@@ -31,7 +31,9 @@ def call(identifier, params):
         time.sleep(float(os.environ.get("SLOW_SECONDS", "0.4")))
         if identifier in cancelled:
             return
-    if name == "cancellations":
+    if params.get("arguments", {}).get("repeat"):
+        text = "x" * int(params["arguments"]["repeat"])
+    elif name == "cancellations":
         text = str(len(cancelled))
     elif name == "big":
         text = "x" * 100000

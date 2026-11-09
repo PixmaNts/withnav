@@ -368,12 +368,16 @@ impl McpManager {
         }))
     }
 
+    /// Calls a tool for an MCP App. Arguments come from app code in a client, so they are
+    /// bounded before anything is sent; the response is bounded before it is copied into a JSON
+    /// value and again after redaction, which can lengthen it.
     pub async fn call_ui_tool(
         &self,
         server_id: &str,
         tool_name: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
+        check_ui_arguments(&arguments)?;
         let server = self
             .servers
             .iter()
@@ -402,16 +406,16 @@ impl McpManager {
         let request =
             rmcp::model::ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(params));
         let timeout = std::time::Duration::from_millis(server.config.call_timeout_ms);
-        let value = tokio::select! {
+        let response = tokio::select! {
             biased;
             _ = disconnected.cancelled() => return Err("MCP server is disconnected".into()),
             res = tokio::time::timeout(timeout, peer.send_request(request)) => match res {
-                Ok(Ok(response)) => serde_json::to_value(response).map_err(|_| "invalid MCP tool response".to_string())?,
+                Ok(Ok(response)) => response,
                 Ok(Err(_)) => return Err("MCP server rejected tools/call".into()),
                 Err(_) => return Err("MCP tools/call timed out".into()),
             }
         };
-        Ok(redaction::redact_value(&value, &server.secrets()))
+        ui_tool_response(&response, &server.secrets())
     }
 
     pub async fn shutdown(&self) {
@@ -421,6 +425,75 @@ impl McpManager {
             let _ = task.await;
         }
     }
+}
+
+/// Largest serialised arguments an MCP App may send to one tool call. Below the HTTP body limit
+/// of the route (2 MiB), so this check, not the transport, is what refuses an oversized call.
+const MAX_UI_ARGUMENT_BYTES: usize = 1024 * 1024;
+
+/// Deepest nesting of objects and arrays in MCP App tool arguments, the arguments object
+/// included.
+const MAX_UI_ARGUMENT_DEPTH: usize = 64;
+
+/// Largest MCP App tool response returned to a client, serialised, before and after redaction.
+const MAX_UI_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+fn check_ui_arguments(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    fn depth_within(value: &serde_json::Value, levels: usize) -> bool {
+        match value {
+            serde_json::Value::Array(items) => {
+                levels > 0 && items.iter().all(|v| depth_within(v, levels - 1))
+            }
+            serde_json::Value::Object(entries) => {
+                levels > 0 && entries.values().all(|v| depth_within(v, levels - 1))
+            }
+            _ => true,
+        }
+    }
+    // Depth first: it bounds the recursion of the size check that follows.
+    if !arguments
+        .values()
+        .all(|v| depth_within(v, MAX_UI_ARGUMENT_DEPTH - 1))
+    {
+        return Err(format!(
+            "MCP tool arguments are nested deeper than {MAX_UI_ARGUMENT_DEPTH} levels"
+        ));
+    }
+    match tool::json_within(arguments, MAX_UI_ARGUMENT_BYTES, false) {
+        Ok(_) => Ok(()),
+        Err(tool::JsonLimit::TooLarge) => Err(format!(
+            "MCP tool arguments are larger than {} KiB",
+            MAX_UI_ARGUMENT_BYTES / 1024
+        )),
+        Err(tool::JsonLimit::Invalid) => Err("invalid MCP tool arguments".into()),
+    }
+}
+
+/// The redacted JSON of an MCP App tool response, refused when it is larger than
+/// [`MAX_UI_RESPONSE_BYTES`].
+fn ui_tool_response(
+    response: &impl serde::Serialize,
+    secrets: &[String],
+) -> Result<serde_json::Value, String> {
+    let too_large = || {
+        format!(
+            "MCP tool response is larger than {} MiB",
+            MAX_UI_RESPONSE_BYTES / (1024 * 1024)
+        )
+    };
+    let refused = |error| match error {
+        tool::JsonLimit::TooLarge => too_large(),
+        tool::JsonLimit::Invalid => "invalid MCP tool response".to_string(),
+    };
+    let (_, bytes) = tool::json_within(response, MAX_UI_RESPONSE_BYTES, true).map_err(refused)?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| "invalid MCP tool response".to_string())?;
+    drop(bytes);
+    let redacted = redaction::redact_value(&value, secrets);
+    tool::json_within(&redacted, MAX_UI_RESPONSE_BYTES, false).map_err(refused)?;
+    Ok(redacted)
 }
 
 fn resolve_collisions(mut tools: Vec<McpTool>) -> (Vec<McpTool>, Vec<(String, String)>) {
@@ -491,6 +564,61 @@ mod tests {
             ..status
         };
         assert_eq!(server_view(&ready, "stdio").tool_count, 4);
+    }
+
+    #[test]
+    fn mcp_app_tool_arguments_are_bounded_in_depth_and_size() {
+        let nested = |levels: usize, array: bool| {
+            // `levels` containers in all, the arguments object included.
+            let mut value = json!(1);
+            for _ in 1..levels {
+                value = if array {
+                    json!([value])
+                } else {
+                    json!({ "k": value })
+                };
+            }
+            serde_json::from_value::<serde_json::Map<_, _>>(json!({ "a": value })).unwrap()
+        };
+        for array in [true, false] {
+            assert!(check_ui_arguments(&nested(MAX_UI_ARGUMENT_DEPTH, array)).is_ok());
+            assert!(
+                check_ui_arguments(&nested(MAX_UI_ARGUMENT_DEPTH + 1, array))
+                    .unwrap_err()
+                    .contains("nested deeper than 64 levels")
+            );
+        }
+        // `{"a":"…"}` is 8 bytes around the string.
+        let sized = |len: usize| {
+            serde_json::from_value::<serde_json::Map<_, _>>(json!({ "a": "x".repeat(len) }))
+                .unwrap()
+        };
+        assert!(check_ui_arguments(&sized(MAX_UI_ARGUMENT_BYTES - 8)).is_ok());
+        assert_eq!(
+            check_ui_arguments(&sized(MAX_UI_ARGUMENT_BYTES - 7)).unwrap_err(),
+            "MCP tool arguments are larger than 1024 KiB"
+        );
+    }
+
+    #[test]
+    fn an_mcp_app_tool_response_is_bounded_before_and_after_redaction() {
+        // `"…"` is 2 bytes around the string.
+        let at_limit = json!("x".repeat(MAX_UI_RESPONSE_BYTES - 2));
+        assert_eq!(ui_tool_response(&at_limit, &[]).unwrap(), at_limit);
+        let over = json!("x".repeat(MAX_UI_RESPONSE_BYTES - 1));
+        assert_eq!(
+            ui_tool_response(&over, &[]).unwrap_err(),
+            "MCP tool response is larger than 8 MiB"
+        );
+        // Within the limit as received, past it once each one-character secret is replaced.
+        let grows =
+            json!({"content": [{"type": "text", "text": "s".repeat(MAX_UI_RESPONSE_BYTES / 2)}]});
+        assert_eq!(
+            ui_tool_response(&grows, &["s".to_string()]).unwrap_err(),
+            "MCP tool response is larger than 8 MiB"
+        );
+        let redacted = ui_tool_response(&json!({"token": "s"}), &["s".to_string()]).unwrap();
+        assert_eq!(redacted, json!({"token": "[redacted]"}));
     }
 
     #[tokio::test]

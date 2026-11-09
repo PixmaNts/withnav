@@ -280,19 +280,198 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
     Ok(output)
 }
 
-fn allowed_image_mime(mime: &str) -> bool {
-    matches!(
-        mime,
-        "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "image/svg+xml"
-    )
+/// Largest redacted `structuredContent` kept, serialised. It is copied into the result metadata
+/// that every client receives and every event log stores.
+const MAX_STRUCTURED_BYTES: usize = 4 * 1024 * 1024;
+
+/// Bytes one result may carry beyond its text, all kinds together: serialised structured
+/// content, preview media (base64 or SVG text) and decoded model images. The per-item and
+/// per-kind caps alone allow four 4 MiB previews plus four 9 MiB images plus unbounded
+/// structured content. Structured content is charged first (an MCP App reads it), then each
+/// block in order, its model image before its preview. `mcp_ui.html` and the text output have
+/// their own caps and are not counted.
+const MAX_RESULT_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+
+/// Most omission notes written into one output, the rest counted in one line. They go last,
+/// into the tail that output truncation keeps (about 32 KiB): a server sending thousands of bad
+/// blocks must not push the first notes, structured content's included, out of it.
+const MAX_OMISSION_NOTES: usize = 8;
+
+/// Why a value was not serialised within a limit.
+#[derive(Debug, PartialEq)]
+pub(super) enum JsonLimit {
+    TooLarge,
+    Invalid,
 }
 
-fn valid_base64(data: &str) -> bool {
-    !data.is_empty()
-        && data.len() <= MAX_MEDIA_BASE64_BYTES
-        && data
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_'))
+/// Serialises `value` as JSON, stopping as soon as it passes `limit` bytes so an oversized value
+/// is never copied whole. With `keep` false nothing is buffered: only the length is returned.
+pub(super) fn json_within(
+    value: &impl serde::Serialize,
+    limit: usize,
+    keep: bool,
+) -> Result<(usize, Vec<u8>), JsonLimit> {
+    struct Capped {
+        len: usize,
+        limit: usize,
+        keep: bool,
+        bytes: Vec<u8>,
+    }
+    impl std::io::Write for Capped {
+        fn write(&mut self, chunk: &[u8]) -> std::io::Result<usize> {
+            self.len = self.len.saturating_add(chunk.len());
+            if self.len > self.limit {
+                return Err(std::io::Error::other("over the limit"));
+            }
+            if self.keep {
+                self.bytes.extend_from_slice(chunk);
+            }
+            Ok(chunk.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut out = Capped {
+        len: 0,
+        limit,
+        keep,
+        bytes: vec![],
+    };
+    match serde_json::to_writer(&mut out, value) {
+        Ok(()) => Ok((out.len, out.bytes)),
+        Err(_) if out.len > limit => Err(JsonLimit::TooLarge),
+        Err(_) => Err(JsonLimit::Invalid),
+    }
+}
+
+fn mib(bytes: usize) -> usize {
+    bytes / (1024 * 1024)
+}
+
+/// The type a client should render these bytes as, decided from the bytes alone: a server's
+/// declared `mimeType` is a claim, and a preview typed from it fails or misrenders when it is
+/// wrong. `None` for anything that is not one of the image types clients draw.
+fn sniff_media_type(bytes: &[u8]) -> Option<&'static str> {
+    use imagesize::ImageType;
+    match imagesize::image_type(bytes) {
+        Ok(ImageType::Png) => Some("image/png"),
+        Ok(ImageType::Jpeg) => Some("image/jpeg"),
+        Ok(ImageType::Gif) => Some("image/gif"),
+        Ok(ImageType::Webp) => Some("image/webp"),
+        Ok(_) => None,
+        Err(_) => std::str::from_utf8(bytes)
+            .is_ok_and(crate::session::attachments::svg::is_svg_document)
+            .then_some("image/svg+xml"),
+    }
+}
+
+/// The previews, model images and omission notes of one result, under one byte budget.
+struct Payload {
+    media: Vec<Value>,
+    images: Vec<Vec<u8>>,
+    omitted: Vec<String>,
+    left: usize,
+}
+
+impl Payload {
+    fn charge(&mut self, bytes: usize) -> bool {
+        let fits = bytes <= self.left;
+        if fits {
+            self.left -= bytes;
+        }
+        fits
+    }
+
+    fn over_budget(&mut self, what: &str) {
+        self.omitted.push(format!(
+            "[{what} omitted: over the {} MiB budget for one result]",
+            mib(MAX_RESULT_PAYLOAD_BYTES)
+        ));
+    }
+
+    fn add_svg(&mut self, svg: String) {
+        if self.media.len() >= MAX_MEDIA_ITEMS {
+            return;
+        }
+        if self.charge(svg.len()) {
+            self.media
+                .push(json!({"mime_type": "image/svg+xml", "svg": svg}));
+        } else {
+            self.over_budget("SVG preview");
+        }
+    }
+
+    /// Decodes one base64 image once, in the standard alphabet (RFC 4648 §4, the one MCP
+    /// specifies and the only one a `data:` URL decodes), for the model and for a preview typed
+    /// from its bytes. The model image is typed later from its bytes too, never from the
+    /// declared `mimeType`. The error says why the model did not get it.
+    fn add_image(
+        &mut self,
+        data: Option<&str>,
+        model: bool,
+        preview: bool,
+        redact: &dyn Fn(&str) -> String,
+    ) -> Result<(), String> {
+        use base64::Engine as _;
+        let data = data.ok_or("no data")?.trim();
+        let to_model = model && self.images.len() < MAX_IMAGE_BLOCKS;
+        let to_preview = preview
+            && self.media.len() < MAX_MEDIA_ITEMS
+            && !data.is_empty()
+            && data.len() <= MAX_MEDIA_BASE64_BYTES
+            && redact(data) == data;
+        let mut refused = (model && !to_model)
+            .then(|| format!("not kept, at most {MAX_IMAGE_BLOCKS} images per result"));
+        if !to_model && !to_preview {
+            return refused.map_or(Ok(()), Err);
+        }
+        if data.len() > MAX_IMAGE_BLOCK_BASE64 {
+            return Err(format!("{} bytes, too large to keep", data.len() / 4 * 3));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|_| "not valid base64".to_string())?;
+        let media_type = to_preview.then(|| sniff_media_type(&bytes)).flatten();
+        if to_model {
+            if self.charge(bytes.len()) {
+                self.images.push(bytes);
+            } else {
+                refused = Some(format!(
+                    "not kept, over the {} MiB budget for one result",
+                    mib(MAX_RESULT_PAYLOAD_BYTES)
+                ));
+            }
+        }
+        if let Some(media_type) = media_type {
+            if self.charge(data.len()) {
+                self.media
+                    .push(json!({"mime_type": media_type, "data": data}));
+            } else {
+                self.over_budget("image preview");
+            }
+        }
+        refused.map_or(Ok(()), Err)
+    }
+}
+
+/// Redacts `structuredContent` and measures it, before and after redaction (a replacement can
+/// be longer than the secret it hides). `Err` is the note naming why it was dropped.
+fn bounded_structured(structured: &Value, secrets: &[String]) -> Result<(Value, usize), String> {
+    let too_large = || {
+        format!(
+            "[structured content omitted: larger than {} MiB]",
+            mib(MAX_STRUCTURED_BYTES)
+        )
+    };
+    let invalid = |error| match error {
+        JsonLimit::TooLarge => too_large(),
+        JsonLimit::Invalid => "[structured content omitted: not serialisable]".to_string(),
+    };
+    json_within(structured, MAX_STRUCTURED_BYTES, false).map_err(invalid)?;
+    let redacted = super::redaction::redact_value(structured, secrets);
+    let (len, _) = json_within(&redacted, MAX_STRUCTURED_BYTES, false).map_err(invalid)?;
+    Ok((redacted, len))
 }
 
 pub(super) fn extract_ui_resource_uri(meta: &Value) -> Option<String> {
@@ -326,8 +505,27 @@ pub(super) fn convert(
     let content = value["content"].as_array();
     let has_text = content.is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "text"));
     let mut parts = vec![];
-    let mut media = vec![];
-    let mut images = vec![];
+    let mut payload = Payload {
+        media: vec![],
+        images: vec![],
+        omitted: vec![],
+        left: MAX_RESULT_PAYLOAD_BYTES,
+    };
+    // Charged before any block: an MCP App reads its state from it.
+    let redacted_structured = match value.get("structuredContent").filter(|v| !v.is_null()) {
+        None => None,
+        Some(structured) => match bounded_structured(structured, secrets) {
+            Ok((redacted, len)) if payload.charge(len) => Some(redacted),
+            Ok(_) => {
+                payload.over_budget("structured content");
+                None
+            }
+            Err(note) => {
+                payload.omitted.push(note);
+                None
+            }
+        },
+    };
     let mut resource_uri =
         extract_ui_resource_uri(&value["_meta"]).filter(|uri| redact(uri) == *uri);
     let mut ui_url = extract_ui_url(&value["_meta"]).filter(|url| redact(url) == *url);
@@ -339,12 +537,11 @@ pub(super) fn convert(
                     let text = block["text"].as_str().unwrap_or("");
                     parts.push(text.to_string());
                     let trimmed = text.trim();
-                    if media.len() < MAX_MEDIA_ITEMS
-                        && trimmed.starts_with("<svg")
-                        && trimmed.ends_with("</svg>")
+                    if payload.media.len() < MAX_MEDIA_ITEMS
                         && trimmed.len() <= MAX_UI_HTML_BYTES
+                        && crate::session::attachments::svg::is_svg_document(trimmed)
                     {
-                        media.push(json!({"mime_type": "image/svg+xml", "svg": redact(trimmed)}));
+                        payload.add_svg(redact(trimmed));
                     }
                 }
                 "resource_link" => parts.push(format!(
@@ -354,16 +551,11 @@ pub(super) fn convert(
                 )),
                 "image" => {
                     let mime = block["mimeType"].as_str().unwrap_or("unknown");
-                    let data = block["data"].as_str();
                     // Decoded for the model; the note stays only when it could not be.
-                    if let Err(note) = decode_image(data, &mut images) {
-                        parts.push(format!("[image: {mime}, {note}]"));
-                    }
-                    if media.len() < MAX_MEDIA_ITEMS
-                        && allowed_image_mime(mime)
-                        && let Some(d) = data.filter(|d| valid_base64(d) && redact(d) == *d)
+                    if let Err(note) =
+                        payload.add_image(block["data"].as_str(), true, true, &redact)
                     {
-                        media.push(json!({"mime_type": mime, "data": d}));
+                        payload.omitted.push(format!("[image: {mime}, {note}]"));
                     }
                 }
                 "audio" => {
@@ -382,8 +574,13 @@ pub(super) fn convert(
                     let mime = res["mimeType"].as_str().unwrap_or("");
                     // A screenshot can also come as an embedded resource with an image type.
                     if mime.starts_with("image/") && res["blob"].is_string() {
-                        if let Err(note) = decode_image(res["blob"].as_str(), &mut images) {
-                            parts.push(format!("[embedded image omitted: {note}]"));
+                        let preview = !uri.starts_with("ui://");
+                        if let Err(note) =
+                            payload.add_image(res["blob"].as_str(), true, preview, &redact)
+                        {
+                            payload
+                                .omitted
+                                .push(format!("[embedded image omitted: {note}]"));
                         }
                     } else {
                         parts.push("[embedded resource omitted]".into());
@@ -402,39 +599,30 @@ pub(super) fn convert(
                         {
                             ui_html = Some(redact(html));
                         }
-                    } else if media.len() < MAX_MEDIA_ITEMS && allowed_image_mime(mime) {
-                        if let Some(blob) = res["blob"]
-                            .as_str()
-                            .filter(|d| valid_base64(d) && redact(d) == *d)
-                        {
-                            media.push(json!({"mime_type": mime, "data": blob}));
-                        } else if mime == "image/svg+xml"
-                            && let Some(svg) = res["text"].as_str()
-                            && svg.len() <= MAX_UI_HTML_BYTES
-                        {
-                            media.push(json!({"mime_type": mime, "svg": redact(svg)}));
-                        }
+                    } else if mime == "image/svg+xml"
+                        && !res["blob"].is_string()
+                        && payload.media.len() < MAX_MEDIA_ITEMS
+                        && let Some(svg) = res["text"].as_str()
+                        && svg.len() <= MAX_UI_HTML_BYTES
+                        && crate::session::attachments::svg::is_svg_document(svg)
+                    {
+                        payload.add_svg(redact(svg));
                     }
                 }
                 _ => parts.push("[unsupported MCP content]".into()),
             }
         }
     }
-    let redacted_structured = value
-        .get("structuredContent")
-        .filter(|v| !v.is_null())
-        .map(|s| super::redaction::redact_value(s, secrets));
     if !has_text && let Some(structured) = &redacted_structured {
         parts.push(serde_json::to_string_pretty(structured).unwrap_or_default());
     }
     if let Some(structured) = &redacted_structured {
         let board = &structured["excalidashBoard"];
-        if media.len() < MAX_MEDIA_ITEMS
-            && let Some(data_url) = board["png"].as_str().or_else(|| structured["png"].as_str())
+        if let Some(data_url) = board["png"].as_str().or_else(|| structured["png"].as_str())
             && let Some(b64) = data_url.strip_prefix("data:image/png;base64,")
-            && valid_base64(b64)
         {
-            media.push(json!({"mime_type": "image/png", "data": b64}));
+            // A preview only: the board image is not a model image, a bad one is just skipped.
+            let _ = payload.add_image(Some(b64), false, true, &redact);
         }
         if ui_url.is_none()
             && let Some(url) = board["url"].as_str().or_else(|| structured["url"].as_str())
@@ -444,6 +632,14 @@ pub(super) fn convert(
             ui_url = Some(url.to_owned());
         }
     }
+    // Last and few, so the bounded output's kept tail always names what was dropped.
+    if payload.omitted.len() > MAX_OMISSION_NOTES {
+        let more = payload.omitted.len() - MAX_OMISSION_NOTES;
+        payload.omitted.truncate(MAX_OMISSION_NOTES);
+        payload.omitted.push(format!("[{more} more items omitted]"));
+    }
+    parts.append(&mut payload.omitted);
+    let Payload { media, images, .. } = payload;
     let mut result = ToolResult::bounded_ok(&redact(&parts.join("\n")), DEFAULT_MAX_OUTPUT_BYTES);
     if value["isError"] == true {
         result.status = ToolStatus::Error;
@@ -494,26 +690,6 @@ const MAX_IMAGE_BLOCK_BASE64: usize = 12 * 1024 * 1024;
 
 /// Most image blocks decoded from one result; the rest are named in the output.
 const MAX_IMAGE_BLOCKS: usize = 4;
-
-/// Decodes one base64 image block into `images`, or says why it was not. The type is decided
-/// later from the bytes, never from the block's declared `mimeType`.
-fn decode_image(data: Option<&str>, images: &mut Vec<Vec<u8>>) -> Result<(), String> {
-    use base64::Engine as _;
-    let data = data.ok_or("no data")?;
-    if images.len() >= MAX_IMAGE_BLOCKS {
-        return Err(format!(
-            "not kept, at most {MAX_IMAGE_BLOCKS} images per result"
-        ));
-    }
-    if data.len() > MAX_IMAGE_BLOCK_BASE64 {
-        return Err(format!("{} bytes, too large to keep", data.len() / 4 * 3));
-    }
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data.trim())
-        .map_err(|_| "not valid base64".to_string())?;
-    images.push(bytes);
-    Ok(())
-}
 
 impl McpTool {
     pub(super) fn server_id(&self) -> &str {
@@ -695,6 +871,219 @@ impl Tool for McpTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::attachments::fixtures;
+
+    fn b64(bytes: &[u8]) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    const MIB: usize = 1024 * 1024;
+
+    #[test]
+    fn a_self_closing_svg_is_a_preview_and_text_merely_mentioning_svg_is_not() {
+        for svg in [
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"/>",
+            "<svg aria-label=\"a>b\"/>",
+            "<?xml version=\"1.0\"?><svg viewBox=\"0 0 1 1\"><rect/></svg>",
+        ] {
+            let result = convert(
+                &json!({"content":[{"type":"text","text":format!("  {svg}\n")}]}),
+                "s",
+                "t",
+                &[],
+            );
+            assert_eq!(
+                result.metadata["mcp_media"],
+                json!([{"mime_type": "image/svg+xml", "svg": svg}]),
+                "{svg}"
+            );
+        }
+        for text in [
+            "<svgfoo/>",
+            "<svg width=\"1\">",
+            "<html><svg/></html>",
+            "see <svg/> here",
+        ] {
+            let result = convert(
+                &json!({"content":[{"type":"text","text":text}]}),
+                "s",
+                "t",
+                &[],
+            );
+            assert!(result.metadata.get("mcp_media").is_none(), "{text}");
+        }
+    }
+
+    // Given image payloads whose declared type disagrees with their bytes
+    // Then every preview is typed from the bytes, and bytes of no image type are not previewed
+    #[test]
+    fn a_preview_is_typed_from_its_bytes_not_its_declared_type() {
+        let png = b64(&fixtures::png(2, 2));
+        let gif = b64(&fixtures::gif(2, 2));
+        let jpeg = b64(&fixtures::jpeg(2, 2));
+        let svg = b64(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+        let value = json!({
+            "content": [
+                {"type": "image", "mimeType": "image/jpeg", "data": png},
+                {"type": "resource", "resource": {"uri": "x://a", "mimeType": "image/png", "blob": gif}},
+                {"type": "image", "mimeType": "image/png", "data": svg},
+                {"type": "image", "mimeType": "image/png", "data": "AAAA"},
+            ],
+            "structuredContent": {"png": format!("data:image/png;base64,{jpeg}")},
+        });
+        let result = convert(&value, "s", "t", &[]);
+        let types: Vec<_> = result.metadata["mcp_media"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["mime_type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            types,
+            ["image/png", "image/gif", "image/svg+xml", "image/jpeg"]
+        );
+        // The model still gets every decodable block; its type is decided from the bytes later.
+        assert_eq!(result.images.len(), 4);
+        // A byte-order mark before the root element is still an SVG document.
+        assert_eq!(
+            sniff_media_type("\u{feff}<svg xmlns=\"http://www.w3.org/2000/svg\"/>".as_bytes()),
+            Some("image/svg+xml")
+        );
+    }
+
+    // Given the same image in the URL-safe and in the standard base64 alphabet
+    // Then the URL-safe one is neither previewed nor given to the model, and says why
+    #[test]
+    fn only_the_standard_base64_alphabet_is_accepted_for_previews_and_the_model() {
+        use base64::Engine as _;
+        let mut bytes = fixtures::png(1, 1);
+        bytes.extend([0xfb, 0xff, 0xbf, 0xfe]);
+        let url_safe = base64::engine::general_purpose::URL_SAFE.encode(&bytes);
+        assert!(url_safe.contains(['-', '_']));
+        let rejected = convert(
+            &json!({"content":[{"type":"image","mimeType":"image/png","data":url_safe}]}),
+            "s",
+            "t",
+            &[],
+        );
+        assert!(rejected.metadata.get("mcp_media").is_none());
+        assert!(rejected.images.is_empty());
+        assert!(rejected.output.contains("not valid base64"));
+        let accepted = convert(
+            &json!({"content":[{"type":"image","mimeType":"image/png","data":b64(&bytes)}]}),
+            "s",
+            "t",
+            &[],
+        );
+        assert_eq!(accepted.metadata["mcp_media"][0]["mime_type"], "image/png");
+        assert_eq!(accepted.images.len(), 1);
+    }
+
+    // Given structured content over its cap, after a text block long enough to be truncated
+    // Then it is not copied into the metadata and the kept tail of the output says so
+    #[test]
+    fn oversized_structured_content_is_dropped_with_a_note() {
+        let big = json!({"blob": "x".repeat(MAX_STRUCTURED_BYTES)});
+        let result = convert(
+            &json!({"content":[{"type":"text","text":"y".repeat(200_000)}], "structuredContent": big}),
+            "s",
+            "t",
+            &[],
+        );
+        assert!(result.metadata.get("mcp_structured").is_none());
+        assert!(
+            result
+                .output
+                .ends_with("[structured content omitted: larger than 4 MiB]"),
+            "{}",
+            &result.output[result.output.len() - 100..]
+        );
+        // Under the cap before redaction, over it after: a replacement is longer than a
+        // one-character secret.
+        let grows = json!({"blob": "s".repeat(MAX_STRUCTURED_BYTES / 2)});
+        let result = convert(
+            &json!({"content":[], "structuredContent": grows}),
+            "s",
+            "t",
+            &["s".to_string()],
+        );
+        assert!(result.metadata.get("mcp_structured").is_none());
+        assert!(result.output.contains("larger than 4 MiB"));
+    }
+
+    // Given oversized structured content and twenty broken images between long texts
+    // Then the notes survive truncation: the first ones in full, the rest counted
+    #[test]
+    fn omission_notes_are_few_and_kept_in_the_output_tail() {
+        let long = json!({"type": "text", "text": "y".repeat(100_000)});
+        let broken = json!({"type": "image", "mimeType": "image/png", "data": "!!"});
+        let mut content = vec![long.clone()];
+        for _ in 0..20 {
+            content.push(broken.clone());
+            content.push(long.clone());
+        }
+        let result = convert(
+            &json!({"content": content, "structuredContent": {"blob": "x".repeat(MAX_STRUCTURED_BYTES)}}),
+            "s",
+            "t",
+            &[],
+        );
+        assert!(result.truncated.is_some());
+        let tail = &result.output[result.output.len() - 2000..];
+        assert!(tail.contains("[structured content omitted: larger than 4 MiB]"));
+        assert_eq!(
+            tail.matches("[image: image/png, not valid base64]").count(),
+            7
+        );
+        assert!(tail.ends_with("[13 more items omitted]"), "{tail}");
+    }
+
+    // Given just under 3 MiB of structured content and three images of 1.5 MiB (2 MiB of base64 each)
+    // Then the 8 MiB result budget keeps the first image and its preview, the second image
+    //      without its preview, and refuses the third, naming each drop
+    #[test]
+    fn previews_images_and_structured_content_share_one_budget() {
+        let mut bytes = fixtures::png(4, 4);
+        bytes.resize(3 * MIB / 2, 0);
+        let data = b64(&bytes);
+        let block = json!({"type": "image", "mimeType": "image/png", "data": data});
+        let structured = json!({"state": "z".repeat(3 * MIB - 64)});
+        let result = convert(
+            &json!({"content": [block, block, block], "structuredContent": structured}),
+            "s",
+            "t",
+            &[],
+        );
+        assert!(result.metadata["mcp_structured"]["state"].is_string());
+        assert_eq!(result.images.len(), 2);
+        assert_eq!(result.metadata["mcp_media"].as_array().unwrap().len(), 1);
+        let note = "over the 8 MiB budget for one result";
+        assert!(
+            result
+                .output
+                .contains(&format!("[image: image/png, not kept, {note}]"))
+        );
+        assert!(
+            result
+                .output
+                .contains(&format!("[image preview omitted: {note}]"))
+        );
+    }
+
+    #[test]
+    fn json_is_measured_up_to_its_limit_and_no_further() {
+        let value = json!("abc");
+        assert_eq!(json_within(&value, 5, true), Ok((5, b"\"abc\"".to_vec())));
+        assert_eq!(json_within(&value, 5, false), Ok((5, vec![])));
+        assert_eq!(json_within(&value, 4, true), Err(JsonLimit::TooLarge));
+        // Escapes count as written: a newline is two bytes, a multibyte character its UTF-8 length.
+        assert_eq!(json_within(&json!("\né"), 6, false).map(|(n, _)| n), Ok(6));
+        assert_eq!(
+            json_within(&json!("\né"), 5, false),
+            Err(JsonLimit::TooLarge)
+        );
+    }
     #[test]
     fn provider_safe_names_and_hashes() {
         assert_eq!(wire_name("github", "a.b 🦀"), "mcp__github__a_b__");
@@ -838,6 +1227,7 @@ mod tests {
 
     #[test]
     fn results_are_bounded_including_error_messages() {
+        let png = b64(&crate::session::attachments::fixtures::png(1, 1));
         let result = convert(
             &json!({"isError":true, "content":[{"type":"text", "text":"a".repeat(100000)}]}),
             "test",
@@ -855,7 +1245,7 @@ mod tests {
         );
         assert_eq!(structured.output, "{\n  \"a\": 1\n}");
         let mixed = convert(
-            &json!({"content":[{"type":"resource_link","uri":"file:///x","name":"x"},{"type":"image","mimeType":"image/png","data":"AAAA"}]}),
+            &json!({"content":[{"type":"resource_link","uri":"file:///x","name":"x"},{"type":"image","mimeType":"image/png","data":png}]}),
             "test",
             "echo",
             &[],
@@ -864,7 +1254,7 @@ mod tests {
         assert_eq!(mixed.images.len(), 1);
         assert_eq!(
             mixed.metadata["mcp_media"],
-            json!([{"mime_type": "image/png", "data": "AAAA"}])
+            json!([{"mime_type": "image/png", "data": png}])
         );
         let ui = convert(
             &json!({
@@ -899,7 +1289,7 @@ mod tests {
                         "id": "b1",
                         "name": "Board",
                         "url": "https://excalidash.example/b/b1",
-                        "png": "data:image/png;base64,AAAA"
+                        "png": format!("data:image/png;base64,{png}")
                     }
                 }
             }),
@@ -913,7 +1303,7 @@ mod tests {
         );
         assert_eq!(
             dash.metadata["mcp_media"],
-            json!([{"mime_type": "image/png", "data": "AAAA"}])
+            json!([{"mime_type": "image/png", "data": png}])
         );
         assert_eq!(
             dash.metadata["mcp_ui"]["url"],

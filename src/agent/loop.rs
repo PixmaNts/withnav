@@ -17,6 +17,13 @@ use crate::tools::{ToolResult, ToolStatus};
 pub const DEFAULT_MAX_STEPS: usize = 50;
 pub const WATCHDOG_FALLBACK_STEPS: usize = 500;
 
+/// How long a step waits for the bytes of its images before sending them as unavailable
+/// placeholders. A responsiveness policy, not a bound derived from storage: the session loader
+/// reads up to `MAX_REQUEST_IMAGES` rows one after the other, each of which may wait on another
+/// SQLite writer, and a read stuck behind a lock must not stall the turn. The blocking read
+/// itself cannot be cancelled; its result is dropped.
+const IMAGE_LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub fn max_steps() -> usize {
     configured_max_steps(
         crate::paths::env_var("WITHNAV_MAX_STEPS"),
@@ -312,7 +319,22 @@ async fn run_steps_inner(
         if let Some(loader) = actor.attachment_loader.clone()
             && !image_ids.is_empty()
         {
-            let mut loaded = loader.load(image_ids.clone()).await;
+            let mut loaded = match tokio::time::timeout(
+                IMAGE_LOAD_TIMEOUT,
+                loader.load(image_ids.clone()),
+            )
+            .await
+            {
+                Ok(loaded) => loaded,
+                Err(_) => {
+                    tracing::warn!(
+                        images = image_ids.len(),
+                        timeout_secs = IMAGE_LOAD_TIMEOUT.as_secs(),
+                        "image loader did not answer in time; images unavailable for request"
+                    );
+                    Default::default()
+                }
+            };
             let mut unavailable = std::collections::HashSet::new();
             for id in &image_ids {
                 match loaded.remove(id) {

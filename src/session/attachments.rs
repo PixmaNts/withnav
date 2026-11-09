@@ -254,6 +254,7 @@ impl AttachmentStore {
         // read raster images only, and a client never receives markup that could run.
         let rendered;
         let (bytes, name) = if imagesize::image_type(bytes).is_err() && svg::looks_like_svg(bytes) {
+            self.admit(session_id, origin)?;
             rendered = svg::rasterize(bytes)?;
             let base = sanitize_name(name);
             let stem = match base.len().checked_sub(4) {
@@ -271,21 +272,10 @@ impl AttachmentStore {
         let detected = inspect(bytes)?;
         let mut connection = self.lock();
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let has_sessions_table = tx
-            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'")?
-            .exists([])?;
-        let session_exists = has_sessions_table
-            && tx
-                .prepare("SELECT 1 FROM sessions WHERE id = ?1")?
-                .exists([session_id])?;
-        if !session_exists {
+        if !session_exists(&tx, session_id)? {
             return Err(AttachmentError::UnknownSession);
         }
-        let held: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM attachments WHERE session_id = ?1",
-            [session_id],
-            |row| row.get(0),
-        )?;
+        let held = attachments_held(&tx, session_id)?;
         if origin == Origin::Tool {
             let known = tx
                 .query_row(
@@ -312,7 +302,7 @@ impl AttachmentStore {
             Origin::Upload => MAX_ATTACHMENTS_PER_SESSION,
             Origin::Tool => MAX_TOOL_ATTACHMENTS_PER_SESSION,
         };
-        if held as usize >= limit {
+        if held >= limit {
             return Err(AttachmentError::Quota(limit));
         }
         let image = ImageRef {
@@ -341,6 +331,25 @@ impl AttachmentStore {
         )?;
         tx.commit()?;
         Ok(image)
+    }
+
+    /// The cheap part of the insert checks, run before an SVG is rendered: rendering is
+    /// serialized process-wide and holds a full-size canvas, so an upload the insert would refuse
+    /// (unknown session, quota reached) must not take the renderer from one that will be kept.
+    /// Plain reads, released before rendering: the insert transaction checks again and decides.
+    /// A tool image skips the quota part, because one identical to a stored image is
+    /// deduplicated even when the quota is reached, and only the rendered bytes can tell.
+    fn admit(&self, session_id: &str, origin: Origin) -> Result<(), AttachmentError> {
+        let connection = self.lock();
+        if !session_exists(&connection, session_id)? {
+            return Err(AttachmentError::UnknownSession);
+        }
+        if origin == Origin::Upload
+            && attachments_held(&connection, session_id)? >= MAX_ATTACHMENTS_PER_SESSION
+        {
+            return Err(AttachmentError::Quota(MAX_ATTACHMENTS_PER_SESSION));
+        }
+        Ok(())
     }
 
     /// The metadata of each id, looked up by `(session, id)`, in input order. An id that does
@@ -385,6 +394,27 @@ impl AttachmentStore {
         )?;
         Ok(())
     }
+}
+
+/// Whether `session_id` is a session of this database (one without a `sessions` table has none).
+fn session_exists(connection: &Connection, session_id: &str) -> rusqlite::Result<bool> {
+    let has_sessions_table = connection
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'")?
+        .exists([])?;
+    Ok(has_sessions_table
+        && connection
+            .prepare("SELECT 1 FROM sessions WHERE id = ?1")?
+            .exists([session_id])?)
+}
+
+/// How many attachments `session_id` holds, whatever their origin.
+fn attachments_held(connection: &Connection, session_id: &str) -> rusqlite::Result<usize> {
+    let held: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM attachments WHERE session_id = ?1",
+        [session_id],
+        |row| row.get(0),
+    )?;
+    Ok(held as usize)
 }
 
 fn row_to_ref(row: &rusqlite::Row<'_>) -> rusqlite::Result<ImageRef> {
@@ -432,8 +462,9 @@ impl crate::agent::images::AttachmentLoader for SessionLoader {
     > {
         let store = self.store.clone();
         let session = self.session_id.clone();
+        let owner = session.clone();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
+            let joined = tokio::task::spawn_blocking(move || {
                 ids.into_iter()
                     .map(|id| {
                         let payload = store
@@ -449,10 +480,20 @@ impl crate::agent::images::AttachmentLoader for SessionLoader {
                     })
                     .collect()
             })
-            .await
-            .unwrap_or_default()
+            .await;
+            loaded_or_none(joined, &owner)
         })
     }
+}
+
+/// The images a loader task read, or none when the task itself failed (it panicked or the
+/// runtime is shutting down): every image of the request then becomes an unavailable
+/// placeholder, and the log says why, since nothing else does.
+fn loaded_or_none<T: Default>(joined: Result<T, tokio::task::JoinError>, session_id: &str) -> T {
+    joined.unwrap_or_else(|error| {
+        tracing::error!(session = %session_id, %error, "attachment loader task failed; the request's images are unavailable");
+        T::default()
+    })
 }
 
 /// Most images one message may reference.
@@ -796,6 +837,89 @@ mod tests {
             .unwrap();
         // The Captain's uploads are never deduplicated and keep the remaining slots.
         store.insert("s1", None, &png(1, 1)).unwrap();
+    }
+
+    // Given an SVG the renderer would refuse (its own error is `Invalid`)
+    // When it is sent to an unknown session, or to one at its quota
+    // Then the session or quota error comes back: the renderer never ran
+    #[test]
+    fn an_svg_for_an_unknown_or_full_session_is_refused_before_rendering() {
+        let unrenderable = b"<svg><unclosed";
+        let store = store_with_session("s1");
+        assert!(matches!(
+            store.insert("s1", None, unrenderable),
+            Err(AttachmentError::Invalid(_))
+        ));
+        assert!(matches!(
+            store.insert("other", None, unrenderable),
+            Err(AttachmentError::UnknownSession)
+        ));
+        assert!(matches!(
+            store.insert_from("other", None, unrenderable, Origin::Tool),
+            Err(AttachmentError::UnknownSession)
+        ));
+        for _ in 0..MAX_ATTACHMENTS_PER_SESSION {
+            store.insert("s1", None, &png(1, 1)).unwrap();
+        }
+        assert!(matches!(
+            store.insert("s1", None, unrenderable),
+            Err(AttachmentError::Quota(64))
+        ));
+    }
+
+    // Given a session whose attachments already reach the tools' limit
+    // When a tool returns an SVG that renders to an image the session holds
+    // Then the stored image is returned: the quota precheck never refuses a tool image early
+    #[test]
+    fn a_tool_svg_identical_to_a_stored_image_is_still_deduplicated_at_the_quota() {
+        let store = store_with_session("s1");
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/></svg>"#;
+        let first = store
+            .insert_from("s1", Some("a.svg"), svg, Origin::Tool)
+            .unwrap();
+        for side in 1..MAX_TOOL_ATTACHMENTS_PER_SESSION as u32 {
+            store
+                .insert_from("s1", None, &png(side, 1), Origin::Tool)
+                .unwrap();
+        }
+        let again = store
+            .insert_from("s1", Some("b.svg"), svg, Origin::Tool)
+            .unwrap();
+        assert_eq!(first, again);
+    }
+
+    // Given a loader task that panicked
+    // Then the request gets no images and the failure is logged
+    #[tokio::test]
+    async fn a_failed_loader_task_is_logged_and_yields_no_images() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        #[derive(Clone, Default)]
+        struct Captured(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Captured {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let joined: Result<std::collections::HashMap<String, ()>, _> =
+            tokio::spawn(async { panic!("forced loader failure") }).await;
+        let logs = Captured::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(move || writer.clone()),
+        );
+        let loaded = tracing::subscriber::with_default(subscriber, || loaded_or_none(joined, "s1"));
+        assert!(loaded.is_empty());
+        let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            logs.contains("attachment loader task failed") && logs.contains("s1"),
+            "{logs}"
+        );
     }
 
     #[test]

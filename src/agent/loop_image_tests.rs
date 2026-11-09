@@ -132,6 +132,40 @@ async fn an_image_the_loader_cannot_read_becomes_a_placeholder_and_the_turn_goes
     );
 }
 
+// Given a loader that never answers
+// Then the step stops waiting after its bound and sends the image as unavailable
+#[tokio::test(start_paused = true)]
+async fn a_loader_that_never_answers_times_out_into_placeholders() {
+    // The clock is paused so the wait is skipped; it resumes when the timed-out load is dropped,
+    // so the request to the mock server runs on real time and no other deadline is jumped over.
+    struct ResumeOnDrop;
+    impl Drop for ResumeOnDrop {
+        fn drop(&mut self) {
+            tokio::time::resume();
+        }
+    }
+    struct NeverAnswers;
+    impl AttachmentLoader for NeverAnswers {
+        fn load(
+            &self,
+            _ids: Vec<String>,
+        ) -> BoxFuture<'static, HashMap<String, Result<ImagePayload, String>>> {
+            Box::pin(async {
+                let _resume = ResumeOnDrop;
+                std::future::pending().await
+            })
+        }
+        fn store(&self, _: String, _: Vec<u8>) -> BoxFuture<'static, Result<ImageRef, String>> {
+            panic!("no tool ran");
+        }
+    }
+    let body = body_of_the_request(true, Some(Arc::new(NeverAnswers))).await;
+    assert_eq!(
+        user_content(&body),
+        "what is this?\n[image a1.png, image/png, 4 B unavailable]"
+    );
+}
+
 #[tokio::test]
 async fn a_model_without_images_gets_the_cannot_see_placeholder_and_the_loader_is_not_asked() {
     struct Panics;

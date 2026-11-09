@@ -106,6 +106,7 @@ pub enum Control {
     DeliveryInterrupt(ulid::Ulid),
     Compact(CompactRequest),
     Model(super::model::ModelRequest),
+    McpTools(super::mcp_tools::McpRefresh),
 }
 
 /// The two ends of the control channel, the saver and the model switcher.

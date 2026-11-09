@@ -675,6 +675,12 @@ the later 0.6 scope, not this contract.
   conversion in `mcp/tool.rs`. The session service owns one manager and `session/actor.rs`
   installs its ready snapshot before role/tool filtering. Shutdown joins supervision tasks and
   kills child process groups. MCP adds no event kind in the stdio delivery.
+  A server's `tools/list_changed` makes `mcp/connection.rs` reread its list; `session/mcp.rs`
+  then asks every root session's runtime to refresh (`bus/runtime/mcp_tools.rs`), which reconciles
+  the session's `InstalledTools` (`mcp/mod.rs`: an already held name wins over a later claimant)
+  with the manager's current inventory only when no turn runs and nothing is held, and publishes a
+  `command.result` named `mcp_tools` listing what was added, removed or refused. Children are
+  created from their parent's current tools and never refreshed.
 
 - Workspace visibility belongs in `session/store.rs` (`hidden_workspaces`, canonical paths, cleared on session creation); its bearer-protected HTTP actions and canonical workspace matching live in `server/web.rs`. Workspace deletion uses `Service::delete`, never direct SQL session deletion.
 

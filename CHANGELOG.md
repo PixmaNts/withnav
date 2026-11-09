@@ -8,6 +8,13 @@ requests land in `develop`.
 
 ### Added
 
+- MCP: an idle session now refreshes its MCP tools between two turns, never during one (nor while
+  a question or permission request is held). A server that becomes ready after the session started,
+  one that sends `notifications/tools/list_changed`, and one that disconnects are all picked up, and
+  the conversation gets a short note listing the tools added and removed. When a new tool's name is
+  already held by another server's tool, the existing one is kept and the note says so. A subagent
+  keeps the tools it was created with; a new subagent is created from its parent's current tools.
+
 - Subagents: a child that uses its step budget (50 by default) no longer waits only for you. It
   pauses, and its parent is woken with a notice giving the steps used, the top-ups used and left,
   and the last tool call and result. The parent can continue it with one more budget, up to three

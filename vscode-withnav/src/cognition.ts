@@ -1601,7 +1601,7 @@ export class CognitionBackend implements ChatBackend {
       // Replay without that row still renders the ordinary command notice.
       if (name === "compact" && payload.ok === false && this.state.compaction?.operationId === payload.operation_id && this.state.compaction?.ok === false) return undefined;
       const text = outcomeText(name, payload.ok === true, payload.data, payload.error);
-      const known = ["help", "model", "context", "variant", "agent", "stop", "new", "compact"].includes(name);
+      const known = ["help", "model", "context", "variant", "agent", "stop", "new", "compact", "mcp_tools"].includes(name);
       if (text === null && (known || payload.data?.applies === "now")) return undefined;
       return { type: "notice", operationId: payload.operation_id, name, ok: payload.ok === true,
         text: `/${name} · ${text ?? "done"}`, ...(text === null ? { details: JSON.stringify(payload.data ?? null, null, 2) } : {}) };

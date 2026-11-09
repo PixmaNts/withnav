@@ -47,6 +47,17 @@ def call(identifier, params):
         text = os.environ.get("RETAINED", json.dumps(params.get("arguments", {}), sort_keys=True))
     send(identifier, {"content": [{"type": "text", "text": text}], "isError": name == "fail"})
 
+def watch_tools_file(path):
+    """Announces `notifications/tools/list_changed` whenever the file's content changes."""
+    last = open(path).read()
+    while True:
+        time.sleep(0.05)
+        current = open(path).read()
+        if current != last:
+            last = current
+            with lock:
+                print(json.dumps({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}), flush=True)
+
 for line in sys.stdin:
     message = json.loads(line)
     method = message.get("method")
@@ -60,7 +71,9 @@ for line in sys.stdin:
                 signal.signal(signal.SIGTERM, signal.SIG_IGN)
             time.sleep(60)
         time.sleep(float(os.environ.get("INIT_DELAY_SECONDS", "0")))
-        send(identifier, {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}}, "serverInfo": {"name": "fixture", "version": "1"}, "instructions": os.environ.get("COMPOSITE", "fixture")})
+        send(identifier, {"protocolVersion": "2025-11-25", "capabilities": {"tools": {"listChanged": bool(os.environ.get("TOOLS_FILE"))}}, "serverInfo": {"name": "fixture", "version": "1"}, "instructions": os.environ.get("COMPOSITE", "fixture")})
+        if os.environ.get("TOOLS_FILE"):
+            threading.Thread(target=watch_tools_file, args=(os.environ["TOOLS_FILE"],), daemon=True).start()
         if os.environ.get("COMPOSITE"):
             print(json.dumps({"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":os.environ["COMPOSITE"]}}), flush=True)
             token = os.environ["COMPOSITE"].removeprefix("Bearer ")
@@ -75,6 +88,8 @@ for line in sys.stdin:
             names.append("secret")
         if os.environ.get("TOOL_NAMES"):
             names = json.loads(os.environ["TOOL_NAMES"])
+        if os.environ.get("TOOLS_FILE"):
+            names = json.loads(open(os.environ["TOOLS_FILE"]).read())
         if os.environ.get("MALFORMED_SCHEMA"):
             names.append("malformed")
         if os.environ.get("SECRET"):

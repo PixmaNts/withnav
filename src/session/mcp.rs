@@ -6,6 +6,10 @@
 //! conversation hears every change while it is connected, and reads `GET /v1/mcp` when it
 //! connects (live-only events are not replayed). Changes close together are sent once, as the
 //! latest snapshot: this is a gauge, not a log of transitions.
+//!
+//! The same wake-up asks every root session to refresh its MCP tools; the session's runtime
+//! does it between two turns (see `bus::runtime::mcp_tools`). A child keeps the tools it was
+//! created with.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -13,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::service::{SessionHandle, SessionId};
 use crate::bus::event::EventKind;
+use crate::bus::runtime::mcp_tools::McpRefresh;
 use crate::bus::sequencer::Candidate;
 use crate::mcp::McpManager;
 
@@ -81,16 +86,30 @@ async fn run(
             }
         };
         // The sequencers are cloned under the lock and published to after it is released.
-        let sequencers: Vec<_> = sessions
+        let targets: Vec<_> = sessions
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .values()
-            .map(|handle| handle.sequencer.clone())
+            .map(|handle| {
+                (
+                    handle.sequencer.clone(),
+                    handle
+                        .parent_session_id
+                        .is_none()
+                        .then(|| (handle.status.clone(), handle.mcp_tools.clone())),
+                )
+            })
             .collect();
         drop(sessions);
-        for sequencer in sequencers {
+        for (sequencer, root) in targets {
             // A session closing meanwhile refuses it; that is not an error for a gauge.
             let _ = sequencer.publish(Candidate::new(EventKind::McpStatus, payload.clone()));
+            if let Some((status, installed)) = root {
+                status.refresh_mcp(McpRefresh {
+                    manager: mcp.clone(),
+                    installed,
+                });
+            }
         }
     }
 }

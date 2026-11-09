@@ -172,4 +172,14 @@ describe("transcript projection", () => {
     ]);
     expect(view.items).toEqual([{ kind: "notice", key: "n:0", text: "/agent · the agent is working", tone: "error" }]);
   });
+
+  it("tells the Captain which MCP tools a refresh added or removed", () => {
+    seq = 0;
+    const view = reduceAll(emptyView(), [
+      env("command.result", { operation_id: "o", name: "mcp_tools", ok: true, data: { added: ["mcp__a__x"], removed: ["mcp__a__y"], removed_more: 2 } }),
+    ]);
+    expect(view.items).toEqual([
+      { kind: "notice", key: "n:0", text: "/mcp_tools · MCP tools added: mcp__a__x\nMCP tools removed: mcp__a__y, and 2 more", tone: "info" },
+    ]);
+  });
 });

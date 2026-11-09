@@ -13,6 +13,7 @@ pub mod bypass;
 mod compact;
 mod deferred;
 mod delivery;
+pub mod mcp_tools;
 pub mod progress;
 mod steering;
 mod watchdog;
@@ -502,6 +503,10 @@ impl RuntimeStatus {
     pub fn budget_topups_used(&self) -> u32 {
         self.budget_topups
             .load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// Asks the runtime to refresh the session's MCP tools once nothing runs or waits.
+    pub fn refresh_mcp(&self, refresh: mcp_tools::McpRefresh) {
+        let _ = self.controls.tx.send(Control::McpTools(refresh));
     }
     pub fn wake_delivery(&self) {
         let _ = self.controls.tx.send(Control::Delivery);
@@ -1083,6 +1088,8 @@ async fn runtime_loop(
     let mut delivery_waiting = false;
     let mut replacement_waiting = false;
     let mut restart_waiting = false;
+    // The latest MCP refresh asked while a turn ran or a question was held.
+    let mut mcp_waiting: Option<mcp_tools::McpRefresh> = None;
     inbox.track_captain(status.queued_captain.clone());
     let boundary_status = status.clone();
     actor.safe_boundary = Some(Arc::new(move |transcript, cancel| {
@@ -1191,9 +1198,16 @@ async fn runtime_loop(
                 actor.cancel=session_cancel.child_token();
                 Some(Inbound::Continue)
             }
+            _ = std::future::ready(()), if mcp_waiting.is_some() && !actor.has_pending() && !status.progress_parked() => {
+                if let Some(request) = mcp_waiting.take() {
+                    mcp_tools::apply(&mut actor, &sequencer, request);
+                }
+                continue;
+            }
             Some(control) = recv_control(&mut control) => {
                 // Between turns: run it now, publish its result, then answer.
                 match control {
+                    Control::McpTools(request) => { mcp_waiting = Some(request); continue; }
                     Control::Steer => {
 
                         if actor.has_pending() || status.progress_parked()
@@ -1515,6 +1529,7 @@ async fn runtime_loop(
                     Some(control) = recv_control(&mut control) => {
                         // A turn is running: accept now, run it at its end.
                         match control {
+                            Control::McpTools(request) => { mcp_waiting = Some(request); }
                             Control::Bypass(request) => { bypass::apply(&status, &sequencer, request, None).await; }
                             Control::Steer => {}
                             Control::Interrupt(id) => {

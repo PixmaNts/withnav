@@ -537,6 +537,13 @@ mod tests {
     use super::fixtures::*;
     use super::*;
 
+    // The terminal client checks its own limit before uploading; if the two drifted apart it would
+    // either refuse images the server takes or upload ones the server refuses.
+    #[test]
+    fn the_terminal_client_stops_at_the_same_image_count_as_the_server() {
+        assert_eq!(withnav_tui::state::MAX_ATTACHMENTS, MAX_IMAGES_PER_MESSAGE);
+    }
+
     fn store_with_session(id: &str) -> AttachmentStore {
         let store = AttachmentStore::in_memory().unwrap();
         {

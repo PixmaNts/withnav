@@ -450,12 +450,13 @@ impl Executor {
             Effect::PasteImage => {
                 self.spawn_event(async move {
                     let result = tokio::task::spawn_blocking(|| {
-                        let bytes = super::desktop::clipboard_image()?;
-                        let path = super::desktop::private_file("png", &bytes)?;
+                        let image = super::desktop::clipboard_image()?;
+                        let extension = super::desktop::extension(image.media_type);
+                        let path = super::desktop::private_file(extension, &image.bytes)?;
                         Ok(PendingAttachment {
                             path,
-                            name: "clipboard.png".into(),
-                            size: bytes.len() as u64,
+                            name: format!("clipboard.{extension}"),
+                            size: image.bytes.len() as u64,
                         })
                     })
                     .await

@@ -4588,6 +4588,7 @@ dependencies = [
  "crossterm",
  "futures-util",
  "insta",
+ "nix",
  "ratatui",
  "ratatui-textarea",
  "serde",

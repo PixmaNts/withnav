@@ -122,9 +122,9 @@ pub struct SessionHandle {
     pub status: Arc<runtime::RuntimeStatus>,
     /// Owner of this session when it is a background child.
     pub parent_session_id: Option<SessionId>,
-    /// The MCP tools frozen into this session's registry when it was built; a child
-    /// inherits exactly this inventory.
-    pub(crate) mcp_tools: Arc<Vec<crate::mcp::McpTool>>,
+    /// The MCP tools this session's registry holds. A root session's are refreshed between
+    /// two turns; a child is created from what its parent holds then and keeps it.
+    pub(crate) mcp_tools: crate::mcp::InstalledTools,
 }
 
 pub use crate::bus::event::{SkillEntry, SkillsBody};
@@ -320,7 +320,7 @@ struct PreparedSession {
     expired: Vec<(Ulid, String)>,
     save_late: bool,
     child_parent: Option<SessionId>,
-    mcp_tools: Arc<Vec<crate::mcp::McpTool>>,
+    mcp_tools: crate::mcp::InstalledTools,
 }
 
 /// Frozen `GET /v1/sessions/:id` body.
@@ -1053,7 +1053,8 @@ impl Service {
         // restriction.
         // Every tool the registry offers, MCP tools included, under the same
         // child and parent restrictions as the native ones.
-        let inherited_mcp = parent_handle.mcp_tools.clone();
+        // One detached copy serves both the policy and the child's registry.
+        let inherited_mcp = parent_handle.mcp_tools.get();
         for tool in super::actor::admissible_tools(&inherited_mcp) {
             let enabled = child_tool_allowed(&tool, &definition, &parent_role);
             policy.insert(tool.clone(), enabled);
@@ -2683,12 +2684,15 @@ impl Service {
             api_key: api_key.clone(),
         });
         let root_tools_enabled = child_policy.is_none() && role.mode.is_primary();
-        // One frozen MCP inventory per session: a child's is its parent's, and a
-        // fresh root session's is what is ready now.
+        // A child keeps the MCP tools its parent held when it was created. A root session
+        // starts with what is ready now and refreshes it between two turns.
         let mcp_tools = match &child_policy {
-            Some((_, _, _, _, _, inherited)) => inherited.clone(),
-            None => Arc::new(self.mcp.snapshot()),
+            Some((_, _, _, _, _, inherited)) => {
+                crate::mcp::InstalledTools::frozen(inherited.clone())
+            }
+            None => crate::mcp::InstalledTools::from_inventory(self.mcp.inventory()),
         };
+        let mcp_registry = mcp_tools.get();
         let mut actor = match &child_policy {
             Some((allowed, read_only, _, _, _, _)) => build_child_actor(
                 &workspace,
@@ -2698,7 +2702,7 @@ impl Service {
                 session_cancel.child_token(),
                 allowed.clone(),
                 *read_only,
-                &mcp_tools,
+                &mcp_registry,
             ),
             None => build_actor(
                 &workspace,
@@ -2706,7 +2710,7 @@ impl Service {
                 resolved,
                 api_key,
                 session_cancel.child_token(),
-                &mcp_tools,
+                &mcp_registry,
             ),
         };
         // A subagent hands its tools the secrets of the tree it works for.
@@ -3449,6 +3453,18 @@ impl Service {
                 None
             };
             self.lock_sessions().insert(session_id, handle);
+        }
+        if child_parent.is_none()
+            && let Some(owner) = self.handle(session_id)
+        {
+            // A server that changed between taking the inventory and registering the
+            // session would otherwise wait for its next change.
+            owner
+                .status
+                .refresh_mcp(crate::bus::runtime::mcp_tools::McpRefresh {
+                    manager: self.mcp.clone(),
+                    installed: owner.mcp_tools.clone(),
+                });
         }
         if child_parent.is_none() {
             if let Some(owner) = self.handle(session_id) {

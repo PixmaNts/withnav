@@ -33,6 +33,14 @@ export function outcomeText(name: string, ok: boolean, data: any, error?: string
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return [`agent ${text("agent")}`, ...data.agents.map((a: any) => `${a.id} · ${a.description || a.mode}`)].join("\n");
       return `agent ${text("agent")}`;
+    case "mcp_tools": {
+      const names = (key: string): string => {
+        const listed: string[] = Array.isArray(data[key]) ? data[key].filter((v: unknown) => typeof v === "string") : [];
+        const more = typeof data[`${key}_more`] === "number" ? data[`${key}_more`] : 0;
+        return listed.length ? `${listed.join(", ")}${more ? `, and ${more} more` : ""}` : "";
+      };
+      return ["added", "removed", "warnings"].filter((key) => names(key)).map((key) => `MCP tools ${key}: ${names(key)}`).join("\n") || null;
+    }
     case "stop":
       return "stopped";
     case "new":

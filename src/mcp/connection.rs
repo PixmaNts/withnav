@@ -110,6 +110,19 @@ impl Drop for Group {
     }
 }
 
+/// Hears `notifications/tools/list_changed`: the supervisor rereads the list on wake-up.
+/// One stored wake-up is enough, so changes close together are read once.
+struct ToolsChanged(Arc<tokio::sync::Notify>);
+
+impl rmcp::ClientHandler for ToolsChanged {
+    async fn on_tool_list_changed(
+        &self,
+        _context: rmcp::service::NotificationContext<rmcp::RoleClient>,
+    ) {
+        self.0.notify_one();
+    }
+}
+
 pub(super) async fn supervise(
     server: Arc<Server>,
     cancel: CancellationToken,
@@ -233,12 +246,27 @@ async fn run(
                 .push(&[], &secrets, true);
         })
     });
-    let initialize = async {
-        ().serve((stdout, stdin)).await.map_err(|_| {
-            "MCP initialization failed (invalid JSON-RPC or closed transport)".to_string()
-        })
+    let tools_changed = Arc::new(tokio::sync::Notify::new());
+    let initialize = {
+        let tools_changed = tools_changed.clone();
+        async move {
+            ToolsChanged(tools_changed)
+                .serve((stdout, stdin))
+                .await
+                .map_err(|_| {
+                    "MCP initialization failed (invalid JSON-RPC or closed transport)".to_string()
+                })
+        }
     };
-    let result = serve(server, cancel, permit, startup_deadline, initialize).await;
+    let result = serve(
+        server,
+        cancel,
+        permit,
+        startup_deadline,
+        initialize,
+        tools_changed,
+    )
+    .await;
     // Initialization futures own only stdio, not the child. Dropping them closes stdin;
     // give both cooperative EOF and SIGTERM handlers time before the group kill fallback.
     let _ = tokio::time::timeout(Duration::from_millis(100), child.wait()).await;
@@ -271,7 +299,7 @@ async fn run(
     result
 }
 
-type Client = rmcp::service::RunningService<rmcp::RoleClient, ()>;
+type Client = rmcp::service::RunningService<rmcp::RoleClient, ToolsChanged>;
 
 /// Initializes, discovers the tools within the startup deadline, publishes the server as
 /// ready, then holds the connection until it drops or the manager shuts down. Shared by
@@ -282,6 +310,7 @@ async fn serve(
     permit: tokio::sync::SemaphorePermit<'_>,
     startup_deadline: tokio::time::Instant,
     initialize: impl std::future::Future<Output = Result<Client, String>>,
+    tools_changed: Arc<tokio::sync::Notify>,
 ) -> Result<(), String> {
     let result: Result<(), String> = async {
         let startup = async {
@@ -307,10 +336,33 @@ async fn serve(
         server.notify();
         // Keep the service handle until explicit closure; dropping it only requests cancellation.
         let close = client.cancellation_token();
+        let peer = client.peer().clone();
         let mut waiting = Box::pin(client.waiting());
-        tokio::select! {
-            _ = cancel.cancelled() => { close.cancel(); },
-            _ = &mut waiting => { disconnected.cancel(); return Err("MCP transport disconnected".into()); }
+        let mut rereading = false;
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => { close.cancel(); break; },
+                _ = &mut waiting => { disconnected.cancel(); return Err("MCP transport disconnected".into()); }
+                reread = tokio::time::timeout(
+                    Duration::from_millis(server.config.startup_timeout_ms),
+                    discover(server, &peer),
+                ), if rereading => {
+                    rereading = false;
+                    match reread {
+                        Ok(Ok(tools)) => {
+                            if let Some(ready) = server.ready.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                                ready.tools = tools;
+                            }
+                            server.notify();
+                        }
+                        // The tools held stay: a failed reread is not a failed server.
+                        Ok(Err(error)) => tracing::warn!(server = %server.id, error = %server.redact(&error), "MCP tool list not refreshed"),
+                        Err(_) => tracing::warn!(server = %server.id, "MCP tool list not refreshed: timed out"),
+                    }
+                }
+                _ = tools_changed.notified(), if !rereading => { rereading = true; }
+            }
         }
         disconnected.cancel();
         let grace = Duration::from_millis(crate::tools::bash_grace_ms());
@@ -340,8 +392,25 @@ async fn run_http(
         StreamableHttpClientTransportConfig::with_uri(server.config.url.as_str())
             .custom_headers(headers),
     );
-    let initialize = async { ().serve(transport).await.map_err(|e| http_failure(&e)) };
-    serve(server, cancel, permit, startup_deadline, initialize).await
+    let tools_changed = Arc::new(tokio::sync::Notify::new());
+    let initialize = {
+        let tools_changed = tools_changed.clone();
+        async move {
+            ToolsChanged(tools_changed)
+                .serve(transport)
+                .await
+                .map_err(|e| http_failure(&e))
+        }
+    };
+    serve(
+        server,
+        cancel,
+        permit,
+        startup_deadline,
+        initialize,
+        tools_changed,
+    )
+    .await
 }
 
 /// What `nav doctor` and clients show when an HTTP server cannot be initialized: whether it

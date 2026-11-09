@@ -197,11 +197,20 @@ async fn nav_run_waits_for_a_server_that_initialises_after_a_delay() {
     assert!(tools.iter().any(|t| t == "mcp__fake__echo"), "{tools:?}");
 }
 
+fn mcp_note(e: &withnav::bus::event::EventEnvelope) -> bool {
+    e.kind == "command.result" && e.payload["name"] == "mcp_tools"
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_child_inherits_the_parents_frozen_inventory_not_later_servers() {
+async fn a_child_keeps_the_tools_it_was_created_with_and_a_later_one_gets_the_parents_current_list()
+{
     let env = common::TestEnv::new();
     install_agents(&env.ws);
-    let provider = spawn_capturing_provider(vec![text_response("child done")]).await;
+    let provider = spawn_capturing_provider(vec![
+        text_response("early done"),
+        text_response("late done"),
+    ])
+    .await;
     let cfg = TestServerConfig::mock(&env.root, &provider.url)
         .chat_tools(128_000)
         .rules_home(&env.home)
@@ -212,23 +221,45 @@ async fn a_child_inherits_the_parents_frozen_inventory_not_later_servers() {
         false,
     );
     let state = AppState::new(cfg).unwrap();
-    // The parent freezes its inventory before the server is ready.
+    // The parent starts before the server is ready, and so does the first child.
     let parent = state.create_session(&env.ws, None, false).await.unwrap();
-    ready(&state).await;
-    let child = state
+    let sub = state.subscribe(parent, None).await.unwrap();
+    let early = state
         .create_child_session(parent, "mcpchild", "inspect")
         .await
         .unwrap();
-    let policy: Value = serde_json::from_str(
-        &state
-            .child_metadata(child)
+    let policy = |id| {
+        let state = state.clone();
+        async move {
+            serde_json::from_str::<Value>(
+                &state
+                    .child_metadata(id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .policy_snapshot,
+            )
+            .unwrap()
+        }
+    };
+    assert!(policy(early).await.get("mcp__fake__echo").is_none());
+    // The idle parent takes the server's tools once it is ready, and says so.
+    let events = common::server::collect_until(sub, mcp_note).await;
+    let note = events.iter().find(|e| mcp_note(e)).unwrap();
+    let added = note.payload["data"]["added"].as_array().unwrap();
+    assert!(added.iter().any(|t| t == "mcp__fake__echo"), "{note:?}");
+    // The first child still holds what it was created with; the next one gets the new list.
+    assert!(
+        common::server::stored_events(&state, early, "command.result")
             .await
-            .unwrap()
-            .unwrap()
-            .policy_snapshot,
-    )
-    .unwrap();
-    assert!(policy.get("mcp__fake__echo").is_none(), "{policy}");
+            .iter()
+            .all(|e| !mcp_note(e))
+    );
+    let late = state
+        .create_child_session(parent, "mcpchild", "inspect again")
+        .await
+        .unwrap();
+    assert_eq!(policy(late).await["mcp__fake__echo"], json!(true));
     let tools = tool_names(&provider, 0).await;
     assert!(!tools.iter().any(|t| t.starts_with("mcp__")), "{tools:?}");
     state.service().close_all().await;
@@ -276,6 +307,111 @@ async fn the_mcp_app_call_route_refuses_oversized_and_deep_arguments() {
     let (status, body) = call(json!({"text": "ok"})).await;
     assert_eq!(status, axum::http::StatusCode::OK, "{body}");
     assert_eq!(body["content"][0]["text"], "{\"text\": \"ok\"}");
+    state.service().close_all().await;
+}
+
+fn tools_file(dir: &Path, names: &[&str]) -> std::path::PathBuf {
+    let path = dir.join("tools.json");
+    std::fs::write(&path, json!(names).to_string()).unwrap();
+    path
+}
+
+/// Waits until the manager serves exactly `count` tools of the `fake` server.
+async fn serving(state: &AppState, count: usize) {
+    wait_for("the server's new tool list", || {
+        state
+            .service()
+            .mcp_statuses()
+            .iter()
+            .any(|s| s.server_id == "fake" && s.state == "ready" && s.tool_count == count)
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tools_list_changed_reaches_an_idle_session_only_between_turns() {
+    let env = common::TestEnv::new();
+    let file = tools_file(&env.root, &["echo"]);
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = common::sse::spawn_gated_provider(
+        vec![
+            text_response("one"),
+            text_response("two"),
+            text_response("three"),
+        ],
+        release.clone(),
+    )
+    .await;
+    let cfg = TestServerConfig::mock(&env.root, &provider.url)
+        .chat_tools(128_000)
+        .rules_home(&env.home)
+        .config();
+    with_mcp(
+        &cfg,
+        json!({"command":[common::python(),FIXTURE],"env":{"TOOLS_FILE":file}}),
+        false,
+    );
+    let state = AppState::new(cfg).unwrap();
+    ready(&state).await;
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    state
+        .send(captain_command(id, "first".into()))
+        .await
+        .unwrap();
+    // The first turn is in flight (its request is held) while the server adds a tool.
+    wait_for("the first request", || !provider.bodies().is_empty()).await;
+    let sub = state.subscribe(id, None).await.unwrap();
+    tools_file(&env.root, &["echo", "alpha"]);
+    serving(&state, 2).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        common::server::stored_events(&state, id, "command.result")
+            .await
+            .iter()
+            .all(|e| !mcp_note(e)),
+        "the registry changed during a turn"
+    );
+    release.notify_one();
+    let events = common::server::collect_until(sub, mcp_note).await;
+    let note = &events.iter().find(|e| mcp_note(e)).unwrap().payload["data"];
+    assert_eq!(note["added"], json!(["mcp__fake__alpha"]));
+    assert!(note.get("removed").is_none(), "{note}");
+    // The next turn offers it; the one that was running did not.
+    state
+        .send(captain_command(id, "second".into()))
+        .await
+        .unwrap();
+    let first = tool_names(&provider, 0).await;
+    let second = tool_names(&provider, 1).await;
+    assert!(!first.iter().any(|t| t == "mcp__fake__alpha"), "{first:?}");
+    assert!(second.iter().any(|t| t == "mcp__fake__alpha"), "{second:?}");
+
+    // A tool the server drops disappears from the tools offered the same way.
+    let mut finished = 0;
+    for _ in 0..200 {
+        finished = common::server::stored_events(&state, id, "task.done")
+            .await
+            .len();
+        if finished == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(finished, 2, "the second turn ends");
+    let sub = state.subscribe(id, None).await.unwrap();
+    tools_file(&env.root, &["alpha"]);
+    let events = common::server::collect_until(sub, |e| {
+        mcp_note(e) && e.payload["data"]["removed"] == json!(["mcp__fake__echo"])
+    })
+    .await;
+    assert!(events.iter().any(mcp_note));
+    state
+        .send(captain_command(id, "third".into()))
+        .await
+        .unwrap();
+    let third = tool_names(&provider, 2).await;
+    assert!(!third.iter().any(|t| t == "mcp__fake__echo"), "{third:?}");
+    assert!(third.iter().any(|t| t == "mcp__fake__alpha"), "{third:?}");
     state.service().close_all().await;
 }
 

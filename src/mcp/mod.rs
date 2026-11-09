@@ -7,6 +7,7 @@ mod ui_error;
 pub use tool::McpTool;
 pub use ui_error::{McpUiError, UI_ERROR_DETAIL_CHARS};
 
+use crate::tools::Tool;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
@@ -346,6 +347,22 @@ impl McpManager {
         }
     }
 
+    /// Every tool of every ready server, before cross-server collision resolution: what a
+    /// session reconciles its own registry against between turns.
+    pub fn inventory(&self) -> Vec<McpTool> {
+        self.servers
+            .iter()
+            .flat_map(|s| {
+                s.ready
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|r| r.tools.clone())
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
     pub fn snapshot(&self) -> Vec<McpTool> {
         let inventory: Vec<_> = self
             .servers
@@ -638,6 +655,170 @@ fn resolve_collisions(mut tools: Vec<McpTool>) -> (Vec<McpTool>, Vec<(String, St
     (tools, skipped)
 }
 
+/// The MCP tools one session's registry holds now. The session handle keeps it (a child
+/// is created from what its parent holds at that moment) and the runtime refreshes it
+/// between two turns.
+#[derive(Clone, Default)]
+pub struct InstalledTools(Arc<Mutex<Installed>>);
+
+#[derive(Default)]
+struct Installed {
+    tools: Arc<Vec<McpTool>>,
+    /// The clashes already reported to this session, so one that persists is announced
+    /// once, not at every status change.
+    reported: std::collections::HashSet<(String, String)>,
+}
+
+/// What a refresh changed in one session's MCP tools, by wire name.
+#[derive(Default)]
+pub struct ToolChange {
+    /// What the registry holds now.
+    pub tools: Arc<Vec<McpTool>>,
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    /// Same name, other description, schema or app metadata.
+    pub updated: Vec<String>,
+    /// New clashes: a tool whose name another server already holds is not installed.
+    pub warnings: Vec<String>,
+}
+
+impl ToolChange {
+    /// Whether the Captain is told: a changed description alone is installed silently.
+    pub fn worth_a_note(&self) -> bool {
+        !(self.added.is_empty() && self.removed.is_empty() && self.warnings.is_empty())
+    }
+}
+
+type Fingerprint = (serde_json::Value, Option<String>, Option<String>);
+
+fn fingerprint(tool: &McpTool) -> Fingerprint {
+    (
+        tool.schema(),
+        tool.ui_resource_uri.clone(),
+        tool.ui_url.clone(),
+    )
+}
+
+impl std::fmt::Debug for InstalledTools {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("InstalledTools")
+    }
+}
+
+impl InstalledTools {
+    /// The tools a new root session starts with: what is ready now.
+    pub fn from_inventory(inventory: Vec<McpTool>) -> Self {
+        let installed = Self::default();
+        installed.refresh(inventory);
+        installed
+    }
+
+    /// A copy frozen at this moment and never refreshed: what a child keeps.
+    pub fn frozen(tools: Arc<Vec<McpTool>>) -> Self {
+        Self(Arc::new(Mutex::new(Installed {
+            tools,
+            reported: Default::default(),
+        })))
+    }
+
+    pub fn get(&self) -> Arc<Vec<McpTool>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tools
+            .clone()
+    }
+
+    /// Reconciles the held tools with `inventory`. A tool already held keeps its wire name
+    /// against another server's tool that claims it later; among the others the server id
+    /// and tool name decide, as for a new session. `None` when nothing changed.
+    pub fn refresh(&self, mut inventory: Vec<McpTool>) -> Option<ToolChange> {
+        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let key = |t: &McpTool| (t.server_id().to_owned(), t.original.clone());
+        let before: std::collections::HashMap<_, _> = held
+            .tools
+            .iter()
+            .map(|t| (key(t), fingerprint(t)))
+            .collect();
+        inventory.sort_by(|a, b| {
+            (!before.contains_key(&key(a)), a.server_id(), &a.original).cmp(&(
+                !before.contains_key(&key(b)),
+                b.server_id(),
+                &b.original,
+            ))
+        });
+        let mut owners = std::collections::HashMap::<String, String>::new();
+        let mut tools = vec![];
+        let mut clashes = std::collections::HashMap::new();
+        for tool in inventory {
+            match owners.get(&tool.wire) {
+                None => {
+                    owners.insert(tool.wire.clone(), tool.server_id().to_owned());
+                    tools.push(tool);
+                }
+                Some(owner) => {
+                    clashes.insert(
+                        key(&tool),
+                        format!(
+                            "{} from {} is not installed: {owner} already holds the name",
+                            tool.wire,
+                            tool.server_id()
+                        ),
+                    );
+                }
+            }
+        }
+        tools.sort_by(|a, b| (a.server_id(), &a.original).cmp(&(b.server_id(), &b.original)));
+        let after: std::collections::HashMap<_, _> = tools
+            .iter()
+            .map(|t| (key(t), (t.wire.clone(), fingerprint(t))))
+            .collect();
+        let wire_before: std::collections::HashMap<_, _> = held
+            .tools
+            .iter()
+            .map(|t| (key(t), t.wire.clone()))
+            .collect();
+        let mut added: Vec<String> = after
+            .iter()
+            .filter(|(k, _)| !before.contains_key(*k))
+            .map(|(_, (wire, _))| wire.clone())
+            .collect();
+        let mut removed: Vec<String> = wire_before
+            .iter()
+            .filter(|(k, _)| !after.contains_key(*k))
+            .map(|(_, wire)| wire.clone())
+            .collect();
+        let mut updated: Vec<String> = after
+            .iter()
+            .filter(|(k, (_, print))| before.get(*k).is_some_and(|old| old != print))
+            .map(|(_, (wire, _))| wire.clone())
+            .collect();
+        let mut warnings: Vec<String> = clashes
+            .iter()
+            .filter(|(k, _)| !held.reported.contains(*k))
+            .map(|(_, text)| text.clone())
+            .collect();
+        for list in [&mut added, &mut removed, &mut updated, &mut warnings] {
+            list.sort();
+        }
+        held.reported = clashes.into_keys().collect();
+        if added.is_empty() && removed.is_empty() && updated.is_empty() && warnings.is_empty() {
+            return None;
+        }
+        for warning in &warnings {
+            tracing::warn!(%warning, "MCP tool skipped");
+        }
+        held.tools = Arc::new(tools);
+        Some(ToolChange {
+            tools: held.tools.clone(),
+            added,
+            removed,
+            updated,
+            warnings,
+        })
+    }
+}
+
 impl Drop for McpManager {
     fn drop(&mut self) {
         self.cancel.cancel();
@@ -756,6 +937,100 @@ mod tests {
         let redacted =
             ui_tool_response("tools/call", &json!({"token": "s"}), &["s".to_string()]).unwrap();
         assert_eq!(redacted, json!({"token": "[redacted]"}));
+    }
+
+    fn bare_server(id: &str) -> Arc<Server> {
+        let config: config::ServerConfig =
+            serde_json::from_value(json!({"command": ["true"], "enabled": false})).unwrap();
+        let (changed, _) = tokio::sync::watch::channel(0u64);
+        Arc::new(Server {
+            id: id.into(),
+            config,
+            ready: Mutex::new(None),
+            status: Mutex::new(ServerStatus {
+                server_id: id.into(),
+                state: "ready",
+                tool_count: 0,
+                skipped_tools: vec![],
+                error: None,
+                stderr_tail: String::new(),
+            }),
+            stderr: Mutex::new(Default::default()),
+            secrets: Mutex::new(vec![]),
+            changed,
+        })
+    }
+
+    fn tool(server: &Arc<Server>, name: &str, description: &str) -> McpTool {
+        let schema = json!({"type": "object"}).as_object().unwrap().clone();
+        McpTool::new(
+            server.clone(),
+            rmcp::model::Tool::new(name.to_owned(), description.to_owned(), schema),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_refresh_reports_added_removed_and_updated_tools() {
+        let a = bare_server("a");
+        let installed =
+            InstalledTools::from_inventory(vec![tool(&a, "one", "first"), tool(&a, "two", "x")]);
+        assert_eq!(installed.get().len(), 2);
+        assert!(
+            installed
+                .refresh(vec![tool(&a, "one", "first"), tool(&a, "two", "x")])
+                .is_none(),
+            "an unchanged inventory changes nothing"
+        );
+        let change = installed
+            .refresh(vec![tool(&a, "one", "reworded"), tool(&a, "three", "y")])
+            .unwrap();
+        assert_eq!(change.added, ["mcp__a__three"]);
+        assert_eq!(change.removed, ["mcp__a__two"]);
+        assert_eq!(change.updated, ["mcp__a__one"]);
+        assert!(change.worth_a_note());
+        assert_eq!(installed.get().len(), 2);
+        // A reworded description alone is installed without a note.
+        let change = installed
+            .refresh(vec![tool(&a, "one", "again"), tool(&a, "three", "y")])
+            .unwrap();
+        assert!(!change.worth_a_note());
+    }
+
+    #[test]
+    fn a_tool_that_claims_a_held_name_later_is_not_installed_and_is_warned_once() {
+        // Both names reduce to `mcp__a__b__c`; only ids written before ids rejected `__`
+        // can produce it.
+        let (first, second) = (bare_server("a"), bare_server("a__b"));
+        let held = tool(&first, "b__c", "held");
+        let rival = tool(&second, "c", "rival");
+        assert_eq!(held.wire, rival.wire);
+        // The rival sorts before the held tool, yet the tool already held keeps the name.
+        let installed = InstalledTools::from_inventory(vec![held.clone()]);
+        let change = installed
+            .refresh(vec![rival.clone(), held.clone()])
+            .unwrap();
+        assert!(change.added.is_empty() && change.removed.is_empty());
+        assert_eq!(change.warnings.len(), 1, "{:?}", change.warnings);
+        assert!(change.warnings[0].contains("already holds the name"));
+        assert!(change.worth_a_note());
+        assert_eq!(installed.get()[0].server_id(), "a");
+        // The same clash is not announced again.
+        assert!(installed.refresh(vec![rival.clone(), held]).is_none());
+        // Once the holder goes, the rival takes the name and the Captain hears of it.
+        let change = installed.refresh(vec![rival]).unwrap();
+        assert_eq!(change.added, ["mcp__a__b__c"]);
+        assert_eq!(change.removed, ["mcp__a__b__c"]);
+    }
+
+    #[test]
+    fn a_frozen_copy_keeps_the_tools_it_was_made_with() {
+        let a = bare_server("a");
+        let parent = InstalledTools::from_inventory(vec![tool(&a, "one", "x")]);
+        let child = InstalledTools::frozen(parent.get());
+        parent.refresh(vec![tool(&a, "two", "y")]).unwrap();
+        assert_eq!(child.get()[0].wire, "mcp__a__one");
+        assert_eq!(parent.get()[0].wire, "mcp__a__two");
     }
 
     #[tokio::test]

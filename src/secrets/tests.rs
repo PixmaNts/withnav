@@ -454,3 +454,32 @@ fn workspace_secrets_carry_an_owner_only_acl_on_windows() {
     check_private(&dir).expect("directory restricted on save");
     check_private(&path).expect("file restricted on save");
 }
+
+#[test]
+fn each_reader_checks_expiry_on_its_own() {
+    // Every reader drops what expired before using the store: none relies on another having
+    // purged first.
+    let ws = workspace();
+    let owner = Ulid::generate();
+    let expired = || {
+        let store = SecretStore::in_memory();
+        store
+            .put(
+                owner,
+                ws.path(),
+                "API_KEY",
+                VALUE,
+                SecretTtl::Hour,
+                SecretScope::Session,
+            )
+            .unwrap();
+        store.advance_clock_test(3_600);
+        store
+    };
+    assert!(expired().environment(owner, ws.path()).is_empty());
+    assert!(expired().list(owner, ws.path()).is_empty());
+    assert_eq!(expired().redact(owner, ws.path(), VALUE), VALUE);
+    let store = expired();
+    assert!(!store.revoke(owner, ws.path(), "API_KEY"));
+    assert!(store.lock().is_empty());
+}

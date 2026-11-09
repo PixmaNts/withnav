@@ -22,6 +22,7 @@ mod file;
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ulid::Ulid;
@@ -158,6 +159,9 @@ pub enum SecretError {
 pub struct SecretStore {
     file: Option<PathBuf>,
     entries: Mutex<Vec<Entry>>,
+    /// Seconds added to the wall clock when expiry is checked: always 0 in a running server;
+    /// tests move it forward to reach a 1 h or 24 h expiry without waiting for it.
+    clock_offset: AtomicI64,
 }
 
 impl std::fmt::Debug for SecretStore {
@@ -174,6 +178,7 @@ impl SecretStore {
         Self {
             file: None,
             entries: Mutex::new(Vec::new()),
+            clock_offset: AtomicI64::new(0),
         }
     }
 
@@ -210,6 +215,7 @@ impl SecretStore {
         let store = Self {
             file: Some(path),
             entries: Mutex::new(entries),
+            clock_offset: AtomicI64::new(0),
         };
         if rewrite {
             let _ = store.save(&store.lock());
@@ -220,6 +226,18 @@ impl SecretStore {
     /// Where workspace secrets are saved, if anywhere.
     pub fn file(&self) -> Option<&Path> {
         self.file.as_deref()
+    }
+
+    /// The time expiry is measured against: the wall clock plus the test offset.
+    fn now(&self) -> i64 {
+        now().saturating_add(self.clock_offset.load(Ordering::Relaxed))
+    }
+
+    /// Moves this store's clock `seconds` forward, so a test sees a secret expire.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn advance_clock_test(&self, seconds: i64) {
+        self.clock_offset.fetch_add(seconds, Ordering::Relaxed);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Entry>> {
@@ -281,7 +299,7 @@ impl SecretStore {
             return Err(SecretError::Nul);
         }
         let workspace = canonical(workspace);
-        let now = now();
+        let now = self.now();
         let entry = Entry {
             name: name.to_owned(),
             value: value.to_owned(),
@@ -314,7 +332,7 @@ impl SecretStore {
     pub fn revoke(&self, owner: Ulid, workspace: &Path, name: &str) -> bool {
         let workspace = canonical(workspace);
         let mut entries = self.lock();
-        let purged = Self::purge(&mut entries, now());
+        let purged = Self::purge(&mut entries, self.now());
         let matches = |e: &Entry, scope| {
             e.name == name && e.scope == scope && e.visible_to(owner, &workspace)
         };
@@ -361,7 +379,7 @@ impl SecretStore {
     pub fn list(&self, owner: Ulid, workspace: &Path) -> Vec<SecretView> {
         let workspace = canonical(workspace);
         let mut entries = self.lock();
-        if Self::purge(&mut entries, now()) {
+        if Self::purge(&mut entries, self.now()) {
             let _ = self.save(&entries);
         }
         Self::visible(&mut entries, owner, &workspace)
@@ -376,7 +394,7 @@ impl SecretStore {
     pub fn environment(&self, owner: Ulid, workspace: &Path) -> Vec<(String, String)> {
         let workspace = canonical(workspace);
         let mut entries = self.lock();
-        let purged = Self::purge(&mut entries, now());
+        let purged = Self::purge(&mut entries, self.now());
         let env = Self::visible(&mut entries, owner, &workspace)
             .into_iter()
             .map(|e| {
@@ -395,7 +413,7 @@ impl SecretStore {
     pub fn redact<'t>(&self, owner: Ulid, workspace: &Path, text: &'t str) -> Cow<'t, str> {
         let workspace = canonical(workspace);
         let mut entries = self.lock();
-        Self::purge(&mut entries, now());
+        Self::purge(&mut entries, self.now());
         let mut values: Vec<(String, String)> = entries
             .iter()
             .filter(|e| {

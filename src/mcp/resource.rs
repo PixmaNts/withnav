@@ -25,15 +25,12 @@ const MAX_DESCRIPTION_CHARS: usize = 300;
 /// The two resource tools of `server`, for a server whose `initialize` result offers
 /// resources.
 pub(super) fn tools(server: &Arc<Server>) -> [McpTool; 2] {
-    let read = super::tool::wire_name(&server.id, READ);
     [
         McpTool::added(
             server.clone(),
             LIST,
             Kind::ListResources,
-            &format!(
-                "List the resources (documents) this MCP server offers and the URI templates it accepts. Read one with {read}."
-            ),
+            "List the resources (documents) this MCP server offers and the URI templates it accepts, with the tool that reads them.",
             json!({"type": "object", "properties": {}, "additionalProperties": false}),
         ),
         McpTool::added(
@@ -241,13 +238,32 @@ async fn list(tool: &McpTool, connection: &Connection<'_>) -> Result<ToolResult,
             DEFAULT_MAX_OUTPUT_BYTES / 1024
         ));
     }
-    let read = super::tool::wire_name(&server.id, READ);
+    // The reader is named only when it is the one WithNav added: a server tool may hold
+    // that name, or the configuration may hide it.
+    let reader = server
+        .ready
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|ready| {
+            ready
+                .tools
+                .iter()
+                .find(|t| t.kind == Kind::ReadResource)
+                .map(|t| t.wire.clone())
+        });
+    if reader.is_none() {
+        notes.push("no resource read tool is available for this server (hidden by configuration, or its name is taken by a server tool)".into());
+    }
     // Notes come first, so the 64 KiB cut never hides that the listing is partial.
     let mut text: Vec<String> = notes.iter().map(|note| format!("Note: {note}")).collect();
-    text.push(format!(
-        "Resources ({}; read one with {read} and its URI):",
-        resources.lines.len()
-    ));
+    text.push(match &reader {
+        Some(read) => format!(
+            "Resources ({}; read one with {read} and its URI):",
+            resources.lines.len()
+        ),
+        None => format!("Resources ({}):", resources.lines.len()),
+    });
     if resources.lines.is_empty() {
         text.push("(none)".into());
     }
@@ -325,9 +341,12 @@ fn line(server: &Server, listing: Listing, entry: &Value) -> String {
     if server.redact(uri) != uri {
         return "- [an entry whose URI contains a configured secret is not shown]".into();
     }
+    // Redacted before folding whitespace or cutting: a secret spread over lines, or crossing
+    // the description limit, would no longer match once reshaped.
     let field = |key: &str| {
         entry[key]
             .as_str()
+            .map(|text| server.redact(text))
             .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
             .filter(|text| !text.is_empty())
     };

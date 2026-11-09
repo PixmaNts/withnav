@@ -25,7 +25,13 @@ def error(identifier, code, text):
 
 def resources_page(identifier, params):
     """Two pages of resources (RESOURCES=1); LOOP_CURSOR makes the server repeat its cursor."""
-    if os.environ.get("LOOP_CURSOR"):
+    if os.environ.get("BIG_LISTING"):
+        page = int(params.get("cursor") or 0)
+        resources = [{"uri": "x://big/%d/%d" % (page, n), "name": "n", "description": "d" * 300} for n in range(200)]
+        send(identifier, {"resources": resources, "nextCursor": str(page + 1)})
+    elif os.environ.get("DESCRIBE_SECRET") and not params.get("cursor"):
+        send(identifier, {"resources": [{"uri": "x://described", "name": "described", "description": "x" * 290 + os.environ["SECRET"]}]})
+    elif os.environ.get("LOOP_CURSOR"):
         send(identifier, {"resources": [{"uri": "x://loop", "name": "loop"}], "nextCursor": "again"})
     elif not params.get("cursor"):
         send(identifier, {"resources": [{"uri": "file:///notes/a.md", "name": "a", "mimeType": "text/markdown", "description": "First\n  note"}], "nextCursor": "second"})
@@ -34,6 +40,17 @@ def resources_page(identifier, params):
         if os.environ.get("SECRET"):
             resources.append({"uri": "x://" + os.environ["SECRET"], "name": "hidden"})
         send(identifier, {"resources": resources})
+
+def templates_page(identifier):
+    if os.environ.get("NO_TEMPLATES"):
+        error(identifier, -32601, "Method not found")
+        return
+    if os.environ.get("SLOW_TEMPLATES"):
+        time.sleep(float(os.environ["SLOW_TEMPLATES"]))
+    description = "One note by id"
+    if os.environ.get("DESCRIBE_SECRET"):
+        description = "see " + os.environ["SECRET"]
+    send(identifier, {"resourceTemplates": [{"uriTemplate": "x://notes/{id}", "name": "note", "description": description}]})
 
 def read_resource(identifier, uri):
     if uri == "x://slow":
@@ -148,10 +165,7 @@ for line in sys.stdin:
     elif method == "resources/list":
         resources_page(identifier, message.get("params") or {})
     elif method == "resources/templates/list":
-        if os.environ.get("NO_TEMPLATES"):
-            error(identifier, -32601, "Method not found")
-        else:
-            send(identifier, {"resourceTemplates": [{"uriTemplate": "x://notes/{id}", "name": "note", "description": "One note by id"}]})
+        threading.Thread(target=templates_page, args=(identifier,), daemon=True).start()
     elif method == "resources/read":
         uri = message.get("params", {}).get("uri", "")
         threading.Thread(target=read_resource, args=(identifier, uri), daemon=True).start()

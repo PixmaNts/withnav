@@ -272,3 +272,77 @@ async fn plain_resource_server() -> std::sync::Arc<McpManager> {
     ready(&manager).await;
     manager
 }
+
+// Given a listing far over the 64 KiB limit, and a templates page slower than the deadline
+// Then the first stops at the limit with a leading note and no templates request result, and
+//      the second fails with a timeout instead of reporting "no templates"
+#[tokio::test]
+async fn listings_stop_at_the_output_limit_and_share_one_deadline() {
+    let big = manager(json!({"RESOURCES": "1", "BIG_LISTING": "1"}), json!({}));
+    let slow = manager(
+        json!({"RESOURCES": "1", "SLOW_TEMPLATES": "1.5"}),
+        json!({"call_timeout_ms": 300}),
+    );
+    ready(&big).await;
+    ready(&slow).await;
+    let listing = call(&registry(&big), LIST, json!({})).await;
+    assert_eq!(listing.status, ToolStatus::Ok);
+    assert!(
+        listing
+            .output
+            .starts_with("Note: listing incomplete: it reached the 64 KiB output limit"),
+        "{}",
+        &listing.output[..200]
+    );
+    assert!(listing.output.len() <= 64 * 1024);
+    assert!(
+        !listing.output.contains("x://big/2/"),
+        "paging stops once the limit is reached"
+    );
+    let timed_out = call(&registry(&slow), LIST, json!({})).await;
+    assert_eq!(timed_out.status, ToolStatus::Error, "{}", timed_out.output);
+    assert_eq!(timed_out.error.unwrap().code, "mcp_timeout");
+    big.shutdown().await;
+    slow.shutdown().await;
+}
+
+// A secret spread over two lines, or crossing the description limit, is redacted before the
+// listing folds whitespace or cuts the description.
+#[tokio::test]
+async fn listing_fields_are_redacted_before_they_are_reshaped() {
+    let manager = manager(
+        json!({"RESOURCES": "1", "DESCRIBE_SECRET": "1", "SECRET": "multi\nline-resource-sentinel"}),
+        json!({}),
+    );
+    ready(&manager).await;
+    let listing = call(&registry(&manager), LIST, json!({})).await;
+    assert!(
+        listing.output.contains("x://described"),
+        "{}",
+        listing.output
+    );
+    assert!(listing.output.contains("x://notes/{id}"));
+    for fragment in ["multi", "line-res", "sentinel"] {
+        assert!(!listing.output.contains(fragment), "{}", listing.output);
+    }
+    manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_listing_names_no_reader_when_a_server_tool_holds_the_name() {
+    let manager = manager(
+        json!({"RESOURCES": "1", "TOOL_NAMES": json!(["read.resource"]).to_string()}),
+        json!({}),
+    );
+    ready(&manager).await;
+    let listing = call(&registry(&manager), LIST, json!({})).await;
+    assert!(
+        listing
+            .output
+            .starts_with("Note: no resource read tool is available"),
+        "{}",
+        listing.output
+    );
+    assert!(!listing.output.contains(READ));
+    manager.shutdown().await;
+}

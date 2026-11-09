@@ -1672,3 +1672,124 @@ fn a_locked_permission_database_does_not_stall_the_runtime() {
         assert_eq!(decisions(&actor)[0].outcome, Outcome::Pending);
     });
 }
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+        .args([
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "init.defaultBranch=main",
+        ])
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+fn write_call(id: &str, path: &std::path::Path) -> (String, String, serde_json::Value) {
+    (
+        id.into(),
+        "write".into(),
+        json!({"path": path, "content": "from the agent"}),
+    )
+}
+
+#[tokio::test]
+async fn a_worktree_created_during_the_session_is_the_project_on_its_next_use() {
+    let mut actor = actor_with(None);
+    add_rule(&actor, "write", "*", Effect::Allow);
+    let ws = actor.tool_context.workspace.clone();
+    git(&ws, &["init", "--quiet"]);
+    git(&ws, &["commit", "--quiet", "--allow-empty", "-m", "base"]);
+    let sibling = ws.with_file_name(format!("{}-wt", ws.file_name().unwrap().to_string_lossy()));
+    let worktree = sibling.join("feature");
+    script(
+        &mut actor,
+        vec![
+            owned(&[write_call("w1", &ws.join("in-project.txt"))]),
+            done("one"),
+            owned(&[write_call("w2", &worktree.join("a.txt"))]),
+            done("two"),
+        ],
+    )
+    .await;
+    let (_, approved) = run_observed(&mut actor).await;
+    assert_eq!(approved, [json!("rule")]);
+
+    // Created after the first call: nothing was read at the session's start.
+    git(
+        &ws,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "feature",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let (outcome, approved) = run_observed(&mut actor).await;
+    assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+    assert_eq!(
+        approved,
+        [json!("rule")],
+        "the same provenance as in the workspace"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("a.txt")).unwrap(),
+        "from the agent"
+    );
+    let rows = decisions(&actor);
+    assert_eq!(rows.last().unwrap().approved_by.as_deref(), Some("rule"));
+    let _ = std::fs::remove_dir_all(&sibling);
+}
+
+#[tokio::test]
+async fn a_folder_that_is_not_a_worktree_of_the_repository_still_asks() {
+    let mut actor = actor_with(None);
+    add_rule(&actor, "write", "*", Effect::Allow);
+    let ws = actor.tool_context.workspace.clone();
+    git(&ws, &["init", "--quiet"]);
+    git(&ws, &["commit", "--quiet", "--allow-empty", "-m", "base"]);
+    // Another repository, with a worktree of its own, next to this one.
+    let other = ws.with_file_name(format!(
+        "{}-other",
+        ws.file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::create_dir_all(&other).unwrap();
+    git(&other, &["init", "--quiet"]);
+    git(
+        &other,
+        &["commit", "--quiet", "--allow-empty", "-m", "base"],
+    );
+    let other_worktree = other.with_file_name(format!(
+        "{}-wt",
+        other.file_name().unwrap().to_string_lossy()
+    ));
+    git(
+        &other,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "x",
+            other_worktree.to_str().unwrap(),
+        ],
+    );
+    script(
+        &mut actor,
+        vec![owned(&[write_call("w1", &other_worktree.join("a.txt"))])],
+    )
+    .await;
+    let RunOutcome::PermissionRequired(_) = run(&mut actor).await else {
+        panic!("a worktree of another repository is outside the project");
+    };
+    assert!(!other_worktree.join("a.txt").exists());
+    let _ = std::fs::remove_dir_all(&other);
+    let _ = std::fs::remove_dir_all(&other_worktree);
+}

@@ -8,6 +8,14 @@ requests land in `develop`.
 
 ### Added
 
+- Permissions: the other git worktrees of the workspace's repository (`git worktree list`) count as
+  the project. An agent working on a parallel branch in `../<repo>-wt/<name>` reads, searches and
+  writes there without an external-directory question, with the same rule and provenance as in the
+  workspace. The list is read when a call falls outside the workspace, so a worktree created
+  mid-session works on its first use. A worktree of another repository, a plain folder or a link
+  leading out of a worktree still asks; WithNav's configuration and database, credential files,
+  written `deny`/`ask` rules and yolo behave as before.
+
 - Subagents: a child that uses its step budget (50 by default) no longer waits only for you. It
   pauses, and its parent is woken with a notice giving the steps used, the top-ups used and left,
   and the last tool call and result. The parent can continue it with one more budget, up to three

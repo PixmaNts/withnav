@@ -87,7 +87,7 @@ Dependencies point down this list. A module never imports one above it.
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events; `runtime/bypass.rs`: the `Control::Bypass` handler (durable `session.bypass` commit, then the live state, then the eligible pending request) | HTTP, storage |
 | `session/` | the `Service` (registry/router, `service.rs`; `set_bypass` sets a root and then its live children under the root's bypass gate, which child creation also takes, and a resume appends `session.bypass` off before its runtime starts), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), the shared permission store, the session's permission flows and the parent's Captain evidence for a child, primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
 | `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`; `web.rs`: the embedded browser-client files, workspace listing/hide/unhide and optional session-tree deletion, `GET /v1/intent` | session state, the model layers |
-| `workspace/` | what is known of a workspace directory regardless of any session: `git.rs` reads its branch and changed files (`git status -z`, bounded by a deadline, `None` outside a repository); used by the terminal client's header and panel (through `TuiHost`) and by `GET /v1/workspaces` | sessions, HTTP |
+| `workspace/` | what is known of a workspace directory regardless of any session: `git.rs` reads its branch and changed files (`git status -z`, bounded by a deadline, `None` outside a repository), and `worktrees.rs` lists the other git worktrees of its repository (`git worktree list --porcelain -z`, empty when git or the repository is missing); used by the terminal client's header and panel (through `TuiHost`) and by `GET /v1/workspaces` | sessions, HTTP |
 | `navigator/` | everything the Captain perceives as the navigator, below | session internals |
 
 ### Inside `navigator/`
@@ -199,6 +199,12 @@ bash are checked too, best effort: certain writes (redirections, output options,
 SQLite `.save`) are `Floor::Protected`; any other command naming a protected file is
 `Floor::NamesProtected` and goes through the same check, which also passes a pure read; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
 from the parent's execution snapshot, and its no-follow descriptor/inode validation is repeated.
+
+The other git worktrees of the workspace's repository are part of the project: `authorize` reads
+them (`workspace/worktrees.rs`) on a call whose target falls outside the project or in the temp
+directory, never at session start and never cached, and passes them as `FloorContext::worktree_roots`.
+Reads, writes, `location` and `inside_project` then treat them as the workspace; the floor, written
+rules and yolo apply as ever, and a link leaving a worktree resolves outside it.
 
 An allowed write or edit is bound to the canonical file the decision was made for, without
 expanding writable roots. Sessions install private scratch storage from `permissions.scratch_dirs`

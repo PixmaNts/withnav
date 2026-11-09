@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use sha2::{Digest, Sha256};
 
 pub mod svg;
 use ulid::Ulid;
@@ -85,11 +86,19 @@ pub struct Detected {
     pub height: u32,
 }
 
-/// Identifies the image from its magic bytes and a bounded header parse. The file name and any
-/// declared content type are never consulted: they are the client's claim, the bytes are the
-/// evidence. No pixel is decoded and nothing is allocated from the declared dimensions, so a file
-/// that passes can still fail to decode at the provider.
+/// Identifies the image from its magic bytes and a bounded header parse, then decodes it fully.
+/// The file name and any declared content type are never consulted: they are the client's claim,
+/// the bytes are the evidence. A file that passes decodes: a truncated or corrupt raster is
+/// refused here instead of failing at the provider on every later turn of the session.
 pub fn inspect(bytes: &[u8]) -> Result<Detected, AttachmentError> {
+    let detected = inspect_header(bytes)?;
+    decode_fully(bytes, detected)?;
+    Ok(detected)
+}
+
+/// The cheap half of [`inspect`]: magic bytes and the header's dimensions. Nothing is decoded and
+/// nothing is allocated from the declared dimensions.
+fn inspect_header(bytes: &[u8]) -> Result<Detected, AttachmentError> {
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err(AttachmentError::TooLarge {
             size: bytes.len(),
@@ -142,6 +151,141 @@ pub fn inspect(bytes: &[u8]) -> Result<Detected, AttachmentError> {
     })
 }
 
+/// Allocation ceiling asked of the decoders: an 8000 x 8000 RGBA image (the largest the header
+/// check admits) is 256 MiB, and the decoder needs room beside its output. Not every codec honours
+/// it (WebP and JPEG check dimensions only): for a still image the real bound is the header's side
+/// limit, which keeps one decode at roughly 430 MiB at worst, and decodes run one at a time.
+const MAX_DECODE_ALLOC: u64 = 384 * 1024 * 1024;
+
+/// Pixels decoded across the frames of one animation (GIF, animated WebP) before the file is
+/// refused: each frame is composited onto a full canvas, so a file of thousands of large frames
+/// would cost minutes of CPU. A 3.75 MiB animation of ordinary size stays far below.
+const MAX_ANIMATION_PIXELS: u64 = 512 * 1024 * 1024;
+
+/// Largest canvas of an animation (GIF, animated WebP, APNG) that is checked, in pixels: 4096 x
+/// 4096, about 64 MiB per RGBA buffer.
+const MAX_ANIMATION_CANVAS_PIXELS: u64 = 4096 * 4096;
+
+/// Decodes every pixel of `bytes`, whose header [`inspect_header`] accepted, and drops the result.
+/// Decoding is bounded in memory ([`MAX_DECODE_ALLOC`], [`MAX_ANIMATION_CANVAS_PIXELS`]) and in
+/// work for animations ([`MAX_ANIMATION_PIXELS`]), and runs one at a time: each holds a
+/// full-size canvas. An animation is decoded frame by frame, a still image once.
+fn decode_fully(bytes: &[u8], detected: Detected) -> Result<(), AttachmentError> {
+    use image::{AnimationDecoder, ImageDecoder, ImageFormat, Limits};
+    use std::io::Cursor;
+
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+
+    let corrupt = |error: image::ImageError| {
+        AttachmentError::Invalid(format!(
+            "corrupt or truncated {} ({error})",
+            detected.media_type
+        ))
+    };
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_SIDE);
+    limits.max_image_height = Some(MAX_IMAGE_SIDE);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    let corrupt_gif = |error: gif::DecodingError| {
+        AttachmentError::Invalid(format!("corrupt or truncated image/gif ({error})"))
+    };
+    let reader = Cursor::new(bytes);
+    let frames = |frames: image::Frames<'_>| -> Result<(), AttachmentError> {
+        // Each frame is composited onto a canvas that is held beside the decoded frame and the
+        // previous one: past this size the animation is refused instead of costing ~3 canvases.
+        if u64::from(detected.width) * u64::from(detected.height) > MAX_ANIMATION_CANVAS_PIXELS {
+            return Err(AttachmentError::Invalid(format!(
+                "the {} animation is too large to check ({}x{} px)",
+                detected.media_type, detected.width, detected.height
+            )));
+        }
+        let mut pixels: u64 = 0;
+        for frame in frames {
+            let frame = frame.map_err(corrupt)?;
+            pixels += u64::from(frame.buffer().width()) * u64::from(frame.buffer().height());
+            if pixels > MAX_ANIMATION_PIXELS {
+                return Err(AttachmentError::Invalid(format!(
+                    "the {} animation has too many frames to check",
+                    detected.media_type
+                )));
+            }
+        }
+        Ok(())
+    };
+    match detected.media_type {
+        "image/gif" => {
+            check_gif_frames(bytes).map_err(corrupt_gif)?;
+            let mut decoder = image::codecs::gif::GifDecoder::new(reader).map_err(corrupt)?;
+            decoder.set_limits(limits).map_err(corrupt)?;
+            frames(decoder.into_frames())
+        }
+        "image/webp" => {
+            let mut decoder = image::codecs::webp::WebPDecoder::new(reader).map_err(corrupt)?;
+            decoder.set_limits(limits).map_err(corrupt)?;
+            if decoder.has_animation() {
+                frames(decoder.into_frames())
+            } else {
+                image::DynamicImage::from_decoder(decoder)
+                    .map(drop)
+                    .map_err(corrupt)
+            }
+        }
+        "image/png" => {
+            check_png_chunks(bytes).map_err(AttachmentError::Invalid)?;
+            let mut decoder = image::codecs::png::PngDecoder::new(reader).map_err(corrupt)?;
+            decoder.set_limits(limits).map_err(corrupt)?;
+            if decoder.is_apng().map_err(corrupt)? {
+                frames(decoder.apng().map_err(corrupt)?.into_frames())
+            } else {
+                image::DynamicImage::from_decoder(decoder)
+                    .map(drop)
+                    .map_err(corrupt)
+            }
+        }
+        _ => {
+            let mut decoder = image::ImageReader::with_format(reader, ImageFormat::Jpeg);
+            decoder.limits(limits);
+            decoder.decode().map(drop).map_err(corrupt)
+        }
+    }
+}
+
+/// Reads every frame header of a GIF without decoding pixels, refusing a frame that lies outside
+/// the logical screen. The pixel budget of [`decode_fully`] counts canvas pixels, so a GIF with a
+/// 1 x 1 screen and large frames would otherwise cost far more than it is charged.
+fn check_gif_frames(bytes: &[u8]) -> Result<(), gif::DecodingError> {
+    let mut options = gif::DecodeOptions::new();
+    options.check_frame_consistency(true);
+    let mut decoder = options.read_info(std::io::Cursor::new(bytes))?;
+    while decoder.next_frame_info()?.is_some() {}
+    Ok(())
+}
+
+/// Walks the chunk structure of a PNG up to `IEND`: the pixel decoder stops once the image data
+/// is complete and never notices a file cut inside the chunks after it (or the closing `IEND`,
+/// and animation frames past the default image, which it does not read). Bytes after `IEND` are
+/// ignored.
+fn check_png_chunks(bytes: &[u8]) -> Result<(), String> {
+    let mut at = 8usize;
+    loop {
+        let header = bytes
+            .get(at..at + 8)
+            .ok_or("corrupt or truncated image/png (the file ends before its IEND chunk)")?;
+        let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        // length + data + 4-byte checksum
+        let end = (at + 8)
+            .checked_add(length)
+            .and_then(|n| n.checked_add(4))
+            .filter(|end| *end <= bytes.len())
+            .ok_or("corrupt or truncated image/png (a chunk runs past the end of the file)")?;
+        if &header[4..8] == b"IEND" {
+            return Ok(());
+        }
+        at = end;
+    }
+}
+
 fn starts_like_supported(bytes: &[u8]) -> bool {
     bytes.starts_with(b"\x89PNG")
         || bytes.starts_with(b"\xFF\xD8\xFF")
@@ -188,6 +332,45 @@ pub fn sanitize_name(raw: Option<&str>) -> String {
     }
 }
 
+/// Brings an `attachments` table written by an older build up to date: the `content_hash` column
+/// (hex SHA-256 of the stored bytes, filled in for existing rows) and the index tool-image
+/// deduplication looks it up by.
+pub(crate) fn upgrade_schema(connection: &Connection) -> rusqlite::Result<()> {
+    let upgraded = !connection
+        .prepare("SELECT 1 FROM pragma_table_info('attachments') WHERE name='content_hash'")?
+        .exists([])?;
+    // One transaction: a failure after the column exists would otherwise leave the old rows
+    // unhashed for good, since the backfill runs only when the column is added.
+    let tx = connection.unchecked_transaction()?;
+    crate::session::store::add_column_if_missing(&tx, "attachments", "content_hash", "TEXT")?;
+    tx.execute_batch(
+        "CREATE INDEX IF NOT EXISTS attachments_session_hash
+            ON attachments(session_id, content_hash);",
+    )?;
+    if upgraded {
+        // Hash the rows an older build stored, once, so a session already holding tool images
+        // still finds them: without it a session at its tool quota would refuse a repeated
+        // screenshot it used to deduplicate. Only on the upgrade itself: finding the rows still
+        // lacking a hash would read past every blob.
+        let ids: Vec<String> = tx
+            .prepare("SELECT id FROM attachments")?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        for id in ids {
+            let bytes: Vec<u8> =
+                tx.query_row("SELECT bytes FROM attachments WHERE id = ?1", [&id], |r| {
+                    r.get(0)
+                })?;
+            tx.execute(
+                "UPDATE attachments SET content_hash = ?2 WHERE id = ?1",
+                params![id, hex::encode(Sha256::digest(&bytes))],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// The attachments table, behind its own connection. Cheap to clone.
 #[derive(Clone, Debug)]
 pub struct AttachmentStore {
@@ -217,9 +400,11 @@ impl AttachmentStore {
             "CREATE TABLE IF NOT EXISTS attachments (
                 id TEXT PRIMARY KEY, session_id TEXT NOT NULL, media_type TEXT NOT NULL,
                 name TEXT NOT NULL, size INTEGER NOT NULL, width INTEGER NOT NULL,
-                height INTEGER NOT NULL, bytes BLOB NOT NULL, created_at TEXT NOT NULL);
+                height INTEGER NOT NULL, bytes BLOB NOT NULL, created_at TEXT NOT NULL,
+                content_hash TEXT);
             CREATE INDEX IF NOT EXISTS attachments_session ON attachments(session_id);",
         )?;
+        upgrade_schema(&connection)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
@@ -269,6 +454,7 @@ impl AttachmentStore {
             (bytes, sanitize_name(name))
         };
         let detected = inspect(bytes)?;
+        let content_hash = hex::encode(Sha256::digest(bytes));
         let mut connection = self.lock();
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let has_sessions_table = tx
@@ -290,8 +476,8 @@ impl AttachmentStore {
             let known = tx
                 .query_row(
                     "SELECT id, media_type, name, size, width, height FROM attachments
-                     WHERE session_id = ?1 AND size = ?2 AND bytes = ?3 LIMIT 1",
-                    params![session_id, bytes.len() as i64, bytes],
+                     WHERE session_id = ?1 AND content_hash = ?2 AND size = ?3 LIMIT 1",
+                    params![session_id, content_hash, bytes.len() as i64],
                     |row| {
                         Ok(ImageRef {
                             attachment_id: row.get(0)?,
@@ -325,8 +511,9 @@ impl AttachmentStore {
         };
         tx.execute(
             "INSERT INTO attachments
-                (id, session_id, media_type, name, size, width, height, bytes, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                (id, session_id, media_type, name, size, width, height, bytes, created_at,
+                 content_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 image.attachment_id,
                 session_id,
@@ -337,6 +524,7 @@ impl AttachmentStore {
                 image.height,
                 bytes,
                 crate::bus::event::now_rfc3339(),
+                content_hash,
             ],
         )?;
         tx.commit()?;
@@ -493,10 +681,39 @@ pub fn resolve_command_images(
     Ok(())
 }
 
-/// Hand-built image headers for tests: just enough bytes for the header parse.
+/// Image fixtures for tests. `png`, `jpeg`, `gif` and `webp` are real, fully decodable images (the
+/// store decodes every upload); the `*_header` variants are header-only bytes, for the checks that
+/// need dimensions no test should allocate (zero, or past the side limit).
 #[cfg(test)]
 pub(crate) mod fixtures {
+    use image::{ImageFormat, RgbImage};
+    use std::io::Cursor;
+
+    fn encode(width: u32, height: u32, format: ImageFormat) -> Vec<u8> {
+        let mut out = Cursor::new(Vec::new());
+        RgbImage::new(width, height)
+            .write_to(&mut out, format)
+            .unwrap();
+        out.into_inner()
+    }
+
     pub fn png(width: u32, height: u32) -> Vec<u8> {
+        encode(width, height, ImageFormat::Png)
+    }
+
+    pub fn gif(width: u16, height: u16) -> Vec<u8> {
+        encode(width.into(), height.into(), ImageFormat::Gif)
+    }
+
+    pub fn jpeg(width: u16, height: u16) -> Vec<u8> {
+        encode(width.into(), height.into(), ImageFormat::Jpeg)
+    }
+
+    pub fn webp(width: u32, height: u32) -> Vec<u8> {
+        encode(width, height, ImageFormat::WebP)
+    }
+
+    pub fn png_header(width: u32, height: u32) -> Vec<u8> {
         let mut out = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
         out.extend(width.to_be_bytes());
         out.extend(height.to_be_bytes());
@@ -504,7 +721,7 @@ pub(crate) mod fixtures {
         out
     }
 
-    pub fn gif(width: u16, height: u16) -> Vec<u8> {
+    pub fn gif_header(width: u16, height: u16) -> Vec<u8> {
         let mut out = b"GIF89a".to_vec();
         out.extend(width.to_le_bytes());
         out.extend(height.to_le_bytes());
@@ -512,22 +729,13 @@ pub(crate) mod fixtures {
         out
     }
 
-    pub fn jpeg(width: u16, height: u16) -> Vec<u8> {
+    pub fn jpeg_header(width: u16, height: u16) -> Vec<u8> {
         let mut out = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00];
         out.extend([0xFF, 0xC0, 0x00, 0x0B, 0x08]);
         out.extend(height.to_be_bytes());
         out.extend(width.to_be_bytes());
         out.extend([1, 1, 0x11, 0]);
         out.extend([0xFF, 0xD9]);
-        out
-    }
-
-    /// A lossless WebP header (VP8L): 14 bits each for width-1 and height-1.
-    pub fn webp(width: u32, height: u32) -> Vec<u8> {
-        let mut out = b"RIFF\x00\x00\x00\x00WEBPVP8L\x00\x00\x00\x00\x2f".to_vec();
-        let dims = (width - 1) | ((height - 1) << 14);
-        out.extend(dims.to_le_bytes());
-        out.extend([0; 4]);
         out
     }
 }
@@ -562,9 +770,9 @@ mod tests {
     fn each_format_is_identified_by_its_bytes() {
         let cases = [
             (png(12, 34), "image/png", 12, 34),
-            (jpeg(640, 480), "image/jpeg", 640, 480),
+            (jpeg(64, 48), "image/jpeg", 64, 48),
             (gif(5, 6), "image/gif", 5, 6),
-            (webp(100, 200), "image/webp", 100, 200),
+            (webp(100, 20), "image/webp", 100, 20),
         ];
         for (bytes, media_type, width, height) in cases {
             let detected = inspect(&bytes).unwrap();
@@ -633,7 +841,7 @@ mod tests {
         let mut bytes = png(10, 10);
         bytes.truncate(14);
         assert!(matches!(inspect(&bytes), Err(AttachmentError::Invalid(_))));
-        let mut jpeg = jpeg(10, 10);
+        let mut jpeg = jpeg_header(10, 10);
         jpeg.truncate(10);
         assert!(matches!(inspect(&jpeg), Err(AttachmentError::Invalid(_))));
     }
@@ -641,19 +849,19 @@ mod tests {
     #[test]
     fn zero_dimensions_are_invalid() {
         assert!(matches!(
-            inspect(&png(0, 10)),
+            inspect(&png_header(0, 10)),
             Err(AttachmentError::Invalid(_))
         ));
         assert!(matches!(
-            inspect(&gif(10, 0)),
+            inspect(&gif_header(10, 0)),
             Err(AttachmentError::Invalid(_))
         ));
     }
 
     #[test]
     fn a_side_over_8000_px_is_refused() {
-        assert!(inspect(&png(8000, 8000)).is_ok());
-        let error = inspect(&png(9000, 10)).unwrap_err();
+        assert!(inspect_header(&png_header(8000, 8000)).is_ok());
+        let error = inspect(&png_header(9000, 10)).unwrap_err();
         assert!(matches!(
             error,
             AttachmentError::TooWide {
@@ -663,7 +871,7 @@ mod tests {
             }
         ));
         assert!(matches!(
-            inspect(&png(u32::MAX, 10)),
+            inspect(&png_header(u32::MAX, 10)),
             Err(AttachmentError::TooWide { .. })
         ));
     }
@@ -796,6 +1004,173 @@ mod tests {
             .unwrap();
         // The Captain's uploads are never deduplicated and keep the remaining slots.
         store.insert("s1", None, &png(1, 1)).unwrap();
+    }
+
+    // Given a raster whose header is intact but whose pixel data is cut short or damaged
+    // Then the upload is refused before any row is written, for each format
+    #[test]
+    fn a_truncated_or_corrupt_raster_is_refused_before_storage() {
+        let store = store_with_session("s1");
+        for (name, bytes) in [
+            ("png", png(40, 40)),
+            ("jpeg", jpeg(64, 64)),
+            ("gif", gif(40, 40)),
+            ("webp", webp(40, 40)),
+        ] {
+            let mut cut = bytes.clone();
+            cut.truncate(bytes.len() * 3 / 4);
+            let error = store.insert("s1", None, &cut).unwrap_err();
+            assert!(
+                matches!(&error, AttachmentError::Invalid(why) if why.contains("corrupt or truncated")),
+                "{name}: {error}"
+            );
+        }
+        // A header with no image data behind it (the shape of the hand-built fixtures).
+        assert!(matches!(
+            store.insert("s1", None, &png_header(4, 4)),
+            Err(AttachmentError::Invalid(_))
+        ));
+        let count: i64 = store
+            .lock()
+            .query_row("SELECT COUNT(*) FROM attachments", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    // Given a PNG with bit flips inside its compressed data
+    // Then the checksum or the inflate fails and nothing is stored
+    #[test]
+    fn a_png_with_damaged_data_is_refused() {
+        let store = store_with_session("s1");
+        let mut bytes = png(40, 40);
+        let middle = bytes.len() / 2;
+        for byte in &mut bytes[middle..middle + 4] {
+            *byte ^= 0xFF;
+        }
+        assert!(matches!(
+            store.insert("s1", None, &bytes),
+            Err(AttachmentError::Invalid(_))
+        ));
+    }
+
+    // Given the quota's worth of tool images
+    // Then looking one up by content goes through the hash index and reads no blob
+    #[test]
+    fn tool_image_dedup_uses_the_hash_index() {
+        let store = store_with_session("s1");
+        for side in 1..=MAX_TOOL_ATTACHMENTS_PER_SESSION as u32 {
+            store
+                .insert_from("s1", None, &png(side, 1), Origin::Tool)
+                .unwrap();
+        }
+        let plan: String = store
+            .lock()
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT id, media_type, name, size, width, height FROM attachments
+                 WHERE session_id = ?1 AND content_hash = ?2 AND size = ?3 LIMIT 1",
+            )
+            .unwrap()
+            .query_map(params!["s1", "h", 1], |row| row.get::<_, String>(3))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+            .join("; ");
+        assert!(plan.contains("attachments_session_hash"), "{plan}");
+        assert!(!plan.contains("SCAN"), "{plan}");
+        // Same bytes under another name: found by hash, not stored again.
+        let again = store
+            .insert_from("s1", Some("again.png"), &png(7, 1), Origin::Tool)
+            .unwrap();
+        let held: i64 = store
+            .lock()
+            .query_row("SELECT COUNT(*) FROM attachments", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(held, MAX_TOOL_ATTACHMENTS_PER_SESSION as i64);
+        assert_eq!((again.width, again.height), (7, 1));
+    }
+
+    // Given a table written before the hash column existed, holding a tool image
+    // Then opening upgrades it in place, hashes the old row, and a repeat of that image is found
+    #[test]
+    fn a_table_without_the_hash_column_is_upgraded_and_old_rows_deduplicate() {
+        let connection = Connection::open_in_memory().unwrap();
+        let old = png(2, 2);
+        connection
+            .execute_batch(
+                "CREATE TABLE attachments (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, media_type TEXT NOT NULL,
+                    name TEXT NOT NULL, size INTEGER NOT NULL, width INTEGER NOT NULL,
+                    height INTEGER NOT NULL, bytes BLOB NOT NULL, created_at TEXT NOT NULL);
+                 CREATE TABLE sessions (id TEXT PRIMARY KEY);
+                 INSERT INTO sessions VALUES ('s1');",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO attachments VALUES ('old','s1','image/png','a.png',?1,2,2,?2,'t')",
+                params![old.len() as i64, old],
+            )
+            .unwrap();
+        let store = AttachmentStore::init(connection).unwrap();
+        assert!(store.load("s1", "old").is_ok());
+        let again = store
+            .insert_from("s1", None, &png(2, 2), Origin::Tool)
+            .unwrap();
+        assert_eq!(again.attachment_id, "old");
+    }
+
+    // Given a PNG cut inside the chunks after its image data
+    // Then it is refused, though every pixel decodes
+    #[test]
+    fn a_png_missing_its_closing_chunk_is_refused() {
+        let store = store_with_session("s1");
+        let whole = png(8, 8);
+        let mut cut = whole.clone();
+        cut.truncate(whole.len() - 4);
+        assert!(matches!(
+            store.insert("s1", None, &cut),
+            Err(AttachmentError::Invalid(why)) if why.contains("truncated")
+        ));
+        // Bytes after IEND are tolerated.
+        let mut padded = whole;
+        padded.extend([0; 16]);
+        assert!(store.insert("s1", None, &padded).is_ok());
+    }
+
+    // Given an animation whose canvas is past the checked size
+    // Then it is refused rather than decoded
+    #[test]
+    fn an_animation_with_a_huge_canvas_is_refused() {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = gif::Encoder::new(&mut bytes, 6000, 6000, &[]).unwrap();
+            encoder
+                .write_frame(&gif::Frame::from_rgb(2, 2, &[0; 12]))
+                .unwrap();
+        }
+        let store = store_with_session("s1");
+        assert!(matches!(
+            store.insert("s1", None, &bytes),
+            Err(AttachmentError::Invalid(why)) if why.contains("too large to check")
+        ));
+    }
+
+    // Given a GIF whose screen is 1x1 but whose frame is larger
+    // Then it is refused before any frame is decoded
+    #[test]
+    fn a_gif_frame_outside_its_screen_is_refused() {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = gif::Encoder::new(&mut bytes, 1, 1, &[]).unwrap();
+            let frame = gif::Frame::from_rgb(64, 64, &[0; 64 * 64 * 3]);
+            encoder.write_frame(&frame).unwrap();
+        }
+        let store = store_with_session("s1");
+        assert!(matches!(
+            store.insert("s1", None, &bytes),
+            Err(AttachmentError::Invalid(_))
+        ));
     }
 
     #[test]

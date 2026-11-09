@@ -1475,7 +1475,7 @@ fn insert_committed_event(
     Ok(())
 }
 
-fn add_column_if_missing(
+pub(crate) fn add_column_if_missing(
     conn: &Connection,
     table: &str,
     column: &str,
@@ -1951,6 +1951,7 @@ fn migrate(path: &Path) -> Result<(), String> {
     // left untouched for manual migration, never interpreted on normal startup.
     add_column_if_missing(&conn, "sessions", "editor", "INTEGER NOT NULL DEFAULT 0")
         .map_err(|e| format!("migrate: {e}"))?;
+    crate::session::attachments::upgrade_schema(&conn).map_err(|e| format!("migrate: {e}"))?;
     add_column_if_missing(&conn, "child_links", "owner_instance", "TEXT")
         .map_err(|e| e.to_string())?;
     add_column_if_missing(

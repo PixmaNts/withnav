@@ -59,6 +59,14 @@ requests land in `develop`.
   - The composer grows with its text, from about three lines up to 40% of the view height.
   - New commands: `WithNav: Show Sessions` and `WithNav: New Conversation`.
 
+### Fixed
+
+- Attachments: a PNG, JPEG, GIF or WebP is now decoded in full before it is stored, so a truncated
+  or corrupt image is refused at upload instead of failing at the provider on every later turn.
+  Repeated tool images are found by an indexed content hash rather than by comparing stored
+  images. `read` returns a file named `*.svg` as an image only when it is a well-formed SVG
+  document; anything else is returned as text.
+
 ## [0.8.2] - 2026-11-05
 
 WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and

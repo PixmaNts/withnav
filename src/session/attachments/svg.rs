@@ -33,6 +33,27 @@ pub fn looks_like_svg(bytes: &[u8]) -> bool {
     head.contains("<svg")
 }
 
+/// Whether `bytes` is a well-formed XML document whose root element is `<svg>`: the sniff a
+/// `.svg` file name alone cannot give. A text file that mentions `<svg>`, or a truncated or
+/// malformed document, is not one. Past [`MAX_SVG_BYTES`] nothing is parsed and the cheap hint
+/// stands in: the caller refuses such a file for its size anyway.
+pub fn is_svg_document(bytes: &[u8]) -> bool {
+    if bytes.len() > MAX_SVG_BYTES {
+        return looks_like_svg(bytes);
+    }
+    std::str::from_utf8(bytes).is_ok_and(|text| {
+        usvg::roxmltree::Document::parse_with_options(
+            text,
+            usvg::roxmltree::ParsingOptions {
+                allow_dtd: false,
+                nodes_limit: MAX_SVG_NODES,
+                ..Default::default()
+            },
+        )
+        .is_ok_and(|document| document.root_element().tag_name().name() == "svg")
+    })
+}
+
 fn fonts() -> Arc<usvg::fontdb::Database> {
     static FONTS: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
     FONTS

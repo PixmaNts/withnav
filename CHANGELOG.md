@@ -255,6 +255,18 @@ requests land in `develop`.
   helper that hangs, or leaves a process holding its output, is killed with its process group at
   the 5 s deadline instead of blocking the paste.
 
+### Fixed
+
+- VS Code: an MCP App with inline scripts now runs. Its page was embedded in the panel and
+  inherited the panel's script policy, which only allows the panel's own script, so the app's
+  scripts were blocked and `ui/initialize` never arrived. The server now serves the app from a
+  single-use `http://127.0.0.1` address (`POST /v1/mcp/{server}/app`, then `GET /mcp-app/{token}`,
+  valid for one load within 60 seconds) under a Content-Security-Policy of its own: inline scripts
+  and styles run, and `connect-src`, `frame-src`, images, fonts and further scripts are limited to
+  the domains the resource declares in `_meta.ui.csp` (none by default). The panel embeds it with
+  `sandbox="allow-scripts allow-forms"`, so the app cannot reach the panel, VS Code's API or local
+  files, and the panel may embed that one origin only.
+
 ## [0.8.2] - 2026-11-05
 
 WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and

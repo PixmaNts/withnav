@@ -3,6 +3,7 @@
 //!
 //! Response bodies are FROZEN:
 //! - `GET  /v1/health`        -> `{status:"ok"}`
+//! - `POST /v1/mcp/{server}/app` `{uri}|{html}` -> `{path,expires_in_ms}`: parks an MCP app document (see `mcp_app.rs`); `GET /mcp-app/{token}` serves it once, without the bearer, under its own CSP
 //! - `GET  /v1/mcp`           -> `{incarnation,revision,servers:[{server_id,transport,state,tool_count,skipped_tools,skipped_more,error,stderr_tail,stderr_truncated}]}`;
 //!   the service's MCP servers (global, not per workspace). `state` is starting/ready/failed/disabled;
 //!   `tool_count` is 0 unless ready; text is redacted and bounded. Keep the highest `revision` of one
@@ -187,6 +188,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/mcp", get(mcp_status))
         .route("/v1/mcp/{server}/resource", get(get_mcp_resource))
         .route("/v1/mcp/{server}/call", post(post_mcp_call))
+        .route("/v1/mcp/{server}/app", post(super::mcp_app::mint))
+        .route("/mcp-app/{token}", get(super::mcp_app::load))
         .route("/v1/layers", get(list_layers))
         .route("/v1/agents", get(list_agents))
         .route(
@@ -248,8 +251,9 @@ pub fn app(state: AppState) -> Router {
             let token = token.clone();
             async move {
                 let path = request.uri().path();
-                let public =
-                    path == "/v1/health" || (web && crate::server::web::is_public_asset_path(path));
+                let public = path == "/v1/health"
+                    || (web && crate::server::web::is_public_asset_path(path))
+                    || super::mcp_app::is_app_load(request.method(), path);
                 if !public && let Some(token) = token {
                     use axum::http::header::AUTHORIZATION;
                     let expected = format!("Bearer {token}");

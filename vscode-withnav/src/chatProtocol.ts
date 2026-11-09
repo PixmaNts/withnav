@@ -312,5 +312,7 @@ export interface ChatBackend {
   /** Model name for the next new conversation (ignored while one is open with messages). */
   selectModel(name: string): void;
   readMcpResource?(server: string, uri: string): Promise<McpResourceBody>;
+  /** The one-time local URL that serves an MCP app's document under its own CSP. */
+  mcpAppFrame?(server: string, source: { uri: string } | { html: string }): Promise<string>;
   callMcpTool?(server: string, name: string, args: Record<string, unknown>): Promise<unknown>;
 }

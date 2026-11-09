@@ -1876,6 +1876,23 @@ export class CognitionBackend implements ChatBackend {
     );
   }
 
+  /**
+   * Parks an MCP app's document on the server and returns the one-time `http://127.0.0.1` URL
+   * that serves it under the app's own Content-Security-Policy.
+   */
+  async mcpAppFrame(server: string, source: { uri: string } | { html: string }): Promise<string> {
+    const body = await this.request(
+      `/v1/mcp/${encodeURIComponent(server)}/app`,
+      { method: "POST", body: JSON.stringify(source) },
+      "operation",
+    );
+    const endpoint = this.endpoint;
+    if (!endpoint || typeof body?.path !== "string" || !body.path.startsWith("/mcp-app/")) {
+      throw new Error("The WithNav server did not return an app document.");
+    }
+    return `http://127.0.0.1:${endpoint.port}${body.path}`;
+  }
+
   async callMcpTool(server: string, name: string, args: Record<string, unknown> = {}): Promise<unknown> {
     return this.request(
       `/v1/mcp/${encodeURIComponent(server)}/call`,

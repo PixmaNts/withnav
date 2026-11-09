@@ -1,10 +1,15 @@
+"use strict";
 const { test, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
+const http = require("node:http");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { spawnSync, execFile } = require("node:child_process");
 const Module = require("node:module");
 
-// Minimal VS Code stand-in: each panel records its message receivers, posted
-// messages and dispose handlers so a test can count how many receivers handle
-// one webview message.
+// Stand-in for VS Code webview panel: each panel records its message receivers,
+// posted messages and dispose handlers.
 const created = [];
 function makeEmitter() {
   const listeners = new Set();
@@ -19,6 +24,7 @@ function makeEmitter() {
     },
   };
 }
+
 function makePanel() {
   const messages = makeEmitter();
   const disposed = makeEmitter();
@@ -27,6 +33,7 @@ function makePanel() {
     html: "",
     posted: [],
     messages,
+    handlers: messages.listeners,
     webview: {
       set html(value) {
         if (panel.isDisposed) throw new Error("Webview is disposed");
@@ -46,11 +53,12 @@ function makePanel() {
     onDidDispose: fn => disposed.register(fn),
     dispose() {
       panel.isDisposed = true;
-      void disposed.fire();
+      for (const fn of disposed.listeners) fn();
     },
   };
   return panel;
 }
+
 const vscode = {
   ViewColumn: { Active: -1, Beside: -2 },
   window: {
@@ -63,22 +71,30 @@ const vscode = {
   env: { openExternal: async () => true },
   Uri: { parse: url => url },
 };
+
 const originalLoad = Module._load;
 Module._load = function (id, ...args) {
   if (id === "vscode") return vscode;
   return originalLoad.call(this, id, ...args);
 };
-const { openMcpAppPanel } = require("../out/tests/mcpAppPanel.js");
+
+const { openMcpAppPanel, renderMcpAppHtml } = require("../out/tests/mcpAppPanel.js");
+Module._load = originalLoad;
 
 let nextServer = 0;
 function freshApp(overrides = {}) {
   return { callId: "c1", server: `srv${nextServer++}`, tool: "draw", html: "<p>app</p>", ...overrides };
 }
+
 function backend(name = "b") {
   const calls = [];
   return {
     name,
     calls,
+    mcpAppFrame: async (server, source) => {
+      calls.push({ kind: "frame", server, source });
+      return `http://127.0.0.1:4321/mcp-app/${name}`;
+    },
     callMcpTool: async (server, tool, args) => {
       calls.push({ kind: "tool", server, tool, args });
       return { ok: name };
@@ -89,6 +105,7 @@ function backend(name = "b") {
     },
   };
 }
+
 const rpcTool = { type: "rpc", id: 1, method: "tools/call", params: { name: "save", arguments: { x: 1 } } };
 const rpcRead = { type: "rpc", id: 2, method: "resources/read", params: { uri: "ui://x" } };
 
@@ -129,8 +146,8 @@ test("a reopen from another backend routes RPCs to that backend only", async () 
   const panel = created[0];
   await panel.messages.fire({ type: "reload" });
   await panel.messages.fire(rpcTool);
-  assert.equal(first.calls.length, 0);
-  assert.equal(second.calls.length, 1);
+  assert.equal(first.calls.filter(c => c.kind === "tool").length, 0);
+  assert.equal(second.calls.filter(c => c.kind === "tool").length, 1);
   assert.match(panel.html, /"callId":"c2"/, "reload renders the latest descriptor");
 });
 
@@ -164,13 +181,15 @@ test("closing the panel disposes its receiver; reopening starts with one", async
   const panel = created[1];
   assert.equal(panel.messages.listeners.size, 1);
   await panel.messages.fire(rpcTool);
-  assert.equal(b.calls.length, 1);
+  assert.equal(b.calls.filter(c => c.kind === "tool").length, 1);
 });
 
 function deferredBackend() {
   const pending = [];
   return {
     pending,
+    mcpAppFrame: (server, source) =>
+      new Promise(resolve => pending.push(url => resolve(url))),
     callMcpTool: async () => ({}),
     readMcpResource: (server, uri) =>
       new Promise(resolve => pending.push(text => resolve({ uri, mime_type: "text/html", text }))),
@@ -183,9 +202,9 @@ test("the latest render wins when resource reads finish out of order", async () 
   const older = openMcpAppPanel(b, app);
   const newer = openMcpAppPanel(b, app);
   assert.equal(b.pending.length, 2);
-  b.pending[1]("NEWER");
+  b.pending[1]("http://127.0.0.1:4321/NEWER");
   await newer;
-  b.pending[0]("OLDER");
+  b.pending[0]("http://127.0.0.1:4321/OLDER");
   await older;
   assert.match(created[0].html, /NEWER/);
   assert.doesNotMatch(created[0].html, /OLDER/);
@@ -206,7 +225,7 @@ test("the displayed app keeps its backend while a reopen is loading", async () =
   await panel.messages.fire(rpcTool);
   assert.equal(first.calls.filter(c => c.kind === "tool").length, 1);
   assert.equal(secondCalls, 0);
-  second.pending[0]("SECOND");
+  second.pending[0]("http://127.0.0.1:4321/SECOND");
   await reopening;
   await panel.messages.fire(rpcTool);
   assert.equal(first.calls.filter(c => c.kind === "tool").length, 1);
@@ -218,7 +237,101 @@ test("a panel closed during a pending read is not written to", async () => {
   const app = freshApp({ html: undefined, resourceUri: "ui://app" });
   const opening = openMcpAppPanel(b, app);
   created[0].dispose();
-  b.pending[0]("LATE");
+  b.pending[0]("http://127.0.0.1:4321/LATE");
   await opening;
   assert.doesNotMatch(created[0].html, /LATE/);
+});
+
+const defaultApp = { callId: "c1", server: "excalidraw", tool: "draw", resourceUri: "ui://excalidraw/app.html", args: {}, metadata: {} };
+
+test("opening the same app twice keeps one message listener and asks the server for a fresh document each time", async () => {
+  let frames = 0;
+  let calls = 0;
+  const b = {
+    async mcpAppFrame(server, source) {
+      frames += 1;
+      assert.equal(server, "excalidraw");
+      assert.deepEqual(source, { uri: "ui://excalidraw/app.html" });
+      return `http://127.0.0.1:4321/mcp-app/token${frames}`;
+    },
+    async callMcpTool() { calls += 1; return { content: [] }; },
+  };
+  await openMcpAppPanel(b, defaultApp);
+  await openMcpAppPanel(b, defaultApp);
+  const panel = created.at(-1);
+  assert.equal(frames, 2);
+  assert.match(panel.webview.html, /src="http:\/\/127\.0\.0\.1:4321\/mcp-app\/token2"/);
+  assert.equal(panel.handlers.size, 1, "the reload did not add a second listener");
+  for (const handler of [...panel.handlers]) await handler({ type: "rpc", id: 7, method: "tools/call", params: { name: "echo", arguments: {} } });
+  assert.equal(calls, 1, "one request reaches the backend once");
+  panel.dispose();
+  assert.equal(panel.handlers.size, 0);
+});
+
+test("a server that cannot serve the app shows the reason and no frame", async () => {
+  await openMcpAppPanel({ async mcpAppFrame() { throw new Error("MCP server is disconnected"); } }, { ...defaultApp, resourceUri: "ui://other/app.html" });
+  const html = created.at(-1).webview.html;
+  assert.match(html, /MCP server is disconnected/);
+  assert.doesNotMatch(html, /<iframe/);
+});
+
+test("the panel policy cannot be broken out of by an unusual app url", () => {
+  const html = renderMcpAppHtml("n", { ...defaultApp, url: 'https://x".test/' });
+  const csp = html.match(/Content-Security-Policy" content="([^"]*)"/)[1];
+  assert.match(csp, /script-src 'nonce-n';/, `the policy survived intact: ${csp}`);
+  assert.match(html, /<script nonce="n">/);
+});
+
+function browser() {
+  if (process.env.WITHNAV_TEST_BROWSER) return process.env.WITHNAV_TEST_BROWSER;
+  for (const name of ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "chrome"]) {
+    if (spawnSync("sh", ["-c", `command -v ${name}`]).status === 0) return name;
+  }
+  return undefined;
+}
+
+// The shipped panel page in a real browser, with an app document served the way the WithNav
+// server serves one: its own CSP header, no `allow-same-origin`. Only the VS Code API is a stand-in.
+test("the shipped panel page runs an app in its sandbox: ui/initialize reaches the bridge and the parent stays unreadable", async (t) => {
+  const exe = browser();
+  if (!exe) { t.skip("no Chromium or Chrome on PATH (set WITHNAV_TEST_BROWSER)"); return; }
+  const appPage = `<!doctype html><script>
+    let parentAccess;
+    try { parent.document.title; parentAccess = "readable"; } catch (error) { parentAccess = "blocked"; }
+    window.addEventListener("message", (event) => {
+      if (!event.data || event.data.id !== 1 || !event.data.result) return;
+      parent.postMessage({ jsonrpc: "2.0", id: 2, method: "ui/open-link",
+        params: { url: "https://example.com/?init=" + event.data.result.protocolVersion + "&parent=" + parentAccess } }, "*");
+    });
+    parent.postMessage({ jsonrpc: "2.0", id: 1, method: "ui/initialize", params: {} }, "*");
+  </script>`;
+  const server = http.createServer((request, response) => {
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; connect-src 'none'; sandbox allow-scripts allow-forms",
+    });
+    response.end(appPage);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const frameUrl = `http://127.0.0.1:${server.address().port}/mcp-app/token`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "withnav-panel-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // Only acquireVsCodeApi is replaced: what the panel posts to VS Code lands on the root element.
+  const page = renderMcpAppHtml("nonce1", defaultApp, frameUrl).replace(
+    "acquireVsCodeApi()",
+    `{ postMessage: (m) => { if (m.type === "openExternal") document.documentElement.setAttribute("data-opened", m.url); } }`,
+  );
+  fs.writeFileSync(path.join(dir, "panel.html"), page);
+  // Asynchronous: the app server above must keep answering while the browser runs.
+  const run = await new Promise((resolve) => execFile(exe, [
+    "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-proxy-server",
+    `--user-data-dir=${path.join(dir, "profile")}`, "--dump-dom", "--virtual-time-budget=10000",
+    `file://${path.join(dir, "panel.html")}`,
+  ], { encoding: "utf8", timeout: 60000 }, (error, stdout, stderr) => resolve({ stdout, stderr })));
+  const opened = /data-opened="([^"]*)"/.exec(run.stdout ?? "");
+  assert.ok(opened, `the app never reached the bridge: ${run.stdout}\n${run.stderr}`);
+  const url = new URL(opened[1].replace(/&amp;/g, "&"));
+  assert.equal(url.searchParams.get("init"), "2025-11-25", "ui/initialize was answered by the panel");
+  assert.equal(url.searchParams.get("parent"), "blocked", "the sandboxed app cannot read the panel");
 });

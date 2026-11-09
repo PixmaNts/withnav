@@ -8,6 +8,7 @@
 pub mod config;
 pub mod discovery;
 mod flows;
+mod mcp_app;
 pub mod routes;
 pub mod session;
 mod settings;

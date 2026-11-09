@@ -927,8 +927,17 @@ test("mcp app: tool row renders inline media preview and Open App button posts o
   assert.equal(posted.app.server, "excalidraw");
   assert.equal(posted.app.resourceUri, "ui://excalidraw/app.html");
   assert.equal(posted.app.url, "http://127.0.0.1:3000");
-  const html = renderMcpAppHtml("nonce1", posted.app, "<!doctype html><p>Canvas</p>");
-  assert.match(html, /sandbox="allow-scripts allow-forms"/);
-  assert.match(html, /srcdoc="&lt;!doctype html&gt;&lt;p&gt;Canvas&lt;\/p&gt;"/);
+  // The app's document is served by WithNav, never inlined into the panel.
+  const frameUrl = "http://127.0.0.1:4321/mcp-app/abc";
+  const html = renderMcpAppHtml("nonce1", { ...posted.app, html: "<script>alert(1)</script>" }, frameUrl);
+  assert.match(html, /<iframe id="mcp-frame" sandbox="allow-scripts allow-forms" src="http:\/\/127\.0\.0\.1:4321\/mcp-app\/abc">/);
+  assert.doesNotMatch(html, /srcdoc|alert\(1\)/, "resource HTML never reaches the panel document");
+  const csp = html.match(/Content-Security-Policy" content="([^"]*)"/)[1];
+  assert.match(csp, /frame-src http:\/\/127\.0\.0\.1:4321;/, "the panel may embed only the app's own origin");
+  assert.match(csp, /script-src 'nonce-nonce1';/, "the host script is the only script the panel runs");
+  assert.doesNotMatch(csp, /unsafe-inline'?;?\s*$|script-src[^;]*unsafe-inline/);
+  const failed = renderMcpAppHtml("nonce1", { ...posted.app, url: undefined }, undefined, "no app");
+  assert.doesNotMatch(failed, /<iframe/);
+  assert.match(failed, /frame-src 'none'/);
   dom.window.close();
 });

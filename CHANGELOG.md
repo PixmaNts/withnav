@@ -133,6 +133,15 @@ requests land in `develop`.
 
 ### Fixed
 
+- Attachments uploaded to an archived conversation are refused with the message route's
+  `session_archived` error before anything is stored. Stopped conversations still accept images
+  for a later resume.
+- Model-only reasoning that contains a configured secret is dropped as a whole item before it
+  enters the transcript; clean items keep their original bytes and order. Existing stored rows
+  are not rewritten, and encrypted data can only be checked for literal occurrences.
+- `nav tui`: a secret paste is ignored while submission is in flight, Backspace removes a whole
+  grapheme, and clearing hides the next value again. Putting the prompt aside focuses the editor;
+  a failed submission names the requested secret.
 - Deleting a conversation now ends its conversation-lifetime secrets, including workspace-scoped
   ones. Timed workspace secrets survive, and deleting a child leaves its parent's secrets intact.
 - MCP Apps: a resource read selects the one `text/html;profile=mcp-app` item instead of assuming
@@ -240,22 +249,16 @@ requests land in `develop`.
   full-image filter passes is refused instead of rendering for minutes. A malformed `order` or
   `numOctaves`, or a second `order` value above the limit, is refused instead of read as zero.
 
-### Fixed
-
 - Secrets: a workspace secret whose save fails is no longer left active (a secret it would have
   replaced stays as it was). Saving now syncs the folder after the rename, so a power cut cannot
   bring the previous file back. At start-up, saved entries that are expired or invalid (name,
   value, time) are removed from the file too, and a permissive file is tightened before it is
   read (Unix).
 
-### Fixed
-
 - `nav tui` `/paste-image`: a clipboard that holds only a JPEG, WebP or GIF is attached (PNG is still
   asked for first; on Linux the clipboard's offered types are listed otherwise). A clipboard
   helper that hangs, or leaves a process holding its output, is killed with its process group at
   the 5 s deadline instead of blocking the paste.
-
-### Fixed
 
 - VS Code: an MCP App with inline scripts now runs. Its page was embedded in the panel and
   inherited the panel's script policy, which only allows the panel's own script, so the app's
@@ -266,8 +269,6 @@ requests land in `develop`.
   the domains the resource declares in `_meta.ui.csp` (none by default). The panel embeds it with
   `sandbox="allow-scripts allow-forms"`, so the app cannot reach the panel, VS Code's API or local
   files, and the panel may embed that one origin only.
-
-### Fixed
 
 - VS Code: the tab strip and the session list work from the keyboard and expose standard
   structures to screen readers. Tabs: Left/Right move between tabs, Home/End jump, Enter or Space

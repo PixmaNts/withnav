@@ -27,7 +27,7 @@ nav lsp   (one process, two channels: ADR 0006)
    ├─ agent/       the coding-agent loop (the cognition runs on it)
    ├─ tools/       nine registry tools: read, write, edit, grep, glob, fetch, bash, ask, request_secret; each session adds `skill`
    ├─ secrets/     the Captain's secrets: store, bash environment, redaction
-   ├─ mcp/         service-owned stdio and HTTP clients; ready tools frozen into each session registry
+   ├─ mcp/         service-owned stdio and HTTP clients; root tools refreshed between turns, child tools frozen
    └─ provider/    model access, re-exported from withnav-provider (config, auth, one HTTP client, chat SSE, FIM, System One) plus the assignments and layers that read `config.json`
 
 nav tui   (the terminal client; an HTTP + SSE client of a session server: the editor's `nav lsp` one
@@ -76,7 +76,7 @@ Dependencies point down this list. A module never imports one above it.
 
 | Module | Owns | Does not own |
 | --- | --- | --- |
-| `mcp/` | global stdio and Streamable HTTP MCP servers: configuration under `mcp` in `config.json` (`config.rs`), the shared `McpManager`, bounded discovery, process-group supervision and the HTTP connection (`connection.rs`), provider-safe `mcp__<server>__<tool>` names and schemas, cancellable bounded calls (`tool.rs`), the `list_resources`/`read_resource` tools of a server that offers resources (`resource.rs`), its prompts as `/<server>:<prompt>` commands: discovery, argument checks, the bounded prompt block (`prompt.rs`), output redaction (`redaction.rs`), the clients' redacted status snapshot and its change `watch` | permission policy (an MCP tool is decided like any other), session persistence, OAuth, publishing to sessions (`session/mcp.rs`), live refresh |
+| `mcp/` | global stdio and Streamable HTTP MCP servers: configuration under `mcp` in `config.json` (`config.rs`), the shared `McpManager`, bounded discovery and tool-list refresh, process-group supervision and the HTTP connection (`connection.rs`), provider-safe `mcp__<server>__<tool>` names and schemas, cancellable bounded calls (`tool.rs`), the `list_resources`/`read_resource` tools of a server that offers resources (`resource.rs`), its prompts as `/<server>:<prompt>` commands: discovery, argument checks, the bounded prompt block (`prompt.rs`), output redaction (`redaction.rs`), the clients' redacted status snapshot and its change `watch` | permission policy (an MCP tool is decided like any other), session persistence, OAuth, publishing to sessions (`session/mcp.rs`), applying an idle session's registry refresh (`bus/runtime/mcp_tools.rs`) |
 | `permission/` | the permission model of ADR 0015, shared by the agent loop and `nav permissions`: the SQLite tables in `withnav.db` (`store.rs`), rules and their matching (`rules.rs`), the decision history (`decisions.rs`), skill and flow validations (`validation.rs`), shell splitting and arity prefixes (`shell.rs`), the fixed floor (`floor.rs`) and the decision order (`decide.rs`: a pure `decide` over a `PermissionFlows` trait, plus `DoomTracker`) | running tools, flows, events |
 | `flows/` | the flow store (built-in, global and workspace definitions, validation-gated loading, reload marker; `store.rs`), the runtime that evaluates a trigger, aggregates the permission verdicts and runs the compiled-in protected check (`runtime.rs`), the built-in flows (`builtin/`), run records, redaction, the decision client to Instinct | the decision order, which lives in `permission/` |
 | `app/` | `nav` command dispatch; `entry.rs` selects stderr-only LSP logging; `lsp.rs` dispatches editor startup and offline replay | language-server wiring and replay reports, which live in `navigator/` |
@@ -457,8 +457,11 @@ even under verbose user filters because dependency diagnostics can include raw w
 Wire-name collisions are resolved across the ready inventory in server-id/original-name order,
 keeping the first and reporting skipped definitions. No workspace MCP
 configuration is loaded. HTTP header values are resolved the same way, only to build the
-connection's headers (marked sensitive), and each value is redacted like an `env` value. Config changes require a service restart; new sessions snapshot only
-currently ready tools, and existing registries stay frozen, including across connection restarts.
+connection's headers (marked sensitive), and each value is redacted like an `env` value. Config changes
+require a service restart. New root sessions start with currently ready tools, then refresh their
+registries between turns when discovery, a tool-list notification or a connection change alters
+the inventory. A held question or permission request defers the refresh. Children keep the inventory
+inherited at creation; a new child takes its parent's current inventory.
 
 Clients see the servers' status, never their configuration. `McpManager::status_snapshot` builds
 one `{incarnation, revision, servers}` value: redacted, with bounded errors, skipped tools and
@@ -467,7 +470,7 @@ channel; `session/mcp.rs` (the service's bridge task) wakes on it, builds one sn
 publishes it as the live-only `mcp.status` event to every live session. Changes close together are
 sent once, as the latest snapshot. The event is not replayed, so a client reads `GET /v1/mcp` when
 its stream connects and keeps the higher revision of one incarnation, whichever arrives first. The
-status is the service's: a conversation keeps the tools it was created with.
+status is the service's; the same change asks root runtimes to reconcile their tools when idle.
 
 WithNav writes the new paths below. During 0.7, absent `.withnav/` directories
 fall back to `.navai/` then `.navigator/`; old config/data paths and `navai.db` /

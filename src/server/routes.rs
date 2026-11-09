@@ -1232,6 +1232,13 @@ async fn upload_attachment(
     let Some(store) = state.attachments() else {
         return attachments_unavailable();
     };
+    // An archived conversation refuses uploads exactly as the message route refuses
+    // a message, so it cannot stage bytes nothing would ever carry. A stopped
+    // conversation still accepts them: its messages answer 409 `resume_required`,
+    // and the resume that follows turns it live again with the upload in place.
+    if let Err(err) = state.ensure_not_archived(session).await {
+        return error_response(err);
+    }
     let bytes = match body {
         Ok(bytes) => bytes,
         Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {

@@ -1408,7 +1408,10 @@ impl Service {
         })
     }
 
-    pub(super) async fn ensure_not_archived(&self, id: SessionId) -> Result<(), ServerError> {
+    /// Refuses an archived conversation with [`ServerError::SessionArchived`]. Shared by
+    /// the message route and the attachment-upload route, so both shape the refusal
+    /// identically; a stopped conversation is not archived and passes.
+    pub(crate) async fn ensure_not_archived(&self, id: SessionId) -> Result<(), ServerError> {
         if let Some(reason) = self
             .history
             .meta(id)

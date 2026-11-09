@@ -8,7 +8,8 @@ import { contextMeter } from "../contextMeter";
 import { displayTitle } from "../sessionTitle";
 import { ConversationIdentity } from "./conversationIdentity";
 import { diffKind, parseWake } from "./wake";
-import { ranked, PICKER_LIMIT } from "./pickerSearch";
+import { ranked, narrowHint, PICKER_LIMIT } from "./pickerSearch";
+import { ImageCache } from "./imageCache";
 import { createSecretCard, expiresIn, KEY_ICON, scopeText, type SecretCard } from "./secretCard";
 import type { SecretInfo } from "../chatProtocol";
 import type { CommandInfo } from "../chatProtocol";
@@ -484,11 +485,11 @@ function renderPalette(): void {
   const allMatches = ranked(pickerItems, pickerSearch.value, row => row.name, row => row.description);
   const matches = pickerKind === "model" && !pickerSearch.value ? allMatches.filter(row => !row.gateway || (!collapsedGroups.has(row.gateway) && !collapsedGroups.has(`${row.gateway}/${row.provider_group}`))) : allMatches;
   const groupRows = matches.slice(0, PICKER_LIMIT);
-  // The Favorites section sits first, is never folded and is not part of the first-50 cut; its rows
+  // The Favorites section sits first, is never folded and is not part of the PICKER_LIMIT cut; its rows
   // come before the groups' rows in `paletteRows`, so indices and option ids stay unique.
   favoriteRows = pickerKind === "model" ? allMatches.filter(row => favorites.has(row.name)).sort((a, b) => a.name.localeCompare(b.name)) : [];
   paletteRows = [...favoriteRows, ...groupRows];
-  pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}${pickerKind === "model" ? " · Alt+A folds or unfolds all · Ctrl+F favorite" : ""}`;
+  pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${narrowHint(matches.length)}${pickerKind === "model" ? " · Alt+A folds or unfolds all · Ctrl+F favorite" : ""}`;
   if (favoriteAnchor) {
     const found = favoriteAnchor.inSection ? paletteRows.findIndex((row, i) => i < favoriteRows.length && row.name === favoriteAnchor!.name) : -1;
     const anywhere = found >= 0 ? found : paletteRows.findIndex((row, i) => i >= favoriteRows.length && row.name === favoriteAnchor!.name);
@@ -791,6 +792,10 @@ function decorateCrew(byline: HTMLElement, agent = "build"): void {
 /** Most images a message carries, and the largest file read: the server's 3.75 MiB per image. */
 const MAX_IMAGES = 8;
 const MAX_IMAGE_FILE = 3_932_160;
+// Each tab keeps its own cache and the chat shows up to 12 tabs, so these bound one view: 64
+// pictures, and 16 Mi characters, three full-size attachments or many screenshots.
+const IMAGE_CACHE_ENTRIES = 64;
+const IMAGE_CACHE_CHARS = 16 * 1024 * 1024;
 /**
  * Composer images in the order the Captain added them. A slot is reserved when its file is
  * accepted, before the read finishes (`data` stays undefined meanwhile), so the cap counts reads
@@ -858,8 +863,10 @@ function addImageFiles(files: Iterable<File>): void {
   renderPending(); updateControls();
 }
 
-/** Per attachment: its `data:` URL, `null` while it loads, `false` once it is known unavailable. */
-const imageUrls = new Map<string, string | null | false>();
+/** Per attachment: its `data:` URL, or `false` once it is known unavailable; bounded, see ImageCache. */
+const imageUrls = new ImageCache(IMAGE_CACHE_ENTRIES, IMAGE_CACHE_CHARS);
+/** Attachments asked of the extension host and not answered yet: one request each, whatever the cache evicts. */
+const imagesLoading = new Set<string>();
 function thumbnails(images: ImageRef[] | undefined): HTMLElement | undefined {
   if (!images?.length) return undefined;
   const row = el("div", "thumbs");
@@ -877,16 +884,17 @@ function thumbnails(images: ImageRef[] | undefined): HTMLElement | undefined {
     const known = imageUrls.get(image.attachment_id);
     if (known) img.src = known;
     else if (known === false) button.classList.add("missing");
-    else if (known === undefined) { imageUrls.set(image.attachment_id, null); post({ type: "loadImage", attachmentId: image.attachment_id }); }
+    else if (!imagesLoading.has(image.attachment_id)) { imagesLoading.add(image.attachment_id); post({ type: "loadImage", attachmentId: image.attachment_id }); }
   }
   return row;
 }
 
 function showImageData(attachmentId: string, url: string | undefined): void {
+  imagesLoading.delete(attachmentId);
   imageUrls.set(attachmentId, url ?? false);
   for (const button of transcript.querySelectorAll<HTMLButtonElement>(`.thumb[data-attachment="${CSS.escape(attachmentId)}"]`)) {
     const img = button.querySelector("img");
-    if (url && img) img.src = url;
+    if (url && img) { img.src = url; button.classList.remove("missing"); }
     else button.classList.add("missing");
   }
 }

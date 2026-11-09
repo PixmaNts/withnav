@@ -1887,24 +1887,32 @@ function isAbort(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
-/** Maps the wire session list onto the panel's ConversationSummary. */
-function parseSessionList(body: any): ConversationSummary[] {
+/**
+ * Maps the wire session list onto the panel's ConversationSummary. Children are indexed by parent
+ * once, so the list costs time linear in its length: rescanning the whole list for every root grew
+ * with its square and stalled the panel on workspaces holding thousands of subagent sessions.
+ */
+export function parseSessionList(body: any): ConversationSummary[] {
   const sessions = Array.isArray(body?.sessions) ? body.sessions : [];
+  const children = new Map<unknown, any[]>();
+  for (const session of sessions) {
+    if (!session || session.parent_session_id == null) continue;
+    const siblings = children.get(session.parent_session_id);
+    if (siblings) siblings.push(session); else children.set(session.parent_session_id, [session]);
+  }
+  // Distinct session ids below `id`; the visited set stops on duplicated or self-parented ids.
   const descendants = (id: string): number => {
     const found = new Set<string>([id]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const child of sessions) {
-        if (child && typeof child.id === "string" && found.has(child.parent_session_id) && !found.has(child.id)) {
-          found.add(child.id); changed = true;
-        }
+    const stack = [id];
+    for (let parent = stack.pop(); parent !== undefined; parent = stack.pop()) {
+      for (const child of children.get(parent) ?? []) {
+        if (typeof child.id === "string" && !found.has(child.id)) { found.add(child.id); stack.push(child.id); }
       }
     }
     return found.size - 1;
   };
   const childCount = (id: string, statuses: string[]): number =>
-    sessions.filter((c: any) => c && c.parent_session_id === id && statuses.includes(c.child_status)).length;
+    (children.get(id) ?? []).filter((c: any) => statuses.includes(c.child_status)).length;
   return sessions
     .filter((s: any) => s && typeof s.id === "string" && !s.parent_session_id && s.promptable !== false)
     .map((s: any) => ({

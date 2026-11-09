@@ -2,7 +2,7 @@
 /// <reference lib="dom.iterable" />
 import { displayTitle } from "../sessionTitle";
 import type { ConversationSummary } from "../chatProtocol";
-import { ranked, PICKER_LIMIT } from "./pickerSearch";
+import { ranked, narrowHint, PICKER_LIMIT } from "./pickerSearch";
 import { STATUS_LABEL, statusIcon, type SessionStatus } from "./statusIcon";
 
 // The session list: every saved conversation of the workspace, with what is known of its state.
@@ -204,7 +204,7 @@ export function mountSessionList(host: HTMLElement, api: SessionListApi): Sessio
     groupName.textContent = workspace || "Sessions";
     groupToggle.setAttribute("aria-expanded", String(!collapsed));
     group.classList.toggle("collapsed", collapsed);
-    count.textContent = `${view.matches} of ${items.length}${view.matches > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}`;
+    count.textContent = `${view.matches} of ${items.length}${narrowHint(view.matches)}`;
     if (total) search.setAttribute("aria-activedescendant", `session-option-${selected}`); else search.removeAttribute("aria-activedescendant");
     note.hidden = total > 0;
     note.textContent = search.value || filter !== "all" ? "No matching sessions." : loaded ? "No saved sessions yet." : "Loading…";

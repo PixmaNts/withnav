@@ -102,6 +102,62 @@ pub fn sendable(wire: &str, kind: &str) -> bool {
 #[cfg(any(test, feature = "test-support"))]
 pub const TEST_SENDABLE: &str = "test.sendable";
 
+/// Largest item kept, counted as the UTF-8 bytes of its `kind` and `data`.
+///
+/// Encrypted reasoning runs to tens of kilobytes per step; a megabyte is far
+/// above any measured item and still bounds what one stored field can cost.
+pub const MAX_ITEM_BYTES: usize = 1024 * 1024;
+
+/// Largest total kept on one message, counted like [`MAX_ITEM_BYTES`].
+pub const MAX_TOTAL_BYTES: usize = 4 * 1024 * 1024;
+
+/// Most items kept on one message, so many tiny items cannot fit the byte budget.
+pub const MAX_ITEMS: usize = 64;
+
+fn item_bytes(kind: &str, data: &str) -> usize {
+    kind.len().saturating_add(data.len())
+}
+
+/// Keeps the items within the size limits, never altering one.
+///
+/// An item over [`MAX_ITEM_BYTES`] is dropped whole and the next one is
+/// considered. The first item that would pass [`MAX_ITEMS`] or
+/// [`MAX_TOTAL_BYTES`] ends the walk: it and every later item go, so the kept
+/// items are an unbroken prefix of what remains. Truncating an item would break
+/// the signature it may carry, so data is never cut. Lazy: items after the stop
+/// are never pulled from `items`.
+fn bounded(items: impl Iterator<Item = OpaqueItem>) -> Vec<OpaqueItem> {
+    let mut kept = Vec::new();
+    let mut total = 0usize;
+    for item in items {
+        let bytes = item_bytes(&item.kind, &item.data);
+        if bytes > MAX_ITEM_BYTES {
+            continue;
+        }
+        if kept.len() == MAX_ITEMS || total + bytes > MAX_TOTAL_BYTES {
+            break;
+        }
+        total += bytes;
+        kept.push(item);
+    }
+    kept
+}
+
+/// The items a provider sent, reduced to the size limits before they are
+/// stored. Dropped items are logged once with counts, never the payload.
+pub fn within_size_limits(items: Vec<OpaqueItem>) -> Vec<OpaqueItem> {
+    let total = items.len();
+    let kept = bounded(items.into_iter());
+    if kept.len() < total {
+        tracing::warn!(
+            dropped = total - kept.len(),
+            kept = kept.len(),
+            "dropped oversized opaque reasoning items"
+        );
+    }
+    kept
+}
+
 /// Applies the replay rule: the reasoning stays only if it is going back to the
 /// model that produced it, and only the items `destination`'s wire can render.
 ///
@@ -136,7 +192,8 @@ pub fn retain_for(opaque: &mut Option<OpaqueReasoning>, destination: &Producer) 
 /// - `items` not an array, or no item left: `None`;
 /// - an item that is not an object with a string `kind` and a string `data` that
 ///   parses as JSON: that item alone goes, siblings and their order stay;
-/// - an unknown `kind` is kept, the adapter that reads it decides.
+/// - an unknown `kind` is kept, the adapter that reads it decides;
+/// - items past the size limits go as [`within_size_limits`] drops them.
 pub fn lenient<'de, D>(deserializer: D) -> Result<Option<OpaqueReasoning>, D::Error>
 where
     D: Deserializer<'de>,
@@ -161,12 +218,12 @@ where
         return Ok(None);
     };
     let total = raw_items.len();
-    let items: Vec<OpaqueItem> = raw_items.into_iter().filter_map(read_item).collect();
+    let items = bounded(raw_items.into_iter().filter_map(read_item));
     if items.len() < total {
         tracing::warn!(
             dropped = total - items.len(),
             kept = items.len(),
-            "dropped invalid opaque reasoning items"
+            "dropped invalid or oversized opaque reasoning items"
         );
     }
     if items.is_empty() {
@@ -185,6 +242,9 @@ fn read_item(value: Value) -> Option<OpaqueItem> {
     let Value::String(data) = object.remove("data")? else {
         return None;
     };
+    if item_bytes(&kind, &data) > MAX_ITEM_BYTES {
+        return None;
+    }
     serde_json::from_str::<IgnoredAny>(&data).ok()?;
     Some(OpaqueItem { kind, data })
 }
@@ -396,6 +456,84 @@ mod tests {
         ] {
             assert!(read(value).is_none());
         }
+    }
+
+    /// An item of exactly `bytes` bytes whose data is a valid JSON string.
+    fn sized(kind: &str, bytes: usize) -> OpaqueItem {
+        let quotes = 2;
+        OpaqueItem {
+            kind: kind.into(),
+            data: format!("\"{}\"", "x".repeat(bytes - kind.len() - quotes)),
+        }
+    }
+
+    fn stored(items: &[OpaqueItem]) -> Option<OpaqueReasoning> {
+        read(json!({"producer": producer(), "items": items}))
+    }
+
+    #[test]
+    fn an_item_over_the_cap_is_dropped_whole_and_siblings_stay_identical() {
+        let small = OpaqueItem {
+            kind: "a".into(),
+            data: " { \"z\":1,\n\"é\":\"\\u00e9\" } ".into(),
+        };
+        let at_cap = sized("b", MAX_ITEM_BYTES);
+        let over = sized("c", MAX_ITEM_BYTES + 1);
+        let items = vec![small.clone(), over, at_cap.clone(), small.clone()];
+        let expected = vec![small.clone(), at_cap, small];
+        assert_eq!(within_size_limits(items.clone()), expected);
+        assert_eq!(stored(&items).unwrap().items, expected);
+    }
+
+    #[test]
+    fn a_kind_counts_toward_the_item_cap() {
+        let over = OpaqueItem {
+            kind: "k".repeat(MAX_ITEM_BYTES),
+            data: "1".into(),
+        };
+        assert!(within_size_limits(vec![over.clone()]).is_empty());
+        assert!(stored(&[over]).is_none());
+    }
+
+    #[test]
+    fn the_aggregate_cap_drops_the_overflowing_item_and_all_later_ones() {
+        let full: Vec<_> = (0..MAX_TOTAL_BYTES / MAX_ITEM_BYTES)
+            .map(|i| sized(&format!("k{i}"), MAX_ITEM_BYTES))
+            .collect();
+        assert_eq!(within_size_limits(full.clone()), full);
+        let mut items = full.clone();
+        items.push(sized("over", 10));
+        items.push(sized("later", 10));
+        assert_eq!(within_size_limits(items.clone()), full);
+        assert_eq!(stored(&items).unwrap().items, full);
+    }
+
+    #[test]
+    fn the_item_count_cap_drops_the_rest() {
+        let items: Vec<_> = (0..MAX_ITEMS + 2)
+            .map(|i| OpaqueItem {
+                kind: format!("k{i}"),
+                data: format!("{i}"),
+            })
+            .collect();
+        let kept = within_size_limits(items.clone());
+        assert_eq!(kept, items[..MAX_ITEMS]);
+        assert_eq!(stored(&items).unwrap().items, items[..MAX_ITEMS]);
+    }
+
+    #[test]
+    fn an_invalid_item_uses_no_budget() {
+        let mut raw: Vec<Value> = (0..MAX_ITEMS).map(|_| json!(17)).collect();
+        raw.push(json!({"kind": "good", "data": "1"}));
+        let got = read(json!({"producer": producer(), "items": raw})).unwrap();
+        assert_eq!(kinds(&got), ["good"]);
+    }
+
+    #[test]
+    fn nothing_within_the_limits_gives_none() {
+        let over = sized("over", MAX_ITEM_BYTES + 1);
+        assert!(within_size_limits(vec![over.clone()]).is_empty());
+        assert!(stored(&[over]).is_none());
     }
 
     #[test]

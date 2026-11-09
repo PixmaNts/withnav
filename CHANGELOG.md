@@ -59,6 +59,13 @@ requests land in `develop`.
   - The composer grows with its text, from about three lines up to 40% of the view height.
   - New commands: `WithNav: Show Sessions` and `WithNav: New Conversation`.
 
+### Fixed
+
+- Model-only reasoning kept in the transcript (signed thinking, encrypted reasoning) is now
+  bounded: 1 MiB per item, 4 MiB and 64 items per message, when it is captured and when a stored
+  conversation is read. An item past a limit is dropped whole, never cut; the items kept are
+  unchanged byte for byte. (#157)
+
 ## [0.8.2] - 2026-11-05
 
 WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and

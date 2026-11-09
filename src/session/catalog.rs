@@ -83,6 +83,13 @@ impl Service {
         // does not know is a 404.
         let parent = self.handle(id).and_then(|handle| handle.parent_session_id);
         self.close_session_gated(id).await?;
+        if parent.is_none() {
+            // The root owned the conversation's "as long as this conversation
+            // runs" secrets; a close ends them, and so must a delete, or they
+            // linger with no conversation left to end them (a workspace one
+            // stays visible to the workspace's other conversations).
+            self.secrets.end_session(id);
+        }
         if let Some(parent) = parent {
             self.finish_child(
                 parent,

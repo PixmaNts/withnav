@@ -16,22 +16,39 @@ use crate::secrets::{
     declined_text, stored_text,
 };
 
-/// How far up a tree the owner is looked for; trees are shallow (subagents of a root).
+/// How many parent links the owner lookup follows. Live trees are one level deep (a child cannot
+/// admit another child), so a longer chain, or a cycle, only comes from corrupt session data.
 const MAX_DEPTH: usize = 16;
+
+/// The root of the tree `id` belongs to, following `parent_of` at most [`MAX_DEPTH`] links. A
+/// session still having a parent after that is an error rather than a guessed owner: secrets
+/// stored, listed or injected under an intermediate session would belong to the wrong tree.
+fn tree_root(
+    id: SessionId,
+    parent_of: impl Fn(SessionId) -> Option<SessionId>,
+) -> Result<SessionId, ServerError> {
+    let mut owner = id;
+    for _ in 0..MAX_DEPTH {
+        match parent_of(owner) {
+            Some(parent) => owner = parent,
+            None => return Ok(owner),
+        }
+    }
+    match parent_of(owner) {
+        None => Ok(owner),
+        Some(_) => Err(ServerError::SessionTreeTooDeep {
+            session: id.to_string(),
+            max: MAX_DEPTH,
+        }),
+    }
+}
 
 impl Service {
     /// The conversation tree a session's secrets belong to: its root, as far as the live
     /// sessions tell (a session whose parent is not live owns its own).
-    pub(crate) fn secret_owner(&self, id: SessionId) -> SessionId {
+    pub(crate) fn secret_owner(&self, id: SessionId) -> Result<SessionId, ServerError> {
         let sessions = self.lock_sessions();
-        let mut owner = id;
-        for _ in 0..MAX_DEPTH {
-            match sessions.get(&owner).and_then(|h| h.parent_session_id) {
-                Some(parent) => owner = parent,
-                None => break,
-            }
-        }
-        owner
+        tree_root(id, |s| sessions.get(&s).and_then(|h| h.parent_session_id))
     }
 
     /// What the actor of a session in `workspace` owned by `owner` hands to its tools and
@@ -55,7 +72,7 @@ impl Service {
     /// `GET /v1/sessions/{id}/secrets`: the secrets this conversation sees, metadata only.
     pub async fn list_secrets(&self, id: SessionId) -> Result<Vec<SecretView>, ServerError> {
         let handle = self.secret_handle(id).await?;
-        Ok(self.secrets.list(self.secret_owner(id), &handle.workspace))
+        Ok(self.secrets.list(self.secret_owner(id)?, &handle.workspace))
     }
 
     /// `DELETE /v1/sessions/{id}/secrets/{name}`: forgets the value (and its saved copy); the
@@ -64,7 +81,7 @@ impl Service {
         let handle = self.secret_handle(id).await?;
         Ok(self
             .secrets
-            .revoke(self.secret_owner(id), &handle.workspace, name))
+            .revoke(self.secret_owner(id)?, &handle.workspace, name))
     }
 
     /// `POST /v1/sessions/{id}/secrets/{request_id}`: the Captain's answer.
@@ -80,7 +97,7 @@ impl Service {
         submission: SecretSubmission,
     ) -> Result<SecretAccepted, ServerError> {
         let handle = self.secret_handle(id).await?;
-        let owner = self.secret_owner(id);
+        let owner = self.secret_owner(id)?;
         let pending = handle.status.pending_secret(request_id);
         if pending.is_none() {
             return self
@@ -241,4 +258,44 @@ fn settle_result(
         accepted: true,
         secret: stored,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    /// A chain of `ancestors + 1` sessions, the last one the root; returns the deepest and the root.
+    fn chain(ancestors: usize) -> (HashMap<SessionId, SessionId>, SessionId, SessionId) {
+        let ids: Vec<SessionId> = (0..=ancestors).map(|_| Ulid::generate()).collect();
+        let parents = ids.windows(2).map(|w| (w[0], w[1])).collect();
+        (parents, ids[0], ids[ancestors])
+    }
+
+    // Given a session with exactly the allowed number of ancestors
+    // Then its owner is the root of the chain
+    #[test]
+    fn the_owner_of_a_chain_at_the_depth_limit_is_its_root() {
+        let (parents, deepest, root) = chain(MAX_DEPTH);
+        let owner = tree_root(deepest, |s| parents.get(&s).copied()).unwrap();
+        assert_eq!(owner, root);
+    }
+
+    // Given a corrupt chain one ancestor past the limit, or a cycle
+    // Then the lookup is an explicit error, never the last session it reached
+    #[test]
+    fn a_chain_past_the_depth_limit_or_a_cycle_is_an_error() {
+        let (parents, deepest, _) = chain(MAX_DEPTH + 1);
+        let error = tree_root(deepest, |s| parents.get(&s).copied()).unwrap_err();
+        assert!(matches!(
+            error,
+            ServerError::SessionTreeTooDeep { max: MAX_DEPTH, .. }
+        ));
+
+        let (a, b) = (Ulid::generate(), Ulid::generate());
+        let cycle = HashMap::from([(a, b), (b, a)]);
+        let error = tree_root(a, |s| cycle.get(&s).copied()).unwrap_err();
+        assert!(matches!(error, ServerError::SessionTreeTooDeep { .. }));
+    }
 }

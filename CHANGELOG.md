@@ -80,6 +80,12 @@ requests land in `develop`.
   silently landing on the last line (with a symbol found, it still only picks the nearest
   occurrence); a missing symbol puts the cursor on the requested line, else line 1, and the result
   says which.
+- Tool images: one tool result keeps at most 4 images and 16 MiB of image bytes together. An MCP
+  image past either limit is no longer decoded; the model reads that it was not kept.
+- Secrets: a session whose recorded parents form a chain longer than 16, or a cycle, gets an
+  explicit error instead of having its secrets filed under whichever session the lookup stopped at.
+- Subagents: a step-budget notice whose evidence lacks a valid top-up or step count is skipped and
+  logged instead of reporting zero.
 
 ## [0.8.2] - 2026-11-05
 

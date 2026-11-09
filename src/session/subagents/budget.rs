@@ -13,6 +13,13 @@ impl Service {
         child: SessionId,
         mut evidence: serde_json::Value,
     ) -> Result<(), ServerError> {
+        let (used, steps) = match budget_counts(&evidence) {
+            Ok(counts) => counts,
+            Err(reason) => {
+                tracing::warn!(%parent, %child, reason, "malformed budget evidence; notice skipped");
+                return Ok(());
+            }
+        };
         let Some(handle) = self.handle(child) else {
             return Ok(());
         };
@@ -23,9 +30,7 @@ impl Service {
             return Ok(());
         }
         evidence["goal"] = serde_json::json!(crate::tools::bound_output(&link.goal, 1024).0);
-        let used = evidence["topups_used"].as_u64().unwrap_or_default() as u32;
         let remaining = MAX_BUDGET_TOPUPS.saturating_sub(used);
-        let steps = evidence["step_count"].as_u64().unwrap_or_default();
         if !handle.status.is_budget_parked() || handle.status.budget_topups_used() != used {
             return Ok(());
         }
@@ -55,6 +60,28 @@ impl Service {
         }
         Ok(())
     }
+}
+
+/// The top-ups used and the step count a budget notice reports, read from the evidence the
+/// child's runtime recorded. Both are required: a missing or malformed count read as zero would
+/// tell the owner it has top-ups it does not have, or that a child stopped after no steps.
+fn budget_counts(evidence: &serde_json::Value) -> Result<(u32, u64), String> {
+    if !evidence.is_object() {
+        return Err("evidence is not an object".into());
+    }
+    let used = evidence
+        .get("topups_used")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("topups_used is missing or not a count")?;
+    let used = u32::try_from(used)
+        .ok()
+        .filter(|used| *used <= MAX_BUDGET_TOPUPS)
+        .ok_or_else(|| format!("topups_used {used} exceeds {MAX_BUDGET_TOPUPS}"))?;
+    let steps = evidence
+        .get("step_count")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("step_count is missing or not a count")?;
+    Ok((used, steps))
 }
 
 impl Service {
@@ -117,5 +144,41 @@ impl Service {
             format!("stopped by owner at its step budget\n{partial}"),
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    // Given the evidence the runtime records when a child exhausts its step budget
+    // Then both counts are read as recorded
+    #[test]
+    fn well_formed_evidence_gives_its_counts() {
+        let evidence = json!({"goal": "g", "step_count": 40, "topups_used": 1});
+        assert_eq!(budget_counts(&evidence), Ok((1, 40)));
+    }
+
+    // Given evidence with a missing, mistyped or out-of-range count, or no object at all
+    // Then it is refused, never read as zero
+    #[test]
+    fn malformed_evidence_is_refused_rather_than_counted_as_zero() {
+        for evidence in [
+            json!({"step_count": 40}),
+            json!({"step_count": 40, "topups_used": "0"}),
+            json!({"step_count": 40, "topups_used": -1}),
+            json!({"step_count": 40, "topups_used": u64::from(MAX_BUDGET_TOPUPS) + 1}),
+            json!({"topups_used": 0}),
+            json!({"step_count": "40", "topups_used": 0}),
+            json!(null),
+            json!([0, 40]),
+        ] {
+            assert!(
+                budget_counts(&evidence).is_err(),
+                "{evidence} must be refused"
+            );
+        }
     }
 }

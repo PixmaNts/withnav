@@ -120,6 +120,30 @@ pub struct ToolImage {
     pub bytes: Vec<u8>,
 }
 
+/// Most images one tool result keeps; the rest are named in its output.
+pub const MAX_TOOL_IMAGES: usize = 4;
+
+/// Most image bytes one tool result keeps, all its images together: 16 MiB. The attachment store
+/// takes at most `MAX_IMAGE_BYTES` (3.75 MiB) per image, so four storable images always fit, while
+/// a tool returning several oversized pictures cannot make the agent hold them all in memory.
+pub const MAX_TOOL_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Why one more image of `incoming` bytes cannot join a tool result that already keeps `kept`
+/// images of `kept_bytes` bytes, or `None` when it can. Producers check it while converting, before
+/// they decode or copy the bytes.
+pub fn tool_image_refusal(kept: usize, kept_bytes: usize, incoming: usize) -> Option<String> {
+    if kept >= MAX_TOOL_IMAGES {
+        return Some(format!("at most {MAX_TOOL_IMAGES} images per tool result"));
+    }
+    if kept_bytes.saturating_add(incoming) > MAX_TOOL_IMAGE_BYTES {
+        return Some(format!(
+            "the images of one tool result are limited to {} together",
+            crate::provider::openai::human_size(MAX_TOOL_IMAGE_BYTES as u64)
+        ));
+    }
+    None
+}
+
 impl std::fmt::Debug for ToolImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "ToolImage({}, {} bytes)", self.name, self.bytes.len())

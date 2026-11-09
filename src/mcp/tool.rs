@@ -492,24 +492,30 @@ pub(super) fn convert(
 /// blocks are not decoded at all, so a server cannot make the agent allocate unbounded memory.
 const MAX_IMAGE_BLOCK_BASE64: usize = 12 * 1024 * 1024;
 
-/// Most image blocks decoded from one result; the rest are named in the output.
-const MAX_IMAGE_BLOCKS: usize = 4;
-
-/// Decodes one base64 image block into `images`, or says why it was not. The type is decided
-/// later from the bytes, never from the block's declared `mimeType`.
+/// Decodes one base64 image block into `images`, or says why it was not. The count and the
+/// aggregate byte budget of one tool result are checked before decoding, so a block past either is
+/// never decoded. The type is decided later from the bytes, never from the block's declared
+/// `mimeType`.
 fn decode_image(data: Option<&str>, images: &mut Vec<Vec<u8>>) -> Result<(), String> {
     use base64::Engine as _;
-    let data = data.ok_or("no data")?;
-    if images.len() >= MAX_IMAGE_BLOCKS {
-        return Err(format!(
-            "not kept, at most {MAX_IMAGE_BLOCKS} images per result"
-        ));
-    }
+    let data = data.ok_or("no data")?.trim();
     if data.len() > MAX_IMAGE_BLOCK_BASE64 {
         return Err(format!("{} bytes, too large to keep", data.len() / 4 * 3));
     }
+    // Padded base64 comes in groups of four with at most two `=`: anything else is refused before
+    // the size is estimated, so a block of padding cannot pass the budget as zero bytes and still
+    // make the decoder allocate its full output buffer.
+    if data.len() % 4 != 0 {
+        return Err("not valid base64".into());
+    }
+    let padding = data.bytes().rev().take_while(|b| *b == b'=').count().min(2);
+    let decoded_len = (data.len() / 4 * 3).saturating_sub(padding);
+    let kept_bytes = images.iter().map(Vec::len).sum();
+    if let Some(reason) = crate::tools::tool_image_refusal(images.len(), kept_bytes, decoded_len) {
+        return Err(format!("not kept, {reason}"));
+    }
     let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data.trim())
+        .decode(data)
         .map_err(|_| "not valid base64".to_string())?;
     images.push(bytes);
     Ok(())
@@ -759,6 +765,46 @@ mod tests {
         let result = convert(&json!({"content": blocks}), "s", "t", &[]);
         assert_eq!(result.images.len(), 4);
         assert_eq!(result.output.matches("at most 4 images").count(), 2);
+    }
+
+    // Given image blocks (inline and embedded resource) whose decoded sizes reach the aggregate
+    //       budget of one tool result exactly, then one more byte
+    // When the result is converted
+    // Then the blocks up to the budget are decoded, the next one is refused before decoding and
+    //      named in the output
+    #[test]
+    fn image_blocks_past_the_aggregate_byte_budget_are_refused_at_conversion() {
+        use base64::Engine as _;
+        let half = base64::engine::general_purpose::STANDARD.encode(vec![
+            0u8;
+            crate::tools::MAX_TOOL_IMAGE_BYTES
+                / 2
+        ]);
+        let one = base64::engine::general_purpose::STANDARD.encode([0u8]);
+        let value = json!({"content": [
+            {"type": "image", "mimeType": "image/png", "data": half},
+            {"type": "resource", "resource": {"uri": "x://shot", "mimeType": "image/png", "blob": half}},
+            {"type": "image", "mimeType": "image/png", "data": one},
+        ]});
+        let result = convert(&value, "s", "t", &[]);
+        assert_eq!(result.images.len(), 2);
+        let kept: usize = result.images.iter().map(|i| i.bytes.len()).sum();
+        assert_eq!(kept, crate::tools::MAX_TOOL_IMAGE_BYTES);
+        assert_eq!(
+            result.output.matches("limited to 16.8 MB together").count(),
+            1
+        );
+
+        // A block made of padding counts at its full size, not as zero bytes.
+        let padding = "=".repeat(MAX_IMAGE_BLOCK_BASE64);
+        let value = json!({"content": [
+            {"type": "image", "mimeType": "image/png", "data": half},
+            {"type": "image", "mimeType": "image/png", "data": half},
+            {"type": "image", "mimeType": "image/png", "data": padding},
+        ]});
+        let result = convert(&value, "s", "t", &[]);
+        assert_eq!(result.images.len(), 2);
+        assert!(result.output.contains("limited to 16.8 MB together"));
     }
 
     #[test]

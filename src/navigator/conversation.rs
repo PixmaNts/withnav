@@ -149,7 +149,7 @@ impl SessionConversation {
         // Only captain messages carry the editor-context block the editor
         // appends at send time; it describes the editor, not the Captain.
         let text = match author {
-            Author::Captain => strip_editor_context(text),
+            Author::Captain => strip_editor_context(crate::mcp::captain_prose(text)),
             _ => text.to_string(),
         };
         let text = excerpt(text.trim(), MAX_EXCHANGE_CHARS);

@@ -38,6 +38,8 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
       // The servers are the service's: the event updates the one shared query.
       if (envelope.kind === "mcp.status" && envelope.payload && Array.isArray(envelope.payload.servers)) {
         keepMcpStatus(qc, envelope.payload as McpStatus);
+        // A server that became ready brings its prompts as `/<server>:<prompt>` commands.
+        void qc.invalidateQueries({ queryKey: keys.commands });
         return;
       }
       if ((envelope.kind === "session.bypass" || envelope.kind === "session.end") && sessionId) {
@@ -63,7 +65,10 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
   const stream = useSessionStream(sessionId, { ready: !!summary.data, once: stopped, bypass: summary.data?.bypass, bypassSeq: summary.data?.bypass_seq, onEnvelope });
   // `mcp.status` is live-only: what changed before this subscription is read back once it is live.
   useEffect(() => {
-    if (stream.status === "live") void qc.invalidateQueries({ queryKey: keys.mcp });
+    if (stream.status === "live") {
+      void qc.invalidateQueries({ queryKey: keys.mcp });
+      void qc.invalidateQueries({ queryKey: keys.commands });
+    }
   }, [stream.status, qc]);
   const [bypassPending, setBypassPending] = useState(false);
   const bypassGuard = useRef(false);

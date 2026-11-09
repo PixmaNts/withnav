@@ -235,6 +235,16 @@ impl ActorInbox {
                 outcome.refused.push((cmd.command_id, format!("skill {name:?} refused: this turn's agent cannot use the skill tool; the whole message was not delivered")));
                 continue;
             }
+            // An MCP prompt queued while the model was still answering must not become the
+            // answer to a question or a permission request raised meanwhile: the Captain never
+            // saw it, and the message is mostly the server's text.
+            if actor.has_pending() && crate::mcp::carries_prompt(&cmd.text_content()) {
+                outcome.refused.push((
+                    cmd.command_id,
+                    "the MCP prompt was not delivered: the agent is waiting for your answer; answer it, then run the prompt again".into(),
+                ));
+                continue;
+            }
             if !cmd.from_captain() {
                 if actor.has_pending() {
                     self.held = Some(cmd);
@@ -256,7 +266,7 @@ impl ActorInbox {
             outcome.applied += 1;
             let mut text = cmd.text_content();
             if cmd.from_captain() {
-                actor.captain_task = Some(text.clone());
+                actor.captain_task = Some(crate::mcp::captain_prose(&text).to_owned());
             }
             for block in &cmd.content {
                 if let crate::bus::command::ContentBlock::LoadedSkill { name, content } = block {
@@ -356,6 +366,54 @@ mod tests {
         ));
         assert_eq!(actor.captain_task.as_deref(), Some("original task"));
         assert_eq!(serde_json::to_string(&actor.transcript).unwrap(), before);
+    }
+
+    // Given an MCP prompt accepted while the model was answering, and a question the model
+    // raised meanwhile
+    // Then the prompt is refused at delivery: it neither answers the question nor becomes the
+    //      Captain's task, and the transcript is unchanged
+    #[test]
+    fn a_queued_mcp_prompt_never_answers_a_pending_interaction() {
+        let mut actor = test_actor();
+        actor.captain_task = Some("original task".into());
+        actor.pending = Some(PendingInteraction::Ask {
+            tool_call_id: "question".into(),
+        });
+        let before = serde_json::to_string(&actor.transcript).unwrap();
+        let (_, mut inbox) = ActorInbox::channel();
+        inbox.commands.push(text_command(
+            DeliveryMode::NextTurn,
+            &format!(
+                "Run the MCP prompt /s:p.\n{}\n{{}}\n{}",
+                crate::mcp::PROMPT_BLOCK_OPEN,
+                crate::mcp::PROMPT_BLOCK_CLOSE
+            ),
+        ));
+        let result = inbox.apply_batch_to_actor(&mut actor);
+        assert_eq!(result.refused.len(), 1);
+        assert_eq!(result.applied, 0);
+        assert!(matches!(
+            actor.pending,
+            Some(PendingInteraction::Ask { .. })
+        ));
+        assert_eq!(actor.captain_task.as_deref(), Some("original task"));
+        assert_eq!(serde_json::to_string(&actor.transcript).unwrap(), before);
+
+        // With nothing pending it is delivered, and the Captain's task is the prose alone.
+        actor.pending = None;
+        inbox.commands.push(text_command(
+            DeliveryMode::NextTurn,
+            &format!(
+                "Run the MCP prompt /s:p.\n{}\n{{}}\n{}",
+                crate::mcp::PROMPT_BLOCK_OPEN,
+                crate::mcp::PROMPT_BLOCK_CLOSE
+            ),
+        ));
+        assert_eq!(inbox.apply_batch_to_actor(&mut actor).applied, 1);
+        assert_eq!(
+            actor.captain_task.as_deref(),
+            Some("Run the MCP prompt /s:p.")
+        );
     }
 
     #[test]

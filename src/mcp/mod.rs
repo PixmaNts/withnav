@@ -484,12 +484,9 @@ impl McpManager {
             .unwrap_or(&[]);
         match mcp_app_resource(contents, server_id, uri, &secrets) {
             Ok(resource) => Ok(resource),
-            Err(err) if err.contains("too large") || err.contains("ceiling") => {
-                tracing::warn!(server = server_id, uri, error = %err, "MCP App resource too large");
-                Err(McpUiError::ResponseTooLarge { limit_mib: 4 })
-            }
             Err(err) => {
-                tracing::warn!(server = server_id, uri, error = %err, "invalid MCP App resource");
+                let diagnostic = bounded_chars(&redaction::redact(&err, &secrets), 1024);
+                tracing::warn!(server = server_id, uri, error = %diagnostic, "invalid MCP App resource");
                 Err(McpUiError::InvalidResponse { method: METHOD })
             }
         }

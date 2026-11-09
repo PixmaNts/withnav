@@ -358,3 +358,42 @@ async fn mcp_status_route_returns_server_snapshot_with_tools() {
     state.close_all().await;
     server_task.abort();
 }
+
+// Given a running server with an initialized fixture MCP server
+// When GET /v1/mcp/fixture/resource requests an invalid MIME resource whose URI contains 'ceiling' or 'too large'
+// Then the endpoint returns 502 Bad Gateway with reason "mcp_invalid_response", not a false size rejection
+#[tokio::test]
+async fn mcp_resource_read_invalid_resource_reports_invalid_response() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = fixture_state(tmp.path(), None);
+    wait_for_mcp_ready(&state).await;
+
+    let (addr, server_task) = spawn_server(state.clone()).await;
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+
+    // URI contains 'ceiling' and 'too-large' but ends with /plain.html (invalid MIME)
+    let response = client
+        .get(format!("{base}/v1/mcp/fixture/resource"))
+        .query(&[("uri", "ui://fixture/ceiling/too-large/plain.html")])
+        .send()
+        .await
+        .expect("get resource response");
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body: Value = response.json().await.expect("error json");
+    assert_eq!(body["reason"], "mcp_invalid_response", "{body}");
+
+    // Standard invalid MIME resource also reports 502 mcp_invalid_response
+    let response = client
+        .get(format!("{base}/v1/mcp/fixture/resource"))
+        .query(&[("uri", "ui://fixture/plain.html")])
+        .send()
+        .await
+        .expect("get resource response");
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body: Value = response.json().await.expect("error json");
+    assert_eq!(body["reason"], "mcp_invalid_response", "{body}");
+
+    state.close_all().await;
+    server_task.abort();
+}

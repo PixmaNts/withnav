@@ -1,9 +1,6 @@
 //! `request_secret` end to end: the agent asks, the Captain answers on the dedicated endpoint,
 //! the value reaches a command's environment, and it never appears in a model request, a tool
 //! result, the SSE stream or the stored conversation.
-
-use std::time::Duration;
-
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 use withnav::provider::openai::ChatMessage;
@@ -255,45 +252,33 @@ async fn a_secret_reaches_the_command_and_never_the_model_the_stream_or_the_hist
 
     // The stored conversation: transcript and events.
     // Writes reach the store asynchronously: wait, bounded, until both the pasted message and
-    // the reply to it are there, in the transcript and in the events, then assert each one.
+    // the reply to it are there, in the transcript and in the events.
     let store = withnav::session::store::HistoryStore::open(tmp.path().join("history.db")).unwrap();
     let pasted = "it was [secret API_KEY]";
-    let in_transcript = |loaded: &withnav::session::store::LoadedSession| {
-        let user = loaded
-            .transcript
-            .iter()
-            .any(|m| matches!(m, ChatMessage::User { content, .. } if content == pasted));
-        let reply = loaded.transcript.iter().any(
-            |m| matches!(m, ChatMessage::Assistant { content: Some(text), .. } if text == "noted"),
-        );
-        (user, reply)
-    };
-    let in_events = |loaded: &withnav::session::store::LoadedSession| {
-        let user = loaded
-            .envelopes
-            .iter()
-            .any(|e| e.kind == "message.received" && e.payload["content"] == pasted);
-        let reply = loaded
-            .envelopes
-            .iter()
-            .any(|e| e.kind == "llm.response" && e.payload["message"]["text"] == "noted");
-        (user, reply)
-    };
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    let loaded = loop {
-        let loaded = store.load(id.parse().unwrap()).await.unwrap().unwrap();
-        let done = in_transcript(&loaded) == (true, true) && in_events(&loaded) == (true, true);
-        if done || tokio::time::Instant::now() >= deadline {
-            break loaded;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    let (user, reply) = in_transcript(&loaded);
-    assert!(user, "the pasted message is not in the stored transcript");
-    assert!(reply, "the reply to it is not in the stored transcript");
-    let (user, reply) = in_events(&loaded);
-    assert!(user, "the pasted message is not in the stored events");
-    assert!(reply, "the reply to it is not in the stored events");
+    let session: ulid::Ulid = id.parse().unwrap();
+    let loaded = common::deadline::eventually(
+        "the pasted message and the reply to it, in the stored transcript and events",
+        || async {
+            let loaded = store.load(session).await.unwrap()?;
+            let in_transcript = loaded
+                .transcript
+                .iter()
+                .any(|m| matches!(m, ChatMessage::User { content, .. } if content == pasted))
+                && loaded.transcript.iter().any(|m| {
+                    matches!(m, ChatMessage::Assistant { content: Some(text), .. } if text == "noted")
+                });
+            let in_events = loaded
+                .envelopes
+                .iter()
+                .any(|e| e.kind == "message.received" && e.payload["content"] == pasted)
+                && loaded
+                    .envelopes
+                    .iter()
+                    .any(|e| e.kind == "llm.response" && e.payload["message"]["text"] == "noted");
+            (in_transcript && in_events).then_some(loaded)
+        },
+    )
+    .await;
     let stored = format!(
         "{}{}",
         serde_json::to_string(&loaded.transcript).unwrap(),

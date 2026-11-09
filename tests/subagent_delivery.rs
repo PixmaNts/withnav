@@ -5,7 +5,8 @@ use withnav::provider::openai::ChatMessage;
 use withnav::server::AppState;
 
 mod common;
-use common::deadline::{DEADLINE, Deadline};
+use common::deadline::{Deadline, WAIT};
+use common::sse::request_matching;
 
 async fn spawn_linked_child(
     state: &AppState,
@@ -26,43 +27,8 @@ async fn spawn_linked_child(
     (parent, child)
 }
 
-/// The next provider request whose body satisfies `wanted`. Requests that arrive
-/// first and do not match are kept in `pending` for a later call.
-///
-/// The whole search shares one `DEADLINE`: bounding each receive alone would let
-/// a steady flow of unrelated requests keep a test waiting forever for a request
-/// that never comes.
-async fn request_matching(
-    requests: &mut tokio::sync::mpsc::Receiver<(
-        String,
-        tokio::sync::mpsc::UnboundedSender<String>,
-    )>,
-    pending: &mut Vec<(String, tokio::sync::mpsc::UnboundedSender<String>)>,
-    wanted: impl Fn(&str) -> bool,
-) -> (String, tokio::sync::mpsc::UnboundedSender<String>) {
-    if let Some(index) = pending.iter().position(|(body, _)| wanted(body)) {
-        return pending.remove(index);
-    }
-    let search = async {
-        loop {
-            let (body, stream) = requests.recv().await.expect("provider closed");
-            if wanted(&body) {
-                return (body, stream);
-            }
-            pending.push((body, stream));
-        }
-    };
-    match tokio::time::timeout(DEADLINE, search).await {
-        Ok(found) => found,
-        Err(_) => panic!(
-            "no provider request matched within {DEADLINE:?}; {} non-matching requests set aside",
-            pending.len()
-        ),
-    }
-}
-
 /// A flow of unrelated requests must not hold off the deadline: the search gives
-/// up once `DEADLINE` has passed in total, however often other requests arrive.
+/// up once `WAIT` has passed in total, however often other requests arrive.
 #[tokio::test(start_paused = true)]
 #[should_panic(expected = "no provider request matched within")]
 async fn request_matching_gives_up_despite_unrelated_requests() {
@@ -73,14 +39,14 @@ async fn request_matching_gives_up_despite_unrelated_requests() {
             if tx.send(("unrelated".to_string(), stream)).await.is_err() {
                 return;
             }
-            tokio::time::sleep(DEADLINE / 2).await;
+            tokio::time::sleep(WAIT / 2).await;
         }
     });
     let mut pending = Vec::new();
     // Virtual time: this outer bound only fires if the search never gives up, and
     // its message differs from the one `should_panic` expects.
     if tokio::time::timeout(
-        DEADLINE * 6,
+        WAIT * 6,
         request_matching(&mut requests, &mut pending, |_| false),
     )
     .await
@@ -189,7 +155,7 @@ async fn owner_continue_admits_one_budget_renewal_and_child_finishes() {
             );
         }
     }
-    tokio::time::timeout(DEADLINE, async {
+    tokio::time::timeout(WAIT, async {
         loop {
             if let withnav::bus::ResumeOutcome::Replay(events) = state
                 .subscribe(child, None)
@@ -311,7 +277,7 @@ async fn exhaust_child_budget(
             );
         }
     }
-    tokio::time::timeout(DEADLINE, async {
+    tokio::time::timeout(WAIT, async {
         loop {
             if let withnav::bus::ResumeOutcome::Replay(events) = state
                 .subscribe(child, None)
@@ -586,7 +552,7 @@ async fn topup_racing_the_budget_notice_never_delivers_a_stale_notice() {
         steps,
     )
     .await;
-    tokio::time::timeout(DEADLINE, barrier.reached.notified())
+    tokio::time::timeout(WAIT, barrier.reached.notified())
         .bounded(file!(), line!())
         .await
         .expect("budget notice reached its commit");
@@ -596,7 +562,7 @@ async fn topup_racing_the_budget_notice_never_delivers_a_stale_notice() {
         .await
         .expect("top-up while the notice is in flight");
     barrier.release.notify_one();
-    tokio::time::timeout(DEADLINE, barrier.reached.notified())
+    tokio::time::timeout(WAIT, barrier.reached.notified())
         .bounded(file!(), line!())
         .await
         .expect("the paused notice attempt finished");
@@ -805,7 +771,7 @@ async fn queued_captain_correction_precedes_completion_only_wake() {
         .unwrap();
     parent_stream.send(text_chunk("old turn done")).unwrap();
     drop(parent_stream);
-    let (request, stream) = tokio::time::timeout(DEADLINE, provider.requests.recv())
+    let (request, stream) = tokio::time::timeout(WAIT, provider.requests.recv())
         .bounded(file!(), line!())
         .await
         .unwrap()
@@ -869,7 +835,7 @@ async fn mirrored_child_permission_is_resolved_after_parent_stop_and_resume() {
         ))
         .unwrap();
     drop(stream);
-    let request = tokio::time::timeout(DEADLINE, async {
+    let request = tokio::time::timeout(WAIT, async {
         loop {
             if let withnav::bus::ResumeOutcome::Replay(events) = state
                 .subscribe(parent, None)
@@ -1088,7 +1054,7 @@ use common::server::TestServerConfig;
 use common::sse::{spawn_streaming_provider, text_chunk, tool_call_chunk};
 
 async fn notice_count(state: &AppState, parent: ulid::Ulid, count: usize) {
-    tokio::time::timeout(DEADLINE, async {
+    tokio::time::timeout(WAIT, async {
         loop {
             if state
                 .history()
@@ -1153,7 +1119,7 @@ async fn finished_child_wakes_idle_parent_and_consumes_once() {
         .unwrap();
     stream.send(text_chunk("a useful answer")).unwrap();
     drop(stream);
-    let (request, stream) = tokio::time::timeout(DEADLINE, provider.requests.recv())
+    let (request, stream) = tokio::time::timeout(WAIT, provider.requests.recv())
         .bounded(file!(), line!())
         .await
         .unwrap()
@@ -1302,7 +1268,7 @@ async fn busy_parent_consumes_several_notices_in_order_at_next_boundary() {
     );
     parent_stream.send(text_chunk("parent finished")).unwrap();
     drop(parent_stream);
-    let (request, stream) = tokio::time::timeout(DEADLINE, provider.requests.recv())
+    let (request, stream) = tokio::time::timeout(WAIT, provider.requests.recv())
         .bounded(file!(), line!())
         .await
         .unwrap()
@@ -1361,7 +1327,7 @@ async fn unconsumed_notice_survives_child_delete_and_service_recreation() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let (request, stream) = tokio::time::timeout(DEADLINE, provider.requests.recv())
+    let (request, stream) = tokio::time::timeout(WAIT, provider.requests.recv())
         .bounded(file!(), line!())
         .await
         .unwrap()
@@ -1487,7 +1453,7 @@ async fn recovery_terminalizes_unfinished_child_without_tool_replay() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    let (request, stream) = tokio::time::timeout(DEADLINE, provider.requests.recv())
+    let (request, stream) = tokio::time::timeout(WAIT, provider.requests.recv())
         .bounded(file!(), line!())
         .await
         .unwrap()
@@ -1542,7 +1508,7 @@ async fn child_permission_is_answered_by_owner_without_parent_interaction() {
         ))
         .unwrap();
     drop(stream);
-    let request = tokio::time::timeout(DEADLINE, async {
+    let request = tokio::time::timeout(WAIT, async {
         loop {
             state
                 .history()
@@ -1682,7 +1648,7 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
         ))
         .unwrap();
     drop(stream);
-    tokio::time::timeout(DEADLINE, async {
+    tokio::time::timeout(WAIT, async {
         loop {
             if let withnav::bus::ResumeOutcome::Replay(events) = state
                 .subscribe(parent, None)
@@ -1719,7 +1685,7 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
         ))
         .unwrap();
     drop(stream);
-    let request_id = tokio::time::timeout(DEADLINE, async {
+    let request_id = tokio::time::timeout(WAIT, async {
         loop {
             if let withnav::bus::ResumeOutcome::Replay(events) = state
                 .subscribe(parent, None)
@@ -1783,7 +1749,7 @@ async fn child_permission_and_result_do_not_answer_parent_ask() {
         .await
         .unwrap();
     let (request, stream) =
-        match tokio::time::timeout(Duration::from_secs(5), provider.requests.recv())
+        match tokio::time::timeout(common::deadline::WAIT, provider.requests.recv())
             .bounded(file!(), line!())
             .await
         {

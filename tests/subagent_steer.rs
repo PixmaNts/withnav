@@ -3,14 +3,14 @@ use withnav::server::AppState;
 mod common;
 use common::deadline::Deadline;
 use common::server::TestServerConfig;
-use common::sse::{spawn_streaming_provider, text_chunk, tool_call_chunk};
+use common::sse::{request_matching, spawn_streaming_provider, text_chunk, tool_call_chunk};
 
 fn body(request: &str) -> Value {
     serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap()
 }
 
 async fn await_outbox_entry(state: &AppState, parent: ulid::Ulid, child: ulid::Ulid) {
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(common::deadline::WAIT, async {
         let sub = state.subscribe(parent, None).await.unwrap();
         let matches = |e: &withnav::bus::event::EventEnvelope| {
             e.kind == "subagent.done" && e.payload["child_session_id"] == child.to_string()
@@ -78,12 +78,11 @@ async fn budget_parked_child_claims_interrupt_once_after_owner_continue() {
     .await;
     // Exhaustion wakes the parent independently; settle that request before
     // asserting that an interrupt cannot resume the child.
-    let (notice, parent_stream) = provider
-        .requests
-        .recv()
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
+    let mut pending = Vec::new();
+    let (notice, parent_stream) = request_matching(&mut provider.requests, &mut pending, |body| {
+        body.contains("top-ups used 0/3")
+    })
+    .await;
     assert!(notice.contains("top-ups used 0/3"));
     parent_stream.send(text_chunk("noted")).unwrap();
     drop(parent_stream);
@@ -247,7 +246,7 @@ async fn two_interrupts_deliver_both_inputs_in_admission_order() {
         .await
         .unwrap();
     let mut streams = Vec::new();
-    let request = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let request = tokio::time::timeout(common::deadline::WAIT, async {
         loop {
             let (request, stream) = provider.requests.recv().await.unwrap();
             streams.push(stream);
@@ -399,7 +398,7 @@ async fn interrupt_held_automatic_summary_restores_valid_checkpoint_and_input_on
         .await
         .unwrap();
     release.notify_one();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tokio::time::timeout(common::deadline::WAIT, async {
         while state.child_metadata(child).await.unwrap().unwrap().status == "running" {
             tokio::task::yield_now().await;
         }
@@ -839,7 +838,7 @@ async fn parked_permission_queues_steer_and_interrupt_cancels_without_running_ca
         ))
         .unwrap();
     drop(stream);
-    let requested = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    let requested = tokio::time::timeout(common::deadline::WAIT, async {
         loop {
             if let Some(e) = replay(&state, child)
                 .await
@@ -1043,7 +1042,7 @@ async fn interrupt_result_waits_for_parent_permission_and_queued_captain_goes_fi
         ))
         .unwrap();
     drop(stream);
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(common::deadline::WAIT, async {
         while !replay(&state, parent)
             .await
             .iter()
@@ -1162,7 +1161,7 @@ async fn interrupt_during_running_tool_preserves_result_pairing_and_capability_c
         ))
         .unwrap();
     drop(stream);
-    let id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    let id = tokio::time::timeout(common::deadline::WAIT, async {
         loop {
             if let Some(e) = replay(&state, child)
                 .await
@@ -1186,7 +1185,7 @@ async fn interrupt_during_running_tool_preserves_result_pairing_and_capability_c
         .bounded(file!(), line!())
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+    tokio::time::timeout(common::deadline::WAIT, async {
         while !ws.join("started").exists() {
             tokio::task::yield_now().await;
         }

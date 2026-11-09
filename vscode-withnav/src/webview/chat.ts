@@ -68,6 +68,7 @@ function makeEntry(info: TabInfo): Entry {
     changed: chrome,
     showSessions: () => showList(),
   });
+  if (!editor) { view.root.id = `panel-${id}`; view.root.setAttribute("role", "tabpanel"); view.root.setAttribute("aria-labelledby", `tab-${id}`); }
   viewsHost.append(view.root);
   return { view, info };
 }
@@ -79,14 +80,16 @@ function showList(): void {
   list.shown();
 }
 
-function focusTab(id: string): void {
+/** `keepFocus`: a keyboard activation shows the panel and leaves focus on the tab, as the Tabs pattern asks. */
+function focusTab(id: string, keepFocus = false): void {
   const entry = entries.get(id);
   if (!entry) return;
   const changed = active !== id;
   active = id; mode = "tab"; overflowOpen = false;
   if (changed) hostPost({ type: "focusTab", tab: id });
+  if (keepFocus) tabFocusTarget = id;
   render();
-  entry.view.focusComposer();
+  if (!keepFocus) entry.view.focusComposer();
 }
 
 function closeTab(id: string): void { hostPost({ type: "closeTab", tab: id }); }
@@ -117,6 +120,8 @@ function openTabs(): Map<string, OpenTab> {
 // ---- Rendering --------------------------------------------------------------------------------
 let tabSignature = "";
 let listSignature = "";
+/** The tab that takes focus once the strip is rebuilt: set by a keyboard action, consumed by `renderTabbar`. */
+let tabFocusTarget: string | undefined;
 
 function tabLabel(tab: TabInfo): string { return entries.get(tab.id)?.view.title() || tab.title || "New conversation"; }
 
@@ -138,20 +143,26 @@ function tabElement(tab: TabInfo, inMenu: boolean): HTMLElement {
   root.className = inMenu ? "tab tab-menu-item" : "tab";
   root.dataset.tab = tab.id; root.dataset.status = status;
   const selected = (wide || mode === "tab") && tab.id === active;
-  root.setAttribute("role", inMenu ? "menuitem" : "tab");
-  if (!inMenu) root.setAttribute("aria-selected", String(selected));
+  // The tab (or menu item) is the focusable button itself; the wrapper only lays out the close button.
+  root.setAttribute("role", "presentation");
   root.classList.toggle("active", selected);
   const main = document.createElement("button");
   main.type = "button"; main.className = "tab-main";
+  main.setAttribute("role", inMenu ? "menuitem" : "tab");
+  if (!inMenu) {
+    main.id = `tab-${tab.id}`; main.setAttribute("aria-controls", `panel-${tab.id}`);
+    main.setAttribute("aria-selected", String(selected));
+  }
   const label = tabLabel(tab);
   const title = document.createElement("span");
   title.className = "tab-title"; title.textContent = label;
   main.append(statusIcon(status), title);
   main.title = `${label} · ${STATUS_LABEL[status]}`;
-  main.addEventListener("click", () => focusTab(tab.id));
+  main.addEventListener("click", event => focusTab(tab.id, !inMenu && event.detail === 0));
   const close = document.createElement("button");
-  close.type = "button"; close.className = "tab-close";
-  close.title = "Close"; close.setAttribute("aria-label", `Close ${label}`);
+  // Mouse only: the keyboard closes the focused tab with Delete.
+  close.type = "button"; close.className = "tab-close"; close.tabIndex = -1; close.setAttribute("aria-hidden", "true");
+  close.title = "Close";
   close.innerHTML = '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 4.5 7 7m0-7-7 7"/></svg>';
   close.addEventListener("click", event => { event.stopPropagation(); closeTab(tab.id); });
   root.addEventListener("auxclick", event => { if (event.button === 1) { event.preventDefault(); closeTab(tab.id); } });
@@ -159,16 +170,57 @@ function tabElement(tab: TabInfo, inMenu: boolean): HTMLElement {
   return root;
 }
 
+/** Tabs pattern keys: arrows wrap, Home/End jump, Delete closes. Moving focus does not activate; Enter or Space does. */
+function tabKeys(event: KeyboardEvent): void {
+  if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
+  const buttons = [...tabbar.querySelectorAll<HTMLButtonElement>(".tab-strip .tab-main")];
+  const index = buttons.indexOf(event.target as HTMLButtonElement);
+  if (index < 0) return;
+  const idOf = (button: HTMLButtonElement | undefined): string | undefined => button?.closest<HTMLElement>(".tab")?.dataset.tab;
+  const moveTo = (to: number): void => {
+    for (const [i, button] of buttons.entries()) button.tabIndex = i === to ? 0 : -1;
+    buttons[to].focus();
+  };
+  switch (event.key) {
+    case "ArrowRight": moveTo((index + 1) % buttons.length); break;
+    case "ArrowLeft": moveTo((index - 1 + buttons.length) % buttons.length); break;
+    case "Home": moveTo(0); break;
+    case "End": moveTo(buttons.length - 1); break;
+    case "Delete": {
+      const id = idOf(buttons[index]);
+      // Focus follows to the next tab (the previous one for the last), not to the composer.
+      tabFocusTarget = idOf(buttons[index + 1]) ?? idOf(buttons[index - 1]);
+      if (id !== undefined) closeTab(id);
+      break;
+    }
+    default: return;
+  }
+  event.preventDefault();
+}
+
 function renderTabbar(): void {
   if (editor) return;
   const { shown, hidden } = splitTabs();
   const signature = JSON.stringify([mode, wide, active, overflowOpen, order.map(tab => [tab.id, tabLabel(tab), entries.get(tab.id)?.view.status()]), shown.map(tab => tab.id)]);
-  if (signature === tabSignature) return;
+  const pending = tabFocusTarget;
+  tabFocusTarget = undefined;
+  if (signature === tabSignature) {
+    // Nothing to rebuild (activating the selected tab again), but the keyboard intent still lands.
+    if (pending !== undefined) [...tabbar.querySelectorAll<HTMLElement>(".tab-strip .tab")].find(tab => tab.dataset.tab === pending)?.querySelector<HTMLElement>(".tab-main")?.focus();
+    return;
+  }
   tabSignature = signature;
+  const focused = document.activeElement?.closest<HTMLElement>(".tab-strip .tab")?.dataset.tab;
+  const refocus = pending ?? focused;
   tabbar.replaceChildren();
   const strip = document.createElement("div");
   strip.className = "tab-strip"; strip.setAttribute("role", "tablist"); strip.setAttribute("aria-label", "Open conversations");
   for (const tab of shown) strip.append(tabElement(tab, false));
+  // Roving tabindex: one tab is in the Tab order, the selected one unless focus is being kept on another.
+  const tabButtons = [...strip.querySelectorAll<HTMLButtonElement>(".tab-main")];
+  const stop = tabButtons.find(button => button.closest<HTMLElement>(".tab")?.dataset.tab === refocus) ?? tabButtons.find(button => button.getAttribute("aria-selected") === "true") ?? tabButtons[0];
+  for (const button of tabButtons) button.tabIndex = button === stop ? 0 : -1;
+  strip.addEventListener("keydown", tabKeys);
   tabbar.append(strip);
   if (hidden.length) {
     const more = document.createElement("button");
@@ -191,6 +243,7 @@ function renderTabbar(): void {
   add.innerHTML = '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg>';
   add.addEventListener("click", () => hostPost({ type: "openTab" }));
   tabbar.append(add);
+  if (refocus !== undefined) stop?.focus();
 }
 
 function renderList(): void {
@@ -243,6 +296,8 @@ document.addEventListener("click", () => { if (overflowOpen) { overflowOpen = fa
 
 // ---- Host messages ----------------------------------------------------------------------------
 function applyTabs(tabs: TabInfo[], nextActive: string | undefined): void {
+  // A keyboard close in the strip keeps focus there; any other change of the active tab moves it to the composer.
+  const keepStrip = tabFocusTarget !== undefined;
   const ids = new Set(tabs.map(tab => tab.id));
   for (const [id, entry] of entries) {
     if (ids.has(id)) continue;
@@ -261,7 +316,8 @@ function applyTabs(tabs: TabInfo[], nextActive: string | undefined): void {
   tabSignature = "";
   render();
   if (!tabs.length) list.shown();
-  else if (mode === "tab" && (created || active !== previous)) entries.get(active!)?.view.focusComposer();
+  else if (mode === "tab" && (created || active !== previous) && !keepStrip) entries.get(active!)?.view.focusComposer();
+  tabFocusTarget = undefined;
 }
 
 function applyConversations(items: ConversationSummary[], name?: string): void {

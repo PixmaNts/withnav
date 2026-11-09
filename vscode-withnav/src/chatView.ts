@@ -90,6 +90,11 @@ export function registerChatView(
       if (picked) await confirmDeleteConversation(tabs, picked.conversation.id);
     } catch (error) { showError(error); }
   });
+  // The session list's context menu passes the right-clicked row in the `data-vscode-context` payload.
+  const sessionDeletion = vscode.commands.registerCommand("withnav.deleteSession", async (target?: { sessionId?: unknown }) => {
+    if (typeof target?.sessionId !== "string") return;
+    try { await confirmDeleteConversation(tabs, target.sessionId); } catch (error) { showError(error); }
+  });
   const registration = vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, {
     resolveWebviewView(view) {
       let disposed = false;
@@ -377,7 +382,7 @@ export function registerChatView(
       });
     },
   }, { webviewOptions: { retainContextWhenHidden: true } });
-  return vscode.Disposable.from(registration, showSessions, newConversation, deletion);
+  return vscode.Disposable.from(registration, showSessions, newConversation, deletion, sessionDeletion);
 }
 
 export async function confirmDeleteConversation(backend: Pick<ChatBackend, "listConversations" | "deleteConversation">, id: string): Promise<void> {

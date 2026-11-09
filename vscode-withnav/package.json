@@ -62,6 +62,11 @@
         "category": "WithNav"
       },
       {
+        "command": "withnav.deleteSession",
+        "title": "Delete Conversation…",
+        "category": "WithNav"
+      },
+      {
         "command": "withnav.toggleBypassPermissions",
         "title": "WithNav: Toggle Bypass Permissions"
       },
@@ -98,6 +103,19 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "withnav.deleteSession",
+          "when": "false"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "withnav.deleteSession",
+          "when": "webviewId == 'withnav.chat' && webviewSection == 'session'",
+          "group": "navigation"
+        }
+      ],
       "view/title": [
         {
           "command": "withnav.showSessions",

@@ -93,6 +93,12 @@ pub enum ServerError {
     PermissionStale,
     #[error("no such secret request is waiting: it was answered, cancelled or never existed")]
     SecretStale,
+    /// The secrets file could not be written; the detail goes to the server log only.
+    #[error("the secret could not be saved; see the server log")]
+    SecretNotSaved,
+    /// The image attachment store failed; the detail goes to the server log only.
+    #[error("the attachment store failed; see the server log")]
+    AttachmentStore,
     #[error("message content must be text")]
     NonTextContent,
     #[error("non-loopback bind refused: {0} (pass --allow-non-loopback to override)")]

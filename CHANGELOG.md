@@ -97,6 +97,13 @@ requests land in `develop`.
   SVG renderer. A step waits at most 30 s for the bytes of its images; past that they are sent as
   `[image … unavailable]` and the turn goes on. A failed image-loading task is now logged instead
   of silently sending every image as unavailable.
+- Secrets file: on Windows, `<data dir>/credentials/secrets.json` and its directory now carry a
+  protected DACL (current user, SYSTEM, Administrators), applied on save and at start. A secrets
+  file over 4 MiB is refused without being read, and a save that would exceed it fails.
+- A workspace secret that cannot be written now answers 500 `secret_not_saved` with a fixed
+  message instead of a 400 carrying the OS error; an attachment store failure (upload, download,
+  or an image in a message) answers 500 `attachments_failed` without the SQLite text. The details
+  go to the server log.
 
 ## [0.8.2] - 2026-11-05
 

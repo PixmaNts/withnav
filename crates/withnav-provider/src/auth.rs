@@ -28,6 +28,21 @@ pub fn default_config_dir() -> Option<PathBuf> {
     super::dirs::config_dir()
 }
 
+/// Replaces the DACL of `path` (file or directory) with a protected one granting full access to
+/// the current user, SYSTEM and Administrators only: what `auth.json` carries, reused by other
+/// private files.
+#[cfg(windows)]
+pub fn protect_private(path: &Path) -> Result<(), ProviderError> {
+    windows::protect(path)
+}
+
+/// Fails unless every ACE on `path` grants access to the current user, SYSTEM or Administrators
+/// only.
+#[cfg(windows)]
+pub fn check_private(path: &Path) -> Result<(), ProviderError> {
+    windows::check_perms_or_fail(path)
+}
+
 fn auth_path(config_dir: &Path) -> PathBuf {
     config_dir.join("auth.json")
 }

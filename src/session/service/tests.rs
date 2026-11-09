@@ -315,3 +315,34 @@ async fn listing_hides_child_until_relationship_commits() {
     );
     assert!(!row.promptable);
 }
+
+#[tokio::test]
+async fn an_attachment_store_failure_on_a_message_is_a_server_error_without_its_detail() {
+    let (dir, service) = test_service();
+    // The store's table gone: the lookup fails with SQLite text.
+    rusqlite::Connection::open(dir.path().join("history.db"))
+        .unwrap()
+        .execute_batch("DROP TABLE attachments")
+        .unwrap();
+    let mut command = Command {
+        command_id: Ulid::generate(),
+        session_id: Ulid::generate(),
+        source_actor_id: "user:http".into(),
+        target_actor_id: ROOT_ACTOR_ID.into(),
+        mode: crate::bus::command::DeliveryMode::NextTurn,
+        content: vec![crate::bus::command::ContentBlock::Image(
+            withnav_client_api::attachment::ImageRef {
+                attachment_id: "a1".into(),
+                media_type: String::new(),
+                name: String::new(),
+                size: 0,
+                width: 0,
+                height: 0,
+            },
+        )],
+        created_at: std::time::SystemTime::now(),
+    };
+    let error = service.resolve_images(&mut command).await.unwrap_err();
+    assert!(matches!(error, ServerError::AttachmentStore), "{error}");
+    assert!(!error.to_string().contains("attachments"), "{error}");
+}

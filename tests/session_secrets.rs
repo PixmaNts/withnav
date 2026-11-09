@@ -424,10 +424,16 @@ async fn a_workspace_secret_that_cannot_be_saved_is_reported_and_not_kept_across
         &json!({"value":VALUE, "ttl":"24h", "scope":"workspace"}),
     )
     .await;
-    assert_eq!(failed.status(), StatusCode::BAD_REQUEST);
-    let error = failed.text().await.unwrap();
-    assert!(error.contains("could not be written"), "{error}");
-    assert!(!error.contains(VALUE));
+    // A server-side failure, reported without the OS error or the value.
+    assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body: Value = failed.json().await.unwrap();
+    assert_eq!(
+        body,
+        json!({
+            "error": "the secret could not be saved; see the server log",
+            "reason": "secret_not_saved",
+        })
+    );
 
     // The request was not settled as stored: it still waits, and a decline answers it.
     let declined = post_secret(&base, &id, "sec_1", &json!({"decline":true})).await;

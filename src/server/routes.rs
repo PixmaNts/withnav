@@ -1226,11 +1226,15 @@ fn attachment_error_response(error: crate::session::attachments::AttachmentError
     } else {
         reason
     };
-    (
-        status,
-        Json(json!({ "error": error.to_string(), "reason": reason })),
-    )
-        .into_response()
+    // A store failure carries SQLite or file-system text: logged here, never sent to the client.
+    let message = match &error {
+        E::Db(detail) => {
+            tracing::error!(%detail, "attachment store failed");
+            ServerError::AttachmentStore.to_string()
+        }
+        _ => error.to_string(),
+    };
+    (status, Json(json!({ "error": message, "reason": reason }))).into_response()
 }
 
 fn attachments_unavailable() -> Response {
@@ -1415,6 +1419,9 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         | ServerError::ResumeRequired
         | ServerError::PermissionStale
         | ServerError::SecretStale => StatusCode::CONFLICT,
+        ServerError::SecretNotSaved | ServerError::AttachmentStore => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
         ServerError::NonLoopbackBind(_) | ServerError::Bind(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::InboxFull => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::NonTextContent | ServerError::MalformedBody(_) => StatusCode::BAD_REQUEST,
@@ -1454,6 +1461,8 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::SubagentCapacity { .. } => Some("subagent_capacity"),
         ServerError::PermissionStale => Some("permission_stale"),
         ServerError::SecretStale => Some("secret_stale"),
+        ServerError::SecretNotSaved => Some("secret_not_saved"),
+        ServerError::AttachmentStore => Some("attachments_failed"),
         ServerError::NoContextWindow { .. } => Some("no_context_window"),
         ServerError::SavedAgentUnavailable { .. } => Some("saved_agent_unavailable"),
         ServerError::ImpossibleBudget { .. } => Some("impossible_context_budget"),
@@ -1664,6 +1673,28 @@ mod tests {
     // Given a session POST with a malformed body
     // When the handler runs
     // Then 400 with the shared {"error": ...} shape (not a panic/plain text)
+    #[tokio::test]
+    async fn an_attachment_store_failure_is_a_500_without_its_detail() {
+        let response = attachment_error_response(crate::session::attachments::AttachmentError::Db(
+            "no such table: attachments (/home/me/.local/share/withnav/withnav.db)".into(),
+        ));
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(
+            body,
+            json!({
+                "error": "the attachment store failed; see the server log",
+                "reason": "attachments_failed",
+            })
+        );
+    }
+
     #[tokio::test]
     async fn malformed_create_body_is_a_structured_400() {
         let (_dir, state) = test_state();

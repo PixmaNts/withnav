@@ -106,7 +106,7 @@ async fn valid_mcp_resource_read_and_tool_call_over_socket() {
 
 // Given a running server with an initialized fixture MCP server
 // When POST /v1/mcp/fixture/call receives unparseable JSON or JSON missing the required name field
-// Then the endpoint returns 400 Bad Request with a malformed body error message
+// Then the endpoint returns 400 mcp_invalid_request with a fixed message, never the body quoted back
 #[tokio::test]
 async fn mcp_call_rejects_malformed_json_and_invalid_shape() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -126,10 +126,9 @@ async fn mcp_call_rejects_malformed_json_and_invalid_shape() {
         .expect("post malformed response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body: Value = response.json().await.expect("error json");
-    let error_text = body["error"].as_str().expect("error field string");
-    assert!(
-        error_text.contains("malformed request body"),
-        "expected malformed body error message, got: {error_text}"
+    assert_eq!(
+        body,
+        json!({"error": "invalid MCP App request", "reason": "mcp_invalid_request"})
     );
 
     let response = client
@@ -142,10 +141,9 @@ async fn mcp_call_rejects_malformed_json_and_invalid_shape() {
         .expect("post missing name response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body: Value = response.json().await.expect("error json");
-    let error_text = body["error"].as_str().expect("error field string");
-    assert!(
-        error_text.contains("malformed request body"),
-        "expected malformed body error message, got: {error_text}"
+    assert_eq!(
+        body,
+        json!({"error": "invalid MCP App request", "reason": "mcp_invalid_request"})
     );
 
     state.close_all().await;
@@ -227,7 +225,7 @@ async fn mcp_routes_require_bearer_auth_when_configured() {
 
 // Given a running server without an MCP server named "nosuch"
 // When GET /v1/mcp/nosuch/resource and POST /v1/mcp/nosuch/call are requested
-// Then both return 400 Bad Request with "unknown MCP server: nosuch" in the error response
+// Then both return 404 mcp_unknown_server
 #[tokio::test]
 async fn mcp_routes_reject_unknown_server() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -244,13 +242,9 @@ async fn mcp_routes_reject_unknown_server() {
         .send()
         .await
         .expect("unknown server resource response");
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body: Value = response.json().await.expect("error json");
-    let error_text = body["error"].as_str().expect("error string");
-    assert!(
-        error_text.contains("unknown MCP server: nosuch"),
-        "error body must identify unknown server: {error_text}"
-    );
+    assert_eq!(body["reason"], "mcp_unknown_server", "{body}");
 
     let response = client
         .post(format!("{base}/v1/mcp/nosuch/call"))
@@ -261,13 +255,9 @@ async fn mcp_routes_reject_unknown_server() {
         .send()
         .await
         .expect("unknown server call response");
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body: Value = response.json().await.expect("error json");
-    let error_text = body["error"].as_str().expect("error string");
-    assert!(
-        error_text.contains("unknown MCP server: nosuch"),
-        "error body must identify unknown server: {error_text}"
-    );
+    assert_eq!(body["reason"], "mcp_unknown_server", "{body}");
 
     state.close_all().await;
     server_task.abort();
@@ -275,7 +265,7 @@ async fn mcp_routes_reject_unknown_server() {
 
 // Given a server whose fixture MCP server is shut down after initialization
 // When GET resource and POST call are requested for the disconnected server
-// Then resource read reports disconnected and tool call reports unavailable with 400 Bad Request
+// Then both return 503 mcp_unavailable
 #[tokio::test]
 async fn mcp_routes_report_unavailable_server_after_shutdown() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -294,13 +284,9 @@ async fn mcp_routes_report_unavailable_server_after_shutdown() {
         .send()
         .await
         .expect("disconnected resource response");
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body: Value = response.json().await.expect("error json");
-    let error_text = body["error"].as_str().expect("error string");
-    assert!(
-        error_text.contains("MCP server is disconnected"),
-        "error must report disconnected server: {error_text}"
-    );
+    assert_eq!(body["reason"], "mcp_unavailable", "{body}");
 
     let response = client
         .post(format!("{base}/v1/mcp/fixture/call"))
@@ -311,13 +297,9 @@ async fn mcp_routes_report_unavailable_server_after_shutdown() {
         .send()
         .await
         .expect("unavailable call response");
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body: Value = response.json().await.expect("error json");
-    let error_text = body["error"].as_str().expect("error string");
-    assert!(
-        error_text.contains("MCP tool is unavailable on this server"),
-        "error must report unavailable tool: {error_text}"
-    );
+    assert_eq!(body["reason"], "mcp_unavailable", "{body}");
 
     server_task.abort();
 }

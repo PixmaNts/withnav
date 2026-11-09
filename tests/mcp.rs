@@ -536,13 +536,14 @@ async fn service_mcp_paths_report_unknown_disconnected_and_unknown_servers() {
         json!({"text": "hi"})
     );
 
-    // Unknown servers are refused by name, before any process exists.
+    // Unknown servers are refused before any process exists.
+    use withnav::mcp::McpUiError;
     let unknown = service.mcp_read_resource("nosuch", "ui://x").await;
-    assert_eq!(unknown.unwrap_err(), "unknown MCP server: nosuch");
+    assert_eq!(unknown.unwrap_err(), McpUiError::UnknownServer);
     let unknown = service
         .mcp_call_tool("nosuch", "echo", serde_json::Map::new())
         .await;
-    assert_eq!(unknown.unwrap_err(), "unknown MCP server: nosuch");
+    assert_eq!(unknown.unwrap_err(), McpUiError::UnknownServer);
 
     // Ready → disconnected: close_all shuts the manager down and awaits it,
     // so the fixture's status is failed with zero tools before we ask again.
@@ -558,9 +559,9 @@ async fn service_mcp_paths_report_unknown_disconnected_and_unknown_servers() {
     let read = service
         .mcp_read_resource("fixture", "ui://fixture/app.html")
         .await;
-    assert_eq!(read.unwrap_err(), "MCP server is disconnected");
+    assert_eq!(read.unwrap_err(), McpUiError::Unavailable);
     let call = service
         .mcp_call_tool("fixture", "echo", serde_json::Map::new())
         .await;
-    assert_eq!(call.unwrap_err(), "MCP tool is unavailable on this server");
+    assert_eq!(call.unwrap_err(), McpUiError::Unavailable);
 }

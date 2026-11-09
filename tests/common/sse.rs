@@ -9,6 +9,8 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use wiremock::ResponseTemplate;
 
+use super::deadline::Deadline;
+
 /// A chat-completion SSE body: one `data:` frame per event, then `[DONE]`.
 pub fn sse_body(events: &[&str]) -> String {
     let mut b = String::new();
@@ -450,4 +452,30 @@ fn parse_frame(raw: &str) -> Option<SseFrame> {
         // ':' comment lines (keep-alive) are ignored.
     }
     saw_field.then_some(SseFrame { id, event, data })
+}
+
+/// The next provider request whose body satisfies `wanted`. Requests that arrive
+/// first and do not match are kept in `pending` for a later call.
+pub async fn request_matching(
+    requests: &mut tokio::sync::mpsc::Receiver<(
+        String,
+        tokio::sync::mpsc::UnboundedSender<String>,
+    )>,
+    pending: &mut Vec<(String, tokio::sync::mpsc::UnboundedSender<String>)>,
+    wanted: impl Fn(&str) -> bool,
+) -> (String, tokio::sync::mpsc::UnboundedSender<String>) {
+    if let Some(index) = pending.iter().position(|(body, _)| wanted(body)) {
+        return pending.remove(index);
+    }
+    loop {
+        let (body, stream) = requests
+            .recv()
+            .bounded(file!(), line!())
+            .await
+            .expect("provider closed");
+        if wanted(&body) {
+            return (body, stream);
+        }
+        pending.push((body, stream));
+    }
 }

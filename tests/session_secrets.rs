@@ -1,9 +1,6 @@
 //! `request_secret` end to end: the agent asks, the Captain answers on the dedicated endpoint,
 //! the value reaches a command's environment, and it never appears in a model request, a tool
 //! result, the SSE stream or the stored conversation.
-
-use std::time::Duration;
-
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 
@@ -198,19 +195,19 @@ async fn a_secret_reaches_the_command_and_never_the_model_the_stream_or_the_hist
 
     // The stored conversation: transcript and events.
     let store = withnav::session::store::HistoryStore::open(tmp.path().join("history.db")).unwrap();
-    let mut stored = String::new();
-    for _ in 0..100 {
-        let loaded = store.load(id.parse().unwrap()).await.unwrap().unwrap();
-        stored = format!(
-            "{}{}",
-            serde_json::to_string(&loaded.transcript).unwrap(),
-            serde_json::to_string(&loaded.envelopes).unwrap()
-        );
-        if stored.contains("it was [secret API_KEY]") && stored.contains("noted") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let session: ulid::Ulid = id.parse().unwrap();
+    let stored =
+        common::deadline::eventually("the secret exchange reaches the history", || async {
+            let loaded = store.load(session).await.unwrap()?;
+            let stored = format!(
+                "{}{}",
+                serde_json::to_string(&loaded.transcript).unwrap(),
+                serde_json::to_string(&loaded.envelopes).unwrap()
+            );
+            (stored.contains("it was [secret API_KEY]") && stored.contains("noted"))
+                .then_some(stored)
+        })
+        .await;
     assert!(stored.contains("stored as $API_KEY"));
     assert!(!stored.contains(VALUE), "the history leaks the value");
 

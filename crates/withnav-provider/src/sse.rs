@@ -101,23 +101,29 @@ struct BlockMeter {
     bytes: usize,
     mid_line: bool,
     after_cr: bool,
+    ended: bool,
 }
 
 impl BlockMeter {
     /// Where in `chunk` the current block passes [`MAX_FRAME_BYTES`], or `None` if every block
-    /// fits. A byte counts toward the block it ends; the LF of a CRLF blank line opens the next.
+    /// fits. Each byte counts toward the block it belongs to, the whole blank line (CRLF too)
+    /// included; the count restarts at the first byte after it.
     fn overflow_at(&mut self, chunk: &[u8]) -> Option<usize> {
         for (i, &b) in chunk.iter().enumerate() {
+            let crlf_tail = self.after_cr && b == b'\n';
+            self.after_cr = b == b'\r';
+            if self.ended && !crlf_tail {
+                self.ended = false;
+                self.bytes = 0;
+            }
             self.bytes += 1;
             if self.bytes > MAX_FRAME_BYTES {
                 return Some(i);
             }
-            let crlf_tail = self.after_cr && b == b'\n';
-            self.after_cr = b == b'\r';
             match b {
                 _ if crlf_tail => {}
                 b'\n' | b'\r' if self.mid_line => self.mid_line = false,
-                b'\n' | b'\r' => self.bytes = 0,
+                b'\n' | b'\r' => self.ended = true,
                 _ => self.mid_line = true,
             }
         }
@@ -200,15 +206,32 @@ mod tests {
 
     #[tokio::test]
     async fn the_cap_counts_one_block_including_its_blank_line() {
-        // `data: ` (6) + payload + `\n\n` (2) is exactly the cap; one more byte is over it.
-        for extra in [0, 1] {
-            let mut block = b"data: ".to_vec();
-            block.resize(MAX_FRAME_BYTES - 2 + extra, b'x');
-            block.extend_from_slice(b"\n\n");
-            let out = decode(vec![Ok(b": ping\n\n".to_vec()), Ok(block)]).await;
-            match extra {
-                0 => assert!(matches!(out.as_slice(), [Ok(d)] if d.len() == MAX_FRAME_BYTES - 8)),
-                _ => assert!(out.len() == 1 && is_too_large(&out), "{out:?}"),
+        // `data: ` + payload + blank line is exactly the cap; one more byte is over it. An
+        // unterminated last block is closed at end of stream without counting the closing bytes.
+        for end in [&b"\n\n"[..], b"\r\n\r\n", b"\r\r", b""] {
+            for extra in [0, 1] {
+                let payload = MAX_FRAME_BYTES - 6 - end.len();
+                let mut block = b"data: ".to_vec();
+                block.resize(6 + payload + extra, b'x');
+                block.extend_from_slice(end);
+                let (head, tail) = block.split_at(block.len() - end.len().min(3));
+                let ping = b": ping\r\n\r".to_vec();
+                let split = vec![
+                    Ok(ping),
+                    Ok(b"\n".to_vec()),
+                    Ok(head.into()),
+                    Ok(tail.into()),
+                ];
+                // Over the cap by its final LF, a CRLF block has already been completed by the
+                // CR before it, so its event is delivered before the error.
+                let delivered = usize::from(extra == 1 && end == b"\r\n\r\n");
+                for out in [decode(vec![Ok(block.clone())]).await, decode(split).await] {
+                    let lens: Vec<_> = out.iter().map(|r| r.as_ref().map(String::len)).collect();
+                    match extra {
+                        0 => assert!(matches!(lens.as_slice(), [Ok(n)] if *n == payload)),
+                        _ => assert!(out.len() == 1 + delivered && is_too_large(&out), "{lens:?}"),
+                    }
+                }
             }
         }
     }

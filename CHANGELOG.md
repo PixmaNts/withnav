@@ -8,6 +8,9 @@ requests land in `develop`.
 
 ### Added
 
+- Project skills: WithNav discovers `.skills/` alongside the existing project skill folders.
+  `skills.paths` adds relative folders within the worktree or absolute user-level folders;
+  the existing validation and discovery limits still apply.
 - Subagents: a child that uses its step budget (50 by default) no longer waits only for you. It
   pauses, and its parent is woken with a notice giving the steps used, the top-ups used and left,
   and the last tool call and result. The parent can continue it with one more budget, up to three
@@ -90,6 +93,15 @@ requests land in `develop`.
 
 ### Fixed
 
+- Deleting a conversation now ends its conversation-lifetime secrets, including workspace-scoped
+  ones. Timed workspace secrets survive, and deleting a child leaves its parent's secrets intact.
+- MCP Apps: a resource read selects the one `text/html;profile=mcp-app` item instead of assuming
+  the first item is HTML. Missing, ambiguous or empty app items are refused; raw text is bounded
+  before redaction, and blobs must be valid base64 within encoded and decoded size limits.
+- `nav tui`: secret input refuses a paste or keystroke that would exceed 16 KiB without changing
+  the value already entered. Pasting removes at most one trailing line ending, preserving leading
+  and additional trailing newlines. Revealed values are sanitized for display without changing
+  the submitted bytes.
 - `nav tui`: an `/attach` or `/paste-image` still being checked when you run `/attach clear` no
   longer adds its image back to the next message.
 - `nav tui`: when sending a message with images fails after some of them were stored, the retry
@@ -181,8 +193,6 @@ requests land in `develop`.
   does. A body that never closes a frame (a broken proxy, an endless line) ends the subscription
   with a protocol error instead of growing the client's memory without limit; nothing of that frame
   is delivered. Keep-alive comments reset the count, so a long-idle stream is never cut. (#156)
-
-### Fixed
 
 - SVG attachments: filter cost is now counted on the document as it will be drawn. A filtered
   element repeated through `<use>`, or filtered by a style rule, is charged at each copy, weighted

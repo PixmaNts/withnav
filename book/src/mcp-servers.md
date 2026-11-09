@@ -1,6 +1,7 @@
 # MCP servers
 
-Connect external tools through stdio MCP servers in `~/.config/withnav/config.json`:
+Connect external tools through stdio or Streamable HTTP MCP servers in
+`~/.config/withnav/config.json`:
 
 ```json
 {
@@ -13,6 +14,11 @@ Connect external tools through stdio MCP servers in `~/.config/withnav/config.js
       "startup_timeout_ms": 10000,
       "call_timeout_ms": 60000,
       "tools": {"delete_*": false}
+    },
+    "docs": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {"Authorization": "Bearer {env:DOCS_MCP_TOKEN}"}
     }
   }
 }
@@ -27,14 +33,25 @@ Connect external tools through stdio MCP servers in `~/.config/withnav/config.js
 
 Server ids use lowercase letters, digits, `_` or `-`, at most 24 characters, with no `__`.
 Commands are
-argv arrays, never shell commands. Only `env` expands `{env:NAME}`; missing variables fail
-that server. On Unix, children inherit PATH, HOME, LANG, LC_*, TMPDIR and XDG_* plus declared
+argv arrays, never shell commands. Only `env` (and an HTTP server's `headers`) expands
+`{env:NAME}`; missing variables fail that server. On Unix, children inherit PATH, HOME, LANG, LC_*, TMPDIR and XDG_* plus declared
 values, not every provider credential in Nav's environment. On Windows, they also inherit the
 runtime variables PATH, PATHEXT, SYSTEMROOT, SYSTEMDRIVE, WINDIR, COMSPEC, TEMP, TMP,
 USERPROFILE, APPDATA, LOCALAPPDATA, PROGRAMDATA, PROGRAMFILES, PROGRAMFILES(X86),
 PROGRAMW6432, COMMONPROGRAMFILES, NUMBER_OF_PROCESSORS and PROCESSOR_ARCHITECTURE.
 Windows variable names are case-insensitive. Commands such as `npx` or `uvx`, including `.cmd`
 shims, are found through the child's Path/PATHEXT. Resolved values are never saved.
+
+An `http` server takes a `url` (http or https, no `user:password@`, no `{env:NAME}`) and
+optional static `headers`, sent with every request. Header values expand `{env:NAME}`; a
+missing variable fails that server. Every header value counts as a secret and is redacted like
+`env` values; for a `Bearer <token>` style value the token alone is redacted too. Headers the
+transport sets itself (`Accept`, `Content-Type`, `Mcp-Session-Id`, `Mcp-Protocol-Version`,
+`Last-Event-Id`, …) are refused. `command` and `env` apply to stdio servers only, `url` and
+`headers` to HTTP servers only. Redirects are followed only within the same origin, so headers
+are never sent to another host. OAuth is not supported: a server that asks for it fails with an
+authorization error. Timeouts, `enabled`, `tools`, naming, results and permissions are the same
+for both types; an HTTP server has no stderr tail.
 
 Tools are exposed as `mcp__github__get_issue`, with provider-safe names at most 64 characters.
 The optional `tools` map hides original tool names matching any `false` glob. An agent's
@@ -72,6 +89,8 @@ that exposed tool name; yolo runs them unchecked.
 Installed servers run arbitrary programs with your account's privileges: WithNav is not a
 sandbox. Server descriptions/results are untrusted text, not authorization.
 
-This delivery supports global stdio servers only. Workspace configs, HTTP, live refresh,
-resources, prompts and sampling are not supported. `nav doctor --offline` checks declarations
-without executing them; ordinary `nav doctor` launches enabled configured commands.
+This delivery supports global stdio and Streamable HTTP servers. Workspace configs, OAuth, live
+refresh, resources, prompts and sampling are not supported. `nav doctor --offline` checks
+declarations without executing or contacting them; ordinary `nav doctor` launches enabled
+configured commands and connects to enabled HTTP servers, reporting whether each was reached
+and its tool count.

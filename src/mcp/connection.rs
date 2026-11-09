@@ -1,4 +1,4 @@
-//! Bounded discovery and process-group supervision for one stdio server.
+//! Bounded discovery and supervision for one server: a stdio process group or an HTTP connection.
 #[cfg(windows)]
 fn resolve_windows_command(
     command: &str,
@@ -171,6 +171,9 @@ async fn run(
     // failed `startup_timeout_ms` after it started, which is what `nav doctor` waits for.
     let startup_deadline =
         tokio::time::Instant::now() + Duration::from_millis(server.config.startup_timeout_ms);
+    if server.config.transport == "http" {
+        return run_http(server, cancel, permit, startup_deadline).await;
+    }
     let (env, secrets) = super::config::child_env(&server.config)?;
     *server.secrets.lock().unwrap_or_else(|e| e.into_inner()) = secrets.clone();
     #[cfg(unix)]
@@ -230,9 +233,59 @@ async fn run(
                 .push(&[], &secrets, true);
         })
     });
+    let initialize = async {
+        ().serve((stdout, stdin)).await.map_err(|_| {
+            "MCP initialization failed (invalid JSON-RPC or closed transport)".to_string()
+        })
+    };
+    let result = serve(server, cancel, permit, startup_deadline, initialize).await;
+    // Initialization futures own only stdio, not the child. Dropping them closes stdin;
+    // give both cooperative EOF and SIGTERM handlers time before the group kill fallback.
+    let _ = tokio::time::timeout(Duration::from_millis(100), child.wait()).await;
+    #[cfg(unix)]
+    {
+        let _ = killpg(group.0, Signal::SIGTERM);
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_millis(crate::tools::bash_grace_ms());
+        // The launcher may already be gone while descendants still run SIGTERM cleanup.
+        // Reap the launcher but use group existence, not its exit, to end the grace period.
+        while !matches!(killpg(group.0, None), Err(nix::errno::Errno::ESRCH))
+            && tokio::time::Instant::now() < deadline
+        {
+            let _ = child.try_wait();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    drop(group);
+    let _ = child.wait().await;
+    if let Some(mut drain) = drain
+        && tokio::time::timeout(Duration::from_secs(1), &mut drain)
+            .await
+            .is_err()
+    {
+        // A grandchild still holds stderr open: stop reading, so nothing changes the tail
+        // after the failure below is published.
+        drain.abort();
+        let _ = drain.await;
+    }
+    result
+}
+
+type Client = rmcp::service::RunningService<rmcp::RoleClient, ()>;
+
+/// Initializes, discovers the tools within the startup deadline, publishes the server as
+/// ready, then holds the connection until it drops or the manager shuts down. Shared by
+/// every transport; publishes its own failure before the caller's cleanup.
+async fn serve(
+    server: &Arc<Server>,
+    cancel: &CancellationToken,
+    permit: tokio::sync::SemaphorePermit<'_>,
+    startup_deadline: tokio::time::Instant,
+    initialize: impl std::future::Future<Output = Result<Client, String>>,
+) -> Result<(), String> {
     let result: Result<(), String> = async {
         let startup = async {
-            let mut client = ().serve((stdout, stdin)).await.map_err(|_| "MCP initialization failed (invalid JSON-RPC or closed transport)".to_string())?;
+            let mut client = initialize.await?;
             let discovery = discover(server, client.peer()).await;
             match discovery {
                 Ok(tools) => Ok((client, tools)),
@@ -267,36 +320,73 @@ async fn run(
     if let Err(error) = &result {
         publish_failure(server, error.clone());
     }
-    // Initialization futures own only stdio, not the child. Dropping them closes stdin;
-    // give both cooperative EOF and SIGTERM handlers time before the group kill fallback.
-    let _ = tokio::time::timeout(Duration::from_millis(100), child.wait()).await;
-    #[cfg(unix)]
-    {
-        let _ = killpg(group.0, Signal::SIGTERM);
-        let deadline =
-            tokio::time::Instant::now() + Duration::from_millis(crate::tools::bash_grace_ms());
-        // The launcher may already be gone while descendants still run SIGTERM cleanup.
-        // Reap the launcher but use group existence, not its exit, to end the grace period.
-        while !matches!(killpg(group.0, None), Err(nix::errno::Errno::ESRCH))
-            && tokio::time::Instant::now() < deadline
-        {
-            let _ = child.try_wait();
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    }
-    drop(group);
-    let _ = child.wait().await;
-    if let Some(mut drain) = drain
-        && tokio::time::timeout(Duration::from_secs(1), &mut drain)
-            .await
-            .is_err()
-    {
-        // A grandchild still holds stderr open: stop reading, so nothing changes the tail
-        // after the failure below is published.
-        drain.abort();
-        let _ = drain.await;
-    }
     result
+}
+
+/// A Streamable HTTP server: no process to supervise, so the connection is the lifecycle.
+/// The URL is never part of an error: reqwest's messages carry it, and it may hold a token.
+async fn run_http(
+    server: &Arc<Server>,
+    cancel: &CancellationToken,
+    permit: tokio::sync::SemaphorePermit<'_>,
+    startup_deadline: tokio::time::Instant,
+) -> Result<(), String> {
+    use rmcp::transport::{
+        StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
+    };
+    let (headers, secrets) = super::config::http_headers(&server.config)?;
+    *server.secrets.lock().unwrap_or_else(|e| e.into_inner()) = secrets;
+    let transport = StreamableHttpClientTransport::from_config(
+        StreamableHttpClientTransportConfig::with_uri(server.config.url.as_str())
+            .custom_headers(headers),
+    );
+    let initialize = async { ().serve(transport).await.map_err(|e| http_failure(&e)) };
+    serve(server, cancel, permit, startup_deadline, initialize).await
+}
+
+/// What `nav doctor` and clients show when an HTTP server cannot be initialized: whether it
+/// was reached and what it answered, in fixed words that carry no URL, body or header.
+fn http_failure(error: &rmcp::service::ClientInitializeError) -> String {
+    use rmcp::transport::streamable_http_client::StreamableHttpError;
+    let rmcp::service::ClientInitializeError::TransportError { error, .. } = error else {
+        return "MCP initialization failed (invalid JSON-RPC response)".into();
+    };
+    match error
+        .error
+        .downcast_ref::<StreamableHttpError<reqwest::Error>>()
+    {
+        Some(StreamableHttpError::Client(e)) if e.is_connect() => {
+            "MCP server unreachable (connection failed)".into()
+        }
+        Some(StreamableHttpError::Client(e)) if e.is_timeout() => {
+            "MCP server unreachable (timed out)".into()
+        }
+        Some(StreamableHttpError::AuthRequired(_) | StreamableHttpError::InsufficientScope(_)) => {
+            "MCP server requires authorization (HTTP 401/403); OAuth is not supported, set headers"
+                .into()
+        }
+        Some(StreamableHttpError::HttpStatus(status)) => http_status(status.status),
+        // A non-success answer without a challenge reads `HTTP <status>: <body>`; keep the
+        // status, never the body.
+        Some(StreamableHttpError::UnexpectedServerResponse(text)) => text
+            .strip_prefix("HTTP ")
+            .and_then(|rest| rest.get(..3))
+            .and_then(|code| code.parse().ok())
+            .map_or_else(
+                || "MCP initialization failed over HTTP (unexpected response)".into(),
+                http_status,
+            ),
+        _ => "MCP initialization failed over HTTP (unexpected response)".into(),
+    }
+}
+
+fn http_status(status: u16) -> String {
+    match status {
+        401 | 403 => format!(
+            "MCP server requires authorization (HTTP {status}); OAuth is not supported, set headers"
+        ),
+        _ => format!("MCP server answered HTTP {status}"),
+    }
 }
 
 async fn discover(

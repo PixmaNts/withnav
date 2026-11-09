@@ -1,4 +1,4 @@
-//! Shared stdio MCP connections, snapshotted into each session's tool registry.
+//! Shared stdio and Streamable HTTP MCP connections, snapshotted into each session's tool registry.
 pub mod config;
 mod connection;
 mod redaction;
@@ -363,9 +363,12 @@ impl McpManager {
             .as_array()
             .and_then(|items| items.first())
             .ok_or(McpUiError::InvalidResponse { method: METHOD })?;
-        let mime_type = contents["mimeType"]
-            .as_str()
-            .unwrap_or("text/html;profile=mcp-app");
+        let mime_type = redaction::redact(
+            contents["mimeType"]
+                .as_str()
+                .unwrap_or("text/html;profile=mcp-app"),
+            &secrets,
+        );
         let text = contents["text"].as_str().map(|t| {
             let redacted = redaction::redact(t, &secrets);
             bounded_chars(&redacted, 512 * 1024)
@@ -373,6 +376,9 @@ impl McpManager {
         let blob = contents["blob"]
             .as_str()
             .filter(|b| b.len() <= 4 * 1024 * 1024)
+            // A blob is not text that can be partly redacted: one holding a configured
+            // secret (a header token is often base64-shaped) is withheld whole.
+            .filter(|b| redaction::redact(b, &secrets) == *b)
             .map(ToOwned::to_owned);
         Ok(serde_json::json!({
             "uri": uri,

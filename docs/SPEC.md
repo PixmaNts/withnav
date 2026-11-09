@@ -1095,8 +1095,9 @@ The agent may explain the denial, choose a safer command, or use `ask`. It MUST 
 
 ## 13. MCP Integration
 
-> **Status: stdio client delivered.** `src/mcp/` uses `rmcp` 3.5 with no HTTP/TLS
-> transport features. HTTP, live tool refresh and client status panels are follow-ups.
+> **Status: stdio and Streamable HTTP clients delivered.** `src/mcp/` uses `rmcp` with its
+> reqwest Streamable HTTP client (rustls, static headers, no OAuth). Live tool refresh is a
+> follow-up.
 
 The core is an MCP client using `rmcp`.
 

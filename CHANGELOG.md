@@ -57,6 +57,11 @@ requests land in `develop`.
 - Images in the terminal client beyond `/attach`: dropping an image file on the terminal attaches
   it, `/paste-image` attaches the clipboard image, every image of the conversation (also after a
   resume) is listed with a number, and `/image [n]` opens it in the system viewer.
+- MCP servers over Streamable HTTP: `"type": "http"` with a `url` and optional static `headers`
+  (`{env:NAME}` expands in header values). Header values are redacted from tool results,
+  descriptions, statuses and logs like `env` values. Timeouts, tool naming, schemas, results and
+  permissions work as for stdio servers; `nav doctor` reports whether the server was reached and
+  its tool count. No OAuth. (#42)
 
 ### Changed
 

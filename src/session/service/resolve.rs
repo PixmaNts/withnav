@@ -398,15 +398,21 @@ impl Service {
             && recorded.is_none()
             && resolved.provider.catalog_format.is_some()
         {
-            self.catalog
+            let data = self
+                .catalog
                 .lookup(
                     &resolved,
                     &api_key,
                     &crate::provider::openai::ClientCache::new(),
                 )
-                .await
-                .limits
-                .and_then(|l| l.vision)
+                .await;
+            let vision = data.limits.and_then(|l| l.vision);
+            // A failed lookup leaves the support unknown for a different reason than a list
+            // that does not report it: say so, the session itself carries no refresh error.
+            if let (None, Some(error)) = (vision, &data.error) {
+                tracing::warn!(alias = %alias, %error, "image support discovery failed; images stay unsent");
+            }
+            vision
         } else {
             None
         };

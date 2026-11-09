@@ -1012,3 +1012,158 @@ fn a_resolution_saved_before_image_support_reads_as_unknown() {
     assert!(saved.provenance.images.is_empty());
     assert_eq!(serde_json::to_string(&saved).unwrap(), raw);
 }
+
+// Given an id listed twice with contradictory image support, in either order and in either
+//       reported shape
+// Then the id is ambiguous and dropped, as for conflicting limits, and a third entry does not
+//      bring it back; duplicates that agree, or where one is silent, still merge
+#[test]
+fn conflicting_duplicate_vision_is_ambiguous_in_both_orders() {
+    let yes = r#"{"id":"v","context_length":8000,"input_modalities":["text","image"]}"#;
+    let no = r#"{"id":"v","context_length":8000,"capabilities":{"vision":false}}"#;
+    for (first, second) in [(yes, no), (no, yes)] {
+        let body =
+            format!(r#"{{"data":[{first},{{"id":"ok","context_length":5000}},{second},{first}]}}"#);
+        let models = parse_models(body.as_bytes()).unwrap();
+        assert!(!models.contains_key("v"), "{first} then {second}");
+        assert_eq!(models["ok"].context_length, Some(5_000));
+    }
+    let body = br#"{"data":[
+        {"id":"no","capabilities":{"vision":false}},
+        {"id":"no","input_modalities":["text"]},
+        {"id":"late","context_length":8000},
+        {"id":"late","capabilities":{"vision":true}},
+        {"id":"early","capabilities":{"vision":true}},
+        {"id":"early","context_length":8000}
+    ]}"#;
+    let models = parse_models(body).unwrap();
+    assert_eq!(models["no"].vision, Some(false));
+    assert_eq!(models["late"].vision, Some(true));
+    assert_eq!(models["early"].vision, Some(true));
+    assert_eq!(models["early"].context_length, Some(8_000));
+}
+
+// Given a cached model with known image support whose refreshed list now contradicts itself
+// Then the model is gone from the cache, after the refresh and after a restart: the old value
+//      is not carried forward as if the provider had simply not reported it
+#[tokio::test]
+async fn a_conflicting_refresh_does_not_carry_the_cached_vision_forward() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = r#"{"data":[
+        {"id":"m","capabilities":{"vision":true}},
+        {"id":"m","capabilities":{"vision":false}},
+        {"id":"m","capabilities":{"vision":true}}
+    ]}"#;
+    let server = serve(body).await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    let mut seeded = limits(500_000);
+    seeded.vision = Some(true);
+    seed(&catalog, &base, TTL + 1, "m", seeded);
+    assert!(lookup(&catalog, &base, "m").await.limits.is_none());
+    let reopened = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    assert!(lookup(&reopened, &base, "m").await.limits.is_none());
+    assert_eq!(requests(&server).await, 1);
+}
+
+/// An expired cache entry for `m` with image support `cached`, refreshed against
+/// `body`, then read again after a restart.
+async fn refreshed_vision(cached: bool, body: &str) -> (CatalogData, CatalogData) {
+    let dir = tempfile::tempdir().unwrap();
+    let server = serve(body).await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let base = format!("{}/v1", server.uri());
+    let mut seeded = limits(500_000);
+    seeded.vision = Some(cached);
+    seed(&catalog, &base, TTL + 1, "m", seeded);
+    let first = lookup(&catalog, &base, "m").await;
+    let reopened = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let again = lookup(&reopened, &base, "m").await;
+    assert_eq!(requests(&server).await, 1, "the list itself is current");
+    (first, again)
+}
+
+// Given cached image support, true or false, and a refresh that omits it
+// Then the cached value is kept and marked as not freshly confirmed, also after a restart
+#[tokio::test]
+async fn image_support_the_refresh_omits_is_carried_forward_as_stale() {
+    let body = r#"{"data":[{"id":"m","context_length":500000}]}"#;
+    for cached in [true, false] {
+        let (first, again) = refreshed_vision(cached, body).await;
+        for d in [first, again] {
+            assert_eq!(d.limits.unwrap().vision, Some(cached), "cached={cached}");
+            assert!(d.stale, "cached={cached}");
+            assert!(d.age_seconds.unwrap() > TTL, "cached={cached}");
+        }
+    }
+}
+
+// Given cached image support and a refresh that reports the opposite value
+// Then the new value replaces it and is fresh, also after a restart
+#[tokio::test]
+async fn image_support_the_refresh_changes_replaces_the_cached_value() {
+    for cached in [true, false] {
+        let body = format!(
+            r#"{{"data":[{{"id":"m","context_length":500000,"capabilities":{{"vision":{}}}}}]}}"#,
+            !cached
+        );
+        let (first, again) = refreshed_vision(cached, &body).await;
+        for d in [first, again] {
+            assert_eq!(d.limits.unwrap().vision, Some(!cached), "cached={cached}");
+            assert!(!d.stale, "cached={cached}");
+        }
+    }
+}
+
+/// A pinned-window alias with its own variants on a provider whose list reports image
+/// support: the list is asked only to learn whether the model takes images.
+fn vision_only(base: &str) -> ResolvedModel {
+    let mut r = resolved(base, "m", ApiKind::Chat, Some(8_000));
+    r.provider.catalog_format = Some(crate::config::CatalogFormat::Omniroute);
+    r.model.variants = Some(Default::default());
+    r
+}
+
+// Given a lookup made only to discover image support, with nothing cached
+// When the list cannot be fetched, now and again while the endpoint backs off
+// Then image support is unknown and the refresh error says why, with one request; a list
+//      that answers but does not report the support leaves it unknown with no error
+#[tokio::test]
+async fn a_failed_vision_only_lookup_reports_its_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let r = vision_only(&format!("{}/v1", server.uri()));
+    for attempt in 0..2 {
+        let chat = resolve_chat(&catalog, &r, "key", &ClientCache::new())
+            .await
+            .unwrap();
+        assert_eq!(chat.window, 8_000);
+        assert_eq!((chat.images, chat.images_source.as_str()), (None, "none"));
+        let error = chat.refresh_error.expect("the failure is reported");
+        assert!(error.contains("500"), "attempt {attempt}: {error}");
+    }
+    assert_eq!(
+        requests(&server).await,
+        1,
+        "the second ask is inside the backoff"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let server = serve(r#"{"data":[{"id":"m","context_length":8000}]}"#).await;
+    let catalog = ModelCatalog::new(Some(dir.path().to_path_buf()));
+    let chat = resolve_chat(
+        &catalog,
+        &vision_only(&format!("{}/v1", server.uri())),
+        "key",
+        &ClientCache::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!((chat.images, chat.refresh_error), (None, None));
+    assert_eq!(requests(&server).await, 1);
+}

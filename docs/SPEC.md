@@ -1544,10 +1544,12 @@ An agent definition says what the agent is for. It does not say what it may exec
 
 A session finds `SKILL.md` files once, lists them in a bounded catalog message after the rules, and lets the model load one with the `skill` tool. Where it looks, nearest first:
 
-1. For each directory from the workspace up to the worktree root: `.agents/skills`, `.claude/skills`, `.opencode/skills`.
-2. The user's `~/.agents/skills`, then `~/.claude/skills`.
+1. For each directory from the workspace up to the worktree root: `.agents/skills`, `.claude/skills`, `.opencode/skills`, and `.skills` (containing skill folders directly).
+2. Configured relative paths under `skills.paths` in user settings, resolved against the worktree root and refused if escaping it.
+3. The user's `~/.agents/skills`, then `~/.claude/skills`.
+4. Configured absolute paths under `skills.paths` in user settings.
 
-Each root is walked recursively (nested folders count), down to 8 levels and 20,000 entries, without `.git`, `node_modules` or `target`. Two skills with one id: the nearer project scope wins, then `.agents` before `.claude` before `.opencode`, then the user's. Equal ranks make the id ambiguous and neither is offered.
+Each root is walked recursively (nested folders count), down to 8 levels and 20,000 entries, without `.git`, `node_modules` or `target`. Two skills with one id: the nearer project scope wins, then `.agents` before `.claude` before `.opencode` before `.skills` before configured relative paths in order, then standard user roots, then configured absolute paths. Equal ranks make the id ambiguous and neither is offered.
 
 The header needs `name` and `description`. `disable-model-invocation: true` keeps a skill out of the catalog. Other keys are ignored. The catalog is capped at about 8,192 estimated tokens and 256 characters per description. `read` and `grep` may open skill files outside the workspace; this adds no write permission.
 

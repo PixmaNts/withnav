@@ -2149,6 +2149,7 @@ mod tests {
         actor.set_skills(crate::agent::skills::Skills::load(
             &crate::agent::instructions::RulesRoots::default(),
             &actor.tool_context.workspace,
+            &crate::settings::Settings::default(),
         ));
         assert!(actor.effective_skills_catalog().is_some());
         let full = policy_role(AgentAccess::Full, &[]);

@@ -2214,10 +2214,17 @@ impl Service {
     }
 
     /// Finds the session's skills once and logs what became of each file.
-    async fn load_skills(&self, workspace: &Path, id: SessionId, resumed: bool) -> Skills {
+    pub(crate) async fn load_skills(
+        &self,
+        workspace: &Path,
+        id: SessionId,
+        resumed: bool,
+        settings: &crate::settings::Settings,
+    ) -> Skills {
         let roots = self.config.rules_roots.clone();
         let dir = workspace.to_path_buf();
-        let skills = tokio::task::spawn_blocking(move || Skills::load(&roots, &dir))
+        let settings = settings.clone();
+        let skills = tokio::task::spawn_blocking(move || Skills::load(&roots, &dir, &settings))
             .await
             .unwrap_or_default();
         super::rules_log::log_skills(id, resumed, &skills);
@@ -2699,7 +2706,12 @@ impl Service {
             .load_rules(&workspace, session_id, resumed.is_some())
             .await;
         let mut skills = self
-            .load_skills(&workspace, session_id, resumed.is_some())
+            .load_skills(
+                &workspace,
+                session_id,
+                resumed.is_some(),
+                &captured.settings,
+            )
             .await;
         skills.validation = Arc::new(crate::agent::skills::validation::SkillValidation {
             data_dir: Some(self.config.data_dir.clone()),

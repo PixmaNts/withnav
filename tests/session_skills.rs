@@ -346,6 +346,7 @@ fn state(env: &Env, provider: &CapturingProvider, alias: &str, navigator: bool) 
             home: Some(env.home.clone()),
         },
         &env.ws,
+        &withnav::settings::Settings::default(),
     );
     let store = withnav::permission::store::PermissionStore::open(env.root.join("data")).unwrap();
     for skill in skills.listed() {

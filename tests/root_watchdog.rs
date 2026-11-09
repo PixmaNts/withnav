@@ -44,6 +44,7 @@ async fn pause_lifecycle(mode: u8) {
         let skills = withnav::agent::skills::Skills::load(
             &withnav::agent::instructions::RulesRoots { home: None },
             &ws,
+            &withnav::settings::Settings::default(),
         );
         let snapshot = skills.snapshot("review").unwrap();
         withnav::permission::store::PermissionStore::open(tmp.path().join("data"))

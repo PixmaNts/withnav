@@ -9,8 +9,11 @@
 //! Where it looks, nearest first:
 //!
 //! 1. for each directory from the workspace up to the worktree root:
-//!    `.agents/skills`, `.claude/skills`, `.opencode/skills`;
-//! 2. the user's `<home>/.agents/skills`, then `<home>/.claude/skills`.
+//!    `.agents/skills`, `.claude/skills`, `.opencode/skills`, `.skills`;
+//! 2. configured relative paths from `skills.paths`, resolved against the
+//!    project worktree root;
+//! 3. the user's `<home>/.agents/skills`, then `<home>/.claude/skills`;
+//! 4. configured absolute paths from `skills.paths`.
 //!
 //! Each root is walked recursively (the real library is nested:
 //! `~/.agents/skills/matt/ask-matt/SKILL.md`), down to [`MAX_DEPTH`] levels
@@ -20,9 +23,10 @@
 //! the skill roots; a loop or a second path to the same directory counts once.
 //!
 //! Two skills with one id: the better [`Rank`] wins (nearer project scope,
-//! then `.agents` before `.claude` before `.opencode`, then the user's
-//! `.agents` before `.claude`). Equal ranks make the id ambiguous: neither is
-//! offered, and the tool says so.
+//! then `.agents` before `.claude` before `.opencode` before `.skills` before
+//! configured relative roots in order, then the user's `.agents` before
+//! `.claude` before configured absolute roots in order). Equal ranks make
+//! the id ambiguous: neither is offered, and the tool says so.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
@@ -46,7 +50,6 @@ pub const MAX_DEPTH: usize = 8;
 pub const MAX_ENTRIES: usize = 20_000;
 
 const SKIPPED_DIRS: [&str; 3] = [".git", "node_modules", "target"];
-const PROJECT_SOURCES: [&str; 3] = [".agents", ".claude", ".opencode"];
 const USER_SOURCES: [&str; 2] = [".agents", ".claude"];
 
 /// How well a skill ranks against another with the same id; lower wins.
@@ -57,7 +60,7 @@ pub struct Rank {
     /// Directories between the workspace and the scope (0 = the workspace).
     distance: u16,
     /// Index in the order of the source directories.
-    source: u8,
+    source: u32,
 }
 
 /// One valid `SKILL.md`.
@@ -221,11 +224,18 @@ impl Skills {
 
     /// Discovers the skills of `workspace`. Blocking file I/O: call it from a
     /// blocking context.
-    pub fn load(roots: &RulesRoots, workspace: &Path) -> Self {
+    pub fn load(
+        roots: &RulesRoots,
+        workspace: &Path,
+        settings: &crate::settings::Settings,
+    ) -> Self {
         let workspace =
             crate::tools::canonical_path(workspace).unwrap_or_else(|_| workspace.to_path_buf());
         let mut walk = Walk::default();
-        let candidates = candidate_roots(roots, &workspace);
+        let (candidates, diagnostics) = candidate_roots(roots, &workspace, settings);
+        for d in diagnostics {
+            walk.diagnostics.push(d);
+        }
         for (dir, root) in &candidates {
             walk.add_root(dir.clone(), *root);
         }
@@ -274,34 +284,183 @@ impl Skills {
     }
 }
 
+fn path_inside(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    return crate::tools::nofollow::path_within(path, root);
+    #[cfg(unix)]
+    path.starts_with(root)
+}
+
 /// The roots to look at, nearest first, with their rank.
-fn candidate_roots(roots: &RulesRoots, workspace: &Path) -> Vec<(PathBuf, Rank)> {
-    let mut found = Vec::new();
-    for (distance, dir) in directories_from_root(workspace).iter().rev().enumerate() {
-        for (source, name) in PROJECT_SOURCES.iter().enumerate() {
-            found.push((
-                dir.join(name).join("skills"),
+fn candidate_roots(
+    roots: &RulesRoots,
+    workspace: &Path,
+    settings: &crate::settings::Settings,
+) -> (Vec<(PathBuf, Rank)>, Vec<Diagnostic>) {
+    let mut candidates = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    let ancestor_dirs = directories_from_root(workspace);
+    let worktree = &ancestor_dirs[0];
+    let worktree_distance = (ancestor_dirs.len().saturating_sub(1)) as u16;
+
+    // Fixed project roots: .agents/skills, .claude/skills, .opencode/skills, .skills
+    for (distance, dir) in ancestor_dirs.iter().rev().enumerate() {
+        let distance = u16::try_from(distance).unwrap_or(u16::MAX);
+        let fixed = [
+            dir.join(".agents").join("skills"),
+            dir.join(".claude").join("skills"),
+            dir.join(".opencode").join("skills"),
+            dir.join(".skills"),
+        ];
+        for (source, path) in fixed.into_iter().enumerate() {
+            candidates.push((
+                path,
                 Rank {
                     user: false,
-                    distance: distance as u16,
-                    source: source as u8,
+                    distance,
+                    source: source as u32,
                 },
             ));
         }
     }
+
+    // Configured paths from settings `skills.paths`
+    let mut configured_relative = Vec::new();
+    let mut configured_absolute = Vec::new();
+
+    if let Some(paths_val) = settings.skills_paths() {
+        match paths_val.as_array() {
+            None => {
+                diagnostics.push(Diagnostic {
+                    path: PathBuf::from("skills.paths"),
+                    kind: DiagnosticKind::Invalid("skills.paths must be an array of paths".into()),
+                });
+            }
+            Some(array) => {
+                let mut rel_index = 0u32;
+                let mut abs_index = 0u32;
+                let canonical_worktree = crate::tools::canonical_path(worktree);
+
+                for item in array {
+                    let Some(entry_str) = item.as_str() else {
+                        diagnostics.push(Diagnostic {
+                            path: PathBuf::from("skills.paths"),
+                            kind: DiagnosticKind::Invalid(format!(
+                                "expected a string path, got {item}"
+                            )),
+                        });
+                        continue;
+                    };
+                    if entry_str.trim().is_empty() {
+                        diagnostics.push(Diagnostic {
+                            path: PathBuf::from("skills.paths"),
+                            kind: DiagnosticKind::Invalid("empty path".into()),
+                        });
+                        continue;
+                    }
+                    let path = Path::new(entry_str);
+                    if path.is_absolute() {
+                        let source = 2u32.saturating_add(abs_index);
+                        abs_index = abs_index.saturating_add(1);
+                        let candidate = path.to_path_buf();
+                        match crate::tools::canonical_path(&candidate) {
+                            Ok(canonical) => {
+                                if !canonical.is_dir() {
+                                    diagnostics.push(Diagnostic {
+                                        path: candidate,
+                                        kind: DiagnosticKind::Invalid("not a directory".into()),
+                                    });
+                                } else {
+                                    configured_absolute.push((
+                                        canonical,
+                                        Rank {
+                                            user: true,
+                                            distance: 0,
+                                            source,
+                                        },
+                                    ));
+                                }
+                            }
+                            Err(error) => {
+                                diagnostics.push(Diagnostic {
+                                    path: candidate,
+                                    kind: DiagnosticKind::ReadError(error.to_string()),
+                                });
+                            }
+                        }
+                    } else {
+                        let source = 4u32.saturating_add(rel_index);
+                        rel_index = rel_index.saturating_add(1);
+                        let candidate = worktree.join(path);
+                        match crate::tools::canonical_path(&candidate) {
+                            Ok(canonical) => match &canonical_worktree {
+                                Ok(cw) if !path_inside(&canonical, cw) => {
+                                    diagnostics.push(Diagnostic {
+                                        path: candidate,
+                                        kind: DiagnosticKind::Escapes { to: canonical },
+                                    });
+                                }
+                                Ok(_) => {
+                                    if !canonical.is_dir() {
+                                        diagnostics.push(Diagnostic {
+                                            path: candidate,
+                                            kind: DiagnosticKind::Invalid("not a directory".into()),
+                                        });
+                                    } else {
+                                        configured_relative.push((
+                                            canonical,
+                                            Rank {
+                                                user: false,
+                                                distance: worktree_distance,
+                                                source,
+                                            },
+                                        ));
+                                    }
+                                }
+                                Err(_) => {
+                                    diagnostics.push(Diagnostic {
+                                        path: candidate,
+                                        kind: DiagnosticKind::Invalid(
+                                            "worktree cannot be canonicalized".into(),
+                                        ),
+                                    });
+                                }
+                            },
+                            Err(error) => {
+                                diagnostics.push(Diagnostic {
+                                    path: candidate,
+                                    kind: DiagnosticKind::ReadError(error.to_string()),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Configured relative roots rank at worktree root after its fixed roots
+    candidates.extend(configured_relative);
+
+    // Standard user roots
     if let Some(home) = &roots.home {
         for (source, name) in USER_SOURCES.iter().enumerate() {
-            found.push((
+            candidates.push((
                 home.join(name).join("skills"),
                 Rank {
                     user: true,
                     distance: 0,
-                    source: source as u8,
+                    source: source as u32,
                 },
             ));
         }
     }
-    found
+
+    // Configured absolute roots rank after standard user roots
+    candidates.extend(configured_absolute);
+
+    (candidates, diagnostics)
 }
 
 #[derive(Default)]

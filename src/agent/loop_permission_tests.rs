@@ -1044,8 +1044,11 @@ fn actor_with_skill_and_flow(mode: &'static str) -> AgentActor {
         "---\nname: helper\ndescription: Helps.\n---\nHELPER BODY\n",
     )
     .unwrap();
-    let mut skills =
-        crate::agent::skills::Skills::load(&crate::agent::instructions::RulesRoots::default(), &ws);
+    let mut skills = crate::agent::skills::Skills::load(
+        &crate::agent::instructions::RulesRoots::default(),
+        &ws,
+        &crate::settings::Settings::default(),
+    );
     skills.validation = Arc::new(crate::agent::skills::validation::SkillValidation {
         data_dir: actor.permission_dirs.data.clone(),
         ..Default::default()

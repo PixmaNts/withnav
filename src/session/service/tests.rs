@@ -315,3 +315,38 @@ async fn listing_hides_child_until_relationship_commits() {
     );
     assert!(!row.promptable);
 }
+
+#[tokio::test]
+async fn service_settings_wiring_discovers_configured_skills() {
+    let (dir, service) = test_service();
+    std::fs::create_dir_all(dir.path().join("cfg")).unwrap();
+    std::fs::write(
+        dir.path().join("cfg/config.json"),
+        r#"{"agents":{"build":{"model":"mock/test"}},"skills":{"paths":["custom_skills"]}}"#,
+    )
+    .unwrap();
+    crate::provider::auth::set_key(&service.config.config_dir, "mock", "test").unwrap();
+    std::fs::write(
+        dir.path().join("models.json"),
+        r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/test":{"provider":"mock","model":"test","context_window":128000}}}"#,
+    )
+    .unwrap();
+    let skill_dir = dir.path().join("custom_skills/my-skill");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: my-skill\ndescription: Test skill\n---\nBody of my-skill",
+    )
+    .unwrap();
+
+    let id = service
+        .create_session(dir.path(), None, false)
+        .await
+        .expect("session created");
+    let handle = service.handle(id).expect("session handle");
+    assert!(matches!(
+        handle.skills.resolve("my-skill"),
+        crate::agent::skills::Resolution::Found(_)
+    ));
+    assert!(handle.skills.catalog().unwrap().contains("my-skill"));
+}

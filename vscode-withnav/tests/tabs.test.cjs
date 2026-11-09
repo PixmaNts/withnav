@@ -159,11 +159,12 @@ test("chat view: backend messages carry their tab, webview messages reach the ba
 });
 
 // --- The page: tabs, agent strip, session list ------------------------------------------------------
-function page() {
+function page(beforeScript) {
   const { chatHtml } = require("../out/tests/chatHtml.js");
   const dom = new JSDOM(chatHtml("n", "chat.js", "chat.css", "resource:"), { runScripts: "outside-only", pretendToBeVisual: true });
   const posts = []; const states = [];
   dom.window.acquireVsCodeApi = () => ({ postMessage: m => posts.push(JSON.parse(JSON.stringify(m))), getState() {}, setState(state) { states.push(state); } });
+  beforeScript?.(dom.window);
   dom.window.eval(fs.readFileSync("out/chat.js", "utf8"));
   const d = dom.window.document;
   const send = data => dom.window.dispatchEvent(new dom.window.MessageEvent("message", { data }));
@@ -208,6 +209,28 @@ test("page: messages are routed to the tab they name and each tab keeps its own 
   tabs(["t2"], "t2");
   assert.equal(d.querySelectorAll(".tab-view").length, 1, "a tab the host closed is gone");
   dom.window.close();
+});
+
+test("page: closing conversation tabs removes their window resize listeners", () => {
+  // Track resize listeners on window by identity; a closed tab that keeps one stays reachable and
+  // keeps resizing a detached composer on every window resize.
+  const resize = new Set();
+  const { dom, tabs } = page(win => {
+    const add = win.addEventListener.bind(win); const remove = win.removeEventListener.bind(win);
+    win.addEventListener = (type, listener, options) => { if (type === "resize") resize.add(listener); return add(type, listener, options); };
+    win.removeEventListener = (type, listener, options) => { if (type === "resize") resize.delete(listener); return remove(type, listener, options); };
+  });
+  try {
+    const baseline = resize.size;
+    for (let cycle = 0; cycle < 3; cycle++) {
+      tabs(["a", "b", "c"], "a");
+      assert.equal(resize.size, baseline + 3, "each open conversation listens for resizes");
+      tabs([]);
+      assert.equal(resize.size, baseline, "closed conversations leave no resize listener behind");
+    }
+  } finally {
+    dom.window.close();
+  }
 });
 
 test("page: tab icons show running, waiting for you and error; beyond four tabs the rest go into a menu", () => {

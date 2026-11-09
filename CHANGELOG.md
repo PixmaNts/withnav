@@ -59,6 +59,11 @@ requests land in `develop`.
   - The composer grows with its text, from about three lines up to 40% of the view height.
   - New commands: `WithNav: Show Sessions` and `WithNav: New Conversation`.
 
+### Fixed
+
+- VS Code chat: closing a conversation tab removes its window resize listener. Closed tabs no
+  longer stay in memory through it, nor resize a composer that is no longer shown.
+
 ## [0.8.2] - 2026-11-05
 
 WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and

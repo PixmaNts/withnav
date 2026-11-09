@@ -1,7 +1,20 @@
 import * as vscode from "vscode";
 import type { ChatBackend, McpAppDescriptor } from "./chatProtocol";
 
-const activePanels = new Map<string, vscode.WebviewPanel>();
+// One entry per open panel. The panel has a single message receiver, registered
+// when the panel is created; it reads `backend` and `app` from this entry, so a
+// reopen or reload only updates them. Registering a receiver per open made one
+// webview RPC run the MCP tool once per earlier open or reload.
+interface PanelEntry {
+  panel: vscode.WebviewPanel;
+  backend: ChatBackend;
+  app: McpAppDescriptor;
+  // Incremented by every open; a render whose resource read was overtaken by a
+  // newer open drops its HTML instead of replacing the newer one.
+  render: number;
+}
+
+const activePanels = new Map<string, PanelEntry>();
 
 function escapeHtml(text: string): string {
   return text
@@ -19,23 +32,28 @@ function randomNonce(): string {
 
 export async function openMcpAppPanel(backend: ChatBackend, app: McpAppDescriptor): Promise<void> {
   const key = `${app.server}:${app.resourceUri ?? app.url ?? app.tool}`;
-  let panel = activePanels.get(key);
   const title = `MCP App · ${app.server} (${app.tool})`;
-  if (panel) {
-    panel.title = title;
-    panel.reveal(vscode.ViewColumn.Beside);
+  let entry = activePanels.get(key);
+  if (entry) {
+    entry.panel.title = title;
+    entry.panel.reveal(vscode.ViewColumn.Beside);
   } else {
-    panel = vscode.window.createWebviewPanel(
+    const panel = vscode.window.createWebviewPanel(
       "withnav.mcpApp",
       title,
       vscode.ViewColumn.Beside ?? vscode.ViewColumn.Active,
       { enableScripts: true, retainContextWhenHidden: true },
     );
-    activePanels.set(key, panel);
+    const created: PanelEntry = { panel, backend, app, render: 0 };
+    entry = created;
+    activePanels.set(key, created);
+    const sub = panel.webview.onDidReceiveMessage((msg: unknown) => handlePanelMessage(created, msg));
     panel.onDidDispose(() => {
-      if (activePanels.get(key) === panel) activePanels.delete(key);
+      sub.dispose();
+      if (activePanels.get(key) === created) activePanels.delete(key);
     });
   }
+  const render = ++entry.render;
 
   let html = app.html;
   let loadError: string | undefined;
@@ -50,64 +68,70 @@ export async function openMcpAppPanel(backend: ChatBackend, app: McpAppDescripto
     }
   }
 
-  const nonce = randomNonce();
-  panel.webview.html = renderMcpAppHtml(nonce, app, html, loadError);
+  // Closed while the resource was read, or overtaken by a newer open.
+  if (activePanels.get(key) !== entry || entry.render !== render) return;
+  // Switch the context together with the HTML: until then the displayed app's
+  // RPCs keep going to the backend that opened it.
+  entry.backend = backend;
+  entry.app = app;
+  entry.panel.webview.html = renderMcpAppHtml(randomNonce(), app, html, loadError);
+}
 
-  const sub = panel.webview.onDidReceiveMessage(async (msg: any) => {
-    if (!msg || typeof msg !== "object") return;
-    if (msg.type === "openExternal" && typeof msg.url === "string") {
-      if (msg.url.startsWith("http://") || msg.url.startsWith("https://")) {
-        try {
-          await vscode.env.openExternal(vscode.Uri.parse(msg.url));
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          void panel?.webview.postMessage({ type: "hostError", message: `Could not open the browser: ${reason}` });
-        }
-      }
-      return;
-    }
-    if (msg.type === "reload") {
-      await openMcpAppPanel(backend, app);
-      return;
-    }
-    if (msg.type === "rpc") {
-      const { id, method, params } = msg;
+async function handlePanelMessage(entry: PanelEntry, msg: any): Promise<void> {
+  if (!msg || typeof msg !== "object") return;
+  // Snapshot the context: a reopen during an await must not mix backends.
+  const { panel, backend, app } = entry;
+  if (msg.type === "openExternal" && typeof msg.url === "string") {
+    if (msg.url.startsWith("http://") || msg.url.startsWith("https://")) {
       try {
-        if (method === "tools/call") {
-          if (!backend.callMcpTool) throw new Error("MCP tool calls are not supported by this backend");
-          const name = typeof params?.name === "string" ? params.name : "";
-          const args = params?.arguments && typeof params.arguments === "object" ? params.arguments : {};
-          const result = await backend.callMcpTool(app.server, name, args);
-          void panel?.webview.postMessage({ type: "rpcReply", id, result });
-        } else if (method === "resources/read") {
-          if (!backend.readMcpResource) throw new Error("MCP resource reads are not supported by this backend");
-          const uri = typeof params?.uri === "string" ? params.uri : "";
-          const res = await backend.readMcpResource(app.server, uri);
-          void panel?.webview.postMessage({
-            type: "rpcReply",
-            id,
-            result: {
-              contents: [
-                {
-                  uri: res.uri,
-                  mimeType: res.mime_type,
-                  ...(res.text ? { text: res.text } : {}),
-                  ...(res.blob ? { blob: res.blob } : {}),
-                },
-              ],
-            },
-          });
-        }
+        await vscode.env.openExternal(vscode.Uri.parse(msg.url));
       } catch (error) {
-        void panel?.webview.postMessage({
+        const reason = error instanceof Error ? error.message : String(error);
+        void panel.webview.postMessage({ type: "hostError", message: `Could not open the browser: ${reason}` });
+      }
+    }
+    return;
+  }
+  if (msg.type === "reload") {
+    await openMcpAppPanel(backend, app);
+    return;
+  }
+  if (msg.type === "rpc") {
+    const { id, method, params } = msg;
+    try {
+      if (method === "tools/call") {
+        if (!backend.callMcpTool) throw new Error("MCP tool calls are not supported by this backend");
+        const name = typeof params?.name === "string" ? params.name : "";
+        const args = params?.arguments && typeof params.arguments === "object" ? params.arguments : {};
+        const result = await backend.callMcpTool(app.server, name, args);
+        void panel.webview.postMessage({ type: "rpcReply", id, result });
+      } else if (method === "resources/read") {
+        if (!backend.readMcpResource) throw new Error("MCP resource reads are not supported by this backend");
+        const uri = typeof params?.uri === "string" ? params.uri : "";
+        const res = await backend.readMcpResource(app.server, uri);
+        void panel.webview.postMessage({
           type: "rpcReply",
           id,
-          error: { code: -32000, message: error instanceof Error ? error.message : String(error) },
+          result: {
+            contents: [
+              {
+                uri: res.uri,
+                mimeType: res.mime_type,
+                ...(res.text ? { text: res.text } : {}),
+                ...(res.blob ? { blob: res.blob } : {}),
+              },
+            ],
+          },
         });
       }
+    } catch (error) {
+      void panel.webview.postMessage({
+        type: "rpcReply",
+        id,
+        error: { code: -32000, message: error instanceof Error ? error.message : String(error) },
+      });
     }
-  });
-  panel.onDidDispose(() => sub.dispose());
+  }
 }
 
 export function renderMcpAppHtml(

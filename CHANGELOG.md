@@ -73,6 +73,13 @@ requests land in `develop`.
   unchanged byte for byte. (#157)
 - VS Code chat: closing a conversation tab removes its window resize listener. Closed tabs no
   longer stay in memory through it, nor resize a composer that is no longer shown.
+- `reveal` no longer opens the wrong place or claims a cursor move it did not make: a file whose
+  real path is not valid UTF-8 is refused instead of being sent under a lossy name that could
+  match another file; VS Code opens the path it checked, not a link retargeted since; a line past
+  the end of the file is refused before any tab opens when it would place the cursor, instead of
+  silently landing on the last line (with a symbol found, it still only picks the nearest
+  occurrence); a missing symbol puts the cursor on the requested line, else line 1, and the result
+  says which.
 
 ## [0.8.2] - 2026-11-05
 

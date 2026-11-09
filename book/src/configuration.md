@@ -62,6 +62,7 @@ versions and clients can share the file. The Settings screens write the same fil
 | `subagents.max_concurrent` | `4` | How many subagents one session may run at once. An integer from 1 to 64. |
 | `subagents.watchdog_interval_secs` | `300` | How often Instinct checks that a background subagent makes progress. `0` turns it off. |
 | `agent.watchdog_interval_secs` | `300` | How often Instinct checks that the main conversation makes progress. `0` turns it off. See [Long turns](permissions.md#long-turns-and-the-watchdog). |
+| `skills.paths` | `[]` | Extra skill directories. Relative paths resolve against the repository worktree root and rank after fixed project roots; absolute paths rank after standard user roots. Invalid, missing or escaping entries produce diagnostics without failing startup. See [Rules and skills](rules-and-skills.md). |
 | `tui.theme` | `tide-dark` | Terminal colour theme: `ayu-dark`, `ayu-light`, `nord-dark`, `nord-light`, `tide-dark`, `tide-light`, `moss-dark` or `moss-light`. |
 
 Layer models apply after you restart WithNav. The other keys apply to new sessions.

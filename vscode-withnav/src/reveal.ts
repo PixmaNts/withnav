@@ -25,9 +25,15 @@ export async function reveal(params: RevealParams): Promise<RevealResult> {
   const column = targetColumn(params.placement ?? "active");
   if (typeof column === "string") return { error: column };
   const document = await vscode.workspace.openTextDocument(uri);
-  const editor = await vscode.window.showTextDocument(document, { viewColumn: column, preserveFocus: true, preview: false });
   const symbol = params.symbol ? await symbolRange(document, params.symbol, params.line) : undefined;
-  const range = symbol ?? lineRange(document, params.line);
+  // Without the symbol the line places the cursor: refuse one past the end
+  // rather than land elsewhere, and fall back to line 1 for a missing symbol
+  // so the server can say where the cursor is.
+  if (!symbol && typeof params.line === "number" && params.line > document.lineCount) {
+    return { error: `line ${params.line} is past the end of ${params.path} (${document.lineCount} lines)` };
+  }
+  const range = symbol ?? lineRange(document, params.line) ?? (params.symbol ? new vscode.Range(0, 0, 0, 0) : undefined);
+  const editor = await vscode.window.showTextDocument(document, { viewColumn: column, preserveFocus: true, preview: false });
   if (range) {
     editor.selection = new vscode.Selection(range.start, range.start);
     editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
@@ -66,7 +72,8 @@ async function workspaceFile(path: string): Promise<vscode.Uri | undefined> {
       const realPath = await realpath(candidate.fsPath);
       const roots = await Promise.all(folders.map(folder => realpath(folder.uri.fsPath)));
       if (!roots.some(root => { const rel = relative(root, realPath); return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel)); })) continue;
-      return candidate;
+      // Open the path that was checked: the candidate may be a link retargeted since.
+      return vscode.Uri.file(realPath);
     } catch { /* Try the next workspace root for missing or inaccessible paths. */ }
   }
   return undefined;

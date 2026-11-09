@@ -16,6 +16,7 @@ mod lifecycle;
 mod mcp;
 mod message;
 pub mod preflight;
+mod prompt_command;
 mod rules_log;
 mod run_command;
 mod secrets;

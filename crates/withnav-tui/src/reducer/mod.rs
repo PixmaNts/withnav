@@ -362,6 +362,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 .or(s.resuming.clone());
             let read_only = s.read_only();
             let default_agent = s.tabs[s.active].default_agent.clone();
+            let mcp_before = mcp_version(&s.mcp);
             let State {
                 tabs,
                 active,
@@ -380,6 +381,10 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     mcp,
                 },
             )?;
+            // The prompts of a server that just became ready are commands of their own.
+            if mcp_version(&s.mcp) != mcp_before {
+                effects.push(Effect::FetchCommands);
+            }
             if selection_changed
                 && let Some(id) = s
                     .session
@@ -561,7 +566,11 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         // A failed read keeps what is shown: the next event or reconnection brings it back.
         ClientEvent::Mcp { result, .. } => {
             if let Ok(snapshot) = result {
+                let before = mcp_version(&s.mcp);
                 keep_newer_mcp(&mut s.mcp, snapshot);
+                if mcp_version(&s.mcp) != before {
+                    effects.push(Effect::FetchCommands);
+                }
             }
         }
         ClientEvent::PermissionAnswered {
@@ -1177,6 +1186,13 @@ fn seed_children(s: &mut State) {
             }
         }
     }
+}
+
+/// Which MCP status the client holds: the server list (and so the prompt commands) can only
+/// have changed when this does.
+fn mcp_version(mcp: &Option<withnav_client_api::event::McpStatus>) -> Option<(String, u64)> {
+    mcp.as_ref()
+        .map(|m| (m.incarnation.to_string(), m.revision))
 }
 
 #[cfg(test)]

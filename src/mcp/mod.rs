@@ -1,9 +1,14 @@
 //! Shared stdio MCP connections, snapshotted into each session's tool registry.
 pub mod config;
 mod connection;
+mod prompt;
 mod redaction;
 mod resource;
 mod tool;
+pub use prompt::{
+    BLOCK_CLOSE as PROMPT_BLOCK_CLOSE, BLOCK_OPEN as PROMPT_BLOCK_OPEN, Fetched, PromptCommand,
+    PromptRun, captain_prose, carries_prompt,
+};
 pub use tool::McpTool;
 
 use std::sync::{Arc, Mutex};
@@ -85,6 +90,7 @@ pub(crate) struct Ready {
     peer: rmcp::Peer<rmcp::RoleClient>,
     disconnected: CancellationToken,
     tools: Vec<McpTool>,
+    prompts: Vec<prompt::Prompt>,
 }
 
 pub(crate) struct Server {
@@ -307,6 +313,37 @@ impl McpManager {
         {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+    }
+
+    /// The prompts of every ready server, as `<server>:<prompt>` commands.
+    pub fn prompt_commands(&self) -> Vec<PromptCommand> {
+        self.servers
+            .iter()
+            .flat_map(|s| {
+                s.ready
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|r| r.prompts.iter().map(|p| p.command(s)).collect())
+                    .unwrap_or_else(Vec::new)
+            })
+            .collect()
+    }
+
+    /// The prompt a `<server>:<prompt>` command names, when that server is ready and offers it.
+    pub fn prompt(&self, command: &str) -> Option<PromptRun> {
+        let (server_id, name) = command.split_once(':')?;
+        let server = self.servers.iter().find(|s| s.id == server_id)?;
+        let prompt = server
+            .ready
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()?
+            .prompts
+            .iter()
+            .find(|p| p.name() == name)?
+            .clone();
+        Some(PromptRun::new(server.clone(), prompt))
     }
 
     pub async fn read_ui_resource(

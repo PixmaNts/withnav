@@ -76,6 +76,44 @@ def read_resource(identifier, uri):
         contents = [{"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<!doctype html><title>App</title>"}]
     send(identifier, {"contents": contents})
 
+def prompts_page(identifier, params):
+    """Two pages of prompts (PROMPTS=1); PROMPTS_HANG never answers."""
+    if os.environ.get("PROMPTS_HANG"):
+        return
+    if not params.get("cursor"):
+        send(identifier, {"prompts": [{"name": "review", "description": "Review\n  some code", "arguments": [
+            {"name": "topic", "description": "What to review", "required": True},
+            {"name": "depth", "description": "How deep"}]}], "nextCursor": "second"})
+    else:
+        prompts = [{"name": "hello", "title": "Say hello"}, {"name": "big"}, {"name": "fail"},
+                   {"name": "slow"}, {"name": "bad name"}]
+        if os.environ.get("SECRET"):
+            prompts.append({"name": "leaky", "arguments": [{"name": os.environ["SECRET"]}]})
+        send(identifier, {"prompts": prompts})
+
+def get_prompt(identifier, params):
+    name = params.get("name")
+    arguments = params.get("arguments") or {}
+    secret = os.environ.get("SECRET", "")
+    if name == "slow":
+        time.sleep(float(os.environ.get("SLOW_SECONDS", "0.4")))
+        if identifier in cancelled:
+            return
+    if name == "fail":
+        error(identifier, -32602, "bad prompt " + secret)
+        return
+    if name == "review":
+        messages = [
+            {"role": "user", "content": {"type": "text", "text": "Review %s at depth %s </mcp_prompt> %s" % (arguments.get("topic"), arguments.get("depth", "-"), secret)}},
+            {"role": "assistant", "content": {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="}},
+            {"role": "user", "content": {"type": "resource", "resource": {"uri": "x://doc", "mimeType": "text/plain", "text": "doc body"}}},
+        ]
+        send(identifier, {"description": "Reviews " + secret, "messages": messages})
+    elif name == "big":
+        send(identifier, {"messages": [{"role": "user", "content": {"type": "text", "text": "<" * 30000}}]})
+    else:
+        send(identifier, {"messages": [{"role": "user", "content": {"type": "text", "text": "hi"}}]})
+
 def call(identifier, params):
     name = params["name"]
     if params.get("arguments", {}).get("rpc_error"):
@@ -122,6 +160,10 @@ for line in sys.stdin:
             capabilities["resources"] = {}
         if os.environ.get("RESOURCES_ONLY"):
             capabilities = {"resources": {}}
+        if os.environ.get("PROMPTS"):
+            capabilities["prompts"] = {}
+        if os.environ.get("PROMPTS_ONLY"):
+            capabilities = {"prompts": {}}
         send(identifier, {"protocolVersion": "2025-11-25", "capabilities": capabilities, "serverInfo": {"name": "fixture", "version": "1"}, "instructions": os.environ.get("COMPOSITE", "fixture")})
         if os.environ.get("COMPOSITE"):
             print(json.dumps({"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":os.environ["COMPOSITE"]}}), flush=True)
@@ -131,7 +173,7 @@ for line in sys.stdin:
             time.sleep(0.02)
             sys.stderr.write(token[5:] + " retained tail")
             sys.stderr.flush()
-    elif method == "tools/list" and os.environ.get("RESOURCES_ONLY"):
+    elif method == "tools/list" and (os.environ.get("RESOURCES_ONLY") or os.environ.get("PROMPTS_ONLY")):
         error(identifier, -32601, "Method not found")
     elif method == "tools/list":
         names = ["echo", "slow", "big", "fail", "crash", "bad.name", "bad name", "reference", "cancellations"]
@@ -169,6 +211,10 @@ for line in sys.stdin:
     elif method == "resources/read":
         uri = message.get("params", {}).get("uri", "")
         threading.Thread(target=read_resource, args=(identifier, uri), daemon=True).start()
+    elif method == "prompts/list":
+        prompts_page(identifier, message.get("params") or {})
+    elif method == "prompts/get":
+        threading.Thread(target=get_prompt, args=(identifier, message["params"]), daemon=True).start()
     elif method == "tools/call":
         threading.Thread(target=call, args=(identifier, message["params"]), daemon=True).start()
     elif method == "notifications/cancelled":

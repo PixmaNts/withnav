@@ -234,6 +234,51 @@ async fn a_child_inherits_the_parents_frozen_inventory_not_later_servers() {
     state.service().close_all().await;
 }
 
+// Given MCP App tool calls over the route, under its 2 MiB body limit
+// Then arguments over 1 MiB or nested deeper than 64 levels get a 400 naming the bound, and
+//      a call within both bounds reaches the server
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_mcp_app_call_route_refuses_oversized_and_deep_arguments() {
+    let env = common::TestEnv::new();
+    let provider = spawn_capturing_provider(vec![]).await;
+    let cfg = TestServerConfig::mock(&env.root, &provider.url)
+        .rules_home(&env.home)
+        .config();
+    with_mcp(&cfg, json!({"command":[common::python(),FIXTURE]}), false);
+    let state = AppState::new(cfg).unwrap();
+    ready(&state).await;
+    let router = withnav::server::app(state.clone());
+    let call = |arguments: Value| {
+        let router = router.clone();
+        async move {
+            let body = json!({"name": "echo", "arguments": arguments});
+            common::server::request_json(&router, "POST", "/v1/mcp/fake/call", Some(&body)).await
+        }
+    };
+    let (status, body) = call(json!({"text": "x".repeat(1536 * 1024)})).await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(
+        body.to_string()
+            .contains("MCP tool arguments are larger than 1024 KiB"),
+        "{body}"
+    );
+    let mut deep = json!(1);
+    for _ in 0..64 {
+        deep = json!([deep]);
+    }
+    let (status, body) = call(json!({"text": deep})).await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(
+        body.to_string()
+            .contains("MCP tool arguments are nested deeper than 64 levels"),
+        "{body}"
+    );
+    let (status, body) = call(json!({"text": "ok"})).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert_eq!(body["content"][0]["text"], "{\"text\": \"ok\"}");
+    state.service().close_all().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_live_session_hears_the_mcp_status_and_the_route_returns_the_same_snapshot() {
     let env = common::TestEnv::new();

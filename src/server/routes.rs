@@ -1385,7 +1385,9 @@ fn mcp_status_code(error: &crate::mcp::McpUiError) -> StatusCode {
     match error {
         E::InvalidRequest(_) | E::InvalidParams { .. } => StatusCode::BAD_REQUEST,
         E::UnknownServer | E::UnknownTool => StatusCode::NOT_FOUND,
-        E::Rejected { .. } | E::InvalidResponse { .. } => StatusCode::BAD_GATEWAY,
+        E::Rejected { .. } | E::InvalidResponse { .. } | E::ResponseTooLarge { .. } => {
+            StatusCode::BAD_GATEWAY
+        }
         E::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         E::Timeout { .. } => StatusCode::GATEWAY_TIMEOUT,
     }
@@ -1401,6 +1403,7 @@ fn mcp_reason(error: &crate::mcp::McpUiError) -> &'static str {
         E::Unavailable => "mcp_unavailable",
         E::Rejected { .. } => "mcp_rejected",
         E::InvalidResponse { .. } => "mcp_invalid_response",
+        E::ResponseTooLarge { .. } => "mcp_response_too_large",
         E::Timeout { .. } => "mcp_timeout",
     }
 }

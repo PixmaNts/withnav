@@ -36,6 +36,9 @@ pub enum McpUiError {
     },
     #[error("invalid MCP {method} response")]
     InvalidResponse { method: &'static str },
+    /// The server's answer is past what an app may receive; refused before it is copied whole.
+    #[error("MCP tool response is larger than {limit_mib} MiB")]
+    ResponseTooLarge { limit_mib: usize },
     #[error("MCP {method} timed out")]
     Timeout { method: &'static str },
 }

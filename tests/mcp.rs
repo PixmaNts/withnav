@@ -159,6 +159,45 @@ async fn registry_call_pagination_conversion_cancel_crash_and_restart() {
         .await
         .unwrap();
     assert_eq!(direct["content"][0]["text"], "{\"text\": \"from-ui\"}");
+    let ui_call = |arguments: serde_json::Value| {
+        manager.call_ui_tool(
+            "fixture",
+            "echo",
+            serde_json::from_value(arguments).unwrap(),
+        )
+    };
+    let oversized = ui_call(json!({"repeat": 9 * 1024 * 1024}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        oversized.to_string(),
+        "MCP tool response is larger than 8 MiB"
+    );
+    assert_eq!(
+        ui_call(json!({"repeat": 1024})).await.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .len(),
+        1024
+    );
+    let mut deep = json!(1);
+    for _ in 0..64 {
+        deep = json!([deep]);
+    }
+    assert_eq!(
+        ui_call(json!({"text": deep}))
+            .await
+            .unwrap_err()
+            .to_string(),
+        "MCP tool arguments are nested deeper than 64 levels"
+    );
+    assert_eq!(
+        ui_call(json!({"text": "x".repeat(1024 * 1024)}))
+            .await
+            .unwrap_err()
+            .to_string(),
+        "MCP tool arguments are larger than 1024 KiB"
+    );
     let result = call("mcp__fixture__big").await.unwrap();
     assert_eq!(result.truncated.unwrap().original_bytes, 100000);
     assert!(result.output.len() <= 65536);

@@ -194,6 +194,8 @@ const agentList = q<HTMLElement>(".agent-list");
 const agentFavoriteHint = q<HTMLElement>(".agent-favorite-hint");
 agentFavoriteHint.id = `agent-favorite-hint-${uid}`;
 agentSearch.setAttribute("aria-describedby", agentFavoriteHint.id);
+agentList.id = `agent-list-${uid}`;
+agentSearch.setAttribute("aria-controls", agentList.id);
 let agentFavorites = new Set<string>();
 let agentRows: AgentRow[] = [];
 let agentIndex = 0;
@@ -502,6 +504,8 @@ function renderPalette(): void {
   // come before the groups' rows in `paletteRows`, so indices and option ids stay unique.
   favoriteRows = pickerKind === "model" ? allMatches.filter(row => favorites.has(row.name)).sort((a, b) => a.name.localeCompare(b.name)) : [];
   paletteRows = [...favoriteRows, ...groupRows];
+  // Hidden outside the model picker so browse mode does not read a shortcut that does nothing there.
+  pickerFavoriteHint.hidden = pickerKind !== "model";
   if (pickerKind === "model") {
     pickerSearch.setAttribute("aria-keyshortcuts", "Control+F");
     pickerSearch.setAttribute("aria-describedby", pickerFavoriteHint.id);

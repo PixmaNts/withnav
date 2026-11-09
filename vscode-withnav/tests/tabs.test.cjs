@@ -698,6 +698,7 @@ test("agent picker: Ctrl+F toggles the highlighted agent's favorite from the key
   assert(hint, "the search box is described by the shortcut hint");
   assert.match(hint.textContent, /Ctrl\+F adds or removes the highlighted agent from favorites/);
   assert.match(search.placeholder, /Ctrl\+F favorite/);
+  assert.equal(search.getAttribute("aria-controls"), view.querySelector(".agent-list").id, "the combobox names the listbox it drives");
   const ctrlF = (extra = {}) => { const e = new dom.window.KeyboardEvent("keydown", { key: "f", code: "KeyF", ctrlKey: true, bubbles: true, cancelable: true, ...extra }); search.dispatchEvent(e); return e; };
   key(search, "ArrowDown");
   const before = posts.length;
@@ -783,6 +784,8 @@ test("mcp app: tool row renders inline media preview and Open App button posts o
   assert(img, "inline image preview is rendered");
   assert.equal(img.getAttribute("src"), "data:image/png;base64,AAAA");
   const zoom = view.querySelector(".mcp-media-card");
+  const style = dom.window.document.createElement("style"); style.textContent = fs.readFileSync("out/chat.css", "utf8"); dom.window.document.head.append(style);
+  assert.equal(dom.window.getComputedStyle(view.querySelector(".mcp-media-grid")).overflow, "visible", "the grid does not clip the button's focus outline");
   assert.equal(zoom.tagName, "BUTTON", "the zoom is a native button, so Tab, Enter and Space reach it");
   assert.equal(zoom.type, "button");
   assert.equal(zoom.getAttribute("aria-label"), "Zoom mcp__excalidraw__get_canvas_screenshot preview 1");

@@ -389,6 +389,7 @@ test('favorites: the star toggles with the mouse without choosing the model and 
   const e=ctrlF(dom,search);assert.equal(e.defaultPrevented,false);assert.equal(posts.length,n);
   assert.equal(search.hasAttribute('aria-keyshortcuts'),false,'no favorite shortcut announced outside the model picker');
   assert.equal(search.hasAttribute('aria-describedby'),false);
+  assert.equal(d.querySelector('.command-palette .sr-only').hidden,true,'the model shortcut hint is hidden too');
   dom.window.close();
 });
 test('favorites: the model search announces the ctrl+f shortcut and grouped rows announce their favorite state',()=>{

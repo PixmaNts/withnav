@@ -122,6 +122,21 @@ requests land in `develop`.
   Repeated tool images are found by an indexed content hash rather than by comparing stored
   images. `read` returns a file named `*.svg` as an image only when it is a well-formed SVG
   document; anything else is returned as text.
+- The version stamped into nav binaries now marks uncommitted work: `0.8.2+dirty` at a release tag,
+  `0.8.2-develop+abc1234.dirty` on a branch, `0.8.2+abc1234.dirty` on a detached head. A clean tree
+  still builds the bare version, so release binaries are unchanged. The stamp is recomputed whenever
+  the worktree becomes dirty or clean again, and ignores a Git environment inherited from an IDE
+  terminal (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`). A source tree unpacked inside an unrelated
+  repository falls back to the plain version instead of adopting that repository's identity, and a
+  branch whose name is all digits (like `001`) no longer produces an invalid prerelease.
+
+- The HTTP user-agent of nav's fetch tool reports the build version instead of the Cargo package
+  version, so requests can be traced to a concrete build.
+
+- A VSIX packaged locally now carries the bundled binary's version in its manifest. The version
+  appeared only in the file name before; the manifest kept whatever `package.json` said, so a dirty
+  or branch build could install as a version it was not. Source manifests and the lockfile stay
+  untouched.
 
 ## [0.8.2] - 2026-11-05
 

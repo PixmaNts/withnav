@@ -59,6 +59,14 @@ requests land in `develop`.
   - The composer grows with its text, from about three lines up to 40% of the view height.
   - New commands: `WithNav: Show Sessions` and `WithNav: New Conversation`.
 
+### Fixed
+
+- SVG attachments: filter cost is now counted on the document as it will be drawn. A filtered
+  element repeated through `<use>`, or filtered by a style rule, is charged at each copy, weighted
+  by its primitives and the share of the image its filter region covers; a document past 32
+  full-image filter passes is refused instead of rendering for minutes. A malformed `order` or
+  `numOctaves`, or a second `order` value above the limit, is refused instead of read as zero.
+
 ## [0.8.2] - 2026-11-05
 
 WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and

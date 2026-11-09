@@ -118,7 +118,18 @@ for line in sys.stdin:
         send(identifier, {"tools": tools, "nextCursor": cursor})
     elif method == "resources/read":
         uri = message.get("params", {}).get("uri", "")
-        send(identifier, {"contents": [{"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<!doctype html><title>App</title>"}]})
+        if uri.endswith("/multi.html"):
+            send(identifier, {"contents": [
+                {"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "a"},
+                {"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "b"},
+            ]})
+        elif uri.endswith("/malformed.html"):
+            # Neither text nor blob: rmcp cannot type this item.
+            send(identifier, {"contents": [{"uri": uri}]})
+        elif uri.endswith("/plain.html"):
+            send(identifier, {"contents": [{"uri": uri, "mimeType": "text/plain", "text": "plain"}]})
+        else:
+            send(identifier, {"contents": [{"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<!doctype html><title>App</title>"}]})
     elif method == "tools/call":
         threading.Thread(target=call, args=(identifier, message["params"]), daemon=True).start()
     elif method == "notifications/cancelled":

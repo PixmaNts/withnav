@@ -150,6 +150,37 @@ async fn registry_call_pagination_conversion_cancel_crash_and_restart() {
             .await
             .is_err()
     );
+    // The read path takes the one MCP App HTML item and fails with InvalidResponse otherwise.
+    let multi = manager
+        .read_ui_resource("fixture", "ui://fixture/multi.html")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        multi,
+        withnav::mcp::McpUiError::InvalidResponse {
+            method: "resources/read"
+        }
+    );
+    let plain = manager
+        .read_ui_resource("fixture", "ui://fixture/plain.html")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        plain,
+        withnav::mcp::McpUiError::InvalidResponse {
+            method: "resources/read"
+        }
+    );
+    let malformed = manager
+        .read_ui_resource("fixture", "ui://fixture/malformed.html")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        malformed,
+        withnav::mcp::McpUiError::InvalidResponse {
+            method: "resources/read"
+        }
+    );
     let direct = manager
         .call_ui_tool(
             "fixture",

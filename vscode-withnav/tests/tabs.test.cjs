@@ -941,3 +941,168 @@ test("mcp app: tool row renders inline media preview and Open App button posts o
   assert.match(failed, /frame-src 'none'/);
   dom.window.close();
 });
+
+// --- Keyboard and accessibility structure of the tab strip and the session list -------------------------
+const press = (dom, target, key, init = {}) => {
+  const event = new dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init });
+  target.dispatchEvent(event);
+  return event;
+};
+
+test("tab strip: the tab is the focusable element, with a roving tabindex and a mouse-only close button", () => {
+  const { dom, d, tabs, tab } = page();
+  tabs(["a", "b", "c"], "b");
+  for (const id of ["a", "b", "c"]) tab(id, { type: "conversationOpened", id: `S-${id}`, title: id });
+  const strip = d.querySelector('[role="tablist"]');
+  const buttons = [...strip.querySelectorAll(".tab-main")];
+  assert.deepEqual(buttons.map(b => b.getAttribute("role")), ["tab", "tab", "tab"]);
+  assert.deepEqual(buttons.map(b => b.getAttribute("aria-selected")), ["false", "true", "false"]);
+  assert.deepEqual(buttons.map(b => b.tabIndex), [-1, 0, -1], "only the selected tab is in the Tab order");
+  assert.deepEqual([...strip.querySelectorAll(".tab")].map(w => w.getAttribute("role")), ["presentation", "presentation", "presentation"]);
+  assert.ok(buttons.every(b => b.closest('[role="tab"]') === b), "role=tab sits on the focusable button, not a wrapper");
+  assert.deepEqual([...strip.querySelectorAll(".tab-close")].map(c => [c.tabIndex, c.getAttribute("aria-hidden")]), [[-1, "true"], [-1, "true"], [-1, "true"]]);
+  assert.deepEqual(buttons.map(b => d.getElementById(b.getAttribute("aria-controls")).getAttribute("aria-labelledby")), buttons.map(b => b.id));
+  assert.equal(d.getElementById(buttons[1].getAttribute("aria-controls")).getAttribute("role"), "tabpanel");
+  dom.window.close();
+});
+
+test("tab strip: arrows wrap, Home and End jump, focus moves without activating, Enter activates and keeps focus on the tab", () => {
+  const { dom, d, tabs, tab, posts } = page();
+  tabs(["a", "b", "c"], "a");
+  for (const id of ["a", "b", "c"]) tab(id, { type: "conversationOpened", id: `S-${id}`, title: id });
+  const main = id => d.querySelector(`.tab[data-tab="${id}"] .tab-main`);
+  main("a").focus();
+  const before = posts.length;
+  assert.equal(press(dom, main("a"), "ArrowRight").defaultPrevented, true);
+  assert.equal(d.activeElement, main("b"));
+  assert.deepEqual([...d.querySelectorAll(".tab-main")].map(b => b.tabIndex), [-1, 0, -1], "tabindex follows focus");
+  press(dom, main("b"), "End"); assert.equal(d.activeElement, main("c"));
+  press(dom, main("c"), "ArrowRight"); assert.equal(d.activeElement, main("a"), "wraps to the first");
+  press(dom, main("a"), "ArrowLeft"); assert.equal(d.activeElement, main("c"), "wraps to the last");
+  press(dom, main("c"), "Home"); assert.equal(d.activeElement, main("a"));
+  assert.equal(posts.length, before, "moving focus activates and closes nothing");
+  assert.equal(d.querySelector('.tab[data-tab="a"] .tab-main').getAttribute("aria-selected"), "true");
+  // Keyboard activation (a click with no pointer) shows the tab and leaves focus on it.
+  press(dom, main("a"), "ArrowRight");
+  main("b").click();
+  assert.deepEqual(posts.at(-1), { type: "focusTab", tab: "b" });
+  assert.equal(main("b").getAttribute("aria-selected"), "true");
+  assert.equal(d.activeElement, main("b"), "focus stays on the tab, not the composer");
+  // A re-render caused by another tab's status keeps focus on the same tab.
+  press(dom, main("b"), "ArrowRight");
+  tab("a", { type: "turnStart", id: "T" });
+  assert.equal(d.activeElement, main("c"));
+  assert.deepEqual([...d.querySelectorAll(".tab-main")].map(b => b.tabIndex), [-1, -1, 0], "exactly one tab stop");
+  // Unrelated keys are left alone.
+  assert.equal(press(dom, main("c"), "a").defaultPrevented, false);
+  dom.window.close();
+});
+
+test("tab strip: Delete asks the host to close the focused tab and focus goes to a neighbour, not the composer", () => {
+  const { dom, d, tabs, tab, posts } = page();
+  tabs(["a", "b", "c"], "b");
+  for (const id of ["a", "b", "c"]) tab(id, { type: "conversationOpened", id: `S-${id}`, title: id });
+  const main = id => d.querySelector(`.tab[data-tab="${id}"] .tab-main`);
+  main("b").focus();
+  press(dom, main("b"), "Delete");
+  assert.deepEqual(posts.at(-1), { type: "closeTab", tab: "b" });
+  tabs(["a", "c"], "c");
+  assert.equal(d.activeElement, main("c"), "the next tab takes focus");
+  press(dom, main("c"), "Delete");
+  assert.deepEqual(posts.at(-1), { type: "closeTab", tab: "c" });
+  tabs(["a"], "a");
+  assert.equal(d.activeElement, main("a"), "the previous one when the last tab was closed");
+  dom.window.close();
+});
+
+test("session list: options hold no focusable control, both listboxes are controlled, and the keys act on the selected row", () => {
+  const { dom, d, send, tabs } = page();
+  tabs([], undefined);
+  const now = new Date().toISOString();
+  send({ type: "conversations", items: [
+    { id: "S-1", title: "One", updatedAt: now, messageCount: 1, live: true },
+    { id: "S-2", title: "Two", updatedAt: now, messageCount: 2 },
+  ] });
+  const search = d.querySelector(".sl-search");
+  assert.deepEqual(search.getAttribute("aria-controls").split(" ").map(id => d.getElementById(id)?.getAttribute("role")), ["listbox", "listbox"]);
+  assert.equal(search.getAttribute("aria-expanded"), "true");
+  for (const option of d.querySelectorAll('.sl-list [role="option"]')) {
+    const focusable = [...option.querySelectorAll("button, a, input, [tabindex]")].filter(e => e.tabIndex >= 0);
+    assert.deepEqual(focusable, [], "nothing in an option is in the Tab order");
+    assert.match(option.getAttribute("aria-label"), /, (Active|Done), /);
+    const del = option.querySelector(".sl-delete");
+    assert.equal(del.tabIndex, -1); assert.equal(del.getAttribute("aria-hidden"), "true");
+    assert.deepEqual(JSON.parse(option.dataset.vscodeContext), { webviewSection: "session", sessionId: option.dataset.id, preventDefaultContextMenuItems: true });
+  }
+  assert.equal(d.querySelectorAll("button.sl-open").length, 0);
+  assert.equal(search.getAttribute("aria-activedescendant"), "session-option-0");
+  press(dom, search, "ArrowDown");
+  assert.equal(search.getAttribute("aria-activedescendant"), "session-option-1");
+  // Enter opens the selected row.
+  const clicked = [];
+  d.querySelector('.sl-row[data-id="S-2"]').addEventListener("click", () => clicked.push("S-2"));
+  press(dom, search, "Enter");
+  assert.deepEqual(clicked, ["S-2"]);
+  dom.window.close();
+});
+
+test("session list: Delete removes the selected row only when it has no text to edit, and a collapsed section is skipped", () => {
+  const { dom, d, send, tabs, posts } = page();
+  tabs(["t1"], "t1");
+  const now = new Date().toISOString();
+  send({ type: "conversations", workspace: "w", items: [
+    { id: "S-1", title: "One", updatedAt: now, messageCount: 1 },
+    { id: "S-2", title: "Two", updatedAt: now, messageCount: 2 },
+  ] });
+  d.querySelector(".sh-back").click();
+  const search = d.querySelector(".sl-search");
+  press(dom, search, "ArrowDown");
+  const empty = press(dom, search, "Delete");
+  assert.equal(empty.defaultPrevented, true);
+  const [first, second] = [...d.querySelectorAll(".sl-row")].map(r => r.dataset.id);
+  assert.deepEqual(posts.at(-1), { type: "deleteConversation", id: second });
+  // With text, Delete at the end still has nothing to edit; in the middle it edits.
+  search.value = "On"; search.dispatchEvent(new dom.window.Event("input"));
+  search.setSelectionRange(0, 0);
+  assert.equal(press(dom, search, "Delete").defaultPrevented, false, "the caret has text after it: Delete edits the field");
+  posts.length = 0;
+  search.setSelectionRange(2, 2);
+  press(dom, search, "Delete");
+  assert.deepEqual(posts.at(-1), { type: "deleteConversation", id: first });
+  // Collapsing the group removes its rows from the keyboard model: no hidden row is selected, opened or deleted.
+  search.value = ""; search.dispatchEvent(new dom.window.Event("input"));
+  d.querySelector(".sl-group-toggle").click();
+  assert.equal(d.querySelectorAll(".sl-row").length, 0);
+  assert.equal(search.hasAttribute("aria-activedescendant"), false);
+  assert.equal(d.querySelector(".sl-note").hidden, true, "a collapsed list is not announced as empty");
+  posts.length = 0;
+  press(dom, search, "ArrowDown"); press(dom, search, "Enter"); press(dom, search, "Delete");
+  assert.deepEqual(posts, []);
+  d.querySelector(".sl-group-toggle").click();
+  assert.equal(d.querySelectorAll(".sl-row").length, 2);
+  assert.equal(search.getAttribute("aria-activedescendant"), "session-option-0");
+  dom.window.close();
+});
+
+test("tab strip: a keyboard activation never lingers, and a tab activated elsewhere takes focus to the composer", () => {
+  const { dom, d, tabs, tab } = page();
+  tabs(["a", "b"], "a");
+  for (const id of ["a", "b"]) tab(id, { type: "conversationOpened", id: `S-${id}`, title: id });
+  const main = id => d.querySelector(`.tab[data-tab="${id}"] .tab-main`);
+  // Enter on the already selected tab changes nothing to rebuild; the next status update must not pull focus back to it.
+  main("a").focus();
+  main("a").click();
+  assert.equal(d.activeElement, main("a"));
+  press(dom, main("a"), "ArrowRight");
+  tab("a", { type: "turnStart", id: "T" });
+  assert.equal(d.activeElement, main("b"), "focus stays where the arrow put it");
+  d.querySelector(".prompt").focus();
+  tab("a", { type: "turnEnd", id: "T" }); tab("b", { type: "status", state: "ready" });
+  assert.equal(d.activeElement, d.querySelector(".tab-view:not([hidden]) .prompt"), "leaving the strip is respected");
+  // The host activates another tab while focus sits on a tab: the composer of that tab gets it.
+  tab("b", { type: "status", state: "ready" });
+  main("a").focus();
+  tabs(["a", "b"], "b");
+  assert.equal(d.activeElement, d.querySelector(".tab-view:not([hidden]) .prompt"));
+  dom.window.close();
+});

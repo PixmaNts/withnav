@@ -465,7 +465,7 @@ body.vscode-light, body.vscode-high-contrast-light { --nav:#036b9a; --lux:#8f5d0
 .sl-heading { margin: 8px 8px 4px; font-size: 0.857rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--nav-muted); }
 .sl-waiting .sl-heading { color: var(--nav-warning-text); }
 .sl-list { list-style: none; margin: 0; padding: 0; }
-.sl-row { position: relative; display: flex; align-items: center; border-radius: 4px; }
+.sl-row { position: relative; display: flex; align-items: center; border-radius: 4px; cursor: pointer; }
 .sl-row:hover, .sl-row[aria-selected="true"] { background: var(--vscode-list-hoverBackground); }
 .sl-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 0; border-radius: 4px; background: none; color: inherit; text-align: left; }
 .sl-open:focus-visible, .sl-delete:focus-visible { outline-offset: -2px; }

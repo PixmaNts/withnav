@@ -108,7 +108,7 @@ export function mountSessionList(host: HTMLElement, api: SessionListApi): Sessio
   host.replaceChildren();
   const head = node("div", "sl-head");
   const search = node("input", "picker-search sl-search"); search.type = "search"; search.placeholder = "Search sessions…";
-  search.setAttribute("aria-label", "Search sessions"); search.setAttribute("role", "combobox"); search.setAttribute("aria-autocomplete", "list"); search.setAttribute("aria-controls", "session-options");
+  search.setAttribute("aria-label", "Search sessions"); search.setAttribute("role", "combobox"); search.setAttribute("aria-autocomplete", "list"); search.setAttribute("aria-controls", "session-waiting-options session-options"); search.setAttribute("aria-expanded", "true");
   const create = node("button", "icon-button sl-new"); create.type = "button"; create.title = "New conversation"; create.setAttribute("aria-label", "New conversation");
   create.append(icon("M8 3.5v9M3.5 8h9"));
   head.append(search);
@@ -122,7 +122,7 @@ export function mountSessionList(host: HTMLElement, api: SessionListApi): Sessio
   const scroll = node("div", "sl-scroll");
   const waitingSection = node("section", "sl-section sl-waiting");
   const waitingHeading = node("h3", "sl-heading", "Waiting for you");
-  const waitingList = node("ul", "sl-list"); waitingList.setAttribute("role", "listbox"); waitingList.setAttribute("aria-label", "Sessions waiting for you");
+  const waitingList = node("ul", "sl-list"); waitingList.id = "session-waiting-options"; waitingList.setAttribute("role", "listbox"); waitingList.setAttribute("aria-label", "Sessions waiting for you");
   waitingSection.append(waitingHeading, waitingList);
   const restSection = node("section", "sl-section");
   const restHeading = node("h3", "sl-heading", "Sessions");
@@ -133,7 +133,8 @@ export function mountSessionList(host: HTMLElement, api: SessionListApi): Sessio
   scroll.append(waitingSection, group, restSection, count, note);
   host.append(head, chipRow, scroll);
 
-  const rows = (): HTMLButtonElement[] => [...host.querySelectorAll<HTMLButtonElement>(".sl-open")];
+  /** The rows on screen: a collapsed section renders none, so arrows and Enter never reach a hidden one. */
+  const rows = (): HTMLLIElement[] => [...host.querySelectorAll<HTMLLIElement>(".sl-row")];
 
   function row(item: ConversationSummary, index: number, now: Date): HTMLLIElement {
     const open = tabs.get(item.id);
@@ -143,7 +144,9 @@ export function mountSessionList(host: HTMLElement, api: SessionListApi): Sessio
     li.dataset.id = item.id; li.dataset.status = status;
     li.classList.toggle("is-open", !!open);
     li.classList.toggle("is-active", !!open && open.tab === activeTab);
-    const button = node("button", "sl-open"); button.type = "button"; button.dataset.id = item.id;
+    // The option holds no focusable control: the search field keeps focus (aria-activedescendant) and the
+    // keys act on the selected row. The delete button below is for the mouse only.
+    const button = node("div", "sl-open"); button.dataset.id = item.id;
     const title = displayTitle(item.title, item.id);
     const when = relativeTime(item.updatedAt, now);
     const time = node("time", "sl-time", when); time.dateTime = item.updatedAt;
@@ -169,10 +172,13 @@ export function mountSessionList(host: HTMLElement, api: SessionListApi): Sessio
       mark.title = "Open in a tab";
       button.append(mark);
     }
-    button.setAttribute("aria-label", `${title}, ${STATUS_LABEL[status]}, ${when}, ${parts.join(", ")}${open ? ", open in a tab" : ""}`);
-    button.addEventListener("click", () => api.open(item.id));
+    li.setAttribute("aria-label", `${title}, ${STATUS_LABEL[status]}, ${when}, ${parts.join(", ")}${open ? ", open in a tab" : ""}`);
+    li.addEventListener("click", () => api.open(item.id));
+    // Read by the host's `webview/context` menu, which offers Delete on a right click.
+    li.dataset.vscodeContext = JSON.stringify({ webviewSection: "session", sessionId: item.id, preventDefaultContextMenuItems: true });
     const remove = node("button", "icon-button sl-delete"); remove.type = "button";
-    remove.title = "Delete"; remove.setAttribute("aria-label", `Delete ${title}`);
+    remove.tabIndex = -1; remove.setAttribute("aria-hidden", "true");
+    remove.title = "Delete";
     remove.append(icon("M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"));
     // The host asks for confirmation before anything is deleted.
     remove.addEventListener("click", event => { event.stopPropagation(); api.remove(item.id); });
@@ -193,20 +199,20 @@ export function mountSessionList(host: HTMLElement, api: SessionListApi): Sessio
     }
     const view = visibleSessions(items, tabs, filter, search.value);
     const shownWaiting = view.waiting.slice(0, PICKER_LIMIT);
-    const shownRest = view.rest.slice(0, Math.max(0, PICKER_LIMIT - shownWaiting.length));
+    const shownRest = collapsed ? [] : view.rest.slice(0, Math.max(0, PICKER_LIMIT - shownWaiting.length));
     const total = shownWaiting.length + shownRest.length;
     selected = Math.max(0, Math.min(selected, total - 1));
     waitingList.replaceChildren(...shownWaiting.map((item, index) => row(item, index, now)));
     restList.replaceChildren(...shownRest.map((item, index) => row(item, shownWaiting.length + index, now)));
     waitingSection.hidden = shownWaiting.length === 0;
-    restSection.hidden = shownRest.length === 0 || collapsed;
+    restSection.hidden = shownRest.length === 0;
     restHeading.hidden = true;
     groupName.textContent = workspace || "Sessions";
     groupToggle.setAttribute("aria-expanded", String(!collapsed));
     group.classList.toggle("collapsed", collapsed);
     count.textContent = `${view.matches} of ${items.length}${narrowHint(view.matches)}`;
     if (total) search.setAttribute("aria-activedescendant", `session-option-${selected}`); else search.removeAttribute("aria-activedescendant");
-    note.hidden = total > 0;
+    note.hidden = total > 0 || (collapsed && view.matches > 0);
     note.textContent = search.value || filter !== "all" ? "No matching sessions." : loaded ? "No saved sessions yet." : "Loading…";
     host.querySelector(`#session-option-${selected}`)?.scrollIntoView?.({ block: "nearest" });
   }
@@ -219,26 +225,15 @@ export function mountSessionList(host: HTMLElement, api: SessionListApi): Sessio
       const all = rows();
       if (all.length) { selected = (selected + (event.key === "ArrowDown" ? 1 : -1) + all.length) % all.length; render(); }
     } else if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); rows()[selected]?.click(); }
+    else if (event.key === "Delete" && search.selectionStart === search.value.length && search.selectionEnd === search.value.length && rows()[selected]) {
+      // Delete at the end of the text has nothing to edit, so it acts on the selected row; the host asks first.
+      event.preventDefault(); event.stopPropagation(); api.remove(rows()[selected].dataset.id!);
+    }
     else if (event.key === "Escape") { if (search.value) { event.preventDefault(); event.stopPropagation(); search.value = ""; selected = 0; render(); } }
     else event.stopPropagation(); // Home/End and editing keys belong to the search field.
   });
   create.addEventListener("click", () => api.create());
   groupToggle.addEventListener("click", () => { collapsed = !collapsed; render(); });
-  host.addEventListener("keydown", event => {
-    if (event.isComposing || event.target === search) return;
-    const all = rows();
-    const index = all.findIndex(button => button === document.activeElement);
-    const move = (to: number): void => { if (all.length) all[(to + all.length) % all.length].focus(); };
-    switch (event.key) {
-      case "ArrowDown": move(index + 1); break;
-      case "ArrowUp": move(index < 0 ? -1 : index - 1); break;
-      case "Home": move(0); break;
-      case "End": move(-1); break;
-      default: return;
-    }
-    event.preventDefault();
-  });
-
   render();
   return {
     update(nextItems, nextTabs, options) { items = nextItems; tabs = nextTabs; workspace = options?.workspace ?? workspace; activeTab = options?.activeTab; loaded = true; render(); },

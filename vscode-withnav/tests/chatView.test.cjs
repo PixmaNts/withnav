@@ -5,8 +5,9 @@ const originalLoad = Module._load;
 const noopDisposable = () => ({ dispose() {} });
 let provider;
 let deleteCommand;
+const commandsById = new Map();
 const vscode = {
-  commands: { registerCommand(_id, handler) { deleteCommand = handler; return noopDisposable(); } },
+  commands: { registerCommand(id, handler) { commandsById.set(id, handler); if (id === "withnav.deleteConversation") deleteCommand = handler; return noopDisposable(); } },
   Disposable: { from(...items) { return { dispose() { items.forEach(item => item.dispose()); } }; } },
   ViewColumn: { Active: 1 },
   window: {
@@ -33,6 +34,24 @@ function memento(initial = {}) {
 const { registerChatView } = require("../out/tests/chatView.js");
 const { CognitionBackend } = require("../out/tests/cognition.js");
 Module._load = originalLoad;
+
+test('the session list context menu deletes the right-clicked session after confirmation', async () => {
+  const deleted = [];
+  const backend = { listConversations: async () => [{ id: 'P', title: 'Work', updatedAt: '' }], deleteConversation: async id => deleted.push(id) };
+  registerChatView({ extensionUri: 'extension', globalState: memento() }, backend);
+  const menuDelete = commandsById.get('withnav.deleteSession');
+  vscode.window.showWarningMessage = async () => undefined;
+  await menuDelete({ sessionId: 'P' });
+  assert.deepEqual(deleted, [], 'declining the confirmation keeps the session');
+  vscode.window.showWarningMessage = async (_text, options) => { assert.equal(options.modal, true); return 'Delete'; };
+  await menuDelete({});
+  await menuDelete(undefined);
+  assert.deepEqual(deleted, [], 'a menu call without a session id does nothing');
+  await menuDelete({ sessionId: 'P' });
+  assert.deepEqual(deleted, ['P']);
+  const manifest = require('../package.json');
+  assert.ok(manifest.contributes.menus['webview/context'].some(item => item.command === 'withnav.deleteSession' && /webviewSection == 'session'/.test(item.when)));
+});
 
 test('delete palette selects a workspace root and confirms its subagent count; cancellation is safe', async () => {
   const deleted = [];

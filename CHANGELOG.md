@@ -267,6 +267,16 @@ requests land in `develop`.
   `sandbox="allow-scripts allow-forms"`, so the app cannot reach the panel, VS Code's API or local
   files, and the panel may embed that one origin only.
 
+### Fixed
+
+- VS Code: the tab strip and the session list work from the keyboard and expose standard
+  structures to screen readers. Tabs: Left/Right move between tabs, Home/End jump, Enter or Space
+  opens the focused tab, Delete closes it; the close button is for the mouse. Sessions: the
+  arrows skip the sessions of a collapsed group, Enter opens the selected one and Delete (with
+  nothing after the cursor in the search field) deletes it after confirmation; a right click also
+  offers Delete. The sessions are plain list options with no buttons inside, and the search field
+  controls both lists.
+
 ## [0.8.2] - 2026-11-05
 
 WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and

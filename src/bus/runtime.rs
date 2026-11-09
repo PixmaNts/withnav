@@ -64,8 +64,12 @@ pub enum CompletionOutcome {
     Stopped,
     Parked,
     /// The step budget ran out: the turn parked at a safe boundary and the
-    /// owner may top it up (`decide_subagent`) or stop it.
-    Budget(serde_json::Value),
+    /// owner may top it up (`decide_subagent`) or stop it. `park` is the
+    /// [`RuntimeStatus::budget_park_generation`] of this park.
+    Budget {
+        evidence: serde_json::Value,
+        park: u64,
+    },
 }
 pub type CompletionHook = Box<dyn Fn(crate::provider::AssistantMessage, CompletionOutcome) + Send>;
 
@@ -156,6 +160,9 @@ pub struct RuntimeStatus {
     /// Serializes top-up claims so the cap check and the park CAS are one step.
     budget_topup_gate: Mutex<()>,
     budget_topups: std::sync::atomic::AtomicU32,
+    /// Counts budget parks. A Captain continue releases a park without spending
+    /// a top-up, so the top-up count alone cannot tell two parks apart.
+    budget_parks: std::sync::atomic::AtomicU64,
     delivery: Mutex<Option<delivery::DeliveryCell>>,
     captain_commit: Mutex<Option<delivery::CaptainCommitCell>>,
     variant: Mutex<VariantSlot>,
@@ -502,6 +509,10 @@ impl RuntimeStatus {
     pub fn budget_topups_used(&self) -> u32 {
         self.budget_topups
             .load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// The generation of the latest budget park, bumped before the park is set.
+    pub fn budget_park_generation(&self) -> u64 {
+        self.budget_parks.load(std::sync::atomic::Ordering::Acquire)
     }
     pub fn wake_delivery(&self) {
         let _ = self.controls.tx.send(Control::Delivery);
@@ -1767,19 +1778,26 @@ async fn runtime_loop(
             }
             // `compact_when_full` consumes it before the run ends.
             Ok(RunOutcome::NeedsCompaction { .. }) | Ok(RunOutcome::StepBudgetExhausted) => {
+                let park = status
+                    .budget_parks
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+                    + 1;
                 status
                     .budget_parked
                     .store(true, std::sync::atomic::Ordering::Release);
                 if let Some(done) = &completion {
                     let outcome = if matches!(outcome, Ok(RunOutcome::StepBudgetExhausted)) {
                         let activity = status.activity.0.lock().unwrap_or_else(|e| e.into_inner());
-                        CompletionOutcome::Budget(serde_json::json!({
-                            "goal": crate::tools::bound_output(&actor.captain_task.clone().unwrap_or_default(), 1024).0,
-                            "step_count": activity.steps,
-                            "last_tool_call": activity.last_tool_call.as_ref().map(|s| crate::tools::bound_output(s, 1024).0),
-                            "last_tool_result": activity.last_tool_result.as_ref().map(|s| crate::tools::bound_output(s, 1024).0),
-                            "topups_used": status.budget_topups_used(),
-                        }))
+                        CompletionOutcome::Budget {
+                            park,
+                            evidence: serde_json::json!({
+                                "goal": crate::tools::bound_output(&actor.captain_task.clone().unwrap_or_default(), 1024).0,
+                                "step_count": activity.steps,
+                                "last_tool_call": activity.last_tool_call.as_ref().map(|s| crate::tools::bound_output(s, 1024).0),
+                                "last_tool_result": activity.last_tool_result.as_ref().map(|s| crate::tools::bound_output(s, 1024).0),
+                                "topups_used": status.budget_topups_used(),
+                            }),
+                        }
                     } else {
                         CompletionOutcome::Parked
                     };

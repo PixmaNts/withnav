@@ -981,9 +981,12 @@ impl HistoryStore {
     }
 
     /// Uses the same durable outbox and sequencer commit as child completion.
+    /// `notice` keys the outbox row: enqueueing the same notice again (a retry
+    /// after a write whose outcome was unknown) leaves the first row untouched.
     pub async fn enqueue_watchdog(
         &self,
         parent: Ulid,
+        notice: Ulid,
         payload: serde_json::Value,
         result: String,
         consume: bool,
@@ -992,8 +995,8 @@ impl HistoryStore {
         tokio::task::spawn_blocking(move || {
             let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
-            conn.execute("INSERT INTO completion_outbox (child_id,parent_id,outcome,result_ref,payload,result_text,consumed) VALUES (?1,?2,'watchdog',?1,?3,?4,?5)",
-                params![Ulid::generate().to_string(), parent.to_string(), payload.to_string(), result, !consume]).map_err(|e| e.to_string())?;
+            conn.execute("INSERT INTO completion_outbox (child_id,parent_id,outcome,result_ref,payload,result_text,consumed) VALUES (?1,?2,'watchdog',?1,?3,?4,?5) ON CONFLICT(child_id) DO NOTHING",
+                params![notice.to_string(), parent.to_string(), payload.to_string(), result, !consume]).map_err(|e| e.to_string())?;
             Ok(())
         }).await.map_err(|e| e.to_string())?
     }
@@ -3110,6 +3113,37 @@ mod tests {
                 .as_deref(),
             Some("answer")
         );
+    }
+
+    #[tokio::test]
+    async fn requeued_watchdog_notice_keeps_one_row_and_its_delivery() {
+        let (_dir, store) = temp_store();
+        let parent = Ulid::generate();
+        store
+            .record_session(parent, "/w", "m", false)
+            .await
+            .unwrap();
+        let notice = Ulid::generate();
+        let payload = serde_json::json!({"notice_kind": "budget"});
+        for _ in 0..2 {
+            store
+                .enqueue_watchdog(parent, notice, payload.clone(), "first".into(), true)
+                .await
+                .unwrap();
+        }
+        let pending = store.pending_completions(parent).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        let event =
+            EventEnvelope::new(parent, 0, EventKind::SubagentWatchdog, pending[0].1.clone());
+        store.deliver_completion(notice, event).await.unwrap();
+        store
+            .enqueue_watchdog(parent, notice, payload, "second".into(), true)
+            .await
+            .unwrap();
+        assert!(store.pending_completions(parent).await.unwrap().is_empty());
+        let unconsumed = store.unconsumed_completions(parent).await.unwrap();
+        assert_eq!(unconsumed.len(), 1);
+        assert_eq!(unconsumed[0].2, "first");
     }
 
     #[tokio::test]

@@ -385,6 +385,8 @@ pub struct Service {
     #[cfg(debug_assertions)]
     pub(crate) watchdog_stop_failure: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(debug_assertions)]
+    pub(crate) budget_notice_failure: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(debug_assertions)]
     pub(crate) watchdog_teardown_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     pub(crate) watchdog_test: Arc<Mutex<Option<super::subagents::supervisor::TestWatchdog>>>,
@@ -531,6 +533,20 @@ impl Service {
     pub fn fail_watchdog_stop_write(&self) {
         self.watchdog_stop_failure
             .store(true, std::sync::atomic::Ordering::Release);
+    }
+    /// Makes the next budget-notice enqueue fail, as a history write would.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn fail_budget_notice_enqueue(&self) {
+        self.budget_notice_failure
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+    /// Whether the failure armed by `fail_budget_notice_enqueue` is still unused.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn budget_notice_failure_armed(&self) -> bool {
+        self.budget_notice_failure
+            .load(std::sync::atomic::Ordering::Acquire)
     }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
@@ -782,6 +798,8 @@ impl Service {
             lifecycle_claim_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             watchdog_stop_failure: Arc::default(),
+            #[cfg(debug_assertions)]
+            budget_notice_failure: Arc::default(),
             #[cfg(debug_assertions)]
             watchdog_teardown_barrier: Arc::default(),
             #[cfg(debug_assertions)]
@@ -3086,15 +3104,12 @@ impl Service {
                 let service = self.clone();
                 Some(Box::new(move |message, outcome| {
                     use crate::bus::runtime::CompletionOutcome;
-                    if let CompletionOutcome::Budget(evidence) = outcome {
+                    if let CompletionOutcome::Budget { evidence, park } = outcome {
                         let service = service.clone();
                         tokio::spawn(async move {
-                            if let Err(error) = service
-                                .notify_budget_park(parent, session_id, evidence)
-                                .await
-                            {
-                                tracing::error!(%error, %session_id, "child budget notice failed");
-                            }
+                            service
+                                .deliver_budget_notice(parent, session_id, park, evidence)
+                                .await;
                         });
                         return;
                     }
@@ -3102,7 +3117,7 @@ impl Service {
                         CompletionOutcome::Done => "done",
                         CompletionOutcome::Failed => "failed",
                         CompletionOutcome::Stopped => "stopped",
-                        CompletionOutcome::Parked | CompletionOutcome::Budget(_) => return,
+                        CompletionOutcome::Parked | CompletionOutcome::Budget { .. } => return,
                     };
                     let service = service.clone();
                     tokio::spawn(async move {

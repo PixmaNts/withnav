@@ -301,6 +301,88 @@ async fn exhaust_child_budget(
     .unwrap();
 }
 
+/// A budget notice whose first history write fails still reaches the owner
+/// once, with no further child turn and nobody stepping in.
+#[tokio::test]
+async fn failed_budget_notice_write_is_retried_and_delivered_once() {
+    let mut provider = common::sse::spawn_streaming_provider()
+        .bounded(file!(), line!())
+        .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let state = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128_000)
+        .allow_everything()
+        .state();
+    let (parent, child) = spawn_linked_child(&state, &ws, "vigie", "inspect").await;
+    let mut pending = Vec::new();
+    let (_, first) = request_matching(
+        &mut provider.requests,
+        &mut pending,
+        is_child_turn("inspect"),
+    )
+    .await;
+    state.fail_budget_notice_enqueue();
+    let steps = withnav::agent::run_loop::max_steps();
+    exhaust_child_budget(
+        &mut provider,
+        &mut pending,
+        &state,
+        child,
+        first,
+        "a",
+        steps,
+    )
+    .await;
+    let (notice, parent_turn) = request_matching(&mut provider.requests, &mut pending, |body| {
+        body.contains("used its 50 steps")
+    })
+    .bounded(file!(), line!())
+    .await;
+    assert!(
+        !state.budget_notice_failure_armed(),
+        "the first enqueue must have failed"
+    );
+    assert!(notice.contains("top-ups used 0/3"), "{notice}");
+    let withnav::bus::ResumeOutcome::Replay(events) = state
+        .subscribe(parent, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap()
+        .replay
+    else {
+        panic!("expected parent event replay");
+    };
+    let notices = events
+        .iter()
+        .filter(|e| e.kind == "subagent.watchdog" && e.payload["verdict"] == "budget")
+        .count();
+    assert_eq!(notices, 1);
+    assert!(
+        state
+            .history()
+            .pending_completions(parent)
+            .bounded(file!(), line!())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // The child stays parked: it made no request after its budget ran out.
+    while let Ok(request) = provider.requests.try_recv() {
+        pending.push(request);
+    }
+    assert!(
+        !pending
+            .iter()
+            .any(|(body, _)| is_child_turn("inspect")(body)),
+        "the parked child must not run another turn"
+    );
+    parent_turn.send(text_chunk("noted")).unwrap();
+    drop(parent_turn);
+    state.close_all().bounded(file!(), line!()).await;
+}
+
 #[tokio::test]
 async fn parent_tops_up_a_budget_parked_child_three_times_then_the_captain_continues() {
     let mut provider = common::sse::spawn_streaming_provider()

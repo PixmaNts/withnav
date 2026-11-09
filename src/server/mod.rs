@@ -6,6 +6,7 @@
 //! (the HTTP state wrapping the session service), and [`routes::serve`]
 //! (loopback bind with graceful shutdown).
 pub mod config;
+pub mod discovery;
 mod flows;
 pub mod routes;
 pub mod session;

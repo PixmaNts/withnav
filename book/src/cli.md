@@ -28,8 +28,15 @@ nav [tui] [--workspace <dir>] [--model <gateway/id> | --session <id>] [--models 
 | `--workspace <dir>` | Folder the conversation works in. Default: the current directory. |
 | `--model <gateway/id>` | Model for a new conversation. Cannot be combined with `--session`. |
 | `--session <id>` | Resume a past conversation. Cannot be combined with `--model`. |
-| `--models <file>` | Use this `models.json` for the embedded server. Cannot be combined with `--url`. |
-| `--url <server>` | Connect to a running server instead of starting one. If it needs a bearer token, set `WITHNAV_SERVER_TOKEN`. Cannot be combined with `--models`. |
+| `--models <file>` | Start a private embedded server with this `models.json`, even when an editor runs one for the workspace. Cannot be combined with `--url`. |
+| `--url <server>` | Connect to a running server instead of joining the editor's or starting one. If it needs a bearer token, set `WITHNAV_SERVER_TOKEN`. Cannot be combined with `--models`. |
+
+When an editor already runs `nav lsp` for the same workspace, `nav tui` joins that editor's
+server: a conversation started in the editor is listed and usable in the terminal, and the
+reverse. Otherwise it starts its own server, which stops when you quit. Quitting a joined server
+only disconnects; closing the editor stops its server and disconnects the terminal client. The
+editor's server is found through an owner-only file in `$XDG_RUNTIME_DIR/withnav-servers/`;
+without a private `$XDG_RUNTIME_DIR` (and on Windows) the terminal client always starts its own.
 
 The terminal client writes its log to `~/.local/share/withnav/tui.log`, never to the screen.
 

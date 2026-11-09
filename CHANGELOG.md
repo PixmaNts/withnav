@@ -24,6 +24,14 @@ requests land in `develop`.
   mid-session works on its first use. A worktree of another repository, a plain folder or a link
   leading out of a worktree still asks; WithNav's configuration and database, credential files,
   written `deny`/`ask` rules and yolo behave as before.
+- `nav tui` joins the server an editor's `nav lsp` runs for the same workspace, so a conversation
+  started in VS Code (or another editor) is listed and usable in the terminal client, and the
+  reverse. The LSP publishes its port and token in an owner-only file (`0600`, in a `0700`
+  directory) under `$XDG_RUNTIME_DIR/withnav-servers/` and removes it when it exits; the terminal
+  client ignores and removes a file whose process, port or token is gone. Without an editor, with
+  `--models`, without a private `$XDG_RUNTIME_DIR` or on Windows, `nav tui` starts its own server
+  as before. Requests from `nav tui` to a loopback server no longer go through `HTTP_PROXY` or
+  `ALL_PROXY`, which could otherwise receive its bearer token.
 
 - Subagents: a child that uses its step budget (50 by default) no longer waits only for you. It
   pauses, and its parent is woken with a notice giving the steps used, the top-ups used and left,

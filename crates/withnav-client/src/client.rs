@@ -120,12 +120,14 @@ impl Client {
         .await
     }
     pub fn new(base_url: impl Into<String>, token: Option<String>) -> Self {
-        let http = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .build()
-            .unwrap_or_default();
+        let base_url = base_url.into().trim_end_matches('/').to_string();
+        let mut builder = reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT);
+        if is_loopback(&base_url) {
+            builder = builder.no_proxy();
+        }
+        let http = builder.build().unwrap_or_default();
         Self {
-            base_url: base_url.into().trim_end_matches('/').to_string(),
+            base_url,
             token,
             http,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
@@ -571,10 +573,47 @@ fn encode_segment(segment: &str) -> String {
     out
 }
 
+/// True when `url` names this machine (`localhost`, `127.0.0.0/8`, `::1`). A local server is
+/// reached directly, never through `HTTP_PROXY`/`ALL_PROXY`: a proxy would receive the bearer
+/// token of a server that only listens on loopback, or fail to reach it at all.
+pub fn is_loopback(url: &str) -> bool {
+    let Some(host) = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+    else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use reqwest::StatusCode;
+
+    #[test]
+    fn only_this_machine_counts_as_loopback() {
+        for url in [
+            "http://127.0.0.1:4242",
+            "http://localhost:1",
+            "http://[::1]:2",
+            "http://127.1.2.3",
+        ] {
+            assert!(is_loopback(url), "{url}");
+        }
+        for url in [
+            "https://example.com",
+            "http://127.0.0.1.example.com",
+            "http://10.0.0.1",
+            "not a url",
+        ] {
+            assert!(!is_loopback(url), "{url}");
+        }
+    }
 
     #[test]
     fn status_message_prefers_the_error_field() {

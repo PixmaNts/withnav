@@ -123,10 +123,11 @@ fn bearer_token() -> String {
 /// `GET /v1/health` (no auth), retried briefly so a server that is just
 /// starting is not reported as down.
 pub(super) async fn check_health(base: &str) -> anyhow::Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(HEALTH_TIMEOUT)
-        .build()
-        .context("cannot build the HTTP client")?;
+    let mut builder = reqwest::Client::builder().timeout(HEALTH_TIMEOUT);
+    if withnav_client::client::is_loopback(base) {
+        builder = builder.no_proxy();
+    }
+    let client = builder.build().context("cannot build the HTTP client")?;
     let url = format!("{base}/v1/health");
     let mut last = String::new();
     for attempt in 0..5 {

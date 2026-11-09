@@ -5876,6 +5876,34 @@ fn transcript_images_are_numbered_and_open_by_number() {
     assert!(notice_texts(&s).iter().any(|n| n == "usage: /image [1-2]"));
 }
 
+// Given an event whose image list holds one valid reference and one malformed item
+// Then the valid image is still numbered and shown
+#[test]
+fn a_malformed_image_reference_does_not_hide_the_valid_ones() {
+    let mut s = st();
+    with_session(&mut s, "S1");
+    subagent_event(
+        &mut s,
+        1,
+        "message.received",
+        json!({"source": "captain", "content": "look", "images": [
+            {"bogus": 1},
+            {"attachment_id": "A1", "media_type": "image/png", "name": "a.png"},
+            {"attachment_id": 7}
+        ]}),
+    );
+    let images: Vec<_> = notice_texts(&s)
+        .into_iter()
+        .filter(|n| n.starts_with("image "))
+        .collect();
+    assert_eq!(images, ["image 1: a.png (/image 1 to open)"]);
+    let fx = handle_action(&mut s, &mut ui(), Action::OpenImage("1".into()));
+    assert!(matches!(
+        fx.as_slice(),
+        [Effect::OpenImage { number: 1, image, .. }] if image.attachment_id == "A1"
+    ));
+}
+
 #[test]
 fn a_pasted_image_path_attaches_it() {
     let mut s = st();

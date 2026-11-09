@@ -438,13 +438,13 @@ impl crate::agent::images::AttachmentLoader for SessionLoader {
                     .map(|id| {
                         let payload = store
                             .load(&session, &id)
-                            .map(|(image, bytes)| {
+                            .map_err(|error| error.to_string())
+                            .and_then(|(image, bytes)| {
                                 withnav_provider::openai::ImagePayload::from_bytes(
                                     image.media_type,
                                     &bytes,
                                 )
-                            })
-                            .map_err(|error| error.to_string());
+                            });
                         (id, payload)
                     })
                     .collect()

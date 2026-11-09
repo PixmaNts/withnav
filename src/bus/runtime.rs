@@ -142,6 +142,10 @@ pub struct RuntimeStatus {
     pub root_supervisor: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub awaiting_fresh_captain: std::sync::atomic::AtomicBool,
     pub activity: progress::Activity,
+    /// The actor's view of the stored secrets, installed when the runtime starts: text that
+    /// reaches the session without passing through the actor (steering, flow notes, host
+    /// messages) is hidden with it before it is queued or published.
+    secrets: std::sync::OnceLock<crate::secrets::SecretAccess>,
     #[cfg(debug_assertions)]
     negative_eligibility_barrier:
         Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
@@ -368,7 +372,14 @@ impl RuntimeStatus {
             None => false,
         }
     }
-    pub fn steer(&self, text: String, interrupt: bool) -> bool {
+    /// Hides the stored secrets `text` carries, with the actor's view of the store.
+    pub(crate) fn redact_in_place(&self, text: &mut String) {
+        if let Some(secrets) = self.secrets.get() {
+            secrets.redact_in_place(text);
+        }
+    }
+    pub fn steer(&self, mut text: String, interrupt: bool) -> bool {
+        self.redact_in_place(&mut text);
         let id = Ulid::generate();
         if !self.steering.admit(steering::Operation {
             wake: true,
@@ -389,7 +400,8 @@ impl RuntimeStatus {
             .is_ok()
     }
     /// Guidance accompanying a renewal must not enqueue another wake.
-    pub fn queue_budget_note(&self, content: String) -> bool {
+    pub fn queue_budget_note(&self, mut content: String) -> bool {
+        self.redact_in_place(&mut content);
         self.steering.admit(steering::Operation {
             wake: false,
             id: Ulid::generate(),
@@ -401,7 +413,14 @@ impl RuntimeStatus {
     pub fn flow_note(&self, text: String, flow: String, run_id: String) -> bool {
         self.queue_flow_note(text, flow, run_id, true)
     }
-    pub fn queue_flow_note(&self, text: String, flow: String, run_id: String, wake: bool) -> bool {
+    pub fn queue_flow_note(
+        &self,
+        mut text: String,
+        flow: String,
+        run_id: String,
+        wake: bool,
+    ) -> bool {
+        self.redact_in_place(&mut text);
         if !self.steering.admit_flow(text, flow, run_id, wake) {
             return false;
         }
@@ -1051,6 +1070,9 @@ pub fn spawn_with_completion(
     completion: Option<CompletionHook>,
 ) -> tokio::task::JoinHandle<AgentActor> {
     status.init_ask(&actor);
+    if let Some(secrets) = &actor.tool_context.secrets {
+        let _ = status.secrets.set(secrets.clone());
+    }
     let mut actor = actor;
     actor.bypass = status.bypass.clone();
     actor.parent_captain = status.parent_captain.clone();
@@ -3870,5 +3892,112 @@ mod tests {
             .nth(1)
             .unwrap_or_default()
             .to_string()
+    }
+
+    const SECRET: &str = "sk-live-7f3a9c2e1d0b4a68";
+
+    /// The actor's view of a store holding `SECRET` as `API_KEY`.
+    fn secret_access(workspace: &std::path::Path) -> crate::secrets::SecretAccess {
+        let store = Arc::new(crate::secrets::SecretStore::in_memory());
+        let owner = Ulid::generate();
+        store
+            .put(
+                owner,
+                workspace,
+                "API_KEY",
+                SECRET,
+                crate::secrets::SecretTtl::Day,
+                crate::secrets::SecretScope::Session,
+            )
+            .unwrap();
+        crate::secrets::SecretAccess::new(store, owner, workspace)
+    }
+
+    #[tokio::test]
+    async fn tool_call_events_and_progress_never_show_a_secret_the_model_wrote() {
+        let call = format!(
+            r#"{{"choices":[{{"index":0,"delta":{{"tool_calls":[{{"index":0,"id":"call_1","function":{{"name":"bash","arguments":"{{\"command\":\"echo hi # {SECRET}\"}}"}}}}]}},"finish_reason":"tool_calls"}}]}}"#
+        );
+        let done =
+            r#"{"choices":[{"index":0,"delta":{"content":"all done"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[call.as_str()])),
+            http_sse(&sse_body(&[done])),
+        ])
+        .await;
+        let (inbox_tx, inbox) = ActorInbox::channel();
+        let mut actor = make_actor(server.url.clone(), CancellationToken::new());
+        allow_everything(&actor);
+        actor.tool_context.secrets = Some(secret_access(&actor.tool_context.workspace));
+        let session_id = Ulid::generate();
+        let sequencer = Sequencer::spawn(session_id, crate::bus::SessionBus::default(), 0);
+        let mut live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
+        let status = Arc::new(RuntimeStatus::default());
+        let session_cancel = CancellationToken::new();
+        let task = spawn_with_status(
+            session_id,
+            actor,
+            inbox,
+            sequencer,
+            session_cancel.clone(),
+            None,
+            status.clone(),
+        );
+        inbox_tx
+            .try_send(text_command(session_id, "run it"))
+            .unwrap();
+        let envelopes = drain_until(&mut live, |e| kind_of(e) == "task.done").await;
+        let pre = envelopes
+            .iter()
+            .find(|e| kind_of(e) == "tool.pre_call")
+            .expect("the call ran");
+        assert_eq!(pre.payload["args"]["command"], "echo hi # [secret API_KEY]");
+        for envelope in &envelopes {
+            let payload = envelope.payload.to_string();
+            assert!(!payload.contains(SECRET), "{}: {payload}", envelope.kind);
+        }
+        let last_call = status
+            .activity
+            .0
+            .lock()
+            .unwrap()
+            .last_tool_call
+            .clone()
+            .expect("the call is the progress evidence");
+        assert!(last_call.contains("[secret API_KEY]"), "{last_call}");
+        assert!(!last_call.contains(SECRET), "{last_call}");
+        drop(inbox_tx);
+        session_cancel.cancel();
+        task.await.unwrap();
+    }
+
+    #[test]
+    fn steered_and_flow_text_is_queued_with_the_secret_hidden() {
+        let status = RuntimeStatus::default();
+        let workspace = tempfile::tempdir().unwrap();
+        let _ = status.secrets.set(secret_access(workspace.path()));
+        assert!(status.queue_budget_note(format!("budget {SECRET}")));
+        status
+            .queue_flow_note_report(
+                format!("flow {SECRET}"),
+                "review".into(),
+                "run".into(),
+                false,
+                false,
+            )
+            .unwrap();
+        assert!(status.queue_flow_note(
+            format!("note {SECRET}"),
+            "review".into(),
+            "n".into(),
+            false
+        ));
+        // A steer is queued whether or not the runtime is there to be woken.
+        let _ = status.steer(format!("steer {SECRET}"), false);
+        let _ = status.steer(format!("interrupt {SECRET}"), true);
+        let (claimed, _) = status.steering.claim_replacements(Vec::new());
+        let queued = serde_json::to_string(&status.steering.apply(claimed)).unwrap();
+        assert_eq!(queued.matches("[secret API_KEY]").count(), 5, "{queued}");
+        assert!(!queued.contains(SECRET), "{queued}");
     }
 }

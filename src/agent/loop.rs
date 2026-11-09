@@ -404,7 +404,17 @@ async fn run_steps_inner(
             secrets.redact_message(&mut history);
         }
         actor.transcript.push(history);
-        observe(AgentEvent::Response(&message));
+        // The event shows the calls' arguments with the stored secrets hidden too.
+        match &actor.tool_context.secrets {
+            Some(secrets) if !message.tool_calls.is_empty() => {
+                let mut shown = message.clone();
+                for call in &mut shown.tool_calls {
+                    secrets.redact_json(&mut call.args);
+                }
+                observe(AgentEvent::Response(&shown));
+            }
+            _ => observe(AgentEvent::Response(&message)),
+        }
         observe(AgentEvent::ContextEstimated(actor.context_breakdown()));
 
         let sibling_ids: Vec<String> = message.tool_calls.iter().map(|tc| tc.id.clone()).collect();
@@ -819,12 +829,13 @@ async fn resolve_skill(
     if let Some(note) = &gate {
         merge_approval_metadata(&mut result.metadata, note);
     }
-    observe(AgentEvent::PreCall {
-        permission_gate: gate.as_ref().and_then(|note| note.get("permission_gate")),
-        tool_call_id: &call.id,
-        name: &call.name,
-        args: &call.args,
-    });
+    redact_result(actor, &mut result);
+    observe_pre_call(
+        actor,
+        &call,
+        gate.as_ref().and_then(|note| note.get("permission_gate")),
+        observe,
+    );
     observe(AgentEvent::PostCall {
         tool_call_id: &call.id,
         name: &call.name,
@@ -1010,12 +1021,13 @@ async fn run_skill(
             if let Some(note) = &approval {
                 merge_approval_metadata(&mut result.metadata, note);
             }
-            observe(AgentEvent::PreCall {
-                permission_gate: approval.as_ref().and_then(|v| v.get("permission_gate")),
-                tool_call_id: &call.id,
-                name: &call.name,
-                args: &call.args,
-            });
+            redact_result(actor, &mut result);
+            observe_pre_call(
+                actor,
+                call,
+                approval.as_ref().and_then(|v| v.get("permission_gate")),
+                observe,
+            );
             observe(AgentEvent::PostCall {
                 tool_call_id: &call.id,
                 name: &call.name,
@@ -1333,17 +1345,10 @@ fn deny_call(
     note: serde_json::Value,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) {
-    observe(AgentEvent::PreCall {
-        permission_gate: note.get("permission_gate"),
-        tool_call_id: &call.id,
-        name: &call.name,
-        args: &call.args,
-    });
+    observe_pre_call(actor, call, note.get("permission_gate"), observe);
     let mut result = ToolResult::permission_denied(message);
     merge_approval_metadata(&mut result.metadata, &note);
-    if let Some(secrets) = &actor.tool_context.secrets {
-        redact_result(secrets, &mut result);
-    }
+    redact_result(actor, &mut result);
     observe(AgentEvent::PostCall {
         tool_call_id: &call.id,
         name: &call.name,
@@ -1460,18 +1465,19 @@ fn reject_call(
 ) {
     // In yolo the refusal carries the same evidence as a run: nothing was asked.
     let approval = actor.yolo.then(yolo_approval);
-    observe(AgentEvent::PreCall {
-        permission_gate: approval
+    observe_pre_call(
+        actor,
+        call,
+        approval
             .as_ref()
             .and_then(|note| note.get("permission_gate")),
-        tool_call_id: &call.id,
-        name: &call.name,
-        args: &call.args,
-    });
+        observe,
+    );
     let mut result = ToolResult::error("tool_error", message);
     if let Some(note) = &approval {
         merge_approval_metadata(&mut result.metadata, note);
     }
+    redact_result(actor, &mut result);
     observe(AgentEvent::PostCall {
         tool_call_id: &call.id,
         name: &call.name,
@@ -1508,12 +1514,12 @@ async fn execute_call(
     if actor.cancel.is_cancelled() {
         return DispatchOutcome::Settled(ToolResult::not_started());
     }
-    observe(AgentEvent::PreCall {
-        permission_gate: note.as_ref().and_then(|note| note.get("permission_gate")),
-        tool_call_id: &call.id,
-        name: &call.name,
-        args: &call.args,
-    });
+    observe_pre_call(
+        actor,
+        call,
+        note.as_ref().and_then(|note| note.get("permission_gate")),
+        observe,
+    );
     let args = call.args.clone();
     let mut cx = actor.tool_context.clone();
     if actor.yolo {
@@ -1557,6 +1563,8 @@ async fn execute_call(
             if let Some(note) = &note {
                 merge_approval_metadata(&mut result.metadata, note);
             }
+            // The path is the one the model asked for, and may name a stored secret.
+            redact_result(actor, &mut result);
             observe(AgentEvent::PostCall {
                 tool_call_id: &call.id,
                 name: &call.name,
@@ -1567,10 +1575,6 @@ async fn execute_call(
         Ok(result) => result,
         Err(e) => ToolResult::error("tool_error", e.to_string()),
     };
-    // A secret a tool printed is hidden before the event, the transcript or the model see it.
-    if let Some(secrets) = &actor.tool_context.secrets {
-        redact_result(secrets, &mut result);
-    }
     // Images go into the session's store before anything is published, so the event and the
     // transcript only ever carry references to stored rows.
     store_tool_images(actor, &mut result).await;
@@ -1578,6 +1582,9 @@ async fn execute_call(
     if let Some(note) = note {
         merge_approval_metadata(&mut result.metadata, &note);
     }
+    // A secret a tool printed, or a permission reason quoted, is hidden on the finished result,
+    // before the event, the transcript or the model see it.
+    redact_result(actor, &mut result);
     observe(AgentEvent::PostCall {
         tool_call_id: &call.id,
         name: &call.name,
@@ -1609,8 +1616,36 @@ fn merge_approval_metadata(metadata: &mut serde_json::Value, note: &serde_json::
     }
 }
 
+/// Publishes the start of `call`. The event shows its arguments and permission evidence with
+/// the stored secrets hidden, since the model may have written a value into them; the tool
+/// itself runs with the arguments as written.
+fn observe_pre_call(
+    actor: &AgentActor,
+    call: &ToolCall,
+    permission_gate: Option<&serde_json::Value>,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) {
+    let mut args = std::borrow::Cow::Borrowed(&call.args);
+    let mut gate = permission_gate.map(std::borrow::Cow::Borrowed);
+    if let Some(secrets) = &actor.tool_context.secrets {
+        secrets.redact_json(args.to_mut());
+        if let Some(gate) = &mut gate {
+            secrets.redact_json(gate.to_mut());
+        }
+    }
+    observe(AgentEvent::PreCall {
+        permission_gate: gate.as_deref(),
+        tool_call_id: &call.id,
+        name: &call.name,
+        args: &args,
+    });
+}
+
 /// Hides the secrets a tool result carries: its output, its metadata and its error message.
-fn redact_result(secrets: &crate::secrets::SecretAccess, result: &mut ToolResult) {
+fn redact_result(actor: &AgentActor, result: &mut ToolResult) {
+    let Some(secrets) = &actor.tool_context.secrets else {
+        return;
+    };
     secrets.redact_in_place(&mut result.output);
     secrets.redact_json(&mut result.metadata);
     if let Some(error) = &mut result.error {
@@ -3757,5 +3792,160 @@ mod tests {
         let transcript = serde_json::to_string(&actor.transcript).unwrap();
         assert!(!transcript.contains(VALUE), "{transcript}");
         assert!(transcript.contains("[secret API_KEY]"), "{transcript}");
+    }
+
+    /// Every tool-call event as text, by kind: `pre`, `response` and `post`.
+    #[derive(Default)]
+    struct Shown {
+        pre: Vec<String>,
+        response: Vec<String>,
+        post: Vec<String>,
+    }
+
+    impl Shown {
+        fn record(&mut self, event: AgentEvent<'_>) {
+            match event {
+                AgentEvent::PreCall {
+                    permission_gate,
+                    args,
+                    ..
+                } => self.pre.push(format!("{args} {permission_gate:?}")),
+                AgentEvent::Response(message) => self
+                    .response
+                    .push(serde_json::to_string(&message.tool_calls).unwrap()),
+                AgentEvent::PostCall { result, .. } => {
+                    self.post.push(serde_json::to_string(result).unwrap())
+                }
+                _ => {}
+            }
+        }
+
+        fn assert_hidden(&self, value: &str) {
+            for text in self.pre.iter().chain(&self.response).chain(&self.post) {
+                assert!(!text.contains(value), "{text}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_call_events_hide_a_secret_the_model_wrote_and_the_call_runs_as_written() {
+        const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().canonicalize().unwrap();
+        let file = dir_path.join(format!("{VALUE}.txt"));
+        std::fs::write(&file, "the file body").unwrap();
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[&calls_chunk(&[(
+                "r1",
+                "read",
+                serde_json::json!({"path": file}),
+            )])])),
+            http_sse(&sse_body(&[&text_chunk("done")])),
+        ])
+        .await;
+        let mut actor = make_actor(server.url.clone(), registry_all(), CancellationToken::new());
+        allow_everything(&actor);
+        actor.tool_context.readable_roots.push(dir_path);
+        with_secret(&mut actor, VALUE);
+        actor.push_user("go");
+        let mut shown = Shown::default();
+        run_agent(&mut actor, &mut |event| shown.record(event))
+            .await
+            .unwrap();
+        assert_eq!((shown.pre.len(), shown.post.len()), (1, 1));
+        assert!(
+            shown.pre[0].contains("[secret API_KEY]"),
+            "{}",
+            shown.pre[0]
+        );
+        assert!(
+            shown
+                .response
+                .iter()
+                .any(|r| r.contains("[secret API_KEY]")),
+            "{:?}",
+            shown.response
+        );
+        // The tool read the file the model named, not one named after the marker.
+        assert!(shown.post[0].contains("the file body"), "{}", shown.post[0]);
+        shown.assert_hidden(VALUE);
+    }
+
+    #[test]
+    fn a_refused_call_hides_the_secret_in_its_arguments_and_its_error() {
+        const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
+        let mut actor = make_actor(String::new(), registry_all(), CancellationToken::new());
+        with_secret(&mut actor, VALUE);
+        let call = ToolCall {
+            id: "x1".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path": format!("/tmp/{VALUE}")}),
+            args_valid: true,
+        };
+        let mut shown = Shown::default();
+        reject_call(
+            &mut actor,
+            &call,
+            format!("cannot read /tmp/{VALUE}"),
+            &mut |event| shown.record(event),
+        );
+        assert_eq!((shown.pre.len(), shown.post.len()), (1, 1));
+        assert!(
+            shown.post[0].contains("[secret API_KEY]"),
+            "{}",
+            shown.post[0]
+        );
+        shown.assert_hidden(VALUE);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_changed_destination_hides_the_secret_in_the_path_it_reports() {
+        const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
+        let mut registry = Registry::new();
+        registry.register(Box::new(WriteTool));
+        let mut actor = make_actor(String::new(), registry, CancellationToken::new());
+        with_secret(&mut actor, VALUE);
+        let ws = actor.tool_context.workspace.canonicalize().unwrap();
+        let target = ws.join(format!("{VALUE}.txt"));
+        let elsewhere = ws.join("elsewhere.txt");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::write(&elsewhere, "kept").unwrap();
+        on_next_dispatch({
+            let (target, elsewhere) = (target.clone(), elsewhere.clone());
+            move || {
+                std::fs::remove_file(&target).unwrap();
+                std::os::unix::fs::symlink(&elsewhere, &target).unwrap();
+            }
+        });
+        let call = ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": target, "content": "new"}),
+            args_valid: true,
+        };
+        let mut shown = Shown::default();
+        let outcome = execute_call(&actor, &call, Some(&target), None, &mut |event| {
+            shown.record(event)
+        })
+        .await;
+        assert!(
+            matches!(outcome, DispatchOutcome::DestinationChanged),
+            "{:?}",
+            shown.post
+        );
+        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "kept");
+        assert_eq!((shown.pre.len(), shown.post.len()), (1, 1));
+        assert!(
+            shown.post[0].contains("destination_changed"),
+            "{}",
+            shown.post[0]
+        );
+        assert!(
+            shown.post[0].contains("[secret API_KEY]"),
+            "{}",
+            shown.post[0]
+        );
+        shown.assert_hidden(VALUE);
     }
 }

@@ -315,3 +315,88 @@ async fn listing_hides_child_until_relationship_commits() {
     );
     assert!(!row.promptable);
 }
+
+/// Keeps the host's sender of the last session started.
+#[derive(Debug, Default)]
+struct KeepSender(Mutex<Option<SessionSender>>);
+
+impl SessionHooks for KeepSender {
+    fn configure_actor(&self, _editor: bool, _actor: &mut crate::agent::actor::AgentActor) {}
+
+    fn started(
+        &self,
+        _info: StartedSession,
+        sender: SessionSender,
+        _subscription: crate::session::Subscription,
+        _cancel: CancellationToken,
+    ) {
+        *self.0.lock().unwrap() = Some(sender);
+    }
+}
+
+#[tokio::test]
+async fn a_host_message_is_published_with_the_secret_hidden() {
+    const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("cfg")).unwrap();
+    std::fs::write(
+        dir.path().join("cfg/config.json"),
+        r#"{"agents":{"build":{"model":"mock/test"}}}"#,
+    )
+    .unwrap();
+    crate::provider::auth::set_key(&dir.path().join("cfg"), "mock", "test").unwrap();
+    std::fs::write(dir.path().join("models.json"), r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/test":{"provider":"mock","model":"test","context_window":128000}}}"#).unwrap();
+    let hooks = Arc::new(KeepSender::default());
+    let service = Service::with_hooks(
+        SessionConfig {
+            models_path: None,
+            config_dir: dir.path().join("cfg"),
+            history_db: dir.path().join("history.db"),
+            data_dir: dir.path().join("data"),
+            rules_roots: Default::default(),
+        },
+        hooks.clone(),
+    )
+    .unwrap();
+    let id = service
+        .create_session(dir.path(), None, false)
+        .await
+        .unwrap();
+    let sender = hooks
+        .0
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the host got a sender");
+    // Stored after the session started: the sender sees the store as it is now.
+    service
+        .secrets
+        .put(
+            id,
+            dir.path(),
+            "API_KEY",
+            VALUE,
+            crate::secrets::SecretTtl::Day,
+            crate::secrets::SecretScope::Session,
+        )
+        .unwrap();
+    sender
+        .send(
+            format!("drift noticed near {VALUE}"),
+            crate::navigator::NAVIGATOR_ACTOR_ID,
+        )
+        .await
+        .unwrap();
+    let sub = service.subscribe(id, None).await.unwrap();
+    let crate::bus::ResumeOutcome::Replay(events) = sub.replay else {
+        panic!("expected a replay");
+    };
+    let received = events
+        .iter()
+        .find(|event| event.kind == "message.received")
+        .expect("the host message was accepted");
+    let payload = received.payload.to_string();
+    assert!(payload.contains("[secret API_KEY]"), "{payload}");
+    assert!(!payload.contains(VALUE), "{payload}");
+    service.close_all().await;
+}

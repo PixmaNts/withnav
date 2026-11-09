@@ -44,6 +44,13 @@ impl Service {
         SecretAccess::new(self.secrets.clone(), owner, workspace)
     }
 
+    /// Moves the secrets' expiry clock `seconds` forward, so a test sees a secret expire.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn advance_secret_clock_test(&self, seconds: i64) {
+        self.secrets.advance_clock_test(seconds);
+    }
+
     async fn secret_handle(&self, id: SessionId) -> Result<SessionHandle, ServerError> {
         let handle = self.routable_handle(id).await?;
         if handle.parent_session_id.is_some() {

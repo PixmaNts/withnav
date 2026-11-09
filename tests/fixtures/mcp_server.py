@@ -40,6 +40,11 @@ def call(identifier, params):
     elif name == "leak_structured":
         send(identifier, {"content": [], "structuredContent": {"token": os.environ["SECRET"], "nested": [os.environ["SECRET"]]}})
         return
+    elif name == "environ":
+        # `<pid>:<value of the variable named by text>`, and the whole environment on stderr.
+        sys.stderr.write(json.dumps(dict(os.environ), sort_keys=True) + "\nenviron done %d\n" % os.getpid())
+        sys.stderr.flush()
+        text = "%d:%s" % (os.getpid(), os.environ.get(params.get("arguments", {}).get("text", ""), "unset"))
     elif name == "leak_text":
         # json.dumps escapes newlines, quotes and backslashes (and non-ASCII by default).
         text = json.dumps({"token": os.environ["SECRET"]})
@@ -52,6 +57,9 @@ for line in sys.stdin:
     method = message.get("method")
     identifier = message.get("id")
     if method == "initialize":
+        if os.environ.get("ANNOUNCE_START"):
+            sys.stderr.write("started %d\n" % os.getpid())
+            sys.stderr.flush()
         if len(sys.argv) > 1 and sys.argv[1] == "hang":
             if os.environ.get("HANG_STDERR"):
                 sys.stderr.write("hung-init-stderr-line\n")

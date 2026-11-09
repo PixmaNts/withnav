@@ -710,6 +710,7 @@ function autosizePrompt(): void {
   prompt.style.overflowY = wanted > max ? "auto" : "hidden";
 }
 window.addEventListener("resize", autosizePrompt);
+disposers.push(() => window.removeEventListener("resize", autosizePrompt));
 
 function updateControls(): void {
   autosizePrompt();

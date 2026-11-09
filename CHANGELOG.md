@@ -71,6 +71,8 @@ requests land in `develop`.
   bounded: 1 MiB per item, 4 MiB and 64 items per message, when it is captured and when a stored
   conversation is read. An item past a limit is dropped whole, never cut; the items kept are
   unchanged byte for byte. (#157)
+- VS Code chat: closing a conversation tab removes its window resize listener. Closed tabs no
+  longer stay in memory through it, nor resize a composer that is no longer shown.
 
 ## [0.8.2] - 2026-11-05
 

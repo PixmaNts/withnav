@@ -79,6 +79,12 @@ commit, and stops a corrupt conversation from overwriting its stored history.
 
 ### Fixed
 
+- Providers: keep-alive comments between two events no longer end a streamed answer once they
+  add up to 4 MiB; the 4 MiB limit now applies to each SSE block, and every blank line starts a new
+  one. Events received in the same chunk before an oversized block are still delivered. A dropped
+  connection during the stream is reported as a transport error with its cause instead of a
+  malformed SSE frame.
+
 - A conversation whose stored transcript cannot be read no longer resumes empty (its next save overwrote the stored history): the resume fails and names the session, and the row is left as it was.
 ### Added
 

@@ -102,8 +102,8 @@ by gate F4).
 All library modules use **typed domain enums with `thiserror`**. `anyhow` appears **only** in
 `main.rs`/CLI boundaries. No `String` error types. No catch-all `Other(String)` variant.
 
-- **`SseError`** — `Utf8`, `UnexpectedEof`, `MalformedFrame(String)` (includes the oversize-frame
-  case). Provider-agnostic; knows nothing about `[DONE]`, JSON, or tool-calls.
+- **`SseError`** — `Utf8`, `UnexpectedEof`, `MalformedFrame(String)` (includes the oversize-block
+  case), `Transport(Box<dyn Error>)` (the response body failed mid-stream; keeps its source). Provider-agnostic; knows nothing about `[DONE]`, JSON, or tool-calls.
 - **`ProviderError`** — `Http(#[from] reqwest::Error)`, `Sse(#[from] SseError)`,
   `Api { status: u16, message: String, partial: Option<Box<AssistantMessage>> }`,
   `MissingApiKey`, `UnknownModelAlias(String)`, `WrongContentType(String)`,
@@ -519,7 +519,7 @@ temp file. Symlink policy: canonicalize then prefix-check (TOCTOU accepted for v
 - **No automatic retry in Phase 1** — 429/5xx surface as `ProviderError::Api`; retry/backoff is a
   documented Phase-2+ decision. Pinned "no retry" so a worker doesn't add hidden retries.
 - **SSE framing is strictly separate from OpenAI JSON decoding:** `sse.rs` = generic frames (max
-  undelivered event size `MAX_FRAME_BYTES`, 4 MiB → `SseError::MalformedFrame` when exceeded; what it
+  wire bytes of one SSE block `MAX_FRAME_BYTES`, 4 MiB → `SseError::MalformedFrame` when exceeded; what it
   bounds and why is documented on the constant in `crates/withnav-provider/src/sse.rs`);
   `mod.rs` accumulator interprets `[DONE]`, tool-call fragments, `reasoning_content`, errors,
   content-type, and cancellation.

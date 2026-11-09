@@ -1068,6 +1068,7 @@ fn secret_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> {
             }
             let value = std::mem::take(&mut entry.value);
             entry.shown = false;
+            entry.error = None;
             let call_id = entry.call_id.clone();
             let submission = withnav_client_api::secrets::SecretSubmission {
                 name: entry.later.then(|| entry.name.clone()),

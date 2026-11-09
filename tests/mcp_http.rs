@@ -196,11 +196,17 @@ async fn http_server_sends_headers_redacts_them_and_reports_reachability() {
         .await
         .unwrap();
     assert_eq!(whoami.output, "[redacted]");
+    // An invalid blob is refused; even its diagnostic must redact a credential in the URI.
     let resource = manager
-        .read_ui_resource("web", "ui://web/app.html")
+        .read_ui_resource("web", &format!("ui://web/{TOKEN}/app.html"))
         .await
-        .unwrap();
-    assert!(resource["blob"].is_null(), "{resource}");
+        .unwrap_err();
+    assert_eq!(
+        resource,
+        withnav::mcp::McpUiError::InvalidResponse {
+            method: "resources/read"
+        }
+    );
 
     let posts: Vec<_> = fake
         .received_requests()

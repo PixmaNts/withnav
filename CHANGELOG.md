@@ -222,6 +222,13 @@ requests land in `develop`.
   value, time) are removed from the file too, and a permissive file is tightened before it is
   read (Unix).
 
+### Fixed
+
+- `nav tui` `/paste-image`: a clipboard that holds only a JPEG, WebP or GIF is attached (PNG is still
+  asked for first; on Linux the clipboard's offered types are listed otherwise). A clipboard
+  helper that hangs, or leaves a process holding its output, is killed with its process group at
+  the 5 s deadline instead of blocking the paste.
+
 ## [0.8.2] - 2026-11-05
 
 WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and

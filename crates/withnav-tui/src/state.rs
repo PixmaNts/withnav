@@ -100,7 +100,8 @@ pub struct Tab {
 /// under 5 MB, the lowest per-image limit among the providers a gateway can route to. The server
 /// refuses more; checking here spares the upload and tells the Captain at `/attach` time.
 pub const MAX_ATTACHMENT_BYTES: u64 = 3_932_160;
-/// The most images one message may carry; the server refuses more.
+/// The most images one message may carry; the server refuses more. A test in the root crate keeps
+/// this equal to the server's `MAX_IMAGES_PER_MESSAGE`.
 pub const MAX_ATTACHMENTS: usize = 8;
 
 /// An image the Captain attached with `/attach`, still on disk: it is uploaded to the session

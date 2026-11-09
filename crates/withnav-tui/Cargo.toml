@@ -25,6 +25,10 @@ tui-markdown = { version = "0.3.10", features = ["highlight-code"] }
 unicode-segmentation = "1"
 time = { workspace = true, features = ["formatting", "parsing"] }
 
+# Kills a clipboard reader's whole process group when it hangs.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["signal"] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread", "net"] }
 serde.workspace = true

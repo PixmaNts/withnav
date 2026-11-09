@@ -476,7 +476,7 @@ impl Service {
         &self,
         server_id: &str,
         uri: &str,
-    ) -> Result<(String, serde_json::Value), String> {
+    ) -> Result<(String, serde_json::Value), crate::mcp::McpUiError> {
         self.mcp.read_app_resource(server_id, uri).await
     }
 

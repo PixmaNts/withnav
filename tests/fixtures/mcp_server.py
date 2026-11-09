@@ -95,11 +95,16 @@ def read_resource(identifier, uri):
         return
     elif uri == "ui://fixture/probe.html":
         content = {"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": PROBE_PAGE}
-        content["_meta"] = {"ui": {"csp": {"connectDomains": os.environ.get("APP_CONNECT", "").split()}}}
+        connect = os.environ.get("APP_CONNECT_URL") or os.environ.get("APP_CONNECT", "")
+        content["_meta"] = {"ui": {"csp": {"connectDomains": connect.split()}}}
         send(identifier, {"contents": [content]})
         return
     elif uri == "ui://fixture/blob.html":
         content = {"uri": uri, "mimeType": "text/html;profile=mcp-app", "blob": base64.b64encode(("<p>" + os.environ.get("SECRET", "") + "</p>").encode()).decode()}
+        send(identifier, {"contents": [content]})
+        return
+    elif uri == "ui://fixture/unpadded-blob.html":
+        content = {"uri": uri, "mimeType": "text/html;profile=mcp-app", "blob": base64.b64encode(("<p>" + os.environ.get("SECRET", "") + "</p>").encode()).decode().rstrip("=")}
         send(identifier, {"contents": [content]})
         return
     elif uri.endswith("/multi.html"):

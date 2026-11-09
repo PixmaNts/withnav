@@ -187,7 +187,7 @@ fn mcp_app_resource(
         "mime_type": MCP_APP_HTML_MIME,
         "text": text,
         "blob": blob,
-        "csp": item["_meta"]["ui"]["csp"],
+        "csp": redaction::redact_value(&item["_meta"]["ui"]["csp"], secrets),
     }))
 }
 
@@ -560,20 +560,16 @@ impl McpManager {
         &self,
         server_id: &str,
         uri: &str,
-    ) -> Result<(String, serde_json::Value), String> {
-        use base64::Engine as _;
-        let body = self
-            .read_ui_resource(server_id, uri)
-            .await
-            .map_err(|e| e.to_string())?;
+    ) -> Result<(String, serde_json::Value), McpUiError> {
+        const METHOD: &str = "resources/read";
+        let body = self.read_ui_resource(server_id, uri).await?;
         let html = if let Some(text) = body["text"].as_str() {
             text.to_owned()
         } else if let Some(blob) = body["blob"].as_str() {
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(blob)
-                .map_err(|_| "MCP app resource is not valid base64".to_string())?;
+            let bytes =
+                decode_base64(blob).map_err(|_| McpUiError::InvalidResponse { method: METHOD })?;
             let text = String::from_utf8(bytes)
-                .map_err(|_| "MCP app resource is not valid UTF-8".to_string())?;
+                .map_err(|_| McpUiError::InvalidResponse { method: METHOD })?;
             let secrets = self
                 .servers
                 .iter()
@@ -582,10 +578,10 @@ impl McpManager {
                 .unwrap_or_default();
             redaction::redact(&text, &secrets)
         } else {
-            return Err("MCP resource returned no HTML content".into());
+            return Err(McpUiError::InvalidResponse { method: METHOD });
         };
         if html.len() > MAX_APP_HTML_BYTES {
-            return Err("MCP app resource is too large".into());
+            return Err(McpUiError::InvalidResponse { method: METHOD });
         }
         Ok((html, body["csp"].clone()))
     }
@@ -1350,5 +1346,23 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("ceiling") && err.contains("srv") && err.contains("ui://srv/a.html"));
+    }
+
+    #[test]
+    fn mcp_app_resource_redacts_metadata_secrets_in_csp() {
+        let mut item = html_item("<title>App</title>");
+        item["_meta"] = json!({
+            "ui": {
+                "csp": {
+                    "connectDomains": ["https://api.example.com", "tok-secret-connect-domain"],
+                    "custom": "Bearer tok-secret-connect-domain"
+                }
+            }
+        });
+        let secret = "tok-secret-connect-domain".to_owned();
+        let value = mcp_app_resource(&[item], "s", "ui://s/app.html", &[secret]).unwrap();
+        let csp_str = value["csp"].to_string();
+        assert!(!csp_str.contains("tok-secret-connect-domain"), "{csp_str}");
+        assert!(csp_str.contains("[redacted]"), "{csp_str}");
     }
 }

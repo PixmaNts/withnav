@@ -196,7 +196,7 @@ pub(super) async fn mint(
     let (html, declared) = match (body.uri, body.html) {
         (Some(uri), None) => match state.service().mcp_read_app(&server, &uri).await {
             Ok(found) => found,
-            Err(message) => return refuse(StatusCode::BAD_REQUEST, &message),
+            Err(error) => return crate::server::routes::error_response(error.into()),
         },
         (None, Some(html)) if html.len() <= MAX_APP_HTML_BYTES => (html, Value::Null),
         (None, Some(_)) => return refuse(StatusCode::BAD_REQUEST, "MCP app document is too large"),

@@ -195,7 +195,6 @@ async fn minting_refuses_what_is_not_an_app_document() {
     let (state, addr, task) = app_server(&env.root, json!({}), Some(TOKEN)).await;
     let client = reqwest::Client::new();
     for body in [
-        json!({"uri": "file:///etc/passwd"}),
         json!({"uri": "ui://fixture/app.html", "html": "<p>"}),
         json!({}),
         json!({"html": "x".repeat(512 * 1024 + 1)}),
@@ -208,6 +207,12 @@ async fn minting_refuses_what_is_not_an_app_document() {
             body.to_string().chars().take(60).collect::<String>()
         );
     }
+
+    let invalid_uri = mint(&client, addr, json!({"uri": "file:///etc/passwd"})).await;
+    assert_eq!(invalid_uri.status(), 400);
+    let body: Value = invalid_uri.json().await.unwrap();
+    assert_eq!(body["reason"], "mcp_invalid_request");
+
     let unknown = client
         .post(format!("http://{addr}/v1/mcp/nobody/app"))
         .bearer_auth(TOKEN)
@@ -215,8 +220,21 @@ async fn minting_refuses_what_is_not_an_app_document() {
         .send()
         .await
         .unwrap();
-    assert_eq!(unknown.status(), 400);
+    assert_eq!(unknown.status(), 404);
+    let body: Value = unknown.json().await.unwrap();
+    assert_eq!(body["reason"], "mcp_unknown_server");
+
+    let invalid_mime = mint(&client, addr, json!({"uri": "ui://fixture/plain.html"})).await;
+    assert_eq!(invalid_mime.status(), 502);
+    let body: Value = invalid_mime.json().await.unwrap();
+    assert_eq!(body["reason"], "mcp_invalid_response");
+
     state.service().close_all().await;
+    let unavail = mint(&client, addr, json!({"uri": "ui://fixture/app.html"})).await;
+    assert_eq!(unavail.status(), 503);
+    let body: Value = unavail.json().await.unwrap();
+    assert_eq!(body["reason"], "mcp_unavailable");
+
     task.abort();
 }
 
@@ -242,6 +260,25 @@ async fn a_blob_document_is_decoded_and_redacted_and_waiting_ones_are_capped() {
     assert!(
         body.starts_with("<p>") && !body.contains("correct-horse-battery"),
         "{body}"
+    );
+
+    let unpadded_path = minted_path(
+        &client,
+        addr,
+        json!({"uri": "ui://fixture/unpadded-blob.html"}),
+    )
+    .await;
+    let unpadded_body = client
+        .get(format!("http://{addr}{unpadded_path}"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        unpadded_body.starts_with("<p>") && !unpadded_body.contains("correct-horse-battery"),
+        "{unpadded_body}"
     );
 
     let mut statuses = vec![];
@@ -354,7 +391,7 @@ async fn a_browser_runs_the_app_in_a_sandbox_that_reaches_nothing_it_did_not_dec
     let env = common::TestEnv::new();
     let (state, addr, task) = app_server(
         &env.root,
-        json!({"APP_CONNECT": format!("http://127.0.0.1:{declared_port}")}),
+        json!({"APP_CONNECT_URL": format!("http://127.0.0.1:{declared_port}")}),
         Some(TOKEN),
     )
     .await;

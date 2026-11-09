@@ -52,7 +52,13 @@ fn incremental_build_invalidation_lifecycle() {
     let build_version_path =
         std::fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/build_version.rs"))
             .expect("canonical build_version.rs path");
-    let build_version_str = build_version_path.to_str().expect("valid utf8 path");
+    // Written into the scratch build script as a string literal: `{:?}` escapes the
+    // backslashes of a Windows path, which raw interpolation turned into escape sequences
+    // (`\b` in `…\build_version.rs`) and a malformed `#[path]` on the Windows runner.
+    let build_version_str = format!(
+        "{:?}",
+        build_version_path.to_str().expect("valid utf8 path")
+    );
 
     // Initialize git repository
     run_git(root, &["init"]);
@@ -85,7 +91,7 @@ path = "src/main.rs"
 
     // Write build.rs including real build_version.rs
     let build_rs = format!(
-        r#"#[path = "{build_version_str}"]
+        r#"#[path = {build_version_str}]
 mod build_version;
 
 use std::path::Path;

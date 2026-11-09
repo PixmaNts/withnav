@@ -387,6 +387,21 @@ test('favorites: the star toggles with the mouse without choosing the model and 
   assert.equal(d.querySelectorAll('.favorite-toggle').length,0);
   const search=d.querySelector('.command-palette .picker-search');const n=posts.length;
   const e=ctrlF(dom,search);assert.equal(e.defaultPrevented,false);assert.equal(posts.length,n);
+  assert.equal(search.hasAttribute('aria-keyshortcuts'),false,'no favorite shortcut announced outside the model picker');
+  assert.equal(search.hasAttribute('aria-describedby'),false);
+  assert.equal(d.querySelector('.command-palette .sr-only').hidden,true,'the model shortcut hint is hidden too');
+  dom.window.close();
+});
+test('favorites: the model search announces the ctrl+f shortcut and grouped rows announce their favorite state',()=>{
+  const {dom,d,receive}=modelPicker(hierarchy);
+  const search=d.querySelector('.command-palette .picker-search');
+  assert.equal(search.getAttribute('aria-keyshortcuts'),'Control+F');
+  const hint=d.getElementById(search.getAttribute('aria-describedby'));
+  assert(hint,'the description exists');assert.match(hint.textContent,/Ctrl\+F adds or removes the highlighted model from favorites/);
+  const label=()=>d.querySelector('.picker-options [role=option][title="omniroute/cc/claude-opus"][aria-label]').getAttribute('aria-label');
+  assert.equal(label(),'omniroute/cc/claude-opus');
+  receive({type:'favorites',items:['omniroute/cc/claude-opus']});
+  assert.equal(label(),'omniroute/cc/claude-opus, favorite');
   dom.window.close();
 });
 test('favorites: the first-50 cut applies to the groups only and option ids stay aligned with rows',()=>{
@@ -416,7 +431,7 @@ test('model rows inside a group show the short name; favorites show the full nam
     ['omniroute/kimi/k2','omniroute/kimi/k2',null],
     ['solo','direct/solo','direct/solo'],
     ['claude-opus','omniroute/cc/claude-opus','omniroute/cc/claude-opus'],
-    ['k2','omniroute/kimi/k2','omniroute/kimi/k2'],
+    ['k2','omniroute/kimi/k2','omniroute/kimi/k2, favorite'],
   ]);
   // Search still matches the canonical name.
   const search=d.querySelector('.command-palette .picker-search');search.value='omniroute/kimi';search.dispatchEvent(new dom.window.Event('input'));

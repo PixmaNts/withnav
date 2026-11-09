@@ -112,6 +112,11 @@ requests land in `develop`.
   of a new conversation). Send waits until every attached image has loaded; only the images a
   message carried leave the composer. Picking more than 8 images names the ones not attached,
   and an image that cannot be read is reported instead of vanishing.
+- VS Code: the keyboard reaches three controls that only took a mouse click. An MCP tool's image
+  preview is a button that zooms on Enter or Space and reports whether it is enlarged; Ctrl+F in
+  the agent picker's search adds or removes the highlighted agent from favorites, as it already
+  did in the model picker, and both search boxes describe that shortcut to screen readers; an
+  attached image's thumbnail is announced as "Open <name> beside".
 
 ## [0.8.2] - 2026-11-05
 

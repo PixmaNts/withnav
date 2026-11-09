@@ -724,3 +724,36 @@ test("older answer completion cannot clear or fail a newer submitted operation",
   assert.equal(backend.history().filter(m => m.type === "permissionState").at(-1).resolution, "pending");
   backend.dispose();
 });
+
+test("the session list counts subagents like a full rescan, in time linear in the list", () => {
+  const { parseSessionList } = require("../out/tests/cognition.js");
+  const wire = [
+    { id: "P", agent: "build" },
+    { id: "c1", parent_session_id: "P", promptable: false, child_status: "running" },
+    { id: "c2", parent_session_id: "P", promptable: false, child_status: "failed" },
+    { parent_session_id: "P", child_status: "active" },
+    { id: "g1", parent_session_id: "c1", promptable: false },
+    { id: "g1", parent_session_id: "c2", promptable: false },
+    { id: "loop", parent_session_id: "loop" },
+    { id: "Q" },
+  ];
+  const [p, q] = parseSessionList({ sessions: wire });
+  assert.deepEqual([p.id, p.subagentCount, p.subagentsRunning, p.subagentsFailed], ["P", 3, 2, 1]);
+  assert.deepEqual([q.id, q.subagentCount], ["Q", 0]);
+
+  // 2000 roots, each above a chain of three subagents listed deepest first: every property read
+  // on the list and its sessions is counted, so the check does not depend on the machine's speed.
+  let reads = 0;
+  const watched = value => new Proxy(value, { get(target, key, receiver) { reads++; return Reflect.get(target, key, receiver); } });
+  const sessions = [];
+  for (let r = 0; r < 2000; r++) {
+    sessions.push(watched({ id: `r${r}-3`, parent_session_id: `r${r}-2`, promptable: false }));
+    sessions.push(watched({ id: `r${r}-2`, parent_session_id: `r${r}-1`, promptable: false }));
+    sessions.push(watched({ id: `r${r}-1`, parent_session_id: `r${r}`, promptable: false, child_status: "running" }));
+    sessions.push(watched({ id: `r${r}`, title: `Root ${r}` }));
+  }
+  const list = parseSessionList({ sessions: watched(sessions) });
+  assert.equal(list.length, 2000);
+  assert.ok(list.every(item => item.subagentCount === 3 && item.subagentsRunning === 1));
+  assert.ok(reads < 40 * sessions.length, `${reads} reads for ${sessions.length} sessions`);
+});

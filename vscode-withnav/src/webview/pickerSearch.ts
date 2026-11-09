@@ -8,3 +8,7 @@ export function ranked<T>(items: T[], query: string, name: (item: T) => string, 
     .sort((a, b) => rank(a) - rank(b));
 }
 export const PICKER_LIMIT = 50;
+/** The picker count's suffix when more rows match than the list shows. */
+export function narrowHint(matches: number): string {
+  return matches > PICKER_LIMIT ? ` · Type to narrow (first ${PICKER_LIMIT} shown)` : "";
+}

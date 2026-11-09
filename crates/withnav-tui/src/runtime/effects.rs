@@ -879,7 +879,8 @@ async fn upload_one(
         .map_err(|e| format!("could not upload {}: {e}", attachment.name))
 }
 
-/// The bytes of an attached file, refusing one that grew past the limit since it was attached.
+/// The bytes of an attached file, refusing one that grew past the limit or was emptied since it
+/// was attached: an empty upload would only fail later, at the server, with a less clear error.
 fn read_attachment(path: &std::path::Path) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let file = std::fs::File::open(path).map_err(|e| format!("cannot read the file: {e}"))?;
@@ -891,6 +892,9 @@ fn read_attachment(path: &std::path::Path) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("cannot read the file: {e}"))?;
     if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
         return Err(too_big(bytes.len() as u64));
+    }
+    if bytes.is_empty() {
+        return Err("the file is empty; was it truncated after /attach?".into());
     }
     Ok(bytes)
 }
@@ -1321,5 +1325,23 @@ mod stream_event_tests {
                 message: "bad frame".into()
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::read_attachment;
+
+    // Given a file emptied between /attach and send
+    // Then reading it for upload fails instead of uploading zero bytes
+    #[test]
+    fn an_attachment_emptied_since_attach_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        std::fs::write(&path, b"").unwrap();
+        let error = read_attachment(&path).unwrap_err();
+        assert!(error.contains("empty"), "{error}");
+        std::fs::write(&path, b"x").unwrap();
+        assert_eq!(read_attachment(&path).unwrap(), b"x");
     }
 }

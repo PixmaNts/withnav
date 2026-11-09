@@ -203,13 +203,17 @@ pub fn paste(text: &str, ui: &mut UiState) -> bool {
     true
 }
 
-/// "in 59 min", "in 23 h", "when this conversation stops", or `None` once past.
+/// "in 59 min", "in 23 h", "when this conversation stops", "at an unknown time" for a timestamp
+/// that does not parse, or `None` once past. An unreadable timestamp is not shown as expired: the
+/// secret may well still be in use.
 pub fn expires_in(expires_at: Option<&str>, now: time::OffsetDateTime) -> Option<String> {
     let Some(at) = expires_at else {
         return Some("when this conversation stops".into());
     };
-    let at =
-        time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339).ok()?;
+    let Ok(at) = time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339)
+    else {
+        return Some("at an unknown time".into());
+    };
     let left = (at - now).whole_seconds();
     if left <= 0 {
         return None;
@@ -271,5 +275,9 @@ mod tests {
             Some("in 24 h")
         );
         assert_eq!(expires_in(Some("1969-12-31T00:00:00Z"), now), None);
+        assert_eq!(
+            expires_in(Some("not a date"), now).as_deref(),
+            Some("at an unknown time")
+        );
     }
 }

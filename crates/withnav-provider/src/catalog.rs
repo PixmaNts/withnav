@@ -90,8 +90,8 @@ pub struct Limits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort_tiers: Option<Vec<String>>,
     /// Whether the model takes image input, as the provider's list reports it
-    /// (`input_modalities`, else `capabilities.vision`). `None`: not reported.
-    /// It fills the alias's `images` when models.json leaves that unset.
+    /// (`input_modalities`, else `capabilities.vision`). `None`: not reported. It fills an
+    /// alias's `images` when models.json leaves it unset; the cache file keeps the name `vision`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<bool>,
 }

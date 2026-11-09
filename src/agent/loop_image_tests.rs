@@ -41,7 +41,7 @@ impl AttachmentLoader for FakeLoader {
                     let result = if fail.contains(&id.as_str()) {
                         Err("row missing".to_string())
                     } else {
-                        Ok(ImagePayload::from_bytes("image/png", b"\x89PNG"))
+                        ImagePayload::from_bytes("image/png", b"\x89PNG")
                     };
                     (id, result)
                 })

@@ -370,7 +370,7 @@ async fn run_steps_inner(
                 sent_ids = ?sent,
                 unavailable = image_ids.len() - sent.len(),
                 placeholders = image_plan.placeholders(),
-                base64_bytes = image_payloads.values().map(|p| p.base64.len()).sum::<usize>(),
+                base64_bytes = image_payloads.values().map(|p| p.base64_len()).sum::<usize>(),
                 "request images"
             );
         }

@@ -172,12 +172,16 @@ pub struct EnvelopeContext<'a> {
 }
 
 /// Numbers the images of one event and shows each as a notice under it. A value that is not a
-/// list of references shows nothing.
+/// list shows nothing; an item that is not a reference is skipped, so one malformed item does not
+/// hide the valid images beside it.
 fn push_images(s: &mut SessionState, seq: u64, value: &Value) {
-    let Ok(images) = Vec::<ImageRef>::deserialize(value) else {
+    let Some(items) = value.as_array() else {
         return;
     };
-    for (i, image) in images.into_iter().enumerate() {
+    let images = items
+        .iter()
+        .filter_map(|item| ImageRef::deserialize(item).ok());
+    for (i, image) in images.enumerate() {
         let mut chip = format!(
             "image {}: {}",
             s.conversation.images.len() + 1,

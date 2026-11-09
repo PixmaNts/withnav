@@ -8,6 +8,8 @@ import { humanSize } from "./Images";
 
 /** Most images one message carries; the server refuses more. */
 const MAX_IMAGES = 8;
+/** Largest image the server stores (`MAX_IMAGE_BYTES` in `src/session/attachments.rs`): it refuses a bigger upload. */
+const MAX_IMAGE_BYTES = 3_932_160;
 
 /** Image files among `files`: the server decides the real type from the bytes. */
 function pictures(files: Iterable<File>): File[] {
@@ -60,10 +62,16 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
   const [files, setFiles] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
   const addFiles = (incoming: File[]) => {
-    if (!incoming.length) return;
+    // Refused before the upload: the server would answer 413 only once the message is sent.
+    const tooLarge = incoming.filter((f) => f.size > MAX_IMAGE_BYTES);
+    const accepted = incoming.filter((f) => f.size <= MAX_IMAGE_BYTES);
     // The updater stays pure (StrictMode runs it twice): the notice is raised here, once.
-    if (files.length + incoming.length > MAX_IMAGES) props.onError(`A message carries at most ${MAX_IMAGES} images.`);
-    setFiles((current) => [...current, ...incoming].slice(0, MAX_IMAGES));
+    const notices: string[] = [];
+    if (tooLarge.length) notices.push(`${tooLarge.map((f) => f.name || "image").join(", ")}: larger than 3.75 MiB, not attached.`);
+    if (files.length + accepted.length > MAX_IMAGES) notices.push(`A message carries at most ${MAX_IMAGES} images.`);
+    if (notices.length) props.onError(notices.join(" "));
+    if (!accepted.length) return;
+    setFiles((current) => [...current, ...accepted].slice(0, MAX_IMAGES));
   };
 
   useImperativeHandle(ref, () => ({
@@ -113,19 +121,25 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
       return;
     }
     setSending(true);
-    if (routed.type === "server") {
-      await props.onServerCommand(routed.name, routed.arguments);
-      setText("");
-    } else {
-      // An empty text block is dropped, unless it carries the delegation line.
-      const content = line.trim() || delegate ? routed.content : routed.content.filter((b) => b.type !== "text");
-      if (await props.onSend(content, files)) {
+    // A failure keeps the draft and unlocks the composer: nothing else would ever unlock it.
+    try {
+      if (routed.type === "server") {
+        await props.onServerCommand(routed.name, routed.arguments);
         setText("");
-        setFiles([]);
-        setDelegate(false);
+      } else {
+        // An empty text block is dropped, unless it carries the delegation line.
+        const content = line.trim() || delegate ? routed.content : routed.content.filter((b) => b.type !== "text");
+        if (await props.onSend(content, files)) {
+          setText("");
+          setFiles([]);
+          setDelegate(false);
+        }
       }
+    } catch (e) {
+      props.onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
     }
-    setSending(false);
   };
 
   const chooseSlash = (row: CommandInfo) => {

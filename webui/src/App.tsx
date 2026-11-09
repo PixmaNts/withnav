@@ -351,6 +351,8 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const storedSecrets = useMemo(() => chat.view.items.reduce((n, item) => n + (item.kind === "turn" ? item.parts.filter((p) => p.type === "question" && p.secretNote?.outcome === "stored").length : 0), 0), [chat.view.items]);
   const { refreshSecrets } = chat;
   useEffect(() => { if (storedSecrets) void refreshSecrets(); }, [storedSecrets, refreshSecrets]);
+  // On opening, and on a session change while open: the new session's list would stay "Loading…".
+  useEffect(() => { if (secretsOpen) void refreshSecrets(); }, [secretsOpen, refreshSecrets]);
   const composerDisabled = !workspace ? "Choose a workspace on the left to start." : chat.readOnly ? chat.summary?.resume_disabled_reason ?? "This session is read-only." : undefined;
 
   const crumbWs = workspace ? baseName(workspace) : "WithNav";
@@ -401,7 +403,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
           {chat.secrets && (
             <span className="secrets-anchor">
               <button type="button" className="icon-btn" aria-haspopup="dialog" aria-expanded={secretsOpen} aria-label="Secrets of this session" title="Secrets"
-                onClick={() => { const open = !secretsOpen; setSecretsOpen(open); if (open) void chat.refreshSecrets(); }}>
+                onClick={() => setSecretsOpen(!secretsOpen)}>
                 <Key size={16} />
               </button>
               {secretsOpen && <SecretsList list={chat.secrets.list} error={chat.secretError} onRevoke={(name) => void chat.secrets?.revoke(name).catch((e) => chat.setError(e instanceof Error ? e.message : String(e)))} />}

@@ -150,6 +150,26 @@ async fn registry_call_pagination_conversion_cancel_crash_and_restart() {
             .await
             .is_err()
     );
+    // The read path takes the one MCP App HTML item and names the server and URI otherwise.
+    let multi = manager
+        .read_ui_resource("fixture", "ui://fixture/multi.html")
+        .await
+        .unwrap_err();
+    assert!(
+        multi.contains("2")
+            && multi.contains("ui://fixture/multi.html")
+            && multi.contains("fixture")
+    );
+    let plain = manager
+        .read_ui_resource("fixture", "ui://fixture/plain.html")
+        .await
+        .unwrap_err();
+    assert!(plain.contains("no text/html") && plain.contains("ui://fixture/plain.html"));
+    let malformed = manager
+        .read_ui_resource("fixture", "ui://fixture/malformed.html")
+        .await
+        .unwrap_err();
+    assert!(malformed.contains("ui://fixture/malformed.html") && malformed.contains("fixture"));
     let direct = manager
         .call_ui_tool(
             "fixture",

@@ -55,7 +55,7 @@ function cross(observed: Observed, isIntersecting: boolean) {
 beforeEach(() => {
   observers = [];
   attachment.mockClear();
-  vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: () => "blob:x", revokeObjectURL: () => {} }));
+  vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: () => {} });
 });
 afterEach(() => {
   vi.unstubAllGlobals();

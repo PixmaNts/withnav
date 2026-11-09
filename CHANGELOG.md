@@ -8,6 +8,14 @@ requests land in `develop`.
 
 ### Added
 
+- `nav tui` joins the server an editor's `nav lsp` runs for the same workspace, so a conversation
+  started in VS Code (or another editor) is listed and usable in the terminal client, and the
+  reverse. The LSP publishes its port and token in an owner-only file (`0600`, in a `0700`
+  directory) under `$XDG_RUNTIME_DIR/withnav-servers/` and removes it when it exits; the terminal
+  client ignores and removes a file whose process, port or token is gone. Without an editor, with
+  `--models`, without a private `$XDG_RUNTIME_DIR` or on Windows, `nav tui` starts its own server
+  as before.
+
 - Subagents: a child that uses its step budget (50 by default) no longer waits only for you. It
   pauses, and its parent is woken with a notice giving the steps used, the top-ups used and left,
   and the last tool call and result. The parent can continue it with one more budget, up to three

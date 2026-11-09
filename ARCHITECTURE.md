@@ -30,7 +30,8 @@ nav lsp   (one process, two channels: ADR 0006)
    ├─ mcp/         service-owned stdio clients; ready tools frozen into each session registry
    └─ provider/    model access, re-exported from withnav-provider (config, auth, one HTTP client, chat SSE, FIM, System One) plus the assignments and layers that read `config.json`
 
-nav tui   (the terminal client; an HTTP + SSE client of a session server, embedded or `--url`)
+nav tui   (the terminal client; an HTTP + SSE client of a session server: the editor's `nav lsp` one
+           for the same workspace when published, else embedded, or `--url`)
    └─ withnav-tui → withnav-client (HTTP + SSE) → withnav-client-api (wire contract)
                  └→ withnav-client-state (events → conversation state)
 ```
@@ -572,6 +573,7 @@ as before; no supervision state is restored. The event catalog (`bus/event.rs`,
 | `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of every permission decision (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
 | `~/.config/withnav/flows/`, `<workspace>/.withnav/flows/` | global and workspace flow definitions; they load only once validated at their current content | the Captain, the Studio |
 | `~/.config/withnav/config.json` key `mcp` | stdio MCP server declarations | the Captain |
+| `$XDG_RUNTIME_DIR/withnav-servers/<key>-<instance>.json` | the port and bearer token of a running `nav lsp` server, mode 0600 (directory 0700), so `nav tui` can join it; removed when the LSP exits | `server/discovery.rs` (`nav lsp`; `nav tui` removes stale ones) |
 | `~/.local/share/withnav/credentials/secrets.json` | workspace-scoped secrets with a timed availability, in plain text, mode 0600 (directory 0700), each with its expiry; removed when empty | `secrets/` (`Service::submit_secret`, expiry, revocation) |
 
 Data and config paths come from `paths.rs` and `withnav-provider`'s `dirs.rs` (`config_dir`, `data_dir`, with `auth::default_config_dir`). On every start `paths::migrate_legacy`
@@ -799,6 +801,11 @@ the later 0.6 scope, not this contract.
   `mcp__<server>__<tool>`, so permissions, events and the context budget need no MCP-specific code.
 - Historical `pipeline.toml` parsing belongs only in `src/flows/migrate/legacy.rs`; it has no runtime engine.
 - The embedded server both clients start (`EmbeddedServer`, the bearer token, the health check) is in `app/embedded.rs`; do not copy it into a new subcommand.
+- Finding a running server for a workspace is `server/discovery.rs`: `nav lsp` publishes its
+  server there (`publish_for`, one owner-only file per process under
+  `$XDG_RUNTIME_DIR/withnav-servers/`, removed on exit) and `nav tui` joins it (`find`: pid, health
+  and an authenticated request decide live, proven-stale files are removed). Another client that
+  should join an editor's server uses the same two functions, never its own file.
 - A workspace's git state is read by `workspace/git.rs`, for any caller; the server must not import `withnav-tui`.
 - `crates/withnav-tui` is a server client: HTTP + SSE only, through `withnav-client`. It shares the wire types of `withnav-client-api` and never depends on the root package: anything it needs from the machine is a method of `TuiHost`. A type that must be on the wire goes in `withnav-client-api`; per-conversation state derived from events goes in `withnav-client-state`.
 - Tests use `tests/common/`: `server.rs` (configs, servers, sessions, messages), `sse.rs` (scripted

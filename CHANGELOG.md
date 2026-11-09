@@ -8,6 +8,13 @@ requests land in `develop`.
 
 ### Added
 
+- Reasoning kept across tool calls on OpenRouter-style gateways: when a model's stream carries
+  `reasoning_details` (signed `reasoning.text`, `reasoning.summary`, `reasoning.encrypted`), WithNav
+  assembles the entries and sends them back with the assistant message on the next step of the
+  turn, to the same model at the same endpoint only. Entries from the OpenAI Responses format
+  (`openai-responses-v1`) are kept but not sent back yet. A malformed stream frame no longer
+  quotes the frame in its error message.
+
 - Subagents: a child that uses its step budget (50 by default) no longer waits only for you. It
   pauses, and its parent is woken with a notice giving the steps used, the top-ups used and left,
   and the last tool call and result. The parent can continue it with one more budget, up to three

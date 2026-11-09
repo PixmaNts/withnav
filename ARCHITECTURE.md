@@ -782,7 +782,12 @@ the later 0.6 scope, not this contract.
   producer (wire, endpoint, model), and `opaque::retain_for` is the only replay rule, applied in
   `compaction::project_reasoning` and again in `ModelClient::chat_turn`. A new wire marks its
   kinds in `opaque::sendable` and writes them in its own serializer. Opaque data never goes into
-  an event, a summary or a client type.
+  an event, a summary or a client type. Chat Completions captures OpenRouter's `reasoning_details`
+  (`reasoning_details.rs`): one item per assembled entry (grouped by `index`, `text`/`summary`
+  fragments concatenated, a later chunk at the same index adds its `signature`), kind
+  `reasoning_details`, written back as `"reasoning_details": [...]` on the assistant message for the
+  same producer. Entries in `format: openai-responses-v1` are captured under kind
+  `reasoning_details.openai-responses-v1`, which no wire sends until replaying them is verified.
 - A new model call goes through `ModelClient`. A new navigator layer seam goes in `ports.rs`, with
   its adapter in `models.rs` and its fake in `tests/common/navigator.rs`.
 - `nav run` exit status mapping lives in `app.rs`: 0 complete, 1 error, 2 yielded, 3 permission

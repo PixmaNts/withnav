@@ -17,6 +17,7 @@ pub mod fim;
 pub mod model_name;
 pub mod opaque;
 pub mod openai;
+pub mod reasoning_details;
 pub mod sse;
 pub mod systemone;
 #[cfg(any(test, feature = "test-support"))]
@@ -46,6 +47,7 @@ struct Accumulator {
     tool_calls: BTreeMap<usize, ToolCallState>,
     finish_reason: Option<String>,
     usage: Option<Usage>,
+    details: reasoning_details::Assembler,
 }
 
 impl Accumulator {
@@ -74,6 +76,9 @@ impl Accumulator {
             {
                 self.thinking.push_str(&thinking);
                 on_delta(StreamDelta::Thinking { text: thinking });
+            }
+            if let Some(details) = delta.reasoning_details {
+                self.details.push(details);
             }
             if let Some(content) = delta.content
                 && !content.is_empty()
@@ -187,13 +192,18 @@ where
                         let chunk: ChatChunk = match serde_json::from_str(&payload) {
                             Ok(c) => c,
                             Err(e) => {
-                                // Response stream chunks contain no request credentials;
-                                // still cap the excerpt to avoid dumping a whole response.
-                                let excerpt: String =
-                                    scrub_data_urls(&payload).chars().take(200).collect();
+                                // Neither the frame nor serde's message goes into the
+                                // error: a frame can hold signed or encrypted reasoning,
+                                // and serde echoes string values it rejects. Kind and
+                                // position are enough to find the fault.
                                 return Err(ProviderError::Api {
                                     status: 0,
-                                    message: format!("malformed SSE JSON: {e}; frame: {excerpt}"),
+                                    message: format!(
+                                        "malformed SSE JSON ({:?}) at line {} column {}",
+                                        e.classify(),
+                                        e.line(),
+                                        e.column()
+                                    ),
                                     partial: Some(Box::new(acc.snapshot())),
                                 });
                             }
@@ -214,13 +224,11 @@ where
             partial: Some(Box::new(acc.snapshot())),
         });
     }
+    // Only a completed response gets this far, so an incomplete one is never
+    // replayed.
     Ok(ChatTurn {
         message: acc.snapshot(),
-        // Chat Completions carries no opaque reasoning today. A dialect that
-        // does (signed thinking, encrypted reasoning items) collects its items
-        // in the accumulator and returns them here; only a completed response
-        // gets this far, so an incomplete one is never replayed.
-        opaque: Vec::new(),
+        opaque: acc.details.finish(),
     })
 }
 
@@ -419,7 +427,7 @@ mod accumulator_tests {
     }
 
     #[tokio::test]
-    async fn a_chat_completions_turn_carries_the_message_and_no_opaque_items() {
+    async fn a_turn_without_reasoning_details_carries_no_opaque_items() {
         let events = vec![chunk_text("hi"), "[DONE]".to_string()];
         let mut noop = |_d: StreamDelta| {};
         let turn = consume_turn(event_stream(events), &CancellationToken::new(), &mut noop)
@@ -427,6 +435,47 @@ mod accumulator_tests {
             .unwrap();
         assert_eq!(turn.message.text, "hi");
         assert!(turn.opaque.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reasoning_details_fragments_become_one_item_per_entry() {
+        let events = vec![
+            r#"{"choices":[{"delta":{"reasoning_content":"a ","reasoning_details":[{"type":"reasoning.text","text":"a ","index":0}]}}]}"#,
+            r#"{"choices":[{"delta":{"reasoning_content":"b","reasoning_details":[{"type":"reasoning.text","text":"b","index":0}]}}]}"#,
+            r#"{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","signature":"SIG","index":0}]}}]}"#,
+            r#"{"choices":[{"delta":{"reasoning_details":null}}]}"#,
+            r#"{"choices":[{"delta":{"reasoning_details":"not an array"}}]}"#,
+            "[DONE]",
+        ];
+        let mut noop = |_d: StreamDelta| {};
+        let turn = consume_turn(
+            event_stream(ev(events)),
+            &CancellationToken::new(),
+            &mut noop,
+        )
+        .await
+        .unwrap();
+        assert_eq!(turn.message.thinking, "a b");
+        assert_eq!(turn.opaque.len(), 1);
+        assert_eq!(turn.opaque[0].kind, "reasoning_details");
+        let entry: Value = serde_json::from_str(&turn.opaque[0].data).unwrap();
+        assert_eq!(
+            entry,
+            serde_json::json!({"type":"reasoning.text","text":"a b","index":0,"signature":"SIG"})
+        );
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_stream_returns_no_opaque_items() {
+        let events = vec![
+            r#"{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"a","index":0}]}}]}"#
+                .to_string(),
+        ];
+        let mut noop = |_d: StreamDelta| {};
+        let err = consume_turn(event_stream(events), &CancellationToken::new(), &mut noop)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::Api { .. }));
     }
 
     #[tokio::test]
@@ -458,7 +507,7 @@ mod accumulator_tests {
     }
 
     #[tokio::test]
-    async fn invalid_stream_arrays_fail_with_partial_and_frame_excerpt() {
+    async fn invalid_stream_arrays_fail_with_the_partial_and_no_frame_text() {
         for frame in [
             r#"{"choices":"bad"}"#,
             r#"{"choices":{}}"#,
@@ -480,7 +529,7 @@ mod accumulator_tests {
                 } => {
                     assert_eq!(status, 0);
                     assert!(message.contains("malformed SSE JSON"));
-                    assert!(message.contains(frame));
+                    assert!(message.contains("line 1 column"), "{message}");
                     assert_eq!(partial.unwrap().text, "partial");
                 }
                 other => panic!("expected Api error, got {other:?}"),
@@ -489,14 +538,14 @@ mod accumulator_tests {
     }
 
     #[tokio::test]
-    async fn malformed_frame_excerpt_is_bounded_and_unicode_safe() {
-        let frame = format!("{{\"choices\":\"{}\"}}", "é".repeat(300));
-        let err = run(vec![&frame, "[DONE]"]).await.unwrap_err();
+    async fn a_malformed_frame_error_never_quotes_the_frame() {
+        // A string where an array belongs: serde's own message would echo it.
+        let frame = r#"{"choices":"SIGNATURE-BYTES-1234567890"}"#;
+        let err = run(vec![frame, "[DONE]"]).await.unwrap_err();
         match err {
             ProviderError::Api { message, .. } => {
-                let excerpt = message.split_once("; frame: ").unwrap().1;
-                assert_eq!(excerpt.chars().count(), 200);
-                assert_eq!(excerpt, frame.chars().take(200).collect::<String>());
+                assert!(!message.contains("SIGNATURE"), "{message}");
+                assert!(!message.contains("frame:"), "{message}");
             }
             other => panic!("expected Api error, got {other:?}"),
         }

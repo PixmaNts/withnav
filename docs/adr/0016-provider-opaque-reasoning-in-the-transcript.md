@@ -2,7 +2,8 @@
 
 Date: 2026-10-21
 
-Status: Accepted — storage, replay rule and provider seam implemented; no wire captures data yet.
+Status: Accepted — storage, replay rule and provider seam implemented; the Chat Completions wire
+captures and replays OpenRouter's `reasoning_details` (2026-11-09); no other wire captures data yet.
 
 The vocabulary is in [CONTEXT.md](../../CONTEXT.md).
 
@@ -73,7 +74,21 @@ the row untouched (before, it resumed as an empty conversation whose next snapsh
 stored history). An older build reading a newer row ignores the field and saves it back without
 it: the reasoning is lost, the conversation is not.
 
-### What reaches clients
+#### Chat Completions: `reasoning_details`
+
+A gateway that streams `choices[].delta.reasoning_details` has its entries assembled (grouped by
+integer `index`, `text` and `summary` fragments concatenated in arrival order, the first value of
+any other field kept, a trailing `signature` chunk joined to its entry) into one item per entry, in
+index order, kind `reasoning_details`. The item's `data` is the assembled entry, not the
+gateway's fragments: string contents are exact, key order is not. The serializer writes the items
+of that kind back as `"reasoning_details": [...]` on the assistant message, after
+`reasoning_content`. Entries whose `format` is `openai-responses-v1` are stored under
+`reasoning_details.openai-responses-v1`, a kind no wire sends: replaying one returned HTTP 500
+through OmniRoute on 2026-11-09 while the Anthropic format was accepted, and it is not known
+whether the gateway or the payload is at fault. Errors never quote a stream frame, and an upstream
+error message has the signatures and encrypted data of the request blanked out.
+
+## What reaches clients
 
 Nothing. `AssistantMessage`, `StreamDelta` and every event are unchanged. Opaque data stays
 between the provider, the transcript and the database.

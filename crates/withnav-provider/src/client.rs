@@ -12,6 +12,7 @@ use crate::config::{ProviderConfig, Variant};
 use crate::error::ProviderError;
 use crate::opaque::{OpaqueItem, Producer, retain_for};
 use crate::openai::{ChatMessage, ChatRequest, ClientCache};
+use crate::reasoning_details;
 use crate::{AssistantMessage, StreamDelta, extract_error_message, start_and_consume_turn};
 
 /// The largest model list accepted.
@@ -209,7 +210,9 @@ impl ModelClient {
                 .send(),
         )
         .await??;
-        start_and_consume_turn(response, cancel, on_delta).await
+        start_and_consume_turn(response, cancel, on_delta)
+            .await
+            .map_err(|error| scrub_echoed_reasoning(error, &request))
     }
 }
 
@@ -246,6 +249,35 @@ fn enforce_replay_rule(request: &mut ChatRequest, base_url: &str) {
         if let ChatMessage::Assistant { opaque, .. } = message {
             retain_for(opaque, &destination);
         }
+    }
+}
+
+/// An error message that quotes the request back must not carry the opaque
+/// reasoning the request held.
+fn scrub_echoed_reasoning(error: ProviderError, request: &ChatRequest) -> ProviderError {
+    let ProviderError::Api {
+        status,
+        message,
+        partial,
+    } = error
+    else {
+        return error;
+    };
+    let sent = request
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            ChatMessage::Assistant {
+                opaque: Some(opaque),
+                ..
+            } => Some(opaque.items.iter()),
+            _ => None,
+        })
+        .flatten();
+    ProviderError::Api {
+        status,
+        message: reasoning_details::scrub_echoed(message, sent),
+        partial,
     }
 }
 

@@ -143,7 +143,8 @@ pub enum ChatMessage {
         #[serde(default)]
         tool_calls: Vec<RequestToolCall>,
         /// Reasoning only its producer can read back. Kept in the stored
-        /// transcript, never written by the Chat Completions serializer.
+        /// transcript; the Chat Completions serializer writes only the kinds
+        /// `opaque::sendable` allows for that wire.
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
@@ -355,11 +356,12 @@ impl Serialize for Wire<'_> {
                 content,
                 reasoning_content,
                 tool_calls,
-                ..
+                opaque,
             } => {
-                // Same keys, same order as the derived form; `opaque` is stored
-                // in the transcript but is never part of this wire body.
-                let mut object = serializer.serialize_struct("ChatMessage", 4)?;
+                // Same keys, same order as the derived form, then the opaque
+                // reasoning this wire can send. The producer was checked
+                // before the request reached the serializer.
+                let mut object = serializer.serialize_struct("ChatMessage", 5)?;
                 object.serialize_field("role", "assistant")?;
                 if let Some(content) = content {
                     object.serialize_field("content", content)?;
@@ -370,11 +372,34 @@ impl Serialize for Wire<'_> {
                 if !tool_calls.is_empty() {
                     object.serialize_field("tool_calls", tool_calls)?;
                 }
+                let details = reasoning_details_to_send(opaque);
+                if !details.is_empty() {
+                    object.serialize_field("reasoning_details", &details)?;
+                }
                 object.end()
             }
             other => other.serialize(serializer),
         }
     }
+}
+
+/// The stored entries of `opaque` that Chat Completions writes back, as the JSON
+/// text they were stored with (emitted as is, not re-encoded).
+fn reasoning_details_to_send(
+    opaque: &Option<OpaqueReasoning>,
+) -> Vec<Box<serde_json::value::RawValue>> {
+    let Some(opaque) = opaque else {
+        return Vec::new();
+    };
+    opaque
+        .items
+        .iter()
+        .filter(|item| {
+            item.kind == crate::reasoning_details::KIND
+                && crate::opaque::sendable(crate::opaque::CHAT_COMPLETIONS, &item.kind)
+        })
+        .filter_map(|item| serde_json::value::RawValue::from_string(item.data.clone()).ok())
+        .collect()
 }
 
 struct UserParts<'a> {
@@ -466,6 +491,10 @@ pub struct ChunkDelta {
     pub content: Option<String>,
     #[serde(default)]
     pub reasoning_content: Option<String>,
+    /// OpenRouter's entries for this chunk; any shape is accepted here and the
+    /// assembler ignores what is not an array of objects.
+    #[serde(default)]
+    pub reasoning_details: Option<Value>,
     #[serde(default, deserialize_with = "null_to_default")]
     pub tool_calls: Vec<ToolCallDelta>,
 }

@@ -489,8 +489,7 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
 }
 
 fn project_roots(cx: &FloorContext) -> Vec<PathBuf> {
-    std::iter::once(&cx.workspace)
-        .chain(&cx.writable_roots)
+    cx.project_roots()
         .filter_map(|root| resolve_path(&root.to_string_lossy(), cx))
         .collect()
 }
@@ -549,8 +548,12 @@ fn writes_inside_temp(input: &Input<'_>) -> bool {
         .iter()
         .filter_map(|root| resolve_path(&root.to_string_lossy(), input.cx))
         .collect();
-    let workspace = resolve_path(&input.cx.workspace.to_string_lossy(), input.cx);
-    inside(&target, &roots) && !workspace.is_some_and(|workspace| target.starts_with(workspace))
+    // The workspace and its repository's worktrees are judged as the project.
+    let worktrees: Vec<PathBuf> = std::iter::once(&input.cx.workspace)
+        .chain(&input.cx.worktree_roots)
+        .filter_map(|root| resolve_path(&root.to_string_lossy(), input.cx))
+        .collect();
+    inside(&target, &roots) && !worktrees.iter().any(|root| target.starts_with(root))
 }
 
 struct Item {
@@ -869,6 +872,7 @@ mod tests {
         let cx = FloorContext {
             workspace: root.join("project"),
             writable_roots: Vec::new(),
+            worktree_roots: Vec::new(),
             readable_roots: vec![root.join("skills")],
             temp_roots: vec![root.join("tmp")],
             config_dir: Some(root.join("config")),
@@ -1192,6 +1196,161 @@ mod tests {
         // Outside the roots a read goes through the rules.
         let outside = f.root().join("outside/x").display().to_string();
         let decision = f.decide(Control::Normal, &file("read", &outside));
+        assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+    }
+
+    /// A fixture whose repository has a second worktree `wt`, next to the project.
+    fn with_worktree() -> (Fixture, PathBuf) {
+        let mut f = fixture();
+        let wt = f.root().join("wt");
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        f.cx.worktree_roots = vec![wt.clone()];
+        (f, wt)
+    }
+
+    fn in_wt(wt: &Path, name: &str) -> String {
+        wt.join(name).display().to_string()
+    }
+
+    #[test]
+    fn a_worktree_of_the_repository_is_judged_as_the_workspace() {
+        let (f, wt) = with_worktree();
+        f.add("read", "*", Effect::Ask);
+        f.add("write", "*", Effect::Allow);
+        f.add("edit", "*", Effect::Allow);
+        for call in [
+            file("read", &in_wt(&wt, "src/a.rs")),
+            file("grep", &in_wt(&wt, "src")),
+            file("glob", &in_wt(&wt, "src")),
+            file("write", &in_wt(&wt, "src/new.rs")),
+            file("edit", &in_wt(&wt, "src/a.rs")),
+        ] {
+            // Reads never reach the flow; a write's flow answer is the rules' word.
+            let flow = if matches!(call.name.as_str(), "write" | "edit") {
+                FlowAnswer::ApplyRule
+            } else {
+                FlowAnswer::Deny
+            };
+            let (decision, asked) = f.decide_with(Control::Normal, &call, 1, flow);
+            let relative = Path::new(call.args["path"].as_str().unwrap())
+                .strip_prefix(&wt)
+                .unwrap()
+                .display()
+                .to_string();
+            let relative = file(&call.name, &relative);
+            let (same, _) = f.decide_with(Control::Normal, &relative, 1, flow);
+            assert_eq!(run_by(&decision), Some(ApprovedBy::Rule), "{call:?}");
+            assert_eq!(decision.verdict, same.verdict, "{call:?}");
+            assert_eq!(decision.trace.rule_id, same.trace.rule_id, "{call:?}");
+            assert_eq!(decision.trace.effect, same.trace.effect, "{call:?}");
+            assert_eq!(
+                asked,
+                usize::from(flow == FlowAnswer::ApplyRule),
+                "{call:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn another_repository_and_plain_folders_still_ask() {
+        let (f, _) = with_worktree();
+        f.add("read", "*", Effect::Allow);
+        f.add("write", "*", Effect::Allow);
+        for call in [
+            file("read", &f.root().join("outside/x").display().to_string()),
+            file(
+                "write",
+                &f.root().join("other-repo/x").display().to_string(),
+            ),
+            // A sibling that only shares the worktree's name prefix is another folder.
+            file("write", &f.root().join("wt-other/x").display().to_string()),
+        ] {
+            let decision = f.decide(Control::Normal, &call);
+            assert!(
+                matches!(decision.verdict, Verdict::AskCaptain { .. }),
+                "{call:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_a_worktree_does_not_inherit_the_exception() {
+        let (f, wt) = with_worktree();
+        f.add("read", "*", Effect::Allow);
+        f.add("write", "*", Effect::Allow);
+        let outside = f.root().join("outside");
+        std::os::unix::fs::symlink(&outside, wt.join("out")).unwrap();
+        std::os::unix::fs::symlink(f.root().join("home/.ssh"), wt.join("ssh")).unwrap();
+        for call in [
+            file("write", &in_wt(&wt, "out/x")),
+            file("read", &in_wt(&wt, "out/x")),
+            file("write", &in_wt(&wt, "ssh/key")),
+        ] {
+            let decision = f.decide(Control::Normal, &call);
+            assert!(
+                matches!(decision.verdict, Verdict::AskCaptain { .. }),
+                "{call:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_floor_applies_inside_a_worktree() {
+        let (mut f, wt) = with_worktree();
+        f.add("write", "*", Effect::Allow);
+        f.add("read", "*", Effect::Allow);
+        // The configuration, the database and a credential file asked in the workspace; they ask here.
+        std::fs::create_dir_all(wt.join("config")).unwrap();
+        f.cx.config_dir = Some(wt.join("config"));
+        f.cx.data_dir = Some(wt.join("data"));
+        for path in [
+            "config/config.json",
+            "data/withnav.db",
+            ".env",
+            ".ssh/id_rsa",
+        ] {
+            let call = file("write", &in_wt(&wt, path));
+            let decision = f.decide(Control::Normal, &call);
+            assert!(
+                matches!(decision.verdict, Verdict::AskCaptain { .. }),
+                "{path}"
+            );
+            assert!(decision.trace.floor.is_some(), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_written_rule_still_wins_inside_a_worktree() {
+        let (f, wt) = with_worktree();
+        f.add("write", "*", Effect::Allow);
+        let denied = in_wt(&wt, "src/denied.rs");
+        f.add("write", &literal(&denied), Effect::Deny);
+        let decision = f.decide(Control::Normal, &file("write", &denied));
+        assert!(matches!(decision.verdict, Verdict::Deny { .. }));
+        let asked = in_wt(&wt, "src/asked.rs");
+        f.add("write", &literal(&asked), Effect::Ask);
+        let decision = f.decide(Control::Normal, &file("write", &asked));
+        assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+        let free = in_wt(&wt, "src/free.rs");
+        let decision = f.decide(Control::Normal, &file("write", &free));
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
+    }
+
+    #[test]
+    fn a_worktree_under_temp_is_not_a_temp_write() {
+        let (mut f, wt) = with_worktree();
+        f.cx.temp_roots = vec![f.root()];
+        f.cx.workspace = f.root().join("project");
+        f.add("write", "*", Effect::Allow);
+        // Judged as the workspace: the flow is consulted, not short-circuited as scratch space.
+        let (decision, asked) = f.decide_with(
+            Control::Normal,
+            &file("write", &in_wt(&wt, "src/a.rs")),
+            1,
+            FlowAnswer::AskCaptain,
+        );
+        assert_eq!(asked, 1);
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
     }
 

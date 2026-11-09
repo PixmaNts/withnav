@@ -65,6 +65,9 @@ pub struct FloorContext {
     pub workspace: PathBuf,
     /// Where the agent may change files; part of the project.
     pub writable_roots: Vec<PathBuf>,
+    /// The other git worktrees of the workspace's repository: part of the project, like the
+    /// workspace. Read from git when a call lands outside the project, never configured.
+    pub worktree_roots: Vec<PathBuf>,
     /// Extra places `read`, `grep` and `glob` may look, never change.
     pub readable_roots: Vec<PathBuf>,
     /// Temporary directories: the system temp directory and the scratch
@@ -87,12 +90,20 @@ pub fn system_temp_roots() -> Vec<PathBuf> {
 }
 
 impl FloorContext {
+    /// The project: the workspace, the writable roots and the repository's other worktrees.
+    pub fn project_roots(&self) -> impl Iterator<Item = &PathBuf> {
+        std::iter::once(&self.workspace)
+            .chain(&self.writable_roots)
+            .chain(&self.worktree_roots)
+    }
+
     /// The roots of a tool context with the configured config and data
     /// directories of this machine.
     pub fn from_environment(cx: &crate::tools::ToolContext) -> Self {
         Self {
             workspace: cx.workspace.clone(),
             writable_roots: cx.writable_roots.clone(),
+            worktree_roots: Vec::new(),
             readable_roots: cx.readable_roots.clone(),
             temp_roots: system_temp_roots(),
             config_dir: crate::provider::auth::default_config_dir(),
@@ -847,11 +858,7 @@ pub fn location(
             .collect()
     };
     let (scratch, temp) = (roots(scratch), roots(&cx.temp_roots));
-    let project = roots(
-        &std::iter::once(cx.workspace.clone())
-            .chain(cx.writable_roots.iter().cloned())
-            .collect::<Vec<_>>(),
-    );
+    let project = roots(&cx.project_roots().cloned().collect::<Vec<_>>());
     let place = |word: &str| match resolve_path(word, cx) {
         None => Location::Unknown,
         Some(path) if scratch.iter().any(|root| path.starts_with(root)) => Location::Scratch,
@@ -1133,6 +1140,7 @@ mod tests {
         let cx = FloorContext {
             workspace: root.join("project"),
             writable_roots: Vec::new(),
+            worktree_roots: Vec::new(),
             readable_roots: Vec::new(),
             temp_roots: Vec::new(),
             config_dir: Some(root.join("config")),

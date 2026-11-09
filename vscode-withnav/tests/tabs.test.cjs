@@ -676,6 +676,48 @@ test("agent picker: the star asks the host to toggle a favourite, and favourites
   dom.window.close();
 });
 
+test("image thumbnails: each button is named after the image and the open-beside action", () => {
+  const { dom, d, posts, tab, tabs } = page();
+  tabs(["t1"], "t1");
+  tab("t1", { type: "conversationOpened", id: "S", title: "S" });
+  tab("t1", { type: "message", id: "m", author: "captain", text: "look", images: [{ attachment_id: "a1", name: "shot.png", width: 640, height: 480 }, { attachment_id: "a2", name: "" }] });
+  const thumbs = [...d.querySelectorAll(".thumb")];
+  assert.deepEqual(thumbs.map(b => b.tagName), ["BUTTON", "BUTTON"]);
+  assert.deepEqual(thumbs.map(b => b.getAttribute("aria-label")), ["Open shot.png beside", "Open image beside"]);
+  thumbs[0].click();
+  assert.deepEqual(posts.at(-1), { type: "openImage", attachmentId: "a1", name: "shot.png", tab: "t1", generation: 1 });
+  dom.window.close();
+});
+
+test("agent picker: Ctrl+F toggles the highlighted agent's favorite from the keyboard and is announced", () => {
+  const { dom, send, view, posts, key } = agentPage();
+  view.querySelector(".agent-btn").click();
+  const search = view.querySelector(".agent-search");
+  assert.equal(search.getAttribute("aria-keyshortcuts"), "Control+F");
+  const hint = dom.window.document.getElementById(search.getAttribute("aria-describedby"));
+  assert(hint, "the search box is described by the shortcut hint");
+  assert.match(hint.textContent, /Ctrl\+F adds or removes the highlighted agent from favorites/);
+  assert.match(search.placeholder, /Ctrl\+F favorite/);
+  const ctrlF = (extra = {}) => { const e = new dom.window.KeyboardEvent("keydown", { key: "f", code: "KeyF", ctrlKey: true, bubbles: true, cancelable: true, ...extra }); search.dispatchEvent(e); return e; };
+  key(search, "ArrowDown");
+  const before = posts.length;
+  const e = ctrlF();
+  assert.equal(e.defaultPrevented, true);
+  assert.equal(posts.length, before + 1);
+  assert.deepEqual(posts.at(-1), { type: "toggleFavoriteAgent", name: "plan", tab: "t1", generation: 1 });
+  assert.equal(view.querySelector(".agent-popover").hidden, false, "the popover stays open");
+  send({ type: "favoriteAgents", items: ["plan"] });
+  assert.equal(view.querySelector('.agent-row[aria-selected="true"]').dataset.id, "plan", "the highlight follows the agent to its new place");
+  assert.equal(dom.window.document.activeElement, search, "focus stays in the search box");
+  // Ctrl+Alt+F, an IME composition or an empty list send nothing.
+  const n = posts.length;
+  ctrlF({ altKey: true }); ctrlF({ isComposing: true });
+  search.value = "zzz"; search.dispatchEvent(new dom.window.Event("input"));
+  ctrlF();
+  assert.equal(posts.length, n);
+  dom.window.close();
+});
+
 test("agent picker: disabled while the view is locked, and unusable in a read-only child view", () => {
   const { dom, tab, view } = agentPage();
   assert.equal(view.querySelector(".agent-btn").disabled, false);
@@ -740,8 +782,17 @@ test("mcp app: tool row renders inline media preview and Open App button posts o
   const img = view.querySelector(".mcp-media-card img");
   assert(img, "inline image preview is rendered");
   assert.equal(img.getAttribute("src"), "data:image/png;base64,AAAA");
+  const zoom = view.querySelector(".mcp-media-card");
+  assert.equal(zoom.tagName, "BUTTON", "the zoom is a native button, so Tab, Enter and Space reach it");
+  assert.equal(zoom.type, "button");
+  assert.equal(zoom.getAttribute("aria-label"), "Zoom mcp__excalidraw__get_canvas_screenshot preview 1");
+  assert.equal(zoom.getAttribute("aria-pressed"), "false");
   img.click();
-  assert(view.querySelector(".mcp-media-card").classList.contains("zoomed"), "clicking toggles zoom");
+  assert(zoom.classList.contains("zoomed"), "clicking toggles zoom");
+  assert.equal(zoom.getAttribute("aria-pressed"), "true");
+  zoom.click();
+  assert.equal(zoom.classList.contains("zoomed"), false);
+  assert.equal(zoom.getAttribute("aria-pressed"), "false");
   const openBtn = view.querySelector(".mcp-open-btn");
   assert(openBtn, "Open App button is rendered");
   openBtn.click();

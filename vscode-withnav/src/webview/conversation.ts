@@ -87,7 +87,8 @@ const TEMPLATE = `
     <button type="submit" class="icon-button send-btn" aria-label="Send" title="Send (Enter)" disabled>${ICON.send}</button>
   </div>
   <div class="agent-popover" hidden>
-    <input class="picker-search agent-search" type="search" placeholder="Search agents" aria-label="Search agents" role="combobox" aria-autocomplete="list" aria-expanded="true">
+    <input class="picker-search agent-search" type="search" placeholder="Search agents · Ctrl+F favorite" aria-label="Search agents" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-keyshortcuts="Control+F">
+    <span class="sr-only agent-favorite-hint">Ctrl+F adds or removes the highlighted agent from favorites.</span>
     <ul class="agent-list" role="listbox" aria-label="Agents"></ul>
   </div>
 </form>`;
@@ -188,6 +189,11 @@ const agentName = q<HTMLElement>(".agent-btn .agent-name");
 const agentPop = q<HTMLElement>(".agent-popover");
 const agentSearch = q<HTMLInputElement>(".agent-search");
 const agentList = q<HTMLElement>(".agent-list");
+// The stars sit inside listbox options and take no focus, so the search box carries the favorite
+// shortcut and describes it to screen readers.
+const agentFavoriteHint = q<HTMLElement>(".agent-favorite-hint");
+agentFavoriteHint.id = `agent-favorite-hint-${uid}`;
+agentSearch.setAttribute("aria-describedby", agentFavoriteHint.id);
 let agentFavorites = new Set<string>();
 let agentRows: AgentRow[] = [];
 let agentIndex = 0;
@@ -265,6 +271,11 @@ agentSearch.addEventListener("keydown", event => {
     if (agentRows.length) { agentIndex = (agentIndex + (event.key === "ArrowDown" ? 1 : -1) + agentRows.length) % agentRows.length; renderAgents(); }
   } else if (event.key === "Enter") { event.preventDefault(); const row = agentRows[agentIndex]; if (row) pickAgent(row.id); }
   else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeAgents(true); }
+  else if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "f") {
+    event.preventDefault();
+    const row = agentRows[agentIndex];
+    if (row) post({ type: "toggleFavoriteAgent", name: row.id });
+  }
 });
 const onAgentOutside = (event: MouseEvent): void => {
   if (agentPop.hidden) return;
@@ -416,6 +427,9 @@ pickerSearch.setAttribute("aria-label", "Search choices");
 pickerSearch.setAttribute("role", "combobox");
 pickerSearch.setAttribute("aria-autocomplete", "list");
 pickerSearch.setAttribute("aria-controls", `picker-options-${uid}`);
+// Model picker only: the stars take no focus, so Ctrl+F on the search box is their keyboard path.
+const pickerFavoriteHint = el("span", "sr-only", "Ctrl+F adds or removes the highlighted model from favorites.");
+pickerFavoriteHint.id = `picker-favorite-hint-${uid}`;
 const pickerCount = document.createElement("div");
 pickerCount.className = "picker-count";
 pickerCount.setAttribute("role", "status");
@@ -424,7 +438,7 @@ const pickerOptions = document.createElement("div");
 pickerOptions.id = `picker-options-${uid}`; pickerOptions.className = "picker-options";
 pickerOptions.setAttribute("role", "listbox");
 pickerOptions.setAttribute("aria-label", "Choices");
-palette.append(pickerSearch, pickerCount, pickerOptions);
+palette.append(pickerSearch, pickerFavoriteHint, pickerCount, pickerOptions);
 palette.hidden = true;
 form.prepend(palette);
 const commandError = document.createElement("div");
@@ -488,6 +502,13 @@ function renderPalette(): void {
   // come before the groups' rows in `paletteRows`, so indices and option ids stay unique.
   favoriteRows = pickerKind === "model" ? allMatches.filter(row => favorites.has(row.name)).sort((a, b) => a.name.localeCompare(b.name)) : [];
   paletteRows = [...favoriteRows, ...groupRows];
+  if (pickerKind === "model") {
+    pickerSearch.setAttribute("aria-keyshortcuts", "Control+F");
+    pickerSearch.setAttribute("aria-describedby", pickerFavoriteHint.id);
+  } else {
+    pickerSearch.removeAttribute("aria-keyshortcuts");
+    pickerSearch.removeAttribute("aria-describedby");
+  }
   pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}${pickerKind === "model" ? " · Alt+A folds or unfolds all · Ctrl+F favorite" : ""}`;
   if (favoriteAnchor) {
     const found = favoriteAnchor.inSection ? paletteRows.findIndex((row, i) => i < favoriteRows.length && row.name === favoriteAnchor!.name) : -1;
@@ -528,7 +549,8 @@ function renderPalette(): void {
     option.setAttribute("role", "option");
     // The group headers already show gateway and provider, so a row inside a group shows the
     // short name; the accessible name stays the full canonical name.
-    if (inGroup) option.setAttribute("aria-label", row.name);
+    // This label replaces the option's content, star included, so it carries the favorite state itself.
+    if (inGroup) option.setAttribute("aria-label", `${row.name}${pickerKind === "model" && favorites.has(row.name) ? ", favorite" : ""}`);
     option.setAttribute("aria-selected", String(index === paletteIndex));
     const name = document.createElement("strong");
     name.textContent = `${pickerKind ? "" : "/"}${inGroup ? shortModelName(row) : row.name}${row.args_hint ? ` ${row.args_hint}` : ""}`;
@@ -835,6 +857,8 @@ function thumbnails(images: ImageRef[] | undefined): HTMLElement | undefined {
     const button = el("button", "thumb");
     button.type = "button";
     button.title = `${name}${image.width && image.height ? ` · ${image.width}×${image.height}` : ""}: open beside`;
+    // The image alt only names the picture; the button's name says what activating it does.
+    button.setAttribute("aria-label", `Open ${name} beside`);
     button.dataset.attachment = image.attachment_id;
     const img = el("img") as HTMLImageElement;
     img.alt = name;
@@ -1188,13 +1212,17 @@ function activity(item: Turn, event: Extract<HostToWebview, { type: "tool" }>): 
     if (!group.chosen) group.details.open = true;
     const grid = el("div", "mcp-media-grid");
     event.mcpMedia.forEach((media, idx) => {
-      const card = el("div", "mcp-media-card");
+      // A button, so the zoom works from the keyboard; aria-pressed reports whether it is enlarged.
+      const card = el("button", "mcp-media-card");
+      card.type = "button";
+      card.setAttribute("aria-label", `Zoom ${event.name} preview ${idx + 1}`);
+      card.setAttribute("aria-pressed", "false");
       const img = document.createElement("img");
       img.src = media.svg
         ? `data:image/svg+xml;utf8,${encodeURIComponent(media.svg)}`
         : `data:${media.mime_type};base64,${media.data ?? ""}`;
       img.alt = `${event.name} preview ${idx + 1}`;
-      img.addEventListener("click", () => card.classList.toggle("zoomed"));
+      card.addEventListener("click", () => card.setAttribute("aria-pressed", String(card.classList.toggle("zoomed"))));
       card.append(img);
       grid.append(card);
     });

@@ -93,7 +93,7 @@ similar = "3.2"
 # Navigator pipeline branch conditions: builtin functions disabled at use sites.
 evalexpr.workspace = true
 # Conversation history (navigator): one SQLite file per user, bundled SQLite.
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 serde-saphyr = "2.0"
 globset = "0.4"
 ignore = "0.4"

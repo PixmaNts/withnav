@@ -11,6 +11,12 @@ use withnav_client_api::secrets::{SecretScope, SecretTtl};
 use crate::protocol::Action;
 use crate::state::{BlockKind, SecretPrompt, State, UiState};
 
+/// The largest value the server stores, in bytes. The prompt refuses a paste or a keystroke that
+/// would grow the value past this, so an oversized value becomes a local error here instead of a
+/// rejected submission. Mirrors `withnav::secrets::MAX_VALUE_BYTES`; the terminal client cannot
+/// depend on the server crate, so the number is duplicated on purpose.
+pub const MAX_VALUE_BYTES: usize = 16 * 1024;
+
 /// The prompt open on a secret request (or on a settled one, to give a value anyway).
 #[derive(Clone, PartialEq, Default)]
 pub struct SecretEntry {
@@ -24,6 +30,9 @@ pub struct SecretEntry {
     pub scope: SecretScope,
     /// Opened on a settled request: Esc closes it instead of declining.
     pub later: bool,
+    /// Refused a paste or a keystroke that would pass [`MAX_VALUE_BYTES`]; cleared by the next
+    /// accepted edit, by [`SecretEntry::clear`] and by a submission. Never the value itself.
+    pub error: Option<String>,
 }
 
 impl std::fmt::Debug for SecretEntry {
@@ -39,6 +48,7 @@ impl std::fmt::Debug for SecretEntry {
             .field("ttl", &self.ttl)
             .field("scope", &self.scope)
             .field("later", &self.later)
+            .field("error", &self.error)
             .finish()
     }
 }
@@ -53,6 +63,7 @@ impl SecretEntry {
             ttl: prompt.request.default_ttl,
             scope: prompt.request.default_scope,
             later,
+            error: None,
         }
     }
 
@@ -69,7 +80,51 @@ impl SecretEntry {
     pub fn clear(&mut self) {
         self.value.clear();
         self.shown = false;
+        self.error = None;
     }
+
+    /// Adds typed text to the value. A value that would pass [`MAX_VALUE_BYTES`] is refused whole,
+    /// so the prompt never holds bytes the server would reject; the value is left unchanged and
+    /// `error` says why. An accepted edit forgets an earlier refusal.
+    pub fn push(&mut self, text: &str) {
+        if self.value.len() + text.len() > MAX_VALUE_BYTES {
+            self.error = Some(limit_error());
+            return;
+        }
+        self.value.push_str(text);
+        self.error = None;
+    }
+
+    /// Adds one typed character; same bound and refusal as [`SecretEntry::push`], counted in the
+    /// bytes the character takes.
+    pub fn push_char(&mut self, c: char) {
+        if self.value.len() + c.len_utf8() > MAX_VALUE_BYTES {
+            self.error = Some(limit_error());
+            return;
+        }
+        self.value.push(c);
+        self.error = None;
+    }
+
+    /// Removes a character from the end; forgetting the refusal, which no longer applies.
+    pub fn pop(&mut self) {
+        self.value.pop();
+        self.error = None;
+    }
+
+    /// Removes at most one trailing line ending — the one a terminal adds to a paste — and no
+    /// leading bytes: a secret may intentionally start or end with a newline.
+    fn without_paste_line_ending(text: &str) -> &str {
+        text.strip_suffix("\r\n")
+            .or_else(|| text.strip_suffix('\n'))
+            .or_else(|| text.strip_suffix('\r'))
+            .unwrap_or(text)
+    }
+}
+
+/// One message for every refusal; it names the limit and never the rejected bytes.
+fn limit_error() -> String {
+    format!("The value is limited to {MAX_VALUE_BYTES} bytes; nothing was added.")
 }
 
 /// The newest secret request of the conversation, open or not.
@@ -177,29 +232,29 @@ pub fn key(key: KeyEvent, state: &State, ui: &mut UiState) -> Option<Action> {
         }
         KeyCode::Char('u') if ctrl => {
             entry.value.clear();
+            entry.error = None;
             None
         }
         KeyCode::Backspace => {
-            entry.value.pop();
+            entry.pop();
             None
         }
         KeyCode::Char(c) if !ctrl && !alt && !sending => {
-            entry.value.push(c);
+            entry.push_char(c);
             None
         }
         _ => None,
     }
 }
 
-/// A paste while the prompt is open goes into the value, without its trailing line break.
+/// A paste while the prompt is open goes into the value, without the one line break a terminal
+/// appends to a pasted line. A paste that would pass [`MAX_VALUE_BYTES`] is refused whole and the
+/// refusal is shown; the value never changes silently.
 pub fn paste(text: &str, ui: &mut UiState) -> bool {
     let Some(entry) = ui.secret_entry.as_mut() else {
         return false;
     };
-    entry.value.push_str(
-        text.trim_end_matches(['\r', '\n'])
-            .trim_start_matches(['\r', '\n']),
-    );
+    entry.push(SecretEntry::without_paste_line_ending(text));
     true
 }
 
@@ -230,14 +285,6 @@ pub fn scope_text(scope: SecretScope) -> &'static str {
     match scope {
         SecretScope::Session => "this session",
         SecretScope::Workspace => "this workspace",
-    }
-}
-
-pub fn ttl_text(ttl: SecretTtl) -> &'static str {
-    match ttl {
-        SecretTtl::Hour => "1 h",
-        SecretTtl::Day => "24 h",
-        SecretTtl::Session => "Session",
     }
 }
 
@@ -279,5 +326,66 @@ mod tests {
             expires_in(Some("not a date"), now).as_deref(),
             Some("at an unknown time")
         );
+    }
+
+    /// A paste keeps every byte but the one terminal line ending: an intentional leading or
+    /// trailing newline inside a secret survives, a value ending in two newlines loses one.
+    #[test]
+    fn paste_removes_at_most_one_trailing_line_ending() {
+        let strip = SecretEntry::without_paste_line_ending;
+        assert_eq!(strip("sk-abc\n"), "sk-abc");
+        assert_eq!(strip("sk-abc\r\n"), "sk-abc");
+        assert_eq!(strip("sk-abc\r"), "sk-abc");
+        assert_eq!(strip("sk-abc"), "sk-abc");
+        assert_eq!(strip("sk-abc\n\n"), "sk-abc\n");
+        assert_eq!(strip("sk-abc\r\n\n"), "sk-abc\r\n");
+        assert_eq!(strip("\nsk-abc\n"), "\nsk-abc");
+        assert_eq!(strip("\n"), "");
+        assert_eq!(strip(""), "");
+    }
+
+    /// The bound counts bytes, so a character that needs more room than is left is refused whole
+    /// and the value is never truncated to fit.
+    #[test]
+    fn a_value_never_passes_the_server_byte_limit() {
+        let mut entry = SecretEntry::default();
+        entry.push(&"a".repeat(MAX_VALUE_BYTES - 2));
+        entry.push("é"); // brings the value to exactly MAX_VALUE_BYTES
+        assert_eq!(entry.value.len(), MAX_VALUE_BYTES);
+        assert!(entry.error.is_none());
+        entry.push("é"); // two more bytes would pass the limit
+        assert_eq!(entry.value.len(), MAX_VALUE_BYTES);
+        assert!(entry.error.is_some(), "the refusal is reported");
+
+        // One byte of room left, a two-byte character offered: nothing is added.
+        let held = "a".repeat(MAX_VALUE_BYTES - 1);
+        let mut entry = SecretEntry {
+            value: held.clone(),
+            ..SecretEntry::default()
+        };
+        entry.push("é");
+        assert_eq!(entry.value, held, "the held bytes are untouched");
+        assert!(entry.error.is_some());
+        entry.push_char('é');
+        assert_eq!(entry.value, held);
+        assert!(entry.error.is_some());
+
+        // An accepted edit forgets the refusal and the value grows again.
+        entry.pop();
+        assert!(entry.error.is_none());
+        entry.push_char('é');
+        assert_eq!(entry.value.len(), MAX_VALUE_BYTES);
+    }
+
+    #[test]
+    fn clear_forgets_the_refusal() {
+        let mut entry = SecretEntry {
+            value: "x".repeat(MAX_VALUE_BYTES),
+            error: Some(limit_error()),
+            ..SecretEntry::default()
+        };
+        entry.clear();
+        assert!(entry.value.is_empty());
+        assert!(entry.error.is_none());
     }
 }

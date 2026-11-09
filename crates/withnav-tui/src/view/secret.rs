@@ -13,6 +13,18 @@ use crate::{
     theme::Theme,
 };
 
+/// A shown value as one line of terminal output: escape sequences and control characters are
+/// removed or replaced with a visible dot, so a pasted secret cannot drive the terminal. Display
+/// only — the bytes that are submitted are the value's own.
+fn shown_line(text: &str) -> String {
+    // `strip_controls` drops ESC sequences and other controls but keeps LF and TAB for multiline
+    // text; this field is one line, so they become a dot too.
+    crate::reducer::strip_controls(text)
+        .chars()
+        .map(|c| if c.is_control() { '·' } else { c })
+        .collect()
+}
+
 fn choice<'a, T: PartialEq + Copy>(
     options: &[(T, &'a str)],
     current: T,
@@ -64,7 +76,11 @@ pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiStat
     frame.render_widget(Clear, rect);
     let clean = |text: &str| crate::reducer::strip_controls(text);
     let field_width = usize::from(width.saturating_sub(8));
-    let shown = entry.display();
+    let shown = if entry.shown {
+        shown_line(&entry.value)
+    } else {
+        entry.display()
+    };
     // The end of a long value stays visible, like a one-line input.
     let visible: String = {
         let chars: Vec<char> = shown.chars().collect();
@@ -165,8 +181,11 @@ pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, ui: &UiStat
             theme.muted(),
         ),
     ];
-    if let Some(error) = &prompt.error {
-        lines.push(Line::styled(clean(error), theme.error()));
+    // The refusal replaces the blank row under the value: the modal has a fixed height and its
+    // last lines already reach the final row, so an added line would clip the key help. The
+    // message is fixed text that never quotes the value, so it stays one row.
+    if let Some(error) = entry.error.as_deref().or(prompt.error.as_deref()) {
+        lines[4] = Line::styled(clean(error), theme.error());
     }
     let block = Block::default()
         .borders(Borders::ALL)

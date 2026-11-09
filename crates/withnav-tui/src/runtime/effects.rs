@@ -12,7 +12,7 @@ use crate::{
     input::Editor,
     protocol::{ClientEvent, Effect, Generation, SubmitRequest, SubmitResponse},
     reducer::strip_controls,
-    state::{MAX_ATTACHMENT_BYTES, PendingAttachment},
+    state::{MAX_ATTACHMENT_BYTES, PendingAttachment, Uploaded},
 };
 use withnav_client::{
     client::Client,
@@ -434,8 +434,9 @@ impl Executor {
                 request,
                 revision,
                 attachments,
-            } => self.send_with_attachments(request, revision, attachments, ctx),
-            Effect::CheckAttachment { path } => {
+                send,
+            } => self.send_with_attachments(request, revision, attachments, send, ctx),
+            Effect::CheckAttachment { path, revision } => {
                 let workspace = ctx.workspace.clone();
                 let home = self.host.home_dir();
                 self.spawn_event(async move {
@@ -444,10 +445,14 @@ impl Executor {
                     })
                     .await
                     .unwrap_or_else(|e| Err(format!("could not read the file: {e}")));
-                    ClientEvent::AttachmentChecked { generation, result }
+                    ClientEvent::AttachmentChecked {
+                        generation,
+                        revision,
+                        result,
+                    }
                 });
             }
-            Effect::PasteImage => {
+            Effect::PasteImage { revision } => {
                 self.spawn_event(async move {
                     let result = tokio::task::spawn_blocking(|| {
                         let bytes = super::desktop::clipboard_image()?;
@@ -456,11 +461,16 @@ impl Executor {
                             path,
                             name: "clipboard.png".into(),
                             size: bytes.len() as u64,
+                            uploaded: None,
                         })
                     })
                     .await
                     .unwrap_or_else(|e| Err(format!("could not read the clipboard: {e}")));
-                    ClientEvent::AttachmentChecked { generation, result }
+                    ClientEvent::AttachmentChecked {
+                        generation,
+                        revision,
+                        result,
+                    }
                 });
             }
             Effect::OpenImage {
@@ -728,13 +738,16 @@ impl Executor {
     /// Uploads each image to the session, then sends `request` with one image block per upload
     /// after its text. The session exists by now (the reducer sends only once it does), which is
     /// why the upload happens here and not at `/attach` time. An upload that fails stops the
-    /// send before any message leaves, so the Captain's text and chips stay as they were; images
-    /// already uploaded stay on the server until the session is deleted (bounded by its quota).
+    /// send before any message leaves, so the Captain's text and chips stay as they were. Every
+    /// image that reached the store is reported first (`AttachmentsUploaded`), so the retry names
+    /// it instead of storing a copy. An upload whose answer was lost cannot be reported, and the
+    /// server has no route to delete an attachment: those stay until the session is deleted.
     fn send_with_attachments(
         &mut self,
         mut request: SubmitRequest,
         revision: u64,
         attachments: Vec<PendingAttachment>,
+        send: u64,
         ctx: &Context,
     ) {
         let generation = ctx.generation.clone();
@@ -750,34 +763,58 @@ impl Executor {
             return;
         };
         let client = self.client.clone();
+        let tx = self.tx.clone();
         self.spawn_event(async move {
+            let mut uploads = vec![];
+            let mut failure = None;
             for attachment in &attachments {
-                let uploaded = upload_one(&client, &id, attachment).await;
-                match uploaded {
-                    // The server fills type, size and dimensions from what it stored; the
-                    // client names only the id.
-                    Ok(image) => request.content.push(ContentBlock::Image(ImageRef {
-                        attachment_id: image.attachment_id,
-                        media_type: String::new(),
-                        name: String::new(),
-                        size: 0,
-                        width: 0,
-                        height: 0,
-                    })),
-                    Err(message) => {
-                        return submit_event(
-                            generation,
-                            revision,
-                            Err(SubmitFailure::Rejected(message)),
-                        );
-                    }
-                }
+                let stored = match &attachment.uploaded {
+                    Some(earlier) if earlier.session_id == id => earlier.attachment_id.clone(),
+                    _ => match upload_one(&client, &id, attachment).await {
+                        Ok(image) => {
+                            uploads.push((
+                                attachment.clone(),
+                                Uploaded {
+                                    session_id: id.clone(),
+                                    attachment_id: image.attachment_id.clone(),
+                                },
+                            ));
+                            image.attachment_id
+                        }
+                        Err(message) => {
+                            failure = Some(message);
+                            break;
+                        }
+                    },
+                };
+                // The server fills type, size and dimensions from what it stored; the client
+                // names only the id.
+                request.content.push(ContentBlock::Image(ImageRef {
+                    attachment_id: stored,
+                    media_type: String::new(),
+                    name: String::new(),
+                    size: 0,
+                    width: 0,
+                    height: 0,
+                }));
             }
-            submit_event(
-                generation,
-                revision,
-                client.send(&id, request).await.map_err(classify_send_error),
-            )
+            let result = match failure {
+                Some(message) => Err(SubmitFailure::Rejected(message)),
+                None => client.send(&id, request).await.map_err(classify_send_error),
+            };
+            // Sent from this task before the send's own outcome, so the reducer records the
+            // stored ids while the images still count as in flight. An accepted message drops
+            // its images from the tab: nothing to reuse then.
+            if result.is_err() && !uploads.is_empty() {
+                let _ = tx
+                    .send(ClientEvent::AttachmentsUploaded {
+                        generation: generation.clone(),
+                        send,
+                        uploads,
+                    })
+                    .await;
+            }
+            submit_event(generation, revision, result)
         });
     }
 
@@ -917,6 +954,7 @@ pub(super) fn check_attachment(
         path,
         name,
         size: meta.len(),
+        uploaded: None,
     })
 }
 

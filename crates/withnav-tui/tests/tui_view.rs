@@ -3890,11 +3890,13 @@ fn pending_images_show_as_chips_above_the_message_box() {
             path: "/ws/bug.png".into(),
             name: "bug.png".into(),
             size: 120_000,
+            uploaded: None,
         },
         withnav_tui::state::PendingAttachment {
             path: "/ws/b.jpg".into(),
             name: "b.jpg".into(),
             size: 3_400_000,
+            uploaded: None,
         },
     ];
     let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();

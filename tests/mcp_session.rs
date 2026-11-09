@@ -286,3 +286,194 @@ async fn a_live_session_hears_the_mcp_status_and_the_route_returns_the_same_snap
     assert_eq!(body["servers"][0]["state"], "ready");
     state.service().close_all().await;
 }
+
+async fn raw(router: &axum::Router, method: &str, path: &str, body: &str) -> (u16, Value) {
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder()
+        .method(method)
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body.to_owned()))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status().as_u16();
+    let bytes = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+// Given MCP servers in every state an app can meet: ready, slow, crashing, disabled and
+// misconfigured
+// When an app reads resources and calls tools through the HTTP bridge
+// Then each failure class has its own status and reason, and a server's oversized error text
+// reaches the app redacted, on one line and cut to the documented bound
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_app_routes_map_each_failure_class_and_bound_server_errors() {
+    let env = common::TestEnv::new();
+    let cfg = TestServerConfig::unreachable(&env.root).config();
+    let secret = "tok-sentinel-0123456789";
+    let mut settings = withnav::settings::load(&cfg.config_dir).unwrap();
+    settings.set_dotted(
+        "mcp",
+        json!({
+            "fake": {"command": [common::python(), FIXTURE], "env": {"API_TOKEN": secret}},
+            "slow": {"command": [common::python(), FIXTURE], "call_timeout_ms": 300, "env": {"SLOW_SECONDS": "30"}},
+            "crashy": {"command": [common::python(), FIXTURE]},
+            "off": {"command": [common::python(), FIXTURE], "enabled": false},
+            "broken": {"command": [common::python(), FIXTURE], "call_timeout_ms": 0},
+        }),
+    );
+    withnav::settings::save(&cfg.config_dir, &settings).unwrap();
+    let state = AppState::new(cfg).unwrap();
+    wait_for("MCP discovery", || {
+        let statuses = state.service().mcp_statuses();
+        ["fake", "slow", "crashy"].iter().all(|id| {
+            statuses
+                .iter()
+                .any(|s| s.server_id == *id && s.state == "ready")
+        })
+    })
+    .await;
+    let router = withnav::server::app(state.clone());
+    let call = |server: &str, body: Value| {
+        let router = router.clone();
+        let path = format!("/v1/mcp/{server}/call");
+        async move { raw(&router, "POST", &path, &body.to_string()).await }
+    };
+    let resource = |server: &str, uri: &str| {
+        let router = router.clone();
+        let path = format!("/v1/mcp/{server}/resource?uri={uri}");
+        async move { raw(&router, "GET", &path, "").await }
+    };
+
+    let (status, body) = resource("fake", "ui://fixture/app.html").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["mime_type"], "text/html;profile=mcp-app");
+    let (status, body) = call("fake", json!({"name": "fail"})).await;
+    assert_eq!(
+        status, 200,
+        "an isError result is a successful call: {body}"
+    );
+    assert_eq!(body["isError"], true);
+
+    // The caller's mistakes: 400, with a stable message that never quotes the request back.
+    let (status, body) = resource("fake", "file:///etc/passwd").await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (400, Some("mcp_invalid_request"))
+    );
+    let (status, body) = raw(&router, "GET", "/v1/mcp/fake/resource", "").await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (400, Some("mcp_invalid_request"))
+    );
+    let quoted = "q".repeat(10_000);
+    let (status, body) = call("fake", json!({"name": "echo", "arguments": quoted})).await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (400, Some("mcp_invalid_request"))
+    );
+    assert_eq!(body["error"], "invalid MCP App request");
+    for (method, path) in [
+        ("GET", "/v1/mcp/%FF/resource?uri=ui://fixture/app.html"),
+        ("POST", "/v1/mcp/%FF/call"),
+    ] {
+        let (status, body) = raw(&router, method, path, "{\"name\":\"echo\"}").await;
+        assert_eq!(
+            (status, body["reason"].as_str()),
+            (400, Some("mcp_invalid_request")),
+            "{path}"
+        );
+    }
+    let (status, body) = raw(&router, "POST", "/v1/mcp/fake/call", "{\"name\":").await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (400, Some("invalid MCP App request"))
+    );
+    let (status, body) = call(
+        "fake",
+        json!({"name": "echo", "arguments": {"rpc_error": "text must be a string"}}),
+    )
+    .await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (400, Some("mcp_invalid_params")),
+        "{body}"
+    );
+    assert_eq!(
+        body["error"],
+        "MCP server refused the tools/call arguments: text must be a string"
+    );
+
+    // Unknown names: 404, and the requested id is not echoed.
+    let long_id = "u".repeat(2_000);
+    let (status, body) = call(&long_id, json!({"name": "echo"})).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (404, Some("unknown MCP server"))
+    );
+    assert_eq!(body["reason"], "mcp_unknown_server");
+    let (status, body) = call("fake", json!({"name": "missing"})).await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (404, Some("mcp_unknown_tool"))
+    );
+
+    // Configured but not serving: 503, whether disabled, misconfigured or gone mid-call.
+    for server in ["off", "broken"] {
+        let (status, body) = call(server, json!({"name": "echo"})).await;
+        assert_eq!(
+            (status, body["reason"].as_str()),
+            (503, Some("mcp_unavailable")),
+            "{server}"
+        );
+        let (status, body) = resource(server, "ui://fixture/app.html").await;
+        assert_eq!(
+            (status, body["reason"].as_str()),
+            (503, Some("mcp_unavailable")),
+            "{server}"
+        );
+    }
+    let (status, body) = call("crashy", json!({"name": "crash"})).await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (503, Some("mcp_unavailable")),
+        "{body}"
+    );
+
+    // No answer within the server's call timeout: 504.
+    let (status, body) = call("slow", json!({"name": "slow"})).await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (504, Some("mcp_timeout"))
+    );
+    assert_eq!(body["error"], "MCP tools/call timed out");
+
+    // A server-side JSON-RPC error: 502, its oversized text redacted, one line, bounded.
+    let oversized = format!("boom\n{}{secret}{}", "a".repeat(200), "z".repeat(10_000));
+    let (status, body) = call(
+        "fake",
+        json!({"name": "echo", "arguments": {"rpc_error": oversized, "rpc_code": -32603}}),
+    )
+    .await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (502, Some("mcp_rejected")),
+        "{body}"
+    );
+    let error = body["error"].as_str().unwrap();
+    let detail = error
+        .strip_prefix("MCP server rejected tools/call: ")
+        .unwrap_or_else(|| panic!("unexpected message: {error}"));
+    assert_eq!(detail.chars().count(), withnav::mcp::UI_ERROR_DETAIL_CHARS);
+    assert!(
+        detail.starts_with("boom a") && detail.ends_with('…'),
+        "{detail}"
+    );
+    assert!(detail.contains("[redacted]"), "{detail}");
+    assert!(!error.contains("tok-") && !error.contains('\n'), "{error}");
+
+    state.service().close_all().await;
+}

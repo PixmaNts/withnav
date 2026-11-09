@@ -21,9 +21,13 @@ def send(identifier, result):
 
 def call(identifier, params):
     name = params["name"]
-    if params.get("arguments", {}).get("rpc_error"):
+    rpc_error = params.get("arguments", {}).get("rpc_error")
+    if rpc_error:
+        # A string is the error message itself; `true` sends the configured COMPOSITE secret.
+        message = rpc_error if isinstance(rpc_error, str) else os.environ["COMPOSITE"]
+        code = params["arguments"].get("rpc_code", -32602)
         with lock:
-            print(json.dumps({"jsonrpc":"2.0","id":identifier,"error":{"code":-32602,"message":os.environ["COMPOSITE"]}}),flush=True)
+            print(json.dumps({"jsonrpc":"2.0","id":identifier,"error":{"code":code,"message":message}}),flush=True)
         return
     if name == "crash":
         os._exit(17)

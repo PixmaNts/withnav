@@ -86,6 +86,12 @@ requests land in `develop`.
   explicit error instead of having its secrets filed under whichever session the lookup stopped at.
 - Subagents: a step-budget notice whose evidence lacks a valid top-up or step count is skipped and
   logged instead of reporting zero.
+- MCP Apps: a failed resource read or tool call from an app no longer comes back as a 400 that
+  blames the request. A bad request is 400, an unknown server or tool 404, a server error 502, a
+  disabled, misconfigured or disconnected server 503 and a timeout 504, each with its own `reason`.
+  The server's own error text reaches the app redacted, on one line and cut to 256 characters; the
+  longer diagnostic goes to the log. A malformed app request or an unreadable image upload gets a
+  fixed message instead of the request quoted back.
 
 ## [0.8.2] - 2026-11-05
 

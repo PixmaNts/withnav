@@ -104,6 +104,9 @@ requests land in `develop`.
   message instead of a 400 carrying the OS error; an attachment store failure (upload, download,
   or an image in a message) answers 500 `attachments_failed` without the SQLite text. The details
   go to the server log.
+- Subagents: when the notice that a child used its step budget could not be saved (a failed
+  history write), the child stayed paused and its parent was never asked to continue or stop it.
+  The notice is now retried until it is saved, and the parent receives it once.
 
 ## [0.8.2] - 2026-11-05
 

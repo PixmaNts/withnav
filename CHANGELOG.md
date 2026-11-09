@@ -207,6 +207,14 @@ requests land in `develop`.
   full-image filter passes is refused instead of rendering for minutes. A malformed `order` or
   `numOctaves`, or a second `order` value above the limit, is refused instead of read as zero.
 
+### Fixed
+
+- Secrets: a workspace secret whose save fails is no longer left active (a secret it would have
+  replaced stays as it was). Saving now syncs the folder after the rename, so a power cut cannot
+  bring the previous file back. At start-up, saved entries that are expired or invalid (name,
+  value, time) are removed from the file too, and a permissive file is tightened before it is
+  read (Unix).
+
 ## [0.8.2] - 2026-11-05
 
 WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and

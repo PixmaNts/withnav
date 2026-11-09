@@ -169,7 +169,7 @@ impl Authorizer {
         let deny = |rule: Option<String>, message: String| Authorization::Deny(Denial { rule, message });
 
         // 1. Yolo checks nothing: no rule, no flow, no reviewer.
-        if control == Control::Yolo {
+        if control.kind() == ControlKind::Yolo {
             return run();
         }
         let facts = match self.rules.lookup(call, class) {
@@ -199,7 +199,7 @@ impl Authorizer {
             match facts.doom {
                 DoomRule::Deny => return deny(None, reason),
                 DoomRule::Allow => {}
-                DoomRule::None if control == Control::Bypass => {}
+                DoomRule::None if control == Control::new(ControlKind::Bypass) => {}
                 DoomRule::None => return ask(reason),
             }
         }
@@ -208,7 +208,7 @@ impl Authorizer {
             return run();
         }
         // 6. Bypass skips the review slot.
-        if control == Control::Bypass {
+        if control == Control::new(ControlKind::Bypass) {
             return run();
         }
         // 7. Review slot: flows may allow, reviewers may only escalate. Order does not matter
@@ -302,10 +302,19 @@ mod tests {
     async fn a_written_deny_is_final_even_if_a_flow_allows() {
         let rig = build(InMemoryRules::default().deny("rm"));
         let p = plan(vec![ReviewStage::Flow(Arc::new(FixedFlow(FlowAnswer::Allow)))]);
-        assert!(matches!(decide(&rig, &p, "rm", Control::Normal).await, Authorization::Deny(_)));
+        assert!(matches!(
+            decide(&rig, &p, "rm", Control::new(ControlKind::Normal)).await,
+            Authorization::Deny(_)
+        ));
         // Bypass does not lift it either; only yolo, which checks nothing, runs it.
-        assert!(matches!(decide(&rig, &p, "rm", Control::Bypass).await, Authorization::Deny(_)));
-        assert!(matches!(decide(&rig, &p, "rm", Control::Yolo).await, Authorization::Run(_)));
+        assert!(matches!(
+            decide(&rig, &p, "rm", Control::new(ControlKind::Bypass)).await,
+            Authorization::Deny(_)
+        ));
+        assert!(matches!(
+            decide(&rig, &p, "rm", Control::new(ControlKind::Yolo)).await,
+            Authorization::Run(_)
+        ));
     }
 
     #[tokio::test]
@@ -314,11 +323,20 @@ mod tests {
         // Allow rule + Ask reviewer -> Ask. Allow rule + NoOpinion -> Run (the rule decides).
         let rig_allow = build(InMemoryRules::default().allow("echo"));
         let p = plan(vec![flows(), reviewer("scan", Restriction::Ask { reason: "secret".into() })]);
-        assert!(matches!(decide(&rig_allow, &p, "echo", Control::Normal).await, Authorization::Ask(_)));
+        assert!(matches!(
+            decide(&rig_allow, &p, "echo", Control::new(ControlKind::Normal)).await,
+            Authorization::Ask(_)
+        ));
         let p = plan(vec![flows(), reviewer("scan", Restriction::NoOpinion)]);
-        assert!(matches!(decide(&rig_allow, &p, "echo", Control::Normal).await, Authorization::Run(_)));
+        assert!(matches!(
+            decide(&rig_allow, &p, "echo", Control::new(ControlKind::Normal)).await,
+            Authorization::Run(_)
+        ));
         let p = plan(vec![reviewer("scan", Restriction::Deny { reason: "x".into() }), flows()]);
-        assert!(matches!(decide(&rig_allow, &p, "echo", Control::Normal).await, Authorization::Deny(_)));
+        assert!(matches!(
+            decide(&rig_allow, &p, "echo", Control::new(ControlKind::Normal)).await,
+            Authorization::Deny(_)
+        ));
 
         // Ask rule: no restriction, in any position, ever yields Run.
         let rig_ask = build(InMemoryRules::default().ask("echo"));
@@ -331,7 +349,7 @@ mod tests {
                 [plan(vec![flows(), reviewer("r", r.clone())]), plan(vec![reviewer("r", r.clone()), flows()])]
             {
                 assert!(!matches!(
-                    decide(&rig_ask, &p, "echo", Control::Normal).await,
+                    decide(&rig_ask, &p, "echo", Control::new(ControlKind::Normal)).await,
                     Authorization::Run(_)
                 ));
             }
@@ -349,11 +367,17 @@ mod tests {
             }));
         let rig = build(InMemoryRules::default().ask("echo"));
         let p = plan(vec![spy]);
-        assert!(matches!(decide(&rig, &p, "echo", Control::Yolo).await, Authorization::Run(_)));
+        assert!(matches!(
+            decide(&rig, &p, "echo", Control::new(ControlKind::Yolo)).await,
+            Authorization::Run(_)
+        ));
         assert!(seen.lock().unwrap().is_empty());
         assert!(rig.telemetry.observations().is_empty());
         // Control: normal does consult the reviewer, and it is observed.
-        assert!(matches!(decide(&rig, &p, "echo", Control::Normal).await, Authorization::Deny(_)));
+        assert!(matches!(
+            decide(&rig, &p, "echo", Control::new(ControlKind::Normal)).await,
+            Authorization::Deny(_)
+        ));
         assert_eq!(rig.telemetry.observations().len(), 1);
     }
 
@@ -362,10 +386,13 @@ mod tests {
         let floored =
             build(InMemoryRules::default().allow("cat").floor("cat", Floor::Credential(".env".into())));
         let p = plan(vec![]);
-        assert!(matches!(decide(&floored, &p, "cat", Control::Bypass).await, Authorization::Ask(_)));
+        assert!(matches!(
+            decide(&floored, &p, "cat", Control::new(ControlKind::Bypass)).await,
+            Authorization::Ask(_)
+        ));
         let looped = build(InMemoryRules::default().allow("echo"));
         let c = call("echo");
-        let at = |n| looped.auth.authorize(&p, &c, ToolClass::Write, Control::Normal, n);
+        let at = |n| looped.auth.authorize(&p, &c, ToolClass::Write, Control::new(ControlKind::Normal), n);
         assert!(matches!(at(2).await, Authorization::Run(_)));
         assert!(matches!(at(DOOM_LOOP_THRESHOLD).await, Authorization::Ask(_)));
     }

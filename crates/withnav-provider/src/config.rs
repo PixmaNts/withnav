@@ -156,9 +156,10 @@ pub struct ModelConfig {
     pub supports_tools: bool,
     #[serde(default)]
     pub supports_parallel_tool_calls: Option<bool>,
-    /// Whether the model accepts image input. Absent means `false`: the model gets a text
-    /// placeholder where an image would go. An `Option` so that gateway discovery can fill the
-    /// `None` case later without a config change.
+    /// Whether the model accepts image input. An explicit value wins over the provider's model
+    /// list; absent lets gateway discovery decide, and when discovery cannot tell either the
+    /// model gets a text placeholder where an image would go. An `Option` so an explicit
+    /// `false` stays distinct from "let discovery decide".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<bool>,
     /// Deprecated and ignored: write `default_variant` instead.

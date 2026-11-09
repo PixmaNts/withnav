@@ -23,6 +23,8 @@ requests land in `develop`.
   `declined by the Captain`. Commands the agent runs with `bash` (subagents included) get it as an
   environment variable, and every exact occurrence of a value of 8 characters or more is replaced
   by `[secret NAME]` in tool output, model text, Captain messages, events and the stored history.
+  Live-streamed text is redacted piece by piece, so a value split across two pieces of a live
+  stream can appear there while it streams; the stored response is redacted.
   `GET /v1/sessions/{id}/secrets` lists them (name, scope, expiry, use count, last four
   characters), `DELETE /v1/sessions/{id}/secrets/{name}` revokes one; the key icon of the
   conversation header (VS Code, browser) and `/secrets` in `nav tui` do the same. Session secrets
@@ -35,6 +37,26 @@ requests land in `develop`.
   - MCP tool calls returning images (`image/png`, `image/jpeg`, `image/webp`, `image/gif`, inline SVG, or board previews in `structuredContent`) render inline thumbnails in the transcript with click-to-zoom, while keeping the model's tool output text compact.
   - Tools declaring a `ui://` resource (`_meta.ui.resourceUri` / `text/html;profile=mcp-app`) or an app URL show an **Open App** button on the tool row that opens a sandboxed interactive MCP App view (in a dedicated `App` tab of the WebUI right panel, or in a `Beside` editor group in VS Code) with a JSON-RPC 2.0 `postMessage` bridge (`ui/initialize`, `ui/notifications/tool-input`, `ui/notifications/tool-result`, `ui/open-link`, `tools/call`, `resources/read`).
   - `scripts/package-vsix.sh` now names branch builds `withnav-<variant>-<version>-<branch>+<sha>.vsix`, matching `nav --version`.
+- Images in conversations, from the terminal client: `/attach <path>` adds a PNG, JPEG, GIF, WebP or SVG
+  image (at most 3.75 MiB and 8,000 px a side) to the next message. A model sees it when
+  `models.json` says `"images": true` or, without that field, when the gateway's model list reports
+  image input; any other model gets a short note saying an image was shown. `GET /v1/models` reports
+  `images` and where it came from.
+- Images from tools: `read` on a PNG, JPEG, GIF, WebP or SVG file returns the picture instead of
+  text, and image blocks in MCP tool results (browser or canvas screenshots) are kept rather than
+  reduced to a size note. They are stored with the session's other images (at most four per call)
+  and a model with image support sees them in the next request. An SVG, uploaded or read, is turned
+  into a PNG first; it may not load external files or declare a DTD.
+- A conversation saved before image support was known, or while the gateway could not tell,
+  learns it from the gateway's model list when it resumes, instead of keeping images unsent.
+- Images in the browser client and the VS Code extension: paste or drop images into the message
+  (the browser also has an attach button; at most eight per message, a message may be images only).
+  The Captain's images and those returned by tools show as thumbnails in the conversation, also
+  after a reload; a click opens one at full size, in the Image tab of the browser's session panel or
+  in an editor panel beside the VS Code chat.
+- Images in the terminal client beyond `/attach`: dropping an image file on the terminal attaches
+  it, `/paste-image` attaches the clipboard image, every image of the conversation (also after a
+  resume) is listed with a number, and `/image [n]` opens it in the system viewer.
 
 ### Changed
 
@@ -80,28 +102,6 @@ commit, and stops a corrupt conversation from overwriting its stored history.
 ### Fixed
 
 - A conversation whose stored transcript cannot be read no longer resumes empty (its next save overwrote the stored history): the resume fails and names the session, and the row is left as it was.
-### Added
-
-- Images in conversations, from the terminal client: `/attach <path>` adds a PNG, JPEG, GIF, WebP or SVG
-  image (at most 3.75 MiB and 8,000 px a side) to the next message. A model sees it when
-  `models.json` says `"images": true` or, without that field, when the gateway's model list reports
-  image input; any other model gets a short note saying an image was shown. `GET /v1/models` reports
-  `images` and where it came from.
-- Images from tools: `read` on a PNG, JPEG, GIF, WebP or SVG file returns the picture instead of
-  text, and image blocks in MCP tool results (browser or canvas screenshots) are kept rather than
-  reduced to a size note. They are stored with the session's other images (at most four per call)
-  and a model with image support sees them in the next request. An SVG, uploaded or read, is turned
-  into a PNG first; it may not load external files or declare a DTD.
-- A conversation saved before image support was known, or while the gateway could not tell,
-  learns it from the gateway's model list when it resumes, instead of keeping images unsent.
-- Images in the browser client and the VS Code extension: paste or drop images into the message
-  (the browser also has an attach button; at most eight per message, a message may be images only).
-  The Captain's images and those returned by tools show as thumbnails in the conversation, also
-  after a reload; a click opens one at full size, in the Image tab of the browser's session panel or
-  in an editor panel beside the VS Code chat.
-- Images in the terminal client beyond `/attach`: dropping an image file on the terminal attaches
-  it, `/paste-image` attaches the clipboard image, every image of the conversation (also after a
-  resume) is listed with a number, and `/image [n]` opens it in the system viewer.
 
 ## [0.8.1] - 2026-10-16
 

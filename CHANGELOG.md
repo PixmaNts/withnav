@@ -59,6 +59,12 @@ requests land in `develop`.
   - The composer grows with its text, from about three lines up to 40% of the view height.
   - New commands: `WithNav: Show Sessions` and `WithNav: New Conversation`.
 
+### Fixed
+
+- Subagents: when the notice that a child used its step budget could not be saved (a failed
+  history write), the child stayed paused and its parent was never asked to continue or stop it.
+  The notice is now retried until it is saved, and the parent receives it once.
+
 ## [0.8.2] - 2026-11-05
 
 WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and

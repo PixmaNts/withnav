@@ -117,6 +117,11 @@ requests land in `develop`.
   the agent picker's search adds or removes the highlighted agent from favorites, as it already
   did in the model picker, and both search boxes describe that shortcut to screen readers; an
   attached image's thumbnail is announced as "Open <name> beside".
+- Attachments: a PNG, JPEG, GIF or WebP is now decoded in full before it is stored, so a truncated
+  or corrupt image is refused at upload instead of failing at the provider on every later turn.
+  Repeated tool images are found by an indexed content hash rather than by comparing stored
+  images. `read` returns a file named `*.svg` as an image only when it is a well-formed SVG
+  document; anything else is returned as text.
 
 ## [0.8.2] - 2026-11-05
 

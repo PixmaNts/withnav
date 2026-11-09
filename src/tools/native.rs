@@ -116,14 +116,23 @@ impl Tool for ReadTool {
     }
 }
 
-/// `read` on a picture: a PNG, JPEG, GIF or WebP (recognised by its bytes) or an `.svg` file. The
-/// result carries the bytes as a [`crate::tools::ToolImage`]; the agent loop stores them in the
+/// `read` on a picture: a PNG, JPEG, GIF or WebP, or an SVG document (recognised by their bytes;
+/// an `.svg` name is only a hint: a file of that name holding anything but a well-formed SVG is
+/// text). The result carries the bytes as a [`crate::tools::ToolImage`]; the agent loop stores them in the
 /// session and the model sees the picture when its model can. `None` for any other file, which
 /// `read` returns as text.
 fn read_image(path: &Path, bytes: &[u8]) -> Option<ToolResult> {
+    // Past the SVG size limit nothing is parsed: the cheap hint stands in, and the attachment
+    // store refuses the file for its size with an error the model reads.
+    use crate::session::attachments::svg;
     let svg = path
         .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"));
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
+        && if bytes.len() > svg::MAX_SVG_BYTES {
+            svg::looks_like_svg(bytes)
+        } else {
+            svg::is_svg_document(bytes)
+        };
     let raster = imagesize::image_type(bytes).ok().is_some_and(|kind| {
         matches!(
             kind,
@@ -614,6 +623,34 @@ mod tests {
         let text = read("fake.png").await;
         assert!(text.images.is_empty());
         assert_eq!(text.output, "just text");
+    }
+
+    // Given `.svg` files that hold plain text, a mention of `<svg>`, a truncated document and XML
+    //       with another root
+    // Then `read` returns each as text, never as an image
+    #[tokio::test]
+    async fn read_returns_a_svg_named_file_as_text_unless_it_is_an_svg_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            ("plain.svg", "notes, not a drawing"),
+            ("mention.svg", "an <svg> element is drawn like this"),
+            ("cut.svg", "<svg xmlns='http://www.w3.org/2000/svg'><rect"),
+            ("other.svg", "<html><body>hi</body></html>"),
+        ];
+        for (name, content) in cases {
+            std::fs::write(dir.path().join(name), content).unwrap();
+            let cx = ctx(dir.path());
+            let result = ReadTool
+                .call(
+                    json!({"path": dir.path().join(name)}),
+                    CancellationToken::new(),
+                    &cx,
+                )
+                .await
+                .unwrap();
+            assert!(result.images.is_empty(), "{name}");
+            assert_eq!(result.output, content, "{name}");
+        }
     }
 
     #[tokio::test]

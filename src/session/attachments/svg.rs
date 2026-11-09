@@ -33,22 +33,27 @@ pub fn looks_like_svg(bytes: &[u8]) -> bool {
     head.contains("<svg")
 }
 
-/// Whether `text` is one well-formed XML document whose root element is `<svg>`, with the same
-/// parser limits as [`rasterize`] (no DTD, bounded node count). Unlike [`looks_like_svg`], an HTML
-/// page or prose that merely mentions `<svg` is not one, and a self-closing `<svg .../>` is.
-pub fn is_svg_document(text: &str) -> bool {
-    text.trim_start_matches('\u{feff}')
-        .trim_start()
-        .starts_with('<')
-        && usvg::roxmltree::Document::parse_with_options(
-            text,
-            usvg::roxmltree::ParsingOptions {
-                allow_dtd: false,
-                nodes_limit: MAX_SVG_NODES,
-                ..Default::default()
-            },
-        )
-        .is_ok_and(|document| document.root_element().tag_name().name() == "svg")
+/// Whether `bytes` is one well-formed XML document whose root element is `<svg>`, with the same
+/// parser limits as [`rasterize`] (no DTD, bounded node count): the sniff a `.svg` name alone
+/// cannot give. Unlike [`looks_like_svg`], an HTML page or prose that merely mentions `<svg`, or a
+/// truncated document, is not one, and a self-closing `<svg .../>` is. Past [`MAX_SVG_BYTES`]
+/// nothing is parsed and the answer is `false`.
+pub fn is_svg_document(bytes: &[u8]) -> bool {
+    bytes.len() <= MAX_SVG_BYTES
+        && std::str::from_utf8(bytes).is_ok_and(|text| {
+            text.trim_start_matches('\u{feff}')
+                .trim_start()
+                .starts_with('<')
+                && usvg::roxmltree::Document::parse_with_options(
+                    text,
+                    usvg::roxmltree::ParsingOptions {
+                        allow_dtd: false,
+                        nodes_limit: MAX_SVG_NODES,
+                        ..Default::default()
+                    },
+                )
+                .is_ok_and(|document| document.root_element().tag_name().name() == "svg")
+        })
 }
 
 fn fonts() -> Arc<usvg::fontdb::Database> {

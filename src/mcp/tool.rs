@@ -360,9 +360,9 @@ fn sniff_media_type(bytes: &[u8]) -> Option<&'static str> {
         Ok(ImageType::Gif) => Some("image/gif"),
         Ok(ImageType::Webp) => Some("image/webp"),
         Ok(_) => None,
-        Err(_) => std::str::from_utf8(bytes)
-            .is_ok_and(crate::session::attachments::svg::is_svg_document)
-            .then_some("image/svg+xml"),
+        Err(_) => {
+            crate::session::attachments::svg::is_svg_document(bytes).then_some("image/svg+xml")
+        }
     }
 }
 
@@ -557,7 +557,7 @@ pub(super) fn convert(
                     let trimmed = text.trim();
                     if payload.media.len() < MAX_MEDIA_ITEMS
                         && trimmed.len() <= MAX_UI_HTML_BYTES
-                        && crate::session::attachments::svg::is_svg_document(trimmed)
+                        && crate::session::attachments::svg::is_svg_document(trimmed.as_bytes())
                     {
                         payload.add_svg(redact(trimmed));
                     }
@@ -622,7 +622,7 @@ pub(super) fn convert(
                         && payload.media.len() < MAX_MEDIA_ITEMS
                         && let Some(svg) = res["text"].as_str()
                         && svg.len() <= MAX_UI_HTML_BYTES
-                        && crate::session::attachments::svg::is_svg_document(svg)
+                        && crate::session::attachments::svg::is_svg_document(svg.as_bytes())
                     {
                         payload.add_svg(redact(svg));
                     }

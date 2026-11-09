@@ -44,8 +44,9 @@ impl SessionSender {
     }
 
     /// Posts `text` as a next-turn command from `source`, through the same
-    /// validation and event-before-action sequencing as `POST /messages`.
-    pub async fn send(&self, text: String, source: &str) -> Result<(), ServerError> {
+    /// validation, secret hiding and event-before-action sequencing as `POST /messages`.
+    pub async fn send(&self, mut text: String, source: &str) -> Result<(), ServerError> {
+        self.handle.status.redact_in_place(&mut text);
         let command = Command {
             command_id: Ulid::generate(),
             session_id: self.session_id,

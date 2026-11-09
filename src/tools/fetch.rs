@@ -74,7 +74,7 @@ impl FetchTool {
         let client = CLIENT
             .get_or_init(|| {
                 Client::builder()
-                    .user_agent(concat!("withnav/", env!("CARGO_PKG_VERSION")))
+                    .user_agent(concat!("withnav/", env!("WITHNAV_VERSION")))
                     .redirect(reqwest::redirect::Policy::none())
                     .connect_timeout(Duration::from_secs(FETCH_MAX_TIMEOUT_SECS))
                     .build()
@@ -1097,7 +1097,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(header(
                 "user-agent",
-                concat!("withnav/", env!("CARGO_PKG_VERSION")),
+                concat!("withnav/", env!("WITHNAV_VERSION")),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_raw("ok", "text/plain"))
             .mount(&server)

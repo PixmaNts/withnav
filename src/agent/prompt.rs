@@ -1,5 +1,6 @@
 use crate::provider::AssistantMessage;
 use crate::provider::config::ReasoningHistory;
+use crate::provider::opaque::within_size_limits;
 use crate::provider::openai::{
     ChatMessage, ChatRequest, OpaqueItem, OpaqueReasoning, Producer, RequestFunction,
     RequestToolCall, StreamOptions, ToolDef,
@@ -88,7 +89,7 @@ pub fn build_request(
 /// `producer` (the model that just produced it) under `Preserve`, and dropped
 /// under `Omit`, which means reasoning is not sent back. A producer that
 /// identifies nothing stamps nothing, since such bytes could be replayed to any
-/// model.
+/// model. Items past the size limits are dropped whole before stamping.
 pub fn assistant_history_message(
     msg: &AssistantMessage,
     opaque: Vec<OpaqueItem>,
@@ -118,9 +119,10 @@ pub fn assistant_history_message(
         .collect();
     let opaque = match policy {
         ReasoningHistory::Preserve if !opaque.is_empty() && producer.is_valid() => {
-            Some(OpaqueReasoning {
+            let items = within_size_limits(opaque);
+            (!items.is_empty()).then(|| OpaqueReasoning {
                 producer: producer.clone(),
-                items: opaque,
+                items,
             })
         }
         _ => None,
@@ -295,6 +297,42 @@ mod tests {
     fn omit_drops_opaque_items() {
         let m = assistant("answer", "", vec![]);
         let wire = assistant_history_message(&m, items(), &producer(), ReasoningHistory::Omit);
+        assert!(stamped(&wire).is_none());
+    }
+
+    #[test]
+    fn oversized_items_are_dropped_before_stamping() {
+        use crate::provider::opaque::{MAX_ITEM_BYTES, MAX_TOTAL_BYTES};
+        let big = |kind: &str| OpaqueItem {
+            kind: kind.into(),
+            data: format!("\"{}\"", "x".repeat(MAX_ITEM_BYTES - kind.len() - 2)),
+        };
+        let m = assistant("answer", "", vec![]);
+        let mut sent = items();
+        sent.insert(
+            1,
+            OpaqueItem {
+                kind: "over".into(),
+                data: "1".repeat(MAX_ITEM_BYTES),
+            },
+        );
+        let wire = assistant_history_message(&m, sent, &producer(), ReasoningHistory::Preserve);
+        assert_eq!(stamped(&wire).expect("survivors kept").items, items());
+
+        let full: Vec<_> = (0..MAX_TOTAL_BYTES / MAX_ITEM_BYTES)
+            .map(|i| big(&format!("k{i}")))
+            .collect();
+        let mut sent = full.clone();
+        sent.extend(items());
+        let wire = assistant_history_message(&m, sent, &producer(), ReasoningHistory::Preserve);
+        assert_eq!(stamped(&wire).expect("prefix kept").items, full);
+
+        let only_over = vec![OpaqueItem {
+            kind: "over".into(),
+            data: "1".repeat(MAX_ITEM_BYTES),
+        }];
+        let wire =
+            assistant_history_message(&m, only_over, &producer(), ReasoningHistory::Preserve);
         assert!(stamped(&wire).is_none());
     }
 

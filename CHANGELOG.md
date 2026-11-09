@@ -67,6 +67,10 @@ requests land in `develop`.
   reuses the stored images instead of uploading them again, so a failed send no longer adds copies
   to the conversation's attachment quota (an upload whose answer never came back can still leave
   one).
+- Model-only reasoning kept in the transcript (signed thinking, encrypted reasoning) is now
+  bounded: 1 MiB per item, 4 MiB and 64 items per message, when it is captured and when a stored
+  conversation is read. An item past a limit is dropped whole, never cut; the items kept are
+  unchanged byte for byte. (#157)
 
 ## [0.8.2] - 2026-11-05
 

@@ -89,7 +89,10 @@ between the provider, the transcript and the database.
   metacognition migrates it first.
 - Summaries never contain opaque data; everything before a compaction boundary loses it.
 - Encrypted reasoning can be tens of kilobytes per step, written with each transcript snapshot.
-  No cap: a truncated item cannot be replayed.
+  Capped on capture and on transcript read: 1 MiB per item and 4 MiB and 64 items per message
+  (`kind` plus `data` bytes). An item over its cap is dropped whole; the first item that would
+  pass a message cap is dropped with every later one. Nothing is truncated: a cut item cannot be
+  replayed.
 
 ## Prior art
 

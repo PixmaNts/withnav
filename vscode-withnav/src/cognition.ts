@@ -50,7 +50,7 @@ class ConversationState {
   archiveReason?: string;
   modelRequestToken = 0;
   settledModelOps = new Set<string>();
-  commands: Map<string, { draft: string; name: string; arguments: string }> = new Map();
+  commands: Map<string, { draft: string; name: string; arguments: string; submission?: number }> = new Map();
   commandResults: Map<string, any> = new Map();
   acceptedMessages: Set<string> = new Set();
   pendingModel?: { name: string; operationId: string; agent: string };
@@ -386,7 +386,7 @@ export class CognitionBackend implements ChatBackend {
       const result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/messages`, { method: "POST", body: JSON.stringify({ target_actor_id: ROOT_ACTOR, content: [{ type: "text", text: match[2] || `Apply the ${match[1]} skill.` }, { type: "skill", name: match[1] }, ...stored] }) });
       this.checkGeneration(generation);
       const operationId = result?.command_id ?? result?.operation_id;
-      if (typeof operationId === "string") this.trackCommand(operationId, { draft, name, arguments: args });
+      if (typeof operationId === "string") this.trackCommand(operationId, { draft, name, arguments: args, submission: operation?.submission });
       else if (result?.accepted === false || result?.ok === false) throw new Error(String(result.error ?? "Message refused"));
       return typeof operationId !== "string";
     }
@@ -445,11 +445,11 @@ export class CognitionBackend implements ChatBackend {
     return false; // Only the durable outcome consumes the draft.
   }
 
-  private trackCommand(operation: string, command: { draft: string; name: string; arguments: string }): void {
+  private trackCommand(operation: string, command: { draft: string; name: string; arguments: string; submission?: number }): void {
     this.state.commands.set(operation, command);
     const outcome = this.state.commandResults.get(operation);
     if (outcome) this.settleCommand(outcome);
-    else if (command.name === "skill" && this.state.acceptedMessages.has(operation)) this.emit({ type: "sendResult", text: command.draft, accepted: true });
+    else if (command.name === "skill" && this.state.acceptedMessages.has(operation)) this.emit({ type: "sendResult", text: command.draft, accepted: true, submission: command.submission });
   }
 
   private settleCommand(p: any, seq?: number): void {
@@ -465,7 +465,7 @@ export class CognitionBackend implements ChatBackend {
     }
     const command = this.state.commands.get(operation);
     if (command) {
-      this.emit({ type: "sendResult", text: command.draft, accepted: p.ok === true, restoreDraft: command.name === "skill" && p.ok !== true });
+      this.emit({ type: "sendResult", text: command.draft, accepted: p.ok === true, restoreDraft: command.name === "skill" && p.ok !== true, submission: command.submission });
       if (p.ok !== true && p.name !== "compact") this.emit({ type: "commandError", text: String(p.error ?? "Command refused. Your draft was kept.") });
       this.state.commands.delete(operation);
     }
@@ -1586,7 +1586,7 @@ export class CognitionBackend implements ChatBackend {
       this.state.acceptedMessages.add(payload.command_id);
       const command = this.state.commands.get(payload.command_id);
       if (command?.name === "skill") {
-        this.emit({ type: "sendResult", text: command.draft, accepted: true });
+        this.emit({ type: "sendResult", text: command.draft, accepted: true, submission: command.submission });
       }
     }
     if (envelope.kind === "session.end") {

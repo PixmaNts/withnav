@@ -107,6 +107,11 @@ requests land in `develop`.
 - Subagents: when the notice that a child used its step budget could not be saved (a failed
   history write), the child stayed paused and its parent was never asked to continue or stop it.
   The notice is now retried until it is saved, and the parent receives it once.
+- VS Code images: a message no longer leaves without an image that was still loading, and an
+  image no longer rides along with the next message after a send (including the first message
+  of a new conversation). Send waits until every attached image has loaded; only the images a
+  message carried leave the composer. Picking more than 8 images names the ones not attached,
+  and an image that cannot be read is reported instead of vanishing.
 
 ## [0.8.2] - 2026-11-05
 

@@ -244,6 +244,7 @@ export function registerChatView(
             if (backend.isReadOnly()) break;
             if (typeof message.text === "string" && (message.text.trim() || message.images?.length)) {
               const operation = backend.captureOperation();
+              if (typeof message.submission === "number") operation.submission = message.submission;
               void (async () => {
                 const images = pendingImages(message.images);
                 const session = backend.currentConversationId();
@@ -270,9 +271,9 @@ export function registerChatView(
                  // /new deliberately changes identity. Its reset already released the composer;
                  // never relabel an acknowledgement from the previous conversation.
                  if (routeComposer(message.text).kind === "command" && message.text.match(/^\/new(?:\s|$)/)) return;
-                 if (backend.ownsOperation(operation)) post({ type: "sendResult", text: message.text, accepted, generation: operation.generation });
+                 if (backend.ownsOperation(operation)) post({ type: "sendResult", text: message.text, accepted, generation: operation.generation, submission: operation.submission });
                })
-                .catch(error => { if (!backend.ownsOperation(operation)) return; post({ type: "sendResult", text: message.text, accepted: false, generation: operation.generation }); post({ type: "commandError", text: error instanceof Error ? error.message : String(error), generation: operation.generation }); });
+                .catch(error => { if (!backend.ownsOperation(operation)) return; post({ type: "sendResult", text: message.text, accepted: false, generation: operation.generation, submission: operation.submission }); post({ type: "commandError", text: error instanceof Error ? error.message : String(error), generation: operation.generation }); });
             }
             break;
           case "answerPermission":

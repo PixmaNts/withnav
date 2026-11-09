@@ -57,7 +57,12 @@ export async function openMcpAppPanel(backend: ChatBackend, app: McpAppDescripto
     if (!msg || typeof msg !== "object") return;
     if (msg.type === "openExternal" && typeof msg.url === "string") {
       if (msg.url.startsWith("http://") || msg.url.startsWith("https://")) {
-        await vscode.env.openExternal(vscode.Uri.parse(msg.url));
+        try {
+          await vscode.env.openExternal(vscode.Uri.parse(msg.url));
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          void panel?.webview.postMessage({ type: "hostError", message: `Could not open the browser: ${reason}` });
+        }
       }
       return;
     }
@@ -153,6 +158,7 @@ export function renderMcpAppHtml(
     </div>
   </div>
   ${loadError && !showUrl ? `<div class="error">${escapeHtml(loadError)}</div>` : ""}
+  <div class="error" id="host-error" role="alert" hidden></div>
   ${html || showUrl ? `<iframe id="mcp-frame" sandbox="${sandbox}" ${srcdocAttr} ${srcAttr}></iframe>` : ""}
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -163,6 +169,12 @@ export function renderMcpAppHtml(
     window.addEventListener("message", (event) => {
       const data = event.data;
       if (!data || typeof data !== "object") return;
+      if (data.type === "hostError" && event.source !== frame?.contentWindow) {
+        const box = document.getElementById("host-error");
+        box.textContent = String(data.message || "");
+        box.hidden = false;
+        return;
+      }
       if (data.type === "rpcReply" && frame?.contentWindow) {
         const msg = data.error
           ? { jsonrpc: "2.0", id: data.id, error: data.error }

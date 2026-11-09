@@ -118,8 +118,10 @@ export class ChatHub implements ChatTabs {
   }
 
   async deleteConversation(id: string): Promise<void> {
-    for (const tab of [...this.order]) if (tab.sessionId === id) this.close(tab.id);
+    // Close the tabs only once the server has dropped the conversation: a refused delete must
+    // leave it open where the Captain had it. The lister treats "already gone" as deleted.
     await this.lister.deleteConversation(id);
+    for (const tab of [...this.order]) if (tab.sessionId === id) this.close(tab.id);
     this.list = this.list.filter(item => item.id !== id);
     this.publishList();
   }
@@ -170,7 +172,7 @@ export class ChatHub implements ChatTabs {
     if (this.refreshTimer || !this.endpoint) return;
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = undefined;
-      if (!this.disposed) void this.lister.listConversations().catch(() => undefined);
+      if (!this.disposed) void this.lister.listConversations().catch(error => { if (!this.disposed) this.notifyError(error); });
     }, LIST_REFRESH_MS);
   }
 

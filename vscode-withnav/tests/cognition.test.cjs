@@ -44,6 +44,20 @@ test('deletion counts nested children, resets current chat and silently refreshe
   assert.deepEqual(calls.slice(-2), ['DELETE', 'GET']);
   backend.dispose();
 });
+test("a deletion the server accepted resolves even when the list re-read after it fails", async t => {
+  const { backend } = setup(t, {});
+  backend.state.session = "other";
+  backend.conversations = [{ id: "gone", title: "Gone" }, { id: "other", title: "Other" }];
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    calls.push(init.method);
+    return init.method === "DELETE" ? new Response(null, { status: 204 }) : new Response("down", { status: 503 });
+  });
+  await backend.deleteConversation("gone");
+  assert.deepEqual(calls, ["DELETE", "GET"]);
+  assert.deepEqual(backend.conversations.map(c => c.id), ["other"]);
+  backend.dispose();
+});
 test("commands use exact body without context and unknown/no-session commands retain draft", async t => {
   const { backend, calls } = setup(t, { operation_id: "OP", ok: true });
   backend.commands = commandCatalog;

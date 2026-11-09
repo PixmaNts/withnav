@@ -486,7 +486,7 @@ impl McpManager {
             Ok(resource) => Ok(resource),
             Err(err) => {
                 let diagnostic = bounded_chars(&redaction::redact(&err, &secrets), 1024);
-                tracing::warn!(server = server_id, uri, error = %diagnostic, "invalid MCP App resource");
+                tracing::warn!(server = server_id, error = %diagnostic, "invalid MCP App resource");
                 Err(McpUiError::InvalidResponse { method: METHOD })
             }
         }

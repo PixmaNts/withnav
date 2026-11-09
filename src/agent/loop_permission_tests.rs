@@ -1633,42 +1633,17 @@ fn a_locked_permission_database_does_not_stall_the_runtime() {
             crate::permission::store::PermissionStore::open(&data).unwrap(),
         ));
         script(&mut actor, vec![owned(&[bash("b1", "echo hi")])]).await;
-        let ticks = Arc::new(AtomicUsize::new(0));
-        let ticker = tokio::spawn({
-            let ticks = ticks.clone();
-            async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                    ticks.fetch_add(1, Ordering::SeqCst);
-                }
-            }
+        let probe = crate::stall_probe::StallProbe::start();
+        let hold = probe.hold(data.join("withnav.db"), |db| {
+            db.execute_batch("BEGIN IMMEDIATE").unwrap();
         });
-        let (locked, is_locked) = std::sync::mpsc::channel();
-        let holder = std::thread::spawn({
-            let ticks = ticks.clone();
-            move || {
-                let connection = rusqlite::Connection::open(data.join("withnav.db")).unwrap();
-                connection.execute_batch("BEGIN IMMEDIATE").unwrap();
-                locked.send(()).unwrap();
-                let before = ticks.load(Ordering::SeqCst);
-                std::thread::sleep(std::time::Duration::from_millis(600));
-                let during = ticks.load(Ordering::SeqCst) - before;
-                connection.execute_batch("COMMIT").unwrap();
-                during
-            }
-        });
-        is_locked.recv().unwrap();
+        let before = hold.start();
         let outcome = run(&mut actor).await;
         assert!(
             matches!(outcome, RunOutcome::PermissionRequired(_)),
             "{outcome:?}"
         );
-        let during = holder.join().unwrap();
-        ticker.abort();
-        // A free runtime ticks about 120 times in the hold on Linux, but only about 38 on
-        // Windows, where the default timer resolution (about 15.6 ms) stretches each 5 ms
-        // sleep. A blocked runtime shows almost none, so 10 tells them apart on both.
-        assert!(during >= 10, "the runtime stalled: {during} ticks");
+        hold.assert_not_stalled(before).await;
         assert_eq!(decisions(&actor)[0].outcome, Outcome::Pending);
     });
 }

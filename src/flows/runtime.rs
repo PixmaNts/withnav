@@ -2466,34 +2466,13 @@ mod application_status_tests {
                 Arc::new(crate::flows::client::UnavailableClient),
                 Arc::new(NoEffects),
             ));
-            let ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let ticker = tokio::spawn({
-                let ticks = ticks.clone();
-                async move {
-                    loop {
-                        tokio::time::sleep(Duration::from_millis(5)).await;
-                        ticks.fetch_add(1, Ordering::SeqCst);
-                    }
-                }
+            let probe = crate::stall_probe::StallProbe::start();
+            // Out of WAL, an exclusive lock blocks readers too, and every
+            // store open waits to switch the journal back.
+            let hold = probe.hold(data.join("withnav.db"), |db| {
+                db.pragma_update(None, "journal_mode", "DELETE").unwrap();
+                db.execute_batch("BEGIN EXCLUSIVE").unwrap();
             });
-            let (locked, is_locked) = std::sync::mpsc::channel();
-            let holder = std::thread::spawn({
-                let (ticks, data) = (ticks.clone(), data.clone());
-                move || {
-                    // Out of WAL, an exclusive lock blocks readers too, and
-                    // every store open waits to switch the journal back.
-                    let db = rusqlite::Connection::open(data.join("withnav.db")).unwrap();
-                    db.pragma_update(None, "journal_mode", "DELETE").unwrap();
-                    db.execute_batch("BEGIN EXCLUSIVE").unwrap();
-                    locked.send(()).unwrap();
-                    let before = ticks.load(Ordering::SeqCst);
-                    std::thread::sleep(Duration::from_millis(600));
-                    let during = ticks.load(Ordering::SeqCst) - before;
-                    db.execute_batch("COMMIT").unwrap();
-                    during
-                }
-            });
-            is_locked.recv().unwrap();
             // A concurrent refresh on another thread holds the marker while
             // it waits on the database.
             let concurrent = std::thread::spawn({
@@ -2504,22 +2483,16 @@ mod application_status_tests {
                 trigger: "tool.pre_call".into(),
                 payload: json!({}),
             };
+            let before = hold.start();
             for _ in 0..2 {
                 runtime
                     .evaluate(event(), ContextSnapshot::default(), CancellationToken::new())
                     .await;
             }
-            let during = tokio::task::spawn_blocking(move || holder.join().unwrap())
-                .await
-                .unwrap();
+            hold.assert_not_stalled(before).await;
             tokio::task::spawn_blocking(move || concurrent.join().unwrap())
                 .await
                 .unwrap();
-            ticker.abort();
-            // About 120 ticks fit in the hold on Linux and about 38 on Windows, whose
-            // default timer resolution (about 15.6 ms) stretches each 5 ms sleep. A
-            // blocked runtime shows almost none.
-            assert!(during >= 10, "the runtime stalled: {during} ticks");
             assert!(store
                 .snapshot()
                 .values()

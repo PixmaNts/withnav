@@ -45,10 +45,37 @@ impl Service {
             link.agent,
             serde_json::to_string(&evidence).map_err(|e| ServerError::History(e.to_string()))?,
         );
-        self.history()
-            .enqueue_watchdog(parent, payload, notice, true)
+        #[cfg(debug_assertions)]
+        let barrier = self
+            .budget_notice_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        #[cfg(debug_assertions)]
+        if let Some(barrier) = &barrier {
+            barrier.reached.notify_one();
+            barrier.release.notified().await;
+        }
+        // A top-up, the Captain's continue or the owner's stop may have landed
+        // since the check above: the park is checked again under their gate,
+        // atomically with the commit, so a resumed child never leaves a stale
+        // "used its steps" notice in the parent's outbox.
+        let status = handle.status.clone();
+        let committed = self
+            .history()
+            .enqueue_watchdog_if(parent, payload, notice, true, move |commit| {
+                status.while_budget_parked(used, commit)
+            })
             .await
-            .map_err(ServerError::History)?;
+            .map_err(ServerError::History);
+        // The paused test learns the attempt is over, whether it committed or not.
+        #[cfg(debug_assertions)]
+        if let Some(barrier) = &barrier {
+            barrier.reached.notify_one();
+        }
+        if !committed? {
+            return Ok(());
+        }
         self.drain_completions(parent).await;
         if let Some(owner) = self.handle(parent) {
             owner.status.wake_delivery();

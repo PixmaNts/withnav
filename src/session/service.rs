@@ -381,6 +381,8 @@ pub struct Service {
     #[cfg(debug_assertions)]
     pub(crate) watchdog_ownership_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
+    pub(crate) budget_notice_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
     pub(crate) lifecycle_claim_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     pub(crate) watchdog_stop_failure: Arc<std::sync::atomic::AtomicBool>,
@@ -507,6 +509,16 @@ impl Service {
     pub fn pause_watchdog_claim_write(&self, barrier: ChildPreparationBarrier) {
         *self
             .watchdog_claim_write_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+    /// Pauses the next budget-park notice after its first park check and
+    /// before its durable commit, the window a concurrent top-up can land in.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_budget_notice(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .budget_notice_barrier
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
     }
@@ -778,6 +790,8 @@ impl Service {
             watchdog_claim_write_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             watchdog_ownership_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
+            budget_notice_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             lifecycle_claim_barrier: Arc::default(),
             #[cfg(debug_assertions)]

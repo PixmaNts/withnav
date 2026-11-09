@@ -988,13 +988,43 @@ impl HistoryStore {
         result: String,
         consume: bool,
     ) -> Result<(), String> {
+        self.enqueue_watchdog_if(parent, payload, result, consume, |commit| Some(commit()))
+            .await
+            .map(|_| ())
+    }
+
+    /// Like [`HistoryStore::enqueue_watchdog`], but the insert and its commit
+    /// run inside `gate`, which may refuse (`None`): nothing is written and
+    /// `Ok(false)` is returned. The SQLite write lock is taken before `gate`
+    /// runs, so the gate is held for one insert and commit, never for a busy wait.
+    pub(crate) async fn enqueue_watchdog_if(
+        &self,
+        parent: Ulid,
+        payload: serde_json::Value,
+        result: String,
+        consume: bool,
+        gate: impl FnOnce(&mut dyn FnMut() -> Result<(), String>) -> Option<Result<(), String>>
+        + Send
+        + 'static,
+    ) -> Result<bool, String> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
-            conn.execute("INSERT INTO completion_outbox (child_id,parent_id,outcome,result_ref,payload,result_text,consumed) VALUES (?1,?2,'watchdog',?1,?3,?4,?5)",
-                params![Ulid::generate().to_string(), parent.to_string(), payload.to_string(), result, !consume]).map_err(|e| e.to_string())?;
-            Ok(())
+            let mut tx = Some(
+                conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .map_err(|e| e.to_string())?,
+            );
+            let mut commit = || {
+                let tx = tx.take().ok_or("watchdog notice committed twice")?;
+                tx.execute("INSERT INTO completion_outbox (child_id,parent_id,outcome,result_ref,payload,result_text,consumed) VALUES (?1,?2,'watchdog',?1,?3,?4,?5)",
+                    params![Ulid::generate().to_string(), parent.to_string(), payload.to_string(), result, !consume]).map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())
+            };
+            match gate(&mut commit) {
+                Some(outcome) => outcome.map(|()| true),
+                None => Ok(false),
+            }
         }).await.map_err(|e| e.to_string())?
     }
 

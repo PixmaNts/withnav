@@ -493,6 +493,25 @@ impl RuntimeStatus {
             .unwrap_or_else(|e| e.into_inner());
         self.is_budget_parked() && self.watchdog.claim_terminal(TerminalOwner::Watchdog)
     }
+    /// Runs `commit` only while the child is still budget-parked with `used`
+    /// top-ups and not stopped, holding the gate that top-ups, the Captain's
+    /// continue and the owner's stop take: none of them can land between this
+    /// check and the commit. `None` when the park has moved on; `commit` then
+    /// never runs. Nothing else done under this gate touches the database, so a
+    /// database write inside `commit` cannot deadlock against it.
+    pub fn while_budget_parked<R>(&self, used: u32, commit: impl FnOnce() -> R) -> Option<R> {
+        let _gate = self
+            .budget_topup_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let parked = !self
+            .watchdog
+            .stopped
+            .load(std::sync::atomic::Ordering::Acquire)
+            && self.is_budget_parked()
+            && self.budget_topups_used() == used;
+        parked.then(commit)
+    }
     /// Whether the runtime is parked on its step budget right now.
     pub fn is_budget_parked(&self) -> bool {
         self.budget_parked
@@ -2201,6 +2220,47 @@ mod tests {
         assert!(!status.continue_budget());
         assert_eq!(status.topup_budget(), Err(BudgetTopupError::NotParked));
         assert_eq!(status.budget_topups_used(), 0);
+    }
+
+    #[test]
+    fn budget_park_commit_runs_under_the_topup_gate_only_while_parked() {
+        let status = budget_parked_status();
+        let committed = status.while_budget_parked(0, || {
+            assert!(
+                status.budget_topup_gate.try_lock().is_err(),
+                "the commit runs while the top-up gate is held"
+            );
+        });
+        assert_eq!(committed, Some(()));
+        assert_eq!(
+            status.while_budget_parked(1, || panic!("stale top-up count")),
+            None
+        );
+
+        assert_eq!(status.topup_budget(), Ok(1));
+        assert_eq!(
+            status.while_budget_parked(0, || panic!("committed after a top-up")),
+            None
+        );
+        assert_eq!(
+            status.while_budget_parked(1, || panic!("committed after a top-up")),
+            None,
+            "a released park refuses whatever the count"
+        );
+
+        let captain = budget_parked_status();
+        assert!(captain.continue_budget());
+        assert_eq!(
+            captain.while_budget_parked(0, || panic!("committed after a continue")),
+            None
+        );
+
+        let stopped = budget_parked_status();
+        assert!(stopped.claim_budget_stop());
+        assert_eq!(
+            stopped.while_budget_parked(0, || panic!("committed after a stop claim")),
+            None
+        );
     }
 
     #[test]

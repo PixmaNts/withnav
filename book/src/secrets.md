@@ -69,6 +69,12 @@ more is replaced by `[secret NAME]`: tool output (`echo $OPENAI_API_KEY` shows
 values are stored and given to commands but not redacted, so that ordinary words are not replaced; the card warns you when the value you type is that short.
 A revoked or expired value is no longer redacted.
 
+Reasoning some models return only to themselves (signed thinking blocks, thought signatures) is
+kept to replay it to the same model. It cannot be redacted in place without invalidating it, so an
+item that contains a stored value of 8 characters or more is dropped from the conversation
+instead, and that step's reasoning is not replayed. An encrypted item cannot be decrypted to find a
+value; it is kept unless the value appears literally in its text.
+
 ## What this does not protect against
 
 - Nav never sees the value **in the chat**, but an agent that can run commands can still read it:

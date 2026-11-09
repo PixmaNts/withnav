@@ -509,7 +509,7 @@ impl SecretAccess {
                 content,
                 reasoning_content,
                 tool_calls,
-                ..
+                opaque,
             } => {
                 for text in [content, reasoning_content].into_iter().flatten() {
                     self.redact_in_place(text);
@@ -517,8 +517,60 @@ impl SecretAccess {
                 for call in tool_calls {
                     self.redact_in_place(&mut call.function.arguments);
                 }
+                self.drop_secret_opaque(opaque);
             }
         }
+    }
+
+    /// Drops every provider-opaque reasoning item that echoes a value this access redacts.
+    ///
+    /// An item is signed or encrypted by its producer, so editing its bytes would invalidate
+    /// it: a forged or altered Anthropic thinking signature is refused with `400 Invalid
+    /// signature in thinking block` (measured through OmniRoute, 2026-10-20). Dropping the
+    /// whole item keeps the secret out of the transcript and `withnav.db` at the cost of that
+    /// item's replay; the remaining items keep the producer's order, and `None` when none
+    /// survive. Encrypted payloads cannot be read to find a value and stay as received.
+    fn drop_secret_opaque(&self, opaque: &mut Option<crate::provider::openai::OpaqueReasoning>) {
+        let Some(reasoning) = opaque else {
+            return;
+        };
+        reasoning
+            .items
+            .retain(|item| !self.json_text_holds_secret(&item.data));
+        if reasoning.items.is_empty() {
+            *opaque = None;
+        }
+    }
+
+    /// Whether any string of `json_text` (a provider payload) echoes a redacted value.
+    ///
+    /// The item's `data` is the provider's JSON text. The raw text is checked first, so a value
+    /// that appears literally anywhere in it — not only inside a JSON string — is found; the
+    /// parsed strings and object keys are then scanned too, which reaches a value stored
+    /// escaped (a `"` becomes `\"`). Text that does not parse is only checked as-is.
+    fn json_text_holds_secret(&self, json_text: &str) -> bool {
+        fn any_string(value: &serde_json::Value, holds: &impl Fn(&str) -> bool) -> bool {
+            match value {
+                serde_json::Value::String(text) => holds(text),
+                serde_json::Value::Array(items) => items.iter().any(|v| any_string(v, holds)),
+                serde_json::Value::Object(map) => map
+                    .iter()
+                    .any(|(key, v)| holds(key) || any_string(v, holds)),
+                _ => false,
+            }
+        }
+        if self.holds_secret(json_text) {
+            return true;
+        }
+        match serde_json::from_str::<serde_json::Value>(json_text) {
+            Ok(value) => any_string(&value, &|text| self.holds_secret(text)),
+            Err(_) => false,
+        }
+    }
+
+    /// Whether `text` contains a value this access replaces with `[secret NAME]`.
+    fn holds_secret(&self, text: &str) -> bool {
+        matches!(self.redact(text), Cow::Owned(_))
     }
 }
 

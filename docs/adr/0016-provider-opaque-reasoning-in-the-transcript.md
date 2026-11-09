@@ -72,7 +72,8 @@ not JSON is dropped alone, unknown kinds are kept, nothing is logged from the pa
 of the transcript is strict: a stored transcript that does not parse fails the resume and leaves
 the row untouched (before, it resumed as an empty conversation whose next snapshot overwrote the
 stored history). An older build reading a newer row ignores the field and saves it back without
-it: the reasoning is lost, the conversation is not.
+it: the reasoning is lost, the conversation is not. An item holding a configured secret is not
+stored: `SecretAccess::redact_message` drops it (see below).
 
 #### Chat Completions: `reasoning_details`
 
@@ -87,6 +88,19 @@ of that kind back as `"reasoning_details": [...]` on the assistant message, afte
 through OmniRoute on 2026-11-09 while the Anthropic format was accepted, and it is not known
 whether the gateway or the payload is at fault. Errors never quote a stream frame, and an upstream
 error message has the signatures and encrypted data of the request blanked out.
+
+### Configured secrets in an opaque item
+
+`SecretAccess::redact_message` redacts an assistant message before it is stored and before it is
+sent, and it applies the same rule to `opaque`: an item whose JSON payload echoes a value of the
+conversation's secrets (8 characters or more) is dropped whole, never edited, because altering a
+signed or encrypted item would invalidate it. Both the raw JSON text and its decoded strings and
+object keys are scanned, so a value stored escaped is found. Order and siblings are kept, and
+`opaque` becomes absent when nothing survives. The item's replay to its producer is lost; keeping
+the value out of the transcript and `withnav.db` is the point. An encrypted item cannot be
+decrypted to find a value; it is kept unless the value appears literally in its text. This guards
+the write path, not the rows already on disk: an item stored before the value became a secret of
+the conversation, or before this guard existed, is not rewritten.
 
 ## What reaches clients
 

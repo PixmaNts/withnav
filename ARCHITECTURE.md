@@ -27,7 +27,7 @@ nav lsp   (one process, two channels: ADR 0006)
    ├─ agent/       the coding-agent loop (the cognition runs on it)
    ├─ tools/       nine registry tools: read, write, edit, grep, glob, fetch, bash, ask, request_secret; each session adds `skill`
    ├─ secrets/     the Captain's secrets: store, bash environment, redaction
-   ├─ mcp/         service-owned stdio clients; ready tools frozen into each session registry
+   ├─ mcp/         service-owned stdio and HTTP clients; ready tools frozen into each session registry
    └─ provider/    model access, re-exported from withnav-provider (config, auth, one HTTP client, chat SSE, FIM, System One) plus the assignments and layers that read `config.json`
 
 nav tui   (the terminal client; an HTTP + SSE client of a session server, embedded or `--url`)
@@ -75,7 +75,7 @@ Dependencies point down this list. A module never imports one above it.
 
 | Module | Owns | Does not own |
 | --- | --- | --- |
-| `mcp/` | global stdio MCP servers: configuration under `mcp` in `config.json` (`config.rs`), the shared `McpManager`, bounded discovery and process-group supervision (`connection.rs`), provider-safe `mcp__<server>__<tool>` names and schemas, cancellable bounded calls (`tool.rs`), output redaction (`redaction.rs`), the clients' redacted status snapshot and its change `watch` | permission policy (an MCP tool is decided like any other), session persistence, HTTP transport, publishing to sessions (`session/mcp.rs`), live refresh |
+| `mcp/` | global stdio and Streamable HTTP MCP servers: configuration under `mcp` in `config.json` (`config.rs`), the shared `McpManager`, bounded discovery, process-group supervision and the HTTP connection (`connection.rs`), provider-safe `mcp__<server>__<tool>` names and schemas, cancellable bounded calls (`tool.rs`), output redaction (`redaction.rs`), the clients' redacted status snapshot and its change `watch` | permission policy (an MCP tool is decided like any other), session persistence, OAuth, publishing to sessions (`session/mcp.rs`), live refresh |
 | `permission/` | the permission model of ADR 0015, shared by the agent loop and `nav permissions`: the SQLite tables in `withnav.db` (`store.rs`), rules and their matching (`rules.rs`), the decision history (`decisions.rs`), skill and flow validations (`validation.rs`), shell splitting and arity prefixes (`shell.rs`), the fixed floor (`floor.rs`) and the decision order (`decide.rs`: a pure `decide` over a `PermissionFlows` trait, plus `DoomTracker`) | running tools, flows, events |
 | `flows/` | the flow store (built-in, global and workspace definitions, validation-gated loading, reload marker; `store.rs`), the runtime that evaluates a trigger, aggregates the permission verdicts and runs the compiled-in protected check (`runtime.rs`), the built-in flows (`builtin/`), run records, redaction, the decision client to Instinct | the decision order, which lives in `permission/` |
 | `app/` | `nav` command dispatch; `entry.rs` selects stderr-only LSP logging; `lsp.rs` dispatches editor startup and offline replay | language-server wiring and replay reports, which live in `navigator/` |
@@ -436,7 +436,8 @@ or stderr eviction (including chunk boundaries). Application subscribers exclude
 even under verbose user filters because dependency diagnostics can include raw wire payloads.
 Wire-name collisions are resolved across the ready inventory in server-id/original-name order,
 keeping the first and reporting skipped definitions. No workspace MCP
-configuration is loaded. Config changes require a service restart; new sessions snapshot only
+configuration is loaded. HTTP header values are resolved the same way, only to build the
+connection's headers (marked sensitive), and each value is redacted like an `env` value. Config changes require a service restart; new sessions snapshot only
 currently ready tools, and existing registries stay frozen, including across connection restarts.
 
 Clients see the servers' status, never their configuration. `McpManager::status_snapshot` builds
@@ -571,7 +572,7 @@ as before; no supervision state is restored. The event catalog (`bus/event.rs`,
 | `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `app/tui.rs`, `withnav-provider`'s `catalog.rs` |
 | `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of every permission decision (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
 | `~/.config/withnav/flows/`, `<workspace>/.withnav/flows/` | global and workspace flow definitions; they load only once validated at their current content | the Captain, the Studio |
-| `~/.config/withnav/config.json` key `mcp` | stdio MCP server declarations | the Captain |
+| `~/.config/withnav/config.json` key `mcp` | stdio and HTTP MCP server declarations | the Captain |
 | `~/.local/share/withnav/credentials/secrets.json` | workspace-scoped secrets with a timed availability, in plain text, mode 0600 (directory 0700), each with its expiry; removed when empty | `secrets/` (`Service::submit_secret`, expiry, revocation) |
 
 Data and config paths come from `paths.rs` and `withnav-provider`'s `dirs.rs` (`config_dir`, `data_dir`, with `auth::default_config_dir`). On every start `paths::migrate_legacy`

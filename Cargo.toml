@@ -46,7 +46,8 @@ name = "nav"
 path = "src/main.rs"
 
 [dependencies]
-rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process"] }
+# The Streamable HTTP client brings no TLS backend of its own: it uses the reqwest below, rustls.
+rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 instinct-flow = { path = "crates/instinct-flow" }
 withnav-client-api = { path = "crates/withnav-client-api" }
 withnav-client = { path = "crates/withnav-client" }

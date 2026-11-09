@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { api } from "../api/client";
 import type { ImageRef } from "../api/types";
 
@@ -113,11 +113,44 @@ export function Thumbnails({ images }: { images: ImageRef[] }) {
   );
 }
 
+/** How far outside the visible part of the conversation a thumbnail starts loading. */
+export const THUMB_MARGIN = "400px";
+
+/**
+ * Turns true once the element comes within THUMB_MARGIN of the visible part of the conversation,
+ * and stays true. A long transcript would otherwise fetch every attachment it ever showed as soon
+ * as it opens. The observer watches the conversation's scroll box: a viewport-rooted one would
+ * ignore the margin inside it. Without IntersectionObserver, the element counts as near at once.
+ */
+function useNearView(ref: RefObject<HTMLElement | null>): boolean {
+  const [near, setNear] = useState(() => typeof IntersectionObserver === "undefined");
+  useEffect(() => {
+    const el = ref.current;
+    if (near || !el) return;
+    const root = el.closest(".transcript, .subview");
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          observer.disconnect();
+          setNear(true);
+        }
+      },
+      { root, rootMargin: THUMB_MARGIN },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref, near]);
+  return near;
+}
+
 function Thumbnail({ image, scope }: { image: ImageRef; scope: Scope }) {
-  const url = useAttachmentUrl(scope.sessionId, image.attachment_id);
+  const ref = useRef<HTMLButtonElement>(null);
+  const near = useNearView(ref);
+  const url = useAttachmentUrl(near ? scope.sessionId : null, image.attachment_id);
   const label = imageLabel(image);
   return (
     <button
+      ref={ref}
       type="button"
       className="thumb"
       title={`${label}: open in the panel`}

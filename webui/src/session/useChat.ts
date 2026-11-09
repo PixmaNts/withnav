@@ -10,11 +10,8 @@ import { HttpError } from "../api/http";
 import { keepMcpStatus, keys, useAgents, useContextSnapshot, useModels, useSessionSummary } from "../api/queries";
 import type { AgentEntry, ContentBlock, Envelope, McpStatus, ModelEntry, SecretView } from "../api/types";
 import type { SecretScope, SecretTtl } from "./reducer";
+import { uploadImages } from "./uploads";
 import { useSessionStream } from "./useSessionStream";
-
-
-/** Files already stored, by session: the Composer keeps a failed message's files for the retry. */
-const uploaded = new WeakMap<File, { session: string; id: string }>();
 
 export interface Draft {
   agent: string | null;
@@ -167,14 +164,8 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
           setDraft({ agent: null, model: null, variant: undefined });
           onCreated(id);
         } else await ensureLive();
-        const images: ContentBlock[] = [];
-        for (const file of files) {
-          // A retry after a failed send reuses the uploads that succeeded instead of filling the quota.
-          const known = uploaded.get(file);
-          const attachmentId = known?.session === id ? known.id : (await api.upload(id, file)).attachment_id;
-          uploaded.set(file, { session: id, id: attachmentId });
-          images.push({ type: "image", attachment_id: attachmentId });
-        }
+        // A retry after a failed send reuses the uploads that succeeded instead of filling the quota.
+        const images: ContentBlock[] = (await uploadImages(id, files)).map((attachmentId) => ({ type: "image", attachment_id: attachmentId }));
         await api.send(id, [...content, ...images]);
         void qc.invalidateQueries({ queryKey: keys.sessions(workspace) });
         return true;

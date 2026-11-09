@@ -286,15 +286,18 @@ async fn a_live_session_hears_the_mcp_status_and_the_route_returns_the_same_snap
     let cfg = TestServerConfig::mock(&env.root, &provider.url)
         .rules_home(&env.home)
         .config();
-    // The server answers after a delay, so it turns ready while the session is open.
+    // The server answers initialize once the gate file exists, created after the session
+    // subscribed: it turns ready while the session listens, however slow the runner is.
+    let gate = env.root.join("mcp-ready");
     with_mcp(
         &cfg,
-        json!({"command":[common::python(),FIXTURE],"env":{"INIT_DELAY_SECONDS":"1"},"startup_timeout_ms":5000}),
+        json!({"command":[common::python(),FIXTURE],"env":{"INIT_GATE":gate},"startup_timeout_ms":30000}),
         false,
     );
     let state = AppState::new(cfg).unwrap();
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
+    std::fs::write(&gate, "").unwrap();
     let events = common::server::collect_until(sub, |e| {
         e.kind == "mcp.status" && e.payload["servers"][0]["state"] == "ready"
     })

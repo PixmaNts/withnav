@@ -341,7 +341,10 @@ fn rerun_paths_emits_expected_watch_set() {
     let head = git_dir.join("HEAD");
     let branch_ref = git_dir.join("refs").join("heads").join("my-branch");
 
-    assert!(paths.contains(&index.to_string_lossy().to_string()));
-    assert!(paths.contains(&head.to_string_lossy().to_string()));
-    assert!(paths.contains(&branch_ref.to_string_lossy().to_string()));
+    // Compared as paths: git answers `--git-path` with `/` separators, which Windows joins
+    // after a `\` prefix; cargo reads either.
+    let watched = |path: &PathBuf| paths.iter().any(|p| std::path::Path::new(p) == path);
+    assert!(watched(&index), "{paths:?}");
+    assert!(watched(&head), "{paths:?}");
+    assert!(watched(&branch_ref), "{paths:?}");
 }

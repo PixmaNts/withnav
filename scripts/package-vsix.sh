@@ -67,17 +67,17 @@ rm -rf "$ext/bin"
 mkdir -p "$dist"
 
 # Captures WITHNAV_VERSION from cargo's root package build-script execution record.
+WITHNAV_PKGID="$(cd "$root" && cargo pkgid -p withnav)"
+export WITHNAV_PKGID
 cargo_version_parser='
 const readline = require("readline");
 const rl = readline.createInterface({ input: process.stdin, terminal: false });
 let version = null;
+// The id cargo gives the root package (`cargo pkgid`): a path package whose directory is named
+// after it is `path+file:///…/withnav#0.8.2`, without the name, so the name alone cannot match.
+const rootId = process.env.WITHNAV_PKGID;
 function isWithnav(pkg) {
-  if (!pkg) return false;
-  if (pkg.includes("#")) {
-    const f = pkg.split("#")[1];
-    return f.startsWith("withnav@") || f === "withnav";
-  }
-  return pkg.startsWith("withnav ") || pkg === "withnav";
+  return Boolean(pkg) && pkg === rootId;
 }
 rl.on("line", (line) => {
   if (!line.startsWith("{")) return;

@@ -296,8 +296,9 @@ async fn slow_start_is_nonblocking_and_shutdown_kills_descendants() {
     let manager = McpManager::start(&settings);
     assert!(start.elapsed() < Duration::from_millis(100));
     assert!(manager.snapshot().is_empty());
-    // The PID file may exist before its contents have been written.
-    let pid: i32 = tokio::time::timeout(Duration::from_secs(3), async {
+    // The PID file may exist before its contents have been written. Python starts two
+    // interpreters first: 3 s timed out on a Windows runner on 2026-11-08.
+    let pid: i32 = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Some(pid) = std::fs::read_to_string(&pidfile)
                 .ok()
@@ -352,11 +353,13 @@ async fn service_session_creation_does_not_wait_for_initialization() {
     let (tmp, workspace) = common::server::temp_workspace();
     let config = common::server::TestServerConfig::unreachable(tmp.path()).config();
     let mut settings = withnav::settings::load(&config.config_dir).unwrap();
-    settings.set_dotted("mcp", json!({"hang":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py"),"hang"],"startup_timeout_ms":10000}}));
+    settings.set_dotted("mcp", json!({"hang":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py"),"hang"],"startup_timeout_ms":60000}}));
     withnav::settings::save(&config.config_dir, &settings).unwrap();
     let state = withnav::server::AppState::new(config).unwrap();
+    // Far below the 60 s initialization a blocking creation would wait for, and loose enough for
+    // a slow Windows runner (2 s timed out there on 2026-11-08).
     tokio::time::timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(10),
         state.service().create_session(&workspace, None, false),
     )
     .await

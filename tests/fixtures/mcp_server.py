@@ -74,6 +74,10 @@ for line in sys.stdin:
                 signal.signal(signal.SIGTERM, signal.SIG_IGN)
             time.sleep(60)
         time.sleep(float(os.environ.get("INIT_DELAY_SECONDS", "0")))
+        # Answers only once the test creates this file: readiness at a point the test chooses.
+        gate = os.environ.get("INIT_GATE")
+        while gate and not os.path.exists(gate):
+            time.sleep(0.02)
         send(identifier, {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}}, "serverInfo": {"name": "fixture", "version": "1"}, "instructions": os.environ.get("COMPOSITE", "fixture")})
         if os.environ.get("COMPOSITE"):
             print(json.dumps({"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":os.environ["COMPOSITE"]}}), flush=True)

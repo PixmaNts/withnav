@@ -114,7 +114,9 @@ test("reveal opens the checked path, not a link retargeted after the check", asy
   ws.beforeOpen = () => { fs.unlinkSync(link); fs.symlinkSync(path.join(base, "outside.c"), link); };
   const result = await reveal({ path: "link.c", placement: "active" });
   assert.equal(result.error, undefined);
-  assert.equal(opened[0].uri.fsPath, path.join(root, "a.c"));
+  // The opened path is the resolved one: compare resolved paths, since a temporary folder can be
+  // named by its short form (Windows `RUNNER~1`) before resolution.
+  assert.equal(opened[0].uri.fsPath, fs.realpathSync.native(path.join(root, "a.c")));
   assert.doesNotMatch(opened[0].text, /outside/);
 });
 

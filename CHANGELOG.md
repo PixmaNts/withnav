@@ -101,6 +101,10 @@ commit, and stops a corrupt conversation from overwriting its stored history.
   malformed SSE frame.
 
 - A conversation whose stored transcript cannot be read no longer resumes empty (its next save overwrote the stored history): the resume fails and names the session, and the row is left as it was.
+- `nav tui`: the session event stream now bounds one SSE frame to 4 MiB, as the provider stream
+  does. A body that never closes a frame (a broken proxy, an endless line) ends the subscription
+  with a protocol error instead of growing the client's memory without limit; nothing of that frame
+  is delivered. Keep-alive comments reset the count, so a long-idle stream is never cut. (#156)
 ### Added
 
 - Images in conversations, from the terminal client: `/attach <path>` adds a PNG, JPEG, GIF, WebP or SVG

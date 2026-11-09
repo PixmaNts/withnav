@@ -292,3 +292,39 @@ async fn a_declined_request_tells_the_model_and_a_bad_one_never_pauses() {
         assert_eq!(mode, 0o600);
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_secret_that_cannot_be_saved_is_a_server_error_without_its_detail() {
+    let provider = spawn_capturing_provider(vec![request_secret(), text_turn("thanks")]).await;
+    let tmp = tempfile::tempdir().unwrap();
+    // A file where the credentials directory should be: the workspace save fails.
+    std::fs::create_dir_all(tmp.path().join("data")).unwrap();
+    std::fs::write(tmp.path().join("data/credentials"), "").unwrap();
+    let state = TestServerConfig::mock(tmp.path(), &provider.url)
+        .allow_everything()
+        .state();
+    let (addr, _task) = spawn_server(state).await;
+    let base = format!("http://{addr}");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    let id = create_session(&base, &ws).await;
+    assert_eq!(post_message(&base, &id, "go").await.status(), 200);
+    frames_until_turns(&base, &id, 1).await;
+
+    let response = post_secret(
+        &base,
+        &id,
+        "sec_1",
+        &json!({"name":"API_KEY","value":VALUE,"scope":"workspace","ttl":"24h"}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(
+        body,
+        json!({
+            "error": "the secret could not be saved; see the server log",
+            "reason": "secret_not_saved",
+        })
+    );
+}

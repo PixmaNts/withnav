@@ -859,9 +859,19 @@ impl Service {
             (content, result)
         })
         .await
-        .map_err(|error| ServerError::MalformedBody(error.to_string()))?;
+        .map_err(|error| {
+            tracing::error!(%error, "image lookup task failed");
+            ServerError::AttachmentStore
+        })?;
         command.content = content;
-        result.map_err(|error| ServerError::MalformedBody(error.to_string()))
+        // A store failure carries SQLite text: logged, never sent back as a request error.
+        result.map_err(|error| match error {
+            super::attachments::AttachmentError::Db(detail) => {
+                tracing::error!(%detail, "attachment store failed");
+                ServerError::AttachmentStore
+            }
+            error => ServerError::MalformedBody(error.to_string()),
+        })
     }
 
     /// The image attachment store, `None` when its connection could not be opened.

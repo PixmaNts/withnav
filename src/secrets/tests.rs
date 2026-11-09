@@ -392,3 +392,65 @@ fn a_workspace_secret_that_cannot_be_saved_is_reported() {
         "a secret that is never saved does not care"
     );
 }
+
+#[test]
+fn an_oversized_secrets_file_is_refused_without_being_read() {
+    let data = tempfile::tempdir().unwrap();
+    let path = data.path().join("credentials").join("secrets.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // Sparse: past the limit on disk, nothing to parse. A full read would fail on the JSON
+    // instead of on the size.
+    let size = file::MAX_FILE_BYTES + 1;
+    std::fs::File::create(&path).unwrap().set_len(size).unwrap();
+    let error = file::load(&path).err().expect("refused");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("byte limit"), "{error}");
+    let store = SecretStore::open(data.path());
+    assert!(store.list(Ulid::generate(), data.path()).is_empty());
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().len(),
+        size,
+        "left as it is"
+    );
+}
+
+#[test]
+fn a_file_that_grows_past_the_limit_is_read_no_further() {
+    // An endless reader: the read stops one byte past the limit.
+    let error = file::read_bounded(std::io::repeat(b'x'), 1024).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(
+        file::read_bounded(&b"{}"[..], 1024).unwrap(),
+        b"{}".to_vec()
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn workspace_secrets_carry_an_owner_only_acl_on_windows() {
+    use withnav_provider::auth::check_private;
+    let data = tempfile::tempdir().unwrap();
+    let ws = workspace();
+    let dir = data.path().join("credentials");
+    let path = dir.join("secrets.json");
+    // A directory and file created with inherited ACEs, as before the protection existed: the
+    // next start restricts both.
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&path, r#"{"version":1,"secrets":[]}"#).unwrap();
+    let store = SecretStore::open(data.path());
+    check_private(&dir).expect("directory restricted on load");
+    check_private(&path).expect("file restricted on load");
+    std::fs::remove_file(&path).unwrap();
+    store
+        .put(
+            Ulid::generate(),
+            ws.path(),
+            "API_KEY",
+            VALUE,
+            SecretTtl::Day,
+            SecretScope::Workspace,
+        )
+        .unwrap();
+    check_private(&dir).expect("directory restricted on save");
+    check_private(&path).expect("file restricted on save");
+}

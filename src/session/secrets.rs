@@ -12,8 +12,8 @@ use crate::bus::command::{Command, ContentBlock, DeliveryMode};
 use crate::bus::event::ROOT_ACTOR_ID;
 use crate::error::ServerError;
 use crate::secrets::{
-    SecretAccepted, SecretAccess, SecretNote, SecretOutcome, SecretSubmission, SecretView,
-    declined_text, stored_text,
+    SecretAccepted, SecretAccess, SecretError, SecretNote, SecretOutcome, SecretSubmission,
+    SecretView, declined_text, stored_text,
 };
 
 /// How far up a tree the owner is looked for; trees are shallow (subagents of a root).
@@ -190,7 +190,13 @@ impl Service {
                 submission.ttl,
                 submission.scope,
             )
-            .map_err(|e| ServerError::MalformedBody(e.to_string()))
+            .map_err(|e| match e {
+                SecretError::NotSaved(detail) => {
+                    tracing::error!(name, %detail, "secret not saved");
+                    ServerError::SecretNotSaved
+                }
+                e => ServerError::MalformedBody(e.to_string()),
+            })
     }
 }
 

@@ -614,6 +614,63 @@ mod tests {
         assert_eq!(encode_segment("a/b c"), "a%2Fb%20c");
     }
 
+    /// Serves `app` on an ephemeral loopback port and returns its base URL.
+    async fn serve(app: axum::Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        url
+    }
+
+    /// One request as the test server saw it: method, path and query as sent (still
+    /// percent-encoded), the `authorization` header and the body.
+    /// No `Debug`: a captured secret submission must never be printed.
+    struct Seen {
+        method: String,
+        uri: String,
+        authorization: String,
+        content_type: Option<String>,
+        body: Vec<u8>,
+    }
+
+    /// A server that records every request and answers it with `respond(path)`.
+    async fn recording_server(
+        respond: fn(&str) -> axum::response::Response,
+    ) -> (String, tokio::sync::mpsc::UnboundedReceiver<Seen>) {
+        use axum::{
+            body::Bytes,
+            extract::OriginalUri,
+            http::{HeaderMap, Method},
+            routing::any,
+        };
+        let (seen, requests) = tokio::sync::mpsc::unbounded_channel();
+        let app = axum::Router::new().fallback(any(
+            move |method: Method, uri: OriginalUri, headers: HeaderMap, body: Bytes| {
+                let seen = seen.clone();
+                async move {
+                    let header =
+                        |name: &str| headers.get(name).map(|v| v.to_str().unwrap().to_owned());
+                    let path = uri.0.path().to_owned();
+                    seen.send(Seen {
+                        method: method.to_string(),
+                        uri: uri.0.to_string(),
+                        authorization: header("authorization").unwrap_or_default(),
+                        content_type: header("content-type"),
+                        body: body.to_vec(),
+                    })
+                    .unwrap();
+                    respond(&path)
+                }
+            },
+        ));
+        (serve(app).await, requests)
+    }
+
+    /// A client of the test server, with a short timeout so a broken route fails instead of hanging.
+    fn local_client(url: String) -> Client {
+        Client::new(url, Some("tok".into())).with_request_timeout(Duration::from_secs(5))
+    }
+
     #[tokio::test]
     async fn session_scoped_calls_encode_the_id_in_the_path() {
         use axum::{Json, Router, extract::OriginalUri, routing::any};
@@ -626,49 +683,32 @@ mod tests {
                     "enabled": true, "changed": false, "bypass_seq": 0}))
             }
         }));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let client = Client::new(url, None);
+        let client = Client::new(serve(app).await, None);
 
         client.skills("a/b c").await.unwrap();
-        assert_eq!(paths.recv().await.unwrap(), "/v1/sessions/a%2Fb%20c/skills");
+        assert_eq!(
+            paths.try_recv().expect("the request reached the server"),
+            "/v1/sessions/a%2Fb%20c/skills"
+        );
         client.set_bypass("a/b c", true).await.unwrap();
-        assert_eq!(paths.recv().await.unwrap(), "/v1/sessions/a%2Fb%20c/bypass");
+        assert_eq!(
+            paths.try_recv().expect("the request reached the server"),
+            "/v1/sessions/a%2Fb%20c/bypass"
+        );
     }
 
     #[tokio::test]
     async fn upload_posts_raw_bytes_with_the_name_in_the_query() {
-        use axum::{
-            Json, Router, body::Bytes, extract::OriginalUri, http::HeaderMap, routing::post,
-        };
-        let (seen, mut requests) = tokio::sync::mpsc::unbounded_channel();
-        let app = Router::new().fallback(post(
-            move |uri: OriginalUri, headers: HeaderMap, body: Bytes| {
-                let seen = seen.clone();
-                async move {
-                    if body.is_empty() {
-                        return (
-                            axum::http::StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({"error": "empty image"})),
-                        );
-                    }
-                    let auth = headers["authorization"].to_str().unwrap().to_owned();
-                    seen.send((uri.0.to_string(), auth, body.to_vec())).unwrap();
-                    (
-                        axum::http::StatusCode::OK,
-                        Json(
-                            serde_json::json!({"attachment_id": "a1", "media_type": "image/png",
-                            "name": "my shot.png", "size": 3, "width": 1, "height": 1}),
-                        ),
-                    )
-                }
-            },
-        ));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let client = Client::new(url, Some("tok".into()));
+        use axum::{Json, http::StatusCode, response::IntoResponse};
+        let (url, mut requests) = recording_server(|_| {
+            Json(
+                serde_json::json!({"attachment_id": "a1", "media_type": "image/png",
+                "name": "my shot.png", "size": 3, "width": 1, "height": 1}),
+            )
+            .into_response()
+        })
+        .await;
+        let client = local_client(url);
 
         let image = client
             .upload_attachment("s/1", "my shot.png", vec![1, 2, 3])
@@ -676,12 +716,212 @@ mod tests {
             .unwrap();
         assert_eq!(image.attachment_id, "a1");
         assert_eq!(image.size, 3);
-        let (uri, auth, body) = requests.recv().await.unwrap();
-        assert_eq!(uri, "/v1/sessions/s%2F1/attachments?name=my+shot.png");
-        assert_eq!(auth, "Bearer tok");
-        assert_eq!(body, vec![1, 2, 3]);
+        let seen = requests.try_recv().expect("the request reached the server");
+        assert_eq!(seen.method, "POST");
+        assert_eq!(seen.uri, "/v1/sessions/s%2F1/attachments?name=my+shot.png");
+        assert_eq!(seen.authorization, "Bearer tok");
+        // Raw bytes, never JSON or base64: the server sniffs the type from the bytes.
+        assert_eq!(
+            seen.content_type.as_deref(),
+            Some("application/octet-stream")
+        );
+        assert_eq!(seen.body, vec![1, 2, 3]);
 
-        let refused = client.upload_attachment("s", "x.png", vec![]).await;
+        let (url, _requests) = recording_server(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "empty image"})),
+            )
+                .into_response()
+        })
+        .await;
+        let refused = local_client(url)
+            .upload_attachment("s", "x.png", vec![])
+            .await;
         assert_eq!(refused.unwrap_err(), "HTTP 400 Bad Request: empty image");
+    }
+
+    /// Not UTF-8 and holding a NUL: the download must not go through text decoding.
+    const PNG_LIKE: [u8; 6] = [0x89, b'P', b'N', b'G', 0x00, 0xFF];
+
+    #[tokio::test]
+    async fn attachment_download_returns_the_raw_bytes() {
+        use axum::{Json, http::StatusCode, response::IntoResponse};
+        let (url, mut requests) = recording_server(|path| {
+            if path.ends_with("/missing") {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "attachment not found"})),
+                )
+                    .into_response();
+            }
+            ([("content-type", "image/png")], PNG_LIKE.to_vec()).into_response()
+        })
+        .await;
+        let client = local_client(url);
+
+        let bytes = client.attachment("s/1", "a/b c").await.unwrap();
+        assert_eq!(bytes, PNG_LIKE);
+        let seen = requests.try_recv().expect("the request reached the server");
+        assert_eq!(seen.method, "GET");
+        assert_eq!(seen.uri, "/v1/sessions/s%2F1/attachments/a%2Fb%20c");
+        assert_eq!(seen.authorization, "Bearer tok");
+
+        let missing = client.attachment("s", "missing").await;
+        assert_eq!(
+            missing.unwrap_err(),
+            "HTTP 404 Not Found: attachment not found"
+        );
+    }
+
+    fn view(name: &str, expires_at: Option<&str>) -> withnav_client_api::secrets::SecretView {
+        use withnav_client_api::secrets::{SecretScope, SecretTtl, SecretView};
+        SecretView {
+            name: name.into(),
+            scope: if expires_at.is_some() {
+                SecretScope::Workspace
+            } else {
+                SecretScope::Session
+            },
+            ttl: if expires_at.is_some() {
+                SecretTtl::Hour
+            } else {
+                SecretTtl::Session
+            },
+            expires_at: expires_at.map(str::to_owned),
+            created_at: "2026-11-09T10:00:00Z".into(),
+            use_count: 2,
+            last4: "wxyz".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_secret_posts_the_submission_and_parses_the_answer() {
+        use axum::{Json, response::IntoResponse};
+        use withnav_client_api::secrets::{
+            SecretAccepted, SecretScope, SecretSubmission, SecretTtl,
+        };
+        let (url, mut requests) = recording_server(|_| {
+            Json(serde_json::json!({"accepted": true, "secret": {
+                "name": "API_KEY", "scope": "workspace", "ttl": "1h",
+                "expires_at": "2026-11-09T11:00:00Z", "created_at": "2026-11-09T10:00:00Z",
+                "use_count": 2, "last4": "wxyz"}}))
+            .into_response()
+        })
+        .await;
+        let client = local_client(url);
+        let value = "test-secret-abcdwxyz";
+
+        let accepted = client
+            .submit_secret(
+                "s/1",
+                "req/1",
+                &SecretSubmission {
+                    name: Some("API_KEY".into()),
+                    value: Some(value.into()),
+                    ttl: SecretTtl::Hour,
+                    scope: SecretScope::Workspace,
+                    decline: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            accepted,
+            SecretAccepted {
+                accepted: true,
+                secret: Some(view("API_KEY", Some("2026-11-09T11:00:00Z"))),
+            }
+        );
+        // The captured body is compared, never printed: a failing assertion must not show
+        // the secret value, wherever a regression put it.
+        let seen = requests.try_recv().expect("the request reached the server");
+        assert_eq!(seen.method, "POST");
+        assert_eq!(seen.uri, "/v1/sessions/s%2F1/secrets/req%2F1");
+        assert_eq!(seen.authorization, "Bearer tok");
+        assert_eq!(seen.content_type.as_deref(), Some("application/json"));
+        let body: serde_json::Value =
+            serde_json::from_slice(&seen.body).expect("the submission body is JSON");
+        let expected = serde_json::json!({
+            "name": "API_KEY", "value": value, "ttl": "1h", "scope": "workspace"});
+        assert!(
+            body == expected,
+            "the submission body is not the expected JSON"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_secrets_decodes_the_metadata() {
+        use axum::{Json, response::IntoResponse};
+        let (url, mut requests) = recording_server(|_| {
+            Json(serde_json::json!({"secrets": [
+                {"name": "API_KEY", "scope": "workspace", "ttl": "1h",
+                 "expires_at": "2026-11-09T11:00:00Z", "created_at": "2026-11-09T10:00:00Z",
+                 "use_count": 2, "last4": "wxyz"},
+                {"name": "TOKEN", "scope": "session", "ttl": "session",
+                 "created_at": "2026-11-09T10:00:00Z", "use_count": 2, "last4": "wxyz"}]}))
+            .into_response()
+        })
+        .await;
+
+        let body = local_client(url).list_secrets("s/1").await.unwrap();
+        assert_eq!(
+            body.secrets,
+            [
+                view("API_KEY", Some("2026-11-09T11:00:00Z")),
+                view("TOKEN", None)
+            ]
+        );
+        let seen = requests.try_recv().expect("the request reached the server");
+        assert_eq!(seen.method, "GET");
+        assert_eq!(seen.uri, "/v1/sessions/s%2F1/secrets");
+        assert_eq!(seen.authorization, "Bearer tok");
+    }
+
+    #[tokio::test]
+    async fn revoke_secret_maps_204_to_true_404_to_false_and_errors_otherwise() {
+        use axum::{Json, http::StatusCode, response::IntoResponse};
+        let (url, mut requests) = recording_server(|path| match path.rsplit('/').next() {
+            Some("GONE") => StatusCode::NO_CONTENT.into_response(),
+            Some("MISSING") => (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "no such secret"})),
+            )
+                .into_response(),
+            _ => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "store failed"})),
+            )
+                .into_response(),
+        })
+        .await;
+        let client = local_client(url);
+
+        assert_eq!(client.revoke_secret("s/1", "GONE").await, Ok(true));
+        let seen = requests.try_recv().expect("the request reached the server");
+        assert_eq!(seen.method, "DELETE");
+        assert_eq!(seen.uri, "/v1/sessions/s%2F1/secrets/GONE");
+        assert_eq!(seen.authorization, "Bearer tok");
+
+        assert_eq!(client.revoke_secret("s/1", "MISSING").await, Ok(false));
+        assert_eq!(
+            requests
+                .try_recv()
+                .expect("the request reached the server")
+                .uri,
+            "/v1/sessions/s%2F1/secrets/MISSING"
+        );
+
+        assert_eq!(
+            client.revoke_secret("s/1", "BROKEN").await,
+            Err("HTTP 500 Internal Server Error: store failed".into())
+        );
+        assert_eq!(
+            requests
+                .try_recv()
+                .expect("the request reached the server")
+                .uri,
+            "/v1/sessions/s%2F1/secrets/BROKEN"
+        );
     }
 }

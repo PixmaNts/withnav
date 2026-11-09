@@ -71,16 +71,59 @@ fn fonts() -> Arc<usvg::fontdb::Database> {
 /// image while the filter renders.
 const MAX_FILTER_PRIMITIVES: usize = 16;
 
+/// Most filter work a rendering may do, in full-canvas passes: each filter primitive costs the
+/// share of the canvas its filter region covers.
+/// Measured 2026-11-09 on a 2048 px canvas (resvg 0.49, opt-level 3): a full-canvas blur pass
+/// takes ~0.27 s, so 32 passes is ~9 s; peak memory is ~435 MB for one 16-primitive filter and
+/// ~13 MB per nested filtered group. Unbounded, a filtered element repeated through `<use>` ran
+/// 0.3 s per copy with no limit, and the source-only primitive cap above never saw the copies.
+const MAX_FILTER_PASSES: f64 = 32.0;
+
+/// The least share of the canvas a primitive is charged: a tiny filter region still allocates
+/// and runs, so thousands of tiny filtered copies must add up too.
+const MIN_PASS_SHARE: f64 = 1.0 / 256.0;
+
+/// The most a primitive is charged: the renderer clips a filter region to a layer five times the
+/// output on each side, so a region far beyond the canvas still costs up to 25 canvases.
+const MAX_PASS_SHARE: f64 = 25.0;
+
 /// Largest `order` of an `<feConvolveMatrix>`: its cost is every pixel times every kernel cell.
 const MAX_CONVOLVE_ORDER: u32 = 5;
 
 /// Largest `numOctaves` of an `<feTurbulence>`: each octave is another pass over every pixel.
 const MAX_TURBULENCE_OCTAVES: u32 = 8;
 
+/// The numbers of a cost-bearing attribute (`order`, `numOctaves`), separated by spaces or commas.
+/// A value that is not entirely finite numbers is refused rather than read as zero: the renderer
+/// parses these attributes its own way, and a guard that reads a malformed value as harmless
+/// passes a document the renderer may then take as large.
+fn numbers(node: usvg::roxmltree::Node, attribute: &str) -> Result<Vec<f64>, AttachmentError> {
+    let Some(value) = node.attribute(attribute) else {
+        return Ok(Vec::new());
+    };
+    let malformed = || {
+        AttachmentError::Invalid(format!(
+            "SVG too costly to render (malformed {attribute} \"{}\")",
+            value.chars().take(32).collect::<String>()
+        ))
+    };
+    let parsed: Vec<f64> = value
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|token| !token.is_empty())
+        .map(|token| token.parse::<f64>().ok().filter(|n| n.is_finite()))
+        .collect::<Option<_>>()
+        .ok_or_else(malformed)?;
+    if parsed.is_empty() {
+        return Err(malformed());
+    }
+    Ok(parsed)
+}
+
 /// Refuses a document whose rendering would cost far more than its size suggests: `<use>`
 /// elements that expand into more than [`MAX_SVG_NODES`] nodes (nested references multiply), too
-/// many filter primitives, or primitives whose cost grows with a parameter. The parser's node
-/// limit counts the source only; this counts what the renderer would build.
+/// many filter primitives in the source, or primitives whose cost grows with a parameter. The
+/// parser's node limit counts the source only; this counts what the renderer would build.
+/// [`check_filter_budget`] then counts the filters of the built tree, copies included.
 fn check_budget(document: &usvg::roxmltree::Document) -> Result<(), AttachmentError> {
     let refused =
         |why: String| AttachmentError::Invalid(format!("SVG too costly to render ({why})"));
@@ -99,21 +142,29 @@ fn check_budget(document: &usvg::roxmltree::Document) -> Result<(), AttachmentEr
                 )));
             }
         }
-        let number = |attribute: &str| {
-            node.attribute(attribute)
-                .and_then(|v| v.split_whitespace().next())
-                .and_then(|v| v.parse::<f64>().ok())
-                .unwrap_or(0.0)
-        };
-        if name == "feConvolveMatrix" && number("order") > MAX_CONVOLVE_ORDER as f64 {
-            return Err(refused(format!(
-                "a convolution larger than {MAX_CONVOLVE_ORDER}x{MAX_CONVOLVE_ORDER}"
-            )));
+        if name == "feConvolveMatrix" {
+            // `order` is one or two numbers (columns, then rows); the renderer reads both.
+            let order = numbers(node, "order")?
+                .iter()
+                .take(2)
+                .map(|n| n.trunc())
+                .fold(0.0, f64::max);
+            if order > MAX_CONVOLVE_ORDER as f64 {
+                return Err(refused(format!(
+                    "a convolution larger than {MAX_CONVOLVE_ORDER}x{MAX_CONVOLVE_ORDER}"
+                )));
+            }
         }
-        if name == "feTurbulence" && number("numOctaves") > MAX_TURBULENCE_OCTAVES as f64 {
-            return Err(refused(format!(
-                "more than {MAX_TURBULENCE_OCTAVES} turbulence octaves"
-            )));
+        if name == "feTurbulence" {
+            // The renderer reads it as a 32-bit float, clamps a negative count to zero and rounds it.
+            let octaves = numbers(node, "numOctaves")?
+                .first()
+                .map_or(0.0, |n| (*n as f32).max(0.0).round() as f64);
+            if octaves > MAX_TURBULENCE_OCTAVES as f64 {
+                return Err(refused(format!(
+                    "more than {MAX_TURBULENCE_OCTAVES} turbulence octaves"
+                )));
+            }
         }
     }
     let mut sizes = HashMap::new();
@@ -160,6 +211,113 @@ fn expanded<'a>(
     }
     sizes.insert(node.id(), size);
     size
+}
+
+/// Running total of [`check_filter_budget`].
+struct FilterBudget {
+    /// Output pixels per tree unit, horizontally and vertically.
+    scale: (f32, f32),
+    /// Output area in pixels.
+    canvas: f64,
+    /// Filter passes counted so far.
+    passes: f64,
+    /// Groups visited so far, repeats included.
+    visited: u64,
+}
+
+impl FilterBudget {
+    fn refused(why: String) -> AttachmentError {
+        AttachmentError::Invalid(format!("SVG too costly to render ({why})"))
+    }
+
+    /// Walks `group` the way the renderer does: every use of a shared mask or pattern draws its
+    /// content again, so its filters are charged again. `outer` is the transform of whatever
+    /// references the subtree (identity for the document itself), since a subtree's own
+    /// transforms do not include it.
+    fn group(
+        &mut self,
+        group: &usvg::Group,
+        outer: tiny_skia::Transform,
+        depth: usize,
+    ) -> Result<(), AttachmentError> {
+        self.visited += 1;
+        if depth > 2048 || self.visited > 2 * MAX_SVG_NODES as u64 {
+            return Err(Self::refused(
+                "the drawing nests or repeats too much".into(),
+            ));
+        }
+        let transform = outer.pre_concat(group.abs_transform());
+        for filter in group.filters() {
+            // The renderer filters the region in an image whose axes are the element's own, with
+            // any rotation or skew applied afterwards, and clips it to the layer, at most five
+            // times the output on each side. Rotation does not change that image's size.
+            let sx = transform.sx.hypot(transform.ky) * self.scale.0;
+            let sy = transform.kx.hypot(transform.sy) * self.scale.1;
+            let pixels = filter.rect().width() as f64
+                * sx as f64
+                * filter.rect().height() as f64
+                * sy as f64;
+            let share = (pixels / self.canvas).clamp(MIN_PASS_SHARE, MAX_PASS_SHARE);
+            self.passes += share * filter.primitives().len().max(1) as f64;
+            if self.passes > MAX_FILTER_PASSES {
+                return Err(Self::refused(format!(
+                    "filters cover more than {MAX_FILTER_PASSES} canvas-sized passes"
+                )));
+            }
+            for primitive in filter.primitives() {
+                if let usvg::filter::Kind::Image(image) = primitive.kind() {
+                    self.group(image.root(), transform, depth + 1)?;
+                }
+            }
+        }
+        let mut mask = group.mask();
+        while let Some(m) = mask {
+            self.group(m.root(), transform, depth + 1)?;
+            mask = m.mask();
+        }
+        for child in group.children() {
+            match child {
+                usvg::Node::Group(inner) => self.group(inner, outer, depth + 1)?,
+                usvg::Node::Path(path) => {
+                    let paints = [
+                        path.fill().map(|f| f.paint()),
+                        path.stroke().map(|s| s.paint()),
+                    ];
+                    for paint in paints.into_iter().flatten() {
+                        if let usvg::Paint::Pattern(pattern) = paint {
+                            self.group(
+                                pattern.root(),
+                                outer.pre_concat(path.abs_transform()),
+                                depth + 1,
+                            )?;
+                        }
+                    }
+                }
+                usvg::Node::Text(text) => self.group(text.flattened(), outer, depth + 1)?,
+                usvg::Node::Image(_) => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Refuses a tree whose filters, counted once per time the renderer draws them, would cost more
+/// than [`MAX_FILTER_PASSES`]. The tree has every `<use>` and every style rule applied, so a
+/// filtered element repeated by `<use>`, filtered through CSS, or drawn inside a shared mask or
+/// pattern, is counted at each copy. `scale` maps tree units to output pixels and `canvas` is the
+/// output area in pixels.
+fn check_filter_budget(
+    tree: &usvg::Tree,
+    scale: (f32, f32),
+    canvas: f64,
+) -> Result<(), AttachmentError> {
+    FilterBudget {
+        scale,
+        canvas,
+        passes: 0.0,
+        visited: 0,
+    }
+    .group(tree.root(), tiny_skia::Transform::identity(), 0)
 }
 
 /// Renders `bytes` (an SVG document) to PNG bytes. One rendering at a time: each holds a
@@ -213,6 +371,11 @@ pub fn rasterize(bytes: &[u8]) -> Result<Vec<u8>, AttachmentError> {
     };
     let target_w = ((width * scale).round() as u32).clamp(1, RENDER_SIDE);
     let target_h = ((height * scale).round() as u32).clamp(1, RENDER_SIDE);
+    check_filter_budget(
+        &tree,
+        (target_w as f32 / width, target_h as f32 / height),
+        target_w as f64 * target_h as f64,
+    )?;
     let mut pixmap = tiny_skia::Pixmap::new(target_w, target_h)
         .ok_or_else(|| AttachmentError::Invalid("the SVG has no drawable size".into()))?;
     // A transparent background reads as black to some models: draw on white, as a viewer does.
@@ -308,6 +471,107 @@ mod tests {
         // A modest drawing with a few reused shapes and one blur still renders.
         let fine = r##"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600"><defs><filter id="b"><feGaussianBlur stdDeviation="2"/></filter><rect id="r" width="10" height="10"/></defs><use href="#r"/><use href="#r" x="20"/><rect width="50" height="50" filter="url(#b)"/></svg>"##;
         rasterize(fine.as_bytes()).unwrap();
+    }
+
+    fn costly(svg: &str) -> String {
+        rasterize(svg.as_bytes()).unwrap_err().to_string()
+    }
+
+    fn filtered_copies(copies: usize, size: u32, filter_attribute: &str) -> String {
+        format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="600" height="600"><defs><filter id="b"><feGaussianBlur stdDeviation="2"/></filter><rect id="r" width="{size}" height="{size}" {filter_attribute}/></defs>{}</svg>"##,
+            r##"<use href="#r"/>"##.repeat(copies)
+        )
+    }
+
+    // Given one blurred full-canvas element reused through `<use>`
+    // Then every copy is charged, so enough copies are refused before anything is drawn, while a
+    //      few still render
+    #[test]
+    fn a_filtered_element_repeated_through_use_is_charged_per_copy() {
+        let many = filtered_copies(100, 600, r##"filter="url(#b)""##);
+        assert!(costly(&many).contains("too costly"));
+        let few = filtered_copies(3, 600, r##"filter="url(#b)""##);
+        rasterize(few.as_bytes()).unwrap();
+    }
+
+    // Given a filter applied through a style rule, and thousands of tiny filtered copies
+    // Then the style rule counts like an attribute, and tiny regions are not free
+    #[test]
+    fn filters_applied_by_style_and_tiny_filtered_copies_are_charged() {
+        let styled = filtered_copies(100, 600, "class='s'")
+            .replace("<defs>", "<style>.s{filter:url(#b)}</style><defs>");
+        assert!(costly(&styled).contains("too costly"));
+        let tiny = filtered_copies(9_000, 4, r##"filter="url(#b)""##);
+        assert!(costly(&tiny).contains("too costly"));
+        let few_tiny = filtered_copies(50, 4, r##"filter="url(#b)""##);
+        rasterize(few_tiny.as_bytes()).unwrap();
+    }
+
+    // Given filters the first count would miss: inside a mask shared by many elements, over a
+    //       region several canvases wide, and on a sheared element whose screen footprint is thin
+    // Then each is charged what the renderer builds, and a page of small shadows still renders
+    #[test]
+    fn filters_in_masks_oversized_regions_and_shears_are_charged() {
+        let masked = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600"><defs><filter id="b"><feGaussianBlur stdDeviation="2"/></filter><mask id="m"><rect width="600" height="600" fill="white" filter="url(#b)"/></mask></defs>{}</svg>"##,
+            r##"<rect width="5" height="5" mask="url(#m)"/>"##.repeat(100)
+        );
+        assert!(costly(&masked).contains("too costly"));
+        let wide = r##"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600"><filter id="w" x="-2" y="-2" width="5" height="5"><feGaussianBlur stdDeviation="2"/><feOffset dx="1"/></filter><rect width="600" height="600" filter="url(#w)"/></svg>"##;
+        assert!(costly(wide).contains("too costly"));
+        let sheared = filtered_copies(100, 600, r##"filter="url(#b)""##).replace(
+            r##"<use href="#r"/>"##,
+            r##"<use href="#r" transform="matrix(1 0 1 0.001 0 0)"/>"##,
+        );
+        assert!(costly(&sheared).contains("too costly"));
+        let shadows = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600"><defs><filter id="s"><feGaussianBlur stdDeviation="2"/><feOffset dx="2" dy="2"/><feMerge><feMergeNode/></feMerge></filter></defs>{}</svg>"##,
+            (0..20)
+                .map(|i| format!(
+                    r##"<rect x="{}" y="{}" width="40" height="40" filter="url(#s)"/>"##,
+                    i * 25,
+                    i * 25
+                ))
+                .collect::<String>()
+        );
+        rasterize(shadows.as_bytes()).unwrap();
+    }
+
+    // Given cost attributes the renderer may read differently from a plain number
+    // Then a malformed one is refused instead of counted as zero, and the second `order` value
+    //      counts too
+    #[test]
+    fn malformed_or_hidden_cost_attributes_are_refused() {
+        let convolve = |order: &str| {
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600"><filter id="f"><feConvolveMatrix order="{order}" kernelMatrix="1"/></filter></svg>"#
+            )
+        };
+        let turbulence = |octaves: &str| {
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600"><filter id="f"><feTurbulence numOctaves="{octaves}"/></filter></svg>"#
+            )
+        };
+        for svg in [
+            convolve("3 300"),
+            convolve("3,300"),
+            convolve("many"),
+            convolve("3px"),
+            convolve(""),
+            turbulence("9"),
+            turbulence("8.4999999"),
+            turbulence("9px"),
+            turbulence("1e3"),
+            turbulence("NaN"),
+            turbulence("inf"),
+        ] {
+            assert!(costly(&svg).contains("too costly"), "{svg}");
+        }
+        rasterize(convolve("3").as_bytes()).unwrap();
+        rasterize(convolve("3, 3").as_bytes()).unwrap();
+        rasterize(turbulence("2").as_bytes()).unwrap();
+        rasterize(turbulence("-4").as_bytes()).unwrap();
     }
 
     #[test]

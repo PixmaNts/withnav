@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
-import { SecretCard, SecretsList, type SecretActions } from "./SecretCard";
+import { SecretCard, SecretsList, SecretsMenu, type SecretActions } from "./SecretCard";
 import { emptyView, reduce, waitingSecret, type Question } from "../session/reducer";
 import type { Envelope } from "../api/types";
 
@@ -107,4 +107,80 @@ it("a list older than the stored note does not read as a revocation", async () =
   await act(async () => root.render(<SecretCard question={stored} actions={{ ...stale, list: [] }} />));
   expect(host.querySelector(".secret-card")!.getAttribute("data-state")).toBe("revoked");
   await act(async () => root.unmount());
+});
+
+const key = (target: Element, k: string) => target.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+
+it("a radio group keeps only the chosen option in the tab order and moves the choice with the arrow keys", async () => {
+  const host = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(host);
+  const acts = actions();
+  await act(async () => root.render(<SecretCard question={question} actions={acts} />));
+  const group = host.querySelector('[role="radiogroup"][aria-label="Availability"]')!;
+  const radios = () => [...group.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+  const state = () => radios().map((r) => `${r.textContent}:${r.getAttribute("aria-checked")}:${r.tabIndex}`);
+  expect(state()).toEqual(["1 h:false:-1", "24 h:true:0", "Session:false:-1"]);
+  radios()[1]!.focus();
+  await act(async () => key(document.activeElement!, "ArrowRight"));
+  expect(state()).toEqual(["1 h:false:-1", "24 h:false:-1", "Session:true:0"]);
+  expect(document.activeElement).toBe(radios()[2]);
+  await act(async () => key(document.activeElement!, "ArrowDown"));
+  expect(state()[0]).toBe("1 h:true:0");
+  expect(document.activeElement).toBe(radios()[0]);
+  await act(async () => key(document.activeElement!, "ArrowLeft"));
+  expect(state()[2]).toBe("Session:true:0");
+  await act(async () => key(document.activeElement!, "ArrowUp"));
+  expect(state()[1]).toBe("24 h:true:0");
+  await act(async () => type(host.querySelector<HTMLInputElement>(".secret-field input")!, VALUE));
+  await act(async () => [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Save")!.click());
+  expect(acts.submit).toHaveBeenCalledWith("sec_1", { value: VALUE, ttl: "24h", scope: "session" });
+  await act(async () => root.unmount());
+  host.remove();
+});
+
+it("a read-only card ignores the arrow keys", async () => {
+  const host = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(host);
+  await act(async () => root.render(<SecretCard question={question} actions={actions()} readOnly />));
+  const radios = [...host.querySelectorAll<HTMLButtonElement>('[role="radiogroup"][aria-label="Availability"] [role="radio"]')];
+  expect(radios.map((r) => r.disabled)).toEqual([true, true, true]);
+  const before = document.activeElement;
+  await act(async () => key(radios[1]!, "ArrowRight"));
+  expect(radios.map((r) => r.getAttribute("aria-checked"))).toEqual(["false", "true", "false"]);
+  expect(document.activeElement).toBe(before);
+  await act(async () => root.unmount());
+  host.remove();
+});
+
+it("the secrets list takes the focus when it opens and Escape returns it to the button", async () => {
+  const host = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(host);
+  const onOpen = vi.fn();
+  const listed = [{ name: "API_KEY", scope: "session" as const, ttl: "24h" as const, expires_at: new Date(Date.now() + 7_200_000).toISOString(), created_at: "", use_count: 0, last4: "4a68" }];
+  const render = (list: typeof listed | null) => root.render(<StrictMode><SecretsMenu list={list} onOpen={onOpen} onRevoke={vi.fn()} /></StrictMode>);
+  await act(async () => render(null));
+  const trigger = host.querySelector<HTMLButtonElement>('[aria-label="Secrets of this session"]')!;
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  trigger.focus();
+  await act(async () => trigger.click());
+  expect(onOpen).toHaveBeenCalledTimes(1);
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  const dialog = host.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(dialog.textContent).toContain("Loading…");
+  expect(document.activeElement).toBe(dialog);
+  await act(async () => render(listed));
+  const revoke = host.querySelector<HTMLButtonElement>('[aria-label="Revoke API_KEY"]')!;
+  revoke.focus();
+  // The revoked row leaves with its focused button: the focus stays in the list and Escape still works.
+  await act(async () => render([]));
+  expect(document.activeElement).toBe(dialog);
+  await act(async () => render(listed));
+  const again = host.querySelector<HTMLButtonElement>('[aria-label="Revoke API_KEY"]')!;
+  again.focus();
+  await act(async () => key(again, "Escape"));
+  expect(host.querySelector('[role="dialog"]')).toBeNull();
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(document.activeElement).toBe(trigger);
+  await act(async () => root.unmount());
+  host.remove();
 });

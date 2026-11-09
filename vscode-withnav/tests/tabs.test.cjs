@@ -191,7 +191,7 @@ test("page: messages are routed to the tab they name and each tab keeps its own 
   views[0].querySelector(".prompt").value = "hello";
   tab("t1", { type: "status", state: "ready" });
   views[0].querySelector(".composer").dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
-  assert.deepEqual(posts.at(-1), { type: "send", text: "hello", includeContext: true, tab: "t1", generation: 1 });
+  assert.deepEqual(posts.at(-1), { type: "send", text: "hello", includeContext: true, submission: 1, tab: "t1", generation: 1 });
   // Focusing the other tab tells the host, and its composer posts with its own tab.
   d.querySelectorAll(".tab-main")[1].click();
   assert.deepEqual(posts.at(-1), { type: "focusTab", tab: "t2" });

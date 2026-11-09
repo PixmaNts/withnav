@@ -59,6 +59,14 @@ requests land in `develop`.
   - The composer grows with its text, from about three lines up to 40% of the view height.
   - New commands: `WithNav: Show Sessions` and `WithNav: New Conversation`.
 
+### Fixed
+
+- VS Code images: a message no longer leaves without an image that was still loading, and an
+  image no longer rides along with the next message after a send (including the first message
+  of a new conversation). Send waits until every attached image has loaded; only the images a
+  message carried leave the composer. Picking more than 8 images names the ones not attached,
+  and an image that cannot be read is reported instead of vanishing.
+
 ## [0.8.2] - 2026-11-05
 
 WithNav 0.8.2 lets Cognition open code in your editor, names development builds by branch and

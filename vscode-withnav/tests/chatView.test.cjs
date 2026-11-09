@@ -752,3 +752,16 @@ test("pending images from the webview are checked before anything is decoded", (
     assert.throws(() => pendingImages(bad));
   }
 });
+
+test("host echoes the webview submission id in its send result, accepted or failed", async () => {
+  let receive; const posted = []; const operations = [];
+  const backend = { isReadOnly: () => false, captureOperation: () => ({ owner: {}, generation: 2 }), ownsOperation: () => true, currentGeneration: () => 2, currentConversationId: () => "S", subscribe: () => () => {}, hasOpenPermissions: () => false,
+    runComposerCommand: async (text, _generation, operation) => { operations.push(operation); if (text.includes("fail")) throw new Error("refused"); return false; } };
+  registerChatView({ extensionUri: "extension", globalState: memento() }, backend);
+  provider.resolveWebviewView({ webview: { cspSource: "test", asWebviewUri: value => value, postMessage(message) { posted.push(message); }, onDidReceiveMessage(listener) { receive = listener; return noopDisposable(); } }, onDidDispose() {} });
+  receive({ type: "send", text: "/skill review check", tab: "main", generation: 2, submission: 4 });
+  receive({ type: "send", text: "/skill review fail", tab: "main", generation: 2, submission: 5 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(operations.map(operation => operation.submission), [4, 5], "deferred skill results can name their submission");
+  assert.deepEqual(posted.filter(message => message.type === "sendResult").map(message => [message.submission, message.accepted]), [[4, false], [5, false]]);
+});

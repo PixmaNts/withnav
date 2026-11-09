@@ -2,7 +2,7 @@
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfm } from "micromark-extension-gfm";
 import { gfmFromMarkdown } from "mdast-util-gfm";
-import type { HostToWebview, WebviewToHost, PermissionEvidence, PermissionDecision, ImageRef, PendingImage } from "../chatProtocol";
+import type { HostToWebview, WebviewToHost, PermissionEvidence, PermissionDecision, ImageRef } from "../chatProtocol";
 import { evidenceLabel, permissionOutcome } from "../eventView";
 import { contextMeter } from "../contextMeter";
 import { displayTitle } from "../sessionTitle";
@@ -717,7 +717,7 @@ function updateControls(): void {
   if (compacting) prompt.placeholder = "Messages you send now are queued until compaction ends";
   else if (!readOnly) prompt.placeholder = secretWaiting() ? "Nav is waiting for the key above… (or write to answer otherwise)" : "Message WithNav…";
   if (readOnly) modelBtn.disabled = true;
-  send.disabled = prompt.disabled || sending || (!prompt.value.trim() && !pendingImages.length);
+  send.disabled = prompt.disabled || sending || imagesReading() || (!prompt.value.trim() && !pendingImages.length);
   stop.hidden = readOnly || (state !== "busy" && !compacting);
 }
 
@@ -790,39 +790,71 @@ function decorateCrew(byline: HTMLElement, agent = "build"): void {
 /** Most images a message carries, and the largest file read: the server's 3.75 MiB per image. */
 const MAX_IMAGES = 8;
 const MAX_IMAGE_FILE = 3_932_160;
-let pendingImages: (PendingImage & { size: number })[] = [];
+/**
+ * Composer images in the order the Captain added them. A slot is reserved when its file is
+ * accepted, before the read finishes (`data` stays undefined meanwhile), so the cap counts reads
+ * in flight and a send waits for every slot instead of leaving late reads behind.
+ */
+type PendingSlot = { name: string; size: number; data?: string };
+let pendingImages: PendingSlot[] = [];
+/**
+ * Submissions that carried images and have no acceptance yet, by the id the host echoes in
+ * `sendResult`. Text cannot tell submissions apart (every image-only message is ""). A refusal
+ * keeps its entry: a `/skill` send reports `accepted: false` while the skill is pending and
+ * `accepted: true` once it settles, and only that later result may take its images away.
+ */
+const submittedImages = new Map<number, PendingSlot[]>();
+let nextSubmission = 0;
 const pendingList = el("ul", "pending-images");
 pendingList.setAttribute("aria-label", "Images to send");
 pendingList.hidden = true;
+const imagesReading = (): boolean => pendingImages.some(image => image.data === undefined);
 
 function renderPending(): void {
-  pendingList.replaceChildren(...pendingImages.map((image, index) => {
-    const item = el("li", "pending-image", `${image.name} · ${Math.ceil(image.size / 1024)} KiB`);
+  pendingList.replaceChildren(...pendingImages.map(image => {
+    const item = el("li", "pending-image", `${image.name} · ${image.data === undefined ? "reading…" : `${Math.ceil(image.size / 1024)} KiB`}`);
     const remove = el("button", "pending-image-remove", "×");
     remove.type = "button";
     remove.setAttribute("aria-label", `Remove ${image.name}`);
-    remove.addEventListener("click", () => { pendingImages.splice(index, 1); renderPending(); updateControls(); });
+    remove.addEventListener("click", () => { pendingImages = pendingImages.filter(other => other !== image); renderPending(); updateControls(); });
     item.append(remove);
     return item;
   }));
   pendingList.hidden = !pendingImages.length;
 }
 
+function showImageProblems(problems: string[]): void {
+  if (!problems.length) return;
+  commandError.textContent = problems.join(" ");
+  commandError.hidden = false;
+}
+
 function addImageFiles(files: Iterable<File>): void {
+  const problems: string[] = [];
+  const omitted: string[] = [];
   for (const file of files) {
     if (!file.type.startsWith("image/") && !/\.(png|jpe?g|gif|webp|svg)$/i.test(file.name)) continue;
-    if (pendingImages.length >= MAX_IMAGES) { commandError.textContent = `A message carries at most ${MAX_IMAGES} images.`; commandError.hidden = false; return; }
-    if (file.size > MAX_IMAGE_FILE) { commandError.textContent = `${file.name} is too large to attach.`; commandError.hidden = false; continue; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const url = String(reader.result ?? "");
-      const data = url.slice(url.indexOf(",") + 1);
-      if (!data || pendingImages.length >= MAX_IMAGES) return;
-      pendingImages.push({ name: file.name || "image", data, size: file.size });
+    const name = file.name || "image";
+    if (pendingImages.length >= MAX_IMAGES) { omitted.push(name); continue; }
+    if (file.size > MAX_IMAGE_FILE) { problems.push(`${name} is too large to attach.`); continue; }
+    const slot: PendingSlot = { name, size: file.size };
+    pendingImages.push(slot);
+    // A read that ends after the Captain removed its slot changes nothing and reports nothing.
+    const settle = (data: string): void => {
+      if (!pendingImages.includes(slot)) return;
+      if (data) slot.data = data;
+      else { pendingImages = pendingImages.filter(other => other !== slot); showImageProblems([`${name} could not be read.`]); }
       renderPending(); updateControls();
     };
-    reader.readAsDataURL(file);
+    const reader = new FileReader();
+    reader.onload = () => { const url = String(reader.result ?? ""); settle(url.slice(url.indexOf(",") + 1)); };
+    reader.onerror = () => settle("");
+    reader.onabort = () => settle("");
+    try { reader.readAsDataURL(file); } catch { pendingImages = pendingImages.filter(other => other !== slot); problems.push(`${name} could not be read.`); }
   }
+  if (omitted.length) problems.unshift(`A message carries at most ${MAX_IMAGES} images; not attached: ${omitted.join(", ")}.`);
+  showImageProblems(problems);
+  renderPending(); updateControls();
 }
 
 /** Per attachment: its `data:` URL, `null` while it loads, `false` once it is known unavailable. */
@@ -1573,8 +1605,18 @@ function receive(event: HostToWebview): void {
       }
       break;
     }
-    case "sendResult":
-      if (pendingSendText === event.text) { sending = false; pendingSendText = undefined; if (event.accepted) { pendingImages = []; renderPending(); } }
+    case "sendResult": {
+      if (pendingSendText === event.text) { sending = false; pendingSendText = undefined; }
+      // Matched on its own record, not on `pendingSendText`: a first message opens its
+      // conversation mid-send, and `conversationOpened` clears `pendingSendText` before this
+      // result arrives. Only the slots that went out leave; images added since stay.
+      const submission = event.accepted ? event.submission : undefined;
+      const sent = submission === undefined ? undefined : submittedImages.get(submission);
+      if (submission !== undefined && sent) {
+        submittedImages.delete(submission);
+        pendingImages = pendingImages.filter(image => !sent.includes(image));
+        renderPending();
+      }
       if (event.accepted && prompt.value === event.text) { lastConsumedDraft = event.text; prompt.value = ""; }
       if (!event.accepted && event.restoreDraft && !prompt.value && lastConsumedDraft === event.text) {
         prompt.value = event.text;
@@ -1582,6 +1624,7 @@ function receive(event: HostToWebview): void {
       }
       updateControls();
       break;
+    }
     case "permission": renderPermission(event); break;
     case "permissionCall": {
       const card = permissionCards.get(event.requestId);
@@ -1865,12 +1908,20 @@ form.addEventListener("submit", event => {
   event.preventDefault();
   const text = prompt.value;
   if ((!text.trim() && !pendingImages.length) || prompt.disabled || sending) return;
+  // A message leaves with every image in the composer or not at all.
+  if (imagesReading()) { commandError.textContent = "Wait until the images finish loading."; commandError.hidden = false; return; }
   closePalette();
   commandError.hidden = true;
   // Idle compaction holds its HTTP response until completion. It must not own
   // the ordinary message submission lock while the server queues input safely.
   if (!/^\/compact(?:\s|$)/.test(text)) { sending = true; pendingSendText = text; }
-  post({ type: "send", text, includeContext: contextOn(), ...(pendingImages.length ? { images: pendingImages.map(({ name, data }) => ({ name, data })) } : {}) });
+  const slots = pendingImages.slice();
+  // An entry is spent once its images all left the composer (a later message carried them, or
+  // the Captain removed them): no result can take anything away from it any more.
+  for (const [id, sent] of submittedImages) if (!sent.some(slot => pendingImages.includes(slot))) submittedImages.delete(id);
+  const submission = ++nextSubmission;
+  if (slots.length) submittedImages.set(submission, slots);
+  post({ type: "send", text, includeContext: contextOn(), submission, ...(slots.length ? { images: slots.map(({ name, data }) => ({ name, data: data ?? "" })) } : {}) });
   // Dropping the chip applies to one message only.
   skipNext = false; renderContext();
   updateControls();

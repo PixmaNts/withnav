@@ -125,3 +125,18 @@ for (const resume of [false,true]) test(`R10 skill ${resume ? 'resumes' : 'creat
   event('command.result', { operation_id: 'SK', name: 'message', ok: false, error: 'disabled' });
   assert.equal(b.state.commands.has('SK'), false);
 });
+for (const early of [false, true]) test(`a skill's deferred acceptance ${early ? 'before' : 'after'} HTTP names the webview submission that sent it`, async t => {
+  const { b, messages, event } = backend();
+  let finish; t.mock.method(globalThis, 'fetch', () => new Promise(resolve => finish = resolve));
+  const operation = { ...b.captureOperation(), submission: 7 };
+  const pending = b.runComposerCommand('/skill review check', operation.generation, operation);
+  await Promise.resolve(); await Promise.resolve();
+  const admission = () => event('message.received', { command_id: 'SK', source: 'user:http', content: 'check' });
+  if (early) admission();
+  finish(new Response(JSON.stringify({ command_id: 'SK', accepted: true })));
+  assert.equal(await pending, false);
+  if (!early) admission();
+  const accepted = messages.filter(m => m.type === 'sendResult' && m.accepted);
+  assert.equal(accepted.length, 1);
+  assert.equal(accepted[0].submission, 7);
+});

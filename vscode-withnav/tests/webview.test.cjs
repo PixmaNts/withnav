@@ -499,3 +499,120 @@ test('unavailable permission rules reuse the warning control with error detail',
   assert.equal(badge.title, 'withnav.db: open failed');
   dom.window.close();
 });
+
+/** The composer with a FileReader the test settles by hand, in any order. */
+function imagePage() {
+  const page = keyboardPage();
+  const { dom, d } = page;
+  const readers = [];
+  dom.window.FileReader = class {
+    readAsDataURL(file) { this.file = file; readers.push(this); }
+    load() { this.result = `data:image/png;base64,${this.file.name}`; this.onload(); }
+    fail() { this.onerror(); }
+  };
+  const prompt = d.querySelector('.prompt');
+  const paste = names => {
+    const event = new dom.window.Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: { files: names.map(name => new dom.window.File(['x'], name, { type: 'image/png' })) } });
+    prompt.dispatchEvent(event);
+  };
+  const submit = () => d.querySelector('.composer').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+  const chips = () => [...d.querySelectorAll('.pending-image')].map(chip => chip.firstChild.textContent);
+  const error = () => d.querySelector('.composer .command-error');
+  const sends = () => page.posts.filter(post => post.type === 'send');
+  return { ...page, readers, prompt, paste, submit, chips, error, sends };
+}
+
+test('an over-limit image selection reads only what fits and names every omitted file', () => {
+  const { dom, readers, paste, chips, error } = imagePage();
+  paste(['1.png', '2.png', '3.png', '4.png', '5.png', '6.png', '7.png', '8.png', '9.png', '10.png']);
+  assert.equal(readers.length, 8, 'no read starts for a file that cannot be attached');
+  assert.equal(chips().length, 8);
+  assert.equal(error().hidden, false);
+  assert.equal(error().textContent, 'A message carries at most 8 images; not attached: 9.png, 10.png.');
+  for (const reader of [...readers].reverse()) reader.load();
+  assert.deepEqual(chips(), ['1.png · 1 KiB', '2.png · 1 KiB', '3.png · 1 KiB', '4.png · 1 KiB', '5.png · 1 KiB', '6.png · 1 KiB', '7.png · 1 KiB', '8.png · 1 KiB'], 'selection order survives out-of-order reads');
+  dom.window.close();
+});
+
+test('a message waits for every image read and leaves with all of them', () => {
+  const { dom, d, readers, prompt, paste, submit, sends, error } = imagePage();
+  prompt.value = 'look';
+  paste(['a.png', 'b.png']);
+  readers[0].load();
+  assert.equal(d.querySelector('.send-btn').disabled, true);
+  submit();
+  assert.equal(sends().length, 0, 'no send while b.png is still reading');
+  assert.equal(error().textContent, 'Wait until the images finish loading.');
+  readers[1].load();
+  assert.equal(d.querySelector('.send-btn').disabled, false);
+  submit();
+  assert.deepEqual(sends().map(post => [...post.images].map(image => image.name)), [['a.png', 'b.png']]);
+  dom.window.close();
+});
+
+test('a refused send keeps its images, and failed or removed reads never block sending', () => {
+  const { dom, d, readers, prompt, paste, submit, chips, sends, receive, error } = imagePage();
+  prompt.value = '/compact';
+  paste(['keep.png', 'broken.png', 'gone.png']);
+  readers[0].load();
+  readers[1].fail();
+  assert.equal(error().textContent, 'broken.png could not be read.');
+  d.querySelectorAll('.pending-image-remove')[1].click();
+  readers[2].load();
+  assert.deepEqual(chips(), ['keep.png · 1 KiB'], 'a read that ends after its removal changes nothing');
+  submit();
+  receive({ type: 'sendResult', text: '/compact', accepted: false, submission: sends().at(-1).submission });
+  assert.deepEqual(chips(), ['keep.png · 1 KiB']);
+  prompt.value = 'retry';
+  submit();
+  assert.deepEqual(sends().map(post => [...post.images].map(image => image.name)), [['keep.png'], ['keep.png']]);
+  dom.window.close();
+});
+
+test('an accepted send removes only the images it carried, also on the first message of a conversation', () => {
+  const { dom, readers, prompt, paste, submit, chips, sends, receive } = imagePage();
+  prompt.value = 'first';
+  paste(['sent.png']);
+  readers[0].load();
+  submit();
+  assert.equal(sends().length, 1);
+  paste(['later.png']);
+  // A first message opens its conversation while the send is in flight.
+  receive({ type: 'conversationOpened', title: 'Starting conversation' });
+  receive({ type: 'conversationOpened', id: 'S2', title: 'Conversation' });
+  receive({ type: 'sendResult', text: 'first', accepted: true, submission: sends()[0].submission });
+  assert.deepEqual(chips(), ['later.png · reading…'], 'the image added after submission stays for the next message');
+  readers[1].load();
+  prompt.value = 'second';
+  submit();
+  assert.deepEqual([...sends().at(-1).images].map(image => image.name), ['later.png']);
+  dom.window.close();
+});
+
+test('each send result settles the images of its own submission, whatever the text', () => {
+  const { dom, readers, prompt, paste, submit, chips, sends, receive } = imagePage();
+  const result = (index, accepted) => receive({ type: 'sendResult', text: sends()[index].text, accepted, submission: sends()[index].submission });
+  // A skill send reports `accepted: false` while it is pending, then `accepted: true` once settled.
+  prompt.value = '/skill review go';
+  paste(['skill.png']); readers[0].load(); submit();
+  result(0, false);
+  assert.deepEqual(chips(), ['skill.png · 1 KiB']);
+  result(0, true);
+  assert.deepEqual(chips(), []);
+  // Two image-only sends (same empty text) overlap while the conversation opens; the second is refused.
+  prompt.value = '';
+  paste(['a.png']); readers[1].load(); submit();
+  receive({ type: 'conversationOpened', title: 'Starting conversation' });
+  receive({ type: 'conversationOpened', id: 'S3', title: 'Conversation' });
+  paste(['b.png']); readers[2].load(); submit();
+  result(2, false);
+  result(1, true);
+  assert.deepEqual(chips(), ['b.png · 1 KiB'], 'the refused send keeps the image only it carried');
+  prompt.value = 'retry';
+  submit();
+  result(3, true);
+  assert.deepEqual(chips(), []);
+  assert.deepEqual(sends().map(post => [...post.images].map(image => image.name)), [['skill.png'], ['a.png'], ['a.png', 'b.png'], ['b.png']]);
+  dom.window.close();
+});

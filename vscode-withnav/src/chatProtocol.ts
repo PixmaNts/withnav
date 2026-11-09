@@ -114,7 +114,8 @@ export type HostToWebview = { generation?: number; tab?: string } & (
   | { type: "commandPicker"; kind: "model" | "variant" | "skills" | "agent"; items: { name: string; description: string; gateway?: string; provider_group?: string }[]; disabledReason?: string }
   | { type: "agent"; name: string }
   | { type: "modelPending"; name?: string }
-  | { type: "sendResult"; text: string; accepted: boolean; restoreDraft?: boolean }
+  /** `submission` echoes the webview's `send` it answers, so its images leave with that send only. */
+  | { type: "sendResult"; text: string; accepted: boolean; restoreDraft?: boolean; submission?: number }
   /** The cognition starts answering; deltas for this id follow. */
   | { type: "turnStart"; id: string }
   /** Streamed answer text for the current turn, to append. */
@@ -196,7 +197,8 @@ export interface ChildInfo {
   pending?: boolean;
   error?: string;
 }
-export interface ComposerOperation { owner: object; generation: number }
+/** `submission`: the webview's id for the `send` that started the operation, echoed in its `sendResult`. */
+export interface ComposerOperation { owner: object; generation: number; submission?: number }
 
 /** Webview -> host messages. */
 export type WebviewToHost = { generation?: number; tab?: string } & (
@@ -213,7 +215,7 @@ export type WebviewToHost = { generation?: number; tab?: string } & (
   /** The webview finished loading and wants the history. */
   | { type: "ready" }
   /** The Captain sends a message to the cognition; the host appends the editor context when asked. */
-  | { type: "send"; text: string; includeContext?: boolean; images?: PendingImage[] }
+  | { type: "send"; text: string; includeContext?: boolean; images?: PendingImage[]; submission?: number }
   | { type: "loadImage"; attachmentId: string }
   | { type: "openImage"; attachmentId: string; name: string }
   /** The Captain interrupts the current turn. */

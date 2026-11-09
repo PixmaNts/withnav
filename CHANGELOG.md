@@ -92,6 +92,11 @@ requests land in `develop`.
   The server's own error text reaches the app redacted, on one line and cut to 256 characters; the
   longer diagnostic goes to the log. A malformed app request or an unreadable image upload gets a
   fixed message instead of the request quoted back.
+- Images: an SVG uploaded to an unknown conversation, or to one already holding its 64 attachments,
+  is refused before it is rendered, so it no longer waits for (and holds up) the one-at-a-time
+  SVG renderer. A step waits at most 30 s for the bytes of its images; past that they are sent as
+  `[image … unavailable]` and the turn goes on. A failed image-loading task is now logged instead
+  of silently sending every image as unavailable.
 
 ## [0.8.2] - 2026-11-05
 

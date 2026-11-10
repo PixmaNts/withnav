@@ -734,11 +734,13 @@ export class CognitionBackend implements ChatBackend {
         });
       } catch (error) {
         // 400, 413 and 415 judge this file's bytes; anything else (unreachable, token, gone
-        // session) is not about the file and fails the send as before.
+        // session) is not about the file and ends the send, keeping the files already refused
+        // named rather than lost behind that error. The images not tried yet are not judged.
         if (error instanceof HttpError && [400, 413, 415].includes(error.status)) {
           refused.push({ name, reason: error.message.replace(/^cognition server: /, "") });
           continue;
         }
+        if (refused.length) throw new ImageRefusalError(refused, error instanceof Error ? error.message : String(error));
         throw error;
       }
       const id = String(ref?.attachment_id);

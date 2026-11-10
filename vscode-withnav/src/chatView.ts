@@ -244,7 +244,7 @@ export function registerChatView(
             }
             break;
           case "pickImages":
-            if (typeof message.request === "number" && typeof message.room === "number") {
+            if (Number.isSafeInteger(message.request) && Number.isInteger(message.room) && message.room >= 0 && message.room <= 8) {
               const { request, room } = message;
               // Answered in the generation it was asked in: after a reset the webview has
               // abandoned the request and postTab drops the late answer.
@@ -296,8 +296,8 @@ export function registerChatView(
                   // line, which typing clears, only says why nothing was sent.
                   const refused = imageRefusals(error);
                   if (refused) {
-                    post({ type: "imageRefusals", items: refused, generation: operation.generation });
-                    post({ type: "commandError", text: "Not sent: remove or replace the images listed as refused.", generation: operation.generation });
+                    post({ type: "imageRefusals", items: refused.refusals, generation: operation.generation });
+                    post({ type: "commandError", text: `Not sent: remove or replace the images listed as refused.${refused.failure ? ` ${refused.failure}` : ""}`, generation: operation.generation });
                     return;
                   }
                   post({ type: "commandError", text: error instanceof Error ? error.message : String(error), generation: operation.generation });

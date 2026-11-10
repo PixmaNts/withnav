@@ -706,7 +706,7 @@ test('an unreadable file in a mixed batch stays refused by name after the other 
 });
 
 test('a non-image file in a pasted or dropped batch is refused by name instead of skipped', () => {
-  const { dom, readers, paste, drop, chips, refusals } = imagePage();
+  const { dom, d, readers, paste, drop, chips, refusals } = imagePage();
   paste(['ok.png', { name: 'notes.txt', type: 'text/plain' }]);
   assert.deepEqual(refusals(), ['notes.txt is not an image: attach a PNG, JPEG, GIF, WebP or SVG file.']);
   // A supported extension without an image MIME type is still a candidate: the server reads the bytes.
@@ -717,6 +717,11 @@ test('a non-image file in a pasted or dropped batch is refused by name instead o
   assert.equal(readers.length, 3, 'a dropped file goes through the same admission as a pasted one');
   for (const reader of readers) reader.load();
   assert.deepEqual(chips(), ['ok.png · 1 KiB', 'mislabeled.webp · 1 KiB', 'dropped.png · 1 KiB']);
+  // A paste without files is plain text: the textarea handles it.
+  const text = new dom.window.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(text, 'clipboardData', { value: { files: [] } });
+  d.querySelector('.prompt').dispatchEvent(text);
+  assert.equal(text.defaultPrevented, false);
   assert.deepEqual(refusals(), ['notes.txt is not an image: attach a PNG, JPEG, GIF, WebP or SVG file.', 'run.sh is not an image: attach a PNG, JPEG, GIF, WebP or SVG file.']);
   dom.window.close();
 });
@@ -729,6 +734,9 @@ test('a drop that carries links instead of files names what was not attached and
   assert.equal(readers.length, 0);
   assert.equal(posts.length, before, 'no host read and no remote fetch is asked for');
   assert.deepEqual(refusals(), ['shot 1.png, remote.png not attached: this drop carried links, not files. Use Attach images.']);
+  // VS Code's own URI list format is read the same way.
+  drop({ data: { 'application/vnd.code.uri-list': 'file:///w/a.gif' } });
+  assert.equal(refusals().at(-1), 'a.gif not attached: this drop carried links, not files. Use Attach images.');
   // Text and links to other files keep the textarea's own drop behaviour.
   assert.equal(drop({ data: { 'text/uri-list': 'file:///home/me/notes.md', 'text/plain': 'notes' } }).defaultPrevented, false);
   dom.window.close();

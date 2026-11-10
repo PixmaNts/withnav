@@ -887,3 +887,40 @@ test('the image chooser selects many images, reads only what fits and names what
   assert.equal(chips().length, 7);
 });
 
+test('a server failure after a refused upload keeps the refused file named and reports the failure', async t => {
+  const { dom, prompt, tick } = fullChat(t);
+  const { readers, paste, submit, chips, refusals } = imageComposer(dom);
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, init = {}) => {
+    calls.push(url);
+    if (url.includes('name=bad.png')) return new Response(JSON.stringify({ error: UNSUPPORTED }), { status: 415 });
+    if (url.includes('name=ok.png')) return new Response(JSON.stringify({ error: 'temporarily unavailable' }), { status: 503 });
+    if (url.includes('/attachments?')) return new Response(JSON.stringify({ attachment_id: 'A' }));
+    if (url.endsWith('/messages')) return new Response(JSON.stringify({ accepted: true }));
+    return new Response(JSON.stringify({ session_id: 'S' }));
+  });
+  paste(['bad.png', 'ok.png', 'later.png']); readers.forEach(reader => reader.load());
+  prompt.value = 'mixed'; submit();
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(refusals(), [`bad.png was refused: ${UNSUPPORTED}`], 'only the file the server judged is named as refused');
+  assert.match(dom.window.document.querySelector('.command-error').textContent, /temporarily unavailable/);
+  assert.equal(calls.some(url => url.includes('name=later.png')), false, 'the send stops at the server failure');
+  assert.equal(calls.some(url => url.endsWith('/messages')), false);
+  assert.deepEqual(chips(), ['bad.png', 'ok.png', 'later.png']);
+  assert.equal(prompt.value, 'mixed');
+});
+
+test('the host refuses a chooser request whose capacity is not a whole number of images', async t => {
+  const { b, dom, tick } = fullChat(t);
+  let opened = 0;
+  vscode.window.showOpenDialog = async () => { opened++; return []; };
+  const d = dom.window.document;
+  // The shipped page always asks with a valid room; a forged one must not open an unbounded read.
+  const receiveHost = d.defaultView.acquireVsCodeApi().postMessage;
+  for (const room of [NaN, Infinity, -1, 9, 2.5]) receiveHost({ type: 'pickImages', request: 99, room, tab: 'main', generation: b.currentGeneration() });
+  await tick();
+  assert.equal(opened, 0);
+  receiveHost({ type: 'pickImages', request: 100, room: 8, tab: 'main', generation: b.currentGeneration() });
+  await tick();
+  assert.equal(opened, 1);
+});

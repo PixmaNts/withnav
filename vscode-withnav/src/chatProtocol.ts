@@ -92,14 +92,16 @@ export interface ImageRefusal { name: string; reason: string }
 /** A send refused because of named images: the message was not posted. */
 export class ImageRefusalError extends Error {
   override readonly name = "ImageRefusalError";
-  constructor(readonly refusals: ImageRefusal[]) {
-    super(`Not sent: ${refusals.map(refusal => `${refusal.name} (${refusal.reason})`).join("; ")}.`);
+  /** `failure` is a later error not about any one file (the server unreachable) that ended the send. */
+  constructor(readonly refusals: ImageRefusal[], readonly failure?: string) {
+    super(`Not sent: ${refusals.map(refusal => `${refusal.name} (${refusal.reason})`).join("; ")}.${failure ? ` ${failure}` : ""}`);
   }
 }
 /** Recognised by shape, not `instanceof`: separately bundled modules each carry their own class. */
-export function imageRefusals(error: unknown): ImageRefusal[] | undefined {
-  const value = error as { name?: unknown; refusals?: unknown } | undefined;
-  return value?.name === "ImageRefusalError" && Array.isArray(value.refusals) ? value.refusals as ImageRefusal[] : undefined;
+export function imageRefusals(error: unknown): { refusals: ImageRefusal[]; failure?: string } | undefined {
+  const value = error as { name?: unknown; refusals?: unknown; failure?: unknown } | undefined;
+  if (value?.name !== "ImageRefusalError" || !Array.isArray(value.refusals)) return undefined;
+  return { refusals: value.refusals as ImageRefusal[], ...(typeof value.failure === "string" ? { failure: value.failure } : {}) };
 }
 
 /** Host -> webview messages. */

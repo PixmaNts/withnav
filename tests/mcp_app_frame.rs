@@ -359,24 +359,52 @@ async fn recording_listener() -> (u16, Arc<Mutex<Vec<String>>>) {
 
 /// The panel's side of the bridge, reduced to what the probe needs: answer `ui/initialize`,
 /// and send the app's report to `collector`, since a headless run cannot be read back reliably
-/// from the page.
+/// from the page. Each step also reaches `collector` as `/stage/<name>`, so a run that never
+/// reports says how far it got.
 fn host_page(frame_url: &str, collector: u16) -> String {
     format!(
         r#"<!doctype html><body>
+<script>
+const collector = "http://127.0.0.1:{collector}";
+const stage = (name) => fetch(collector + "/stage/" + name, {{mode: "no-cors"}}).catch(() => {{}});
+stage("host");
+</script>
 <iframe id="f" sandbox="allow-scripts allow-forms" src="{frame_url}"></iframe>
 <script>
 const frame = document.getElementById("f");
+frame.addEventListener("load", () => stage("frame-load"));
 window.addEventListener("message", (event) => {{
   if (event.source !== frame.contentWindow) return;
   const data = event.data;
   if (data.method === "ui/initialize") {{
+    stage("initialize");
     frame.contentWindow.postMessage({{jsonrpc: "2.0", id: data.id, result: {{protocolVersion: "2025-11-25"}}}}, "*");
   }} else if (data.method === "probe/result") {{
-    fetch("http://127.0.0.1:{collector}/report?" + encodeURIComponent(JSON.stringify(data.params)), {{mode: "no-cors"}});
+    fetch(collector + "/report?" + encodeURIComponent(JSON.stringify(data.params)), {{mode: "no-cors"}});
   }}
 }});
 </script></body>"#
     )
+}
+
+/// The last lines of the browser's log, each one bounded, with the document token and the
+/// bearer token replaced: a failure message must not hand either to whoever reads the CI log.
+fn log_tail(path: &Path, secrets: &[&str]) -> String {
+    let text = std::fs::read(path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_else(|error| format!("<no browser log: {error}>"));
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(40)..]
+        .iter()
+        .map(|line| {
+            let mut line: String = line.chars().take(400).collect();
+            for secret in secrets {
+                line = line.replace(secret, "<redacted>");
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -401,6 +429,8 @@ async fn a_browser_runs_the_app_in_a_sandbox_that_reaches_nothing_it_did_not_dec
     let profile = tempfile::tempdir().unwrap();
     let host_file = profile.path().join("host.html");
     std::fs::write(&host_file, host_page(&frame_url, collector_port)).unwrap();
+    let log_path = profile.path().join("browser.log");
+    let log = std::fs::File::create(&log_path).unwrap();
     let mut browser = tokio::process::Command::new(&browser)
         .args([
             "--headless",
@@ -408,22 +438,52 @@ async fn a_browser_runs_the_app_in_a_sandbox_that_reaches_nothing_it_did_not_dec
             "--disable-gpu",
             "--no-first-run",
             "--no-proxy-server",
+            "--enable-logging=stderr",
         ])
         .arg(format!("--user-data-dir={}", profile.path().display()))
         .arg(format!("file://{}", host_file.display()))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
         .kill_on_drop(true)
         .spawn()
         .unwrap();
-    wait_for("the app's report", || {
+    let has_report = || {
         reports
             .lock()
             .unwrap()
             .iter()
             .any(|t| t.starts_with("/report?"))
-    })
-    .await;
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !has_report() {
+        let exited = browser.try_wait().unwrap();
+        if exited.is_none() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            continue;
+        }
+        let failure = match exited {
+            Some(status) => format!("the browser exited before the app's report ({status})"),
+            None => "timed out waiting for the app's report".to_string(),
+        };
+        let _ = browser.kill().await;
+        // The document is single use: a 404 now means the browser fetched it.
+        let document = client
+            .get(format!("http://{addr}{path}"))
+            .send()
+            .await
+            .map(|response| match response.status().as_u16() {
+                404 => "fetched by the browser".to_string(),
+                200 => "never fetched".to_string(),
+                other => format!("status {other}"),
+            })
+            .unwrap_or_else(|error| format!("unknown: {error}"));
+        let stages: Vec<String> = reports.lock().unwrap().clone();
+        let token = path.trim_start_matches("/mcp-app/");
+        panic!(
+            "{failure}\nstages reached: {stages:?}\napp document: {document}\nbrowser log:\n{}",
+            log_tail(&log_path, &[token, TOKEN])
+        );
+    }
     let _ = browser.kill().await;
     let target = reports
         .lock()

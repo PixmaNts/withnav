@@ -447,6 +447,7 @@ body.vscode-light, body.vscode-high-contrast-light { --nav:#036b9a; --lux:#8f5d0
 .toolbar .icon-button { width: 26px; height: 26px; }
 .attach-btn { color: var(--nav-muted); }
 .attach-btn[aria-pressed="true"] { color: var(--nav-fg); background: var(--vscode-toolbar-hoverBackground); }
+.image-btn:disabled:hover { background: none; }
 .send-btn { border-radius: 50%; background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
 .send-btn:not(:disabled):hover { background: var(--vscode-button-hoverBackground); }
 .send-btn:disabled { background: none; color: var(--nav-muted); }
@@ -710,6 +711,13 @@ code { padding: 1px 5px; border-radius: 4px; background: var(--vscode-textPrefor
 .mcp-media-card.zoomed img { max-height: 480px; }
 
 /* Images: pending ones above the prompt, thumbnails under a message or a turn's tools. */
+.image-refusals { list-style: none; min-width: 0; max-height: min(8rem, 24vh); overflow-y: auto; margin: 0 0 4px; padding: 0; }
+.image-refusal { display: flex; align-items: flex-start; gap: 6px; padding: 3px 4px 3px 8px; border-inline-start: 2px solid var(--vscode-errorForeground); color: var(--vscode-errorForeground); font-size: 0.964rem; }
+.image-refusal + .image-refusal { margin-top: 4px; }
+.image-refusal-text { flex: 1; min-width: 0; padding-block: 2px; overflow-wrap: anywhere; }
+.image-refusal-dismiss { display: grid; place-items: center; flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--vscode-icon-foreground, var(--nav-fg)); font-size: 1.2rem; line-height: 1; }
+.image-refusal-dismiss:hover { background: var(--vscode-toolbar-hoverBackground); }
+.image-refusal-dismiss:focus-visible { outline-offset: -2px; }
 .pending-images { list-style: none; display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 4px; padding: 0; }
 .pending-image { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border: 1px solid var(--vscode-widget-border, #8884); border-radius: 10px; font-size: 0.86em; }
 .pending-image-remove { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0 2px; }

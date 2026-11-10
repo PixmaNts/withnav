@@ -298,12 +298,13 @@ async fn first_answer_wins_race() {
         send_text(&state, id, "begin operation requiring secret").await;
         collect_until(sub, |e| e.kind == "agent.yield").await;
 
-        // Concurrent race to answer the pending secret request
+        // Reply to this pending request only. Supplying a name also permits a later
+        // replacement after the first answer settles, which is a different API operation.
         let race_a = state.submit_secret(
             id,
             "sec_race",
             SecretSubmission {
-                name: Some("API_KEY".into()),
+                name: None,
                 value: Some("sk-winner-choice-1111".into()),
                 scope: SecretScope::Session,
                 ttl: SecretTtl::Session,
@@ -314,7 +315,7 @@ async fn first_answer_wins_race() {
             id,
             "sec_race",
             SecretSubmission {
-                name: Some("API_KEY".into()),
+                name: None,
                 value: Some("sk-loser-choice-2222".into()),
                 scope: SecretScope::Session,
                 ttl: SecretTtl::Session,

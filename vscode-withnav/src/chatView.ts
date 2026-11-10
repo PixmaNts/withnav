@@ -1,6 +1,6 @@
 import { chatHtml } from "./chatHtml";
 import * as vscode from "vscode";
-import { CHAT_VIEW_ID, ChatBackend, ChatTabs, HostToWebview, PendingImage, WebviewToHost } from "./chatProtocol";
+import { CHAT_VIEW_ID, ChatBackend, ChatTabs, HostToWebview, ImageRefusalError, imageRefusals, PendingImage, WebviewToHost } from "./chatProtocol";
 import { singleTab } from "./chatHub";
 import { openMcpAppPanel } from "./mcpAppPanel";
 import { readSetting } from "./settings";
@@ -24,6 +24,7 @@ import { buildEditorContext, presentMessage } from "./editorContext";
 import { routeComposer } from "./commands";
 import { openFile } from "./reveal";
 import { showImage } from "./imagePanel";
+import { pickImageFiles } from "./imageFiles";
 
 
 const CONTEXT_DEBOUNCE_MS = 200;
@@ -242,6 +243,16 @@ export function registerChatView(
               void backend.imageDataUrl(attachmentId).then(url => url ? showImage(String(name || "image"), url) : void vscode.window.showWarningMessage("This image is no longer available."), showError);
             }
             break;
+          case "pickImages":
+            if (typeof message.request === "number" && typeof message.room === "number") {
+              const { request, room } = message;
+              // Answered in the generation it was asked in: after a reset the webview has
+              // abandoned the request and postTab drops the late answer.
+              const generation = backend.currentGeneration();
+              void pickImageFiles(room).catch(error => { showError(error); return []; })
+                .then(images => post({ type: "pickedImages", request, images, generation }));
+            }
+            break;
           case "toggleBypass":
             void backend.toggleBypassPermissions().catch(showError);
             break;
@@ -278,7 +289,19 @@ export function registerChatView(
                  if (routeComposer(message.text).kind === "command" && message.text.match(/^\/new(?:\s|$)/)) return;
                  if (backend.ownsOperation(operation)) post({ type: "sendResult", text: message.text, accepted, generation: operation.generation, submission: operation.submission });
                })
-                .catch(error => { if (!backend.ownsOperation(operation)) return; post({ type: "sendResult", text: message.text, accepted: false, generation: operation.generation, submission: operation.submission }); post({ type: "commandError", text: error instanceof Error ? error.message : String(error), generation: operation.generation }); });
+                .catch(error => {
+                  if (!backend.ownsOperation(operation)) return;
+                  post({ type: "sendResult", text: message.text, accepted: false, generation: operation.generation, submission: operation.submission });
+                  // Named image refusals stay listed in the composer until dismissed; the error
+                  // line, which typing clears, only says why nothing was sent.
+                  const refused = imageRefusals(error);
+                  if (refused) {
+                    post({ type: "imageRefusals", items: refused, generation: operation.generation });
+                    post({ type: "commandError", text: "Not sent: remove or replace the images listed as refused.", generation: operation.generation });
+                    return;
+                  }
+                  post({ type: "commandError", text: error instanceof Error ? error.message : String(error), generation: operation.generation });
+                });
             }
             break;
           case "answerPermission":
@@ -470,11 +493,14 @@ const MAX_PENDING_BASE64 = Math.ceil((3_932_160 * 4) / 3) + 4;
 export function pendingImages(value: unknown): PendingImage[] {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > MAX_PENDING_IMAGES) throw new Error(`A message carries at most ${MAX_PENDING_IMAGES} images.`);
-  return value.map((item: unknown) => {
+  const refusals: { name: string; reason: string }[] = [];
+  const images = value.map((item: unknown) => {
     const { name, data } = (item ?? {}) as { name?: unknown; data?: unknown };
-    if (typeof name !== "string" || name.length > 255 || typeof data !== "string" || !data) throw new Error("An attached image could not be read.");
-    if (data.length > MAX_PENDING_BASE64) throw new Error(`${name} is too large to attach.`);
-    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error(`${name} could not be read.`);
-    return { name, data };
+    if (typeof name !== "string" || name.length > 255) throw new Error("An attached image could not be read.");
+    if (typeof data !== "string" || !data || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) refusals.push({ name, reason: "could not be read" });
+    else if (data.length > MAX_PENDING_BASE64) refusals.push({ name, reason: "too large to attach" });
+    return { name, data: String(data) };
   });
+  if (refusals.length) throw new ImageRefusalError(refusals);
+  return images;
 }

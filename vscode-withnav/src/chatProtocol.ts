@@ -83,6 +83,24 @@ export interface McpResourceBody {
 export interface ImageRef { attachment_id: string; media_type?: string; name?: string; size?: number; width?: number; height?: number }
 /** An image the Captain pasted or dropped, base64 without the `data:` prefix, not yet uploaded. */
 export interface PendingImage { name: string; data: string }
+/** Why a file did not enter the composer; `omitted` means it did not fit the per-message cap. */
+export type ImageProblem = "notImage" | "empty" | "large" | "unreadable" | "omitted";
+/** A file the image chooser returned: its bytes in base64, or the reason it was not read. */
+export interface PickedImage { name: string; size?: number; data?: string; problem?: ImageProblem }
+/** An image the host or the server refused at send time, by file name; never its bytes. */
+export interface ImageRefusal { name: string; reason: string }
+/** A send refused because of named images: the message was not posted. */
+export class ImageRefusalError extends Error {
+  override readonly name = "ImageRefusalError";
+  constructor(readonly refusals: ImageRefusal[]) {
+    super(`Not sent: ${refusals.map(refusal => `${refusal.name} (${refusal.reason})`).join("; ")}.`);
+  }
+}
+/** Recognised by shape, not `instanceof`: separately bundled modules each carry their own class. */
+export function imageRefusals(error: unknown): ImageRefusal[] | undefined {
+  const value = error as { name?: unknown; refusals?: unknown } | undefined;
+  return value?.name === "ImageRefusalError" && Array.isArray(value.refusals) ? value.refusals as ImageRefusal[] : undefined;
+}
 
 /** Host -> webview messages. */
 export type HostToWebview = { generation?: number; tab?: string } & (
@@ -103,6 +121,10 @@ export type HostToWebview = { generation?: number; tab?: string } & (
    | { type: "message"; id: string; author: Author; text: string; context?: string; source?: string; selectedSkill?: { name: string; origin: string }; answer?: AskAnswer; secret?: SecretNote; images?: ImageRef[] }
   /** The bytes of one stored image as a `data:` URL, or no `url` when it cannot be read. */
   | { type: "imageData"; attachmentId: string; url?: string }
+  /** The answer to `pickImages` with the same `request`; empty when the Captain cancelled. */
+  | { type: "pickedImages"; request: number; images: PickedImage[] }
+  /** Images a send was refused for, each by name, kept in the composer until dismissed. */
+  | { type: "imageRefusals"; items: ImageRefusal[] }
   | { type: "permission"; card: PermissionCard }
   | { type: "permissionCall"; requestId: string; call: string }
   | { type: "permissionState"; requestId: string; resolution: string; message?: string; alwaysSaved?: false }
@@ -217,6 +239,8 @@ export type WebviewToHost = { generation?: number; tab?: string } & (
   /** The Captain sends a message to the cognition; the host appends the editor context when asked. */
   | { type: "send"; text: string; includeContext?: boolean; images?: PendingImage[]; submission?: number }
   | { type: "loadImage"; attachmentId: string }
+  /** Open the host's image chooser; `room` is how many more images the message can carry. */
+  | { type: "pickImages"; request: number; room: number }
   | { type: "openImage"; attachmentId: string; name: string }
   /** The Captain interrupts the current turn. */
   | { type: "stop" }

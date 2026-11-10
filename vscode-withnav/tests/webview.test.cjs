@@ -523,28 +523,39 @@ function imagePage() {
   dom.window.FileReader = class {
     readAsDataURL(file) { this.file = file; readers.push(this); }
     load() { this.result = `data:image/png;base64,${this.file.name}`; this.onload(); }
+    // What Chromium's FileReader returns for a 0-byte image/png File (headless Chromium, 2026-11-10).
+    loadEmpty() { this.result = 'data:image/png;base64,'; this.onload(); }
     fail() { this.onerror(); }
   };
   const prompt = d.querySelector('.prompt');
+  // A name is a 1-byte image/png file; `{ name, content, type }` describes any other file.
+  const file = spec => typeof spec === 'string' ? new dom.window.File(['x'], spec, { type: 'image/png' }) : new dom.window.File(spec.content === undefined ? ['x'] : [spec.content], spec.name, { type: spec.type ?? '' });
   const paste = names => {
     const event = new dom.window.Event('paste', { bubbles: true, cancelable: true });
-    Object.defineProperty(event, 'clipboardData', { value: { files: names.map(name => new dom.window.File(['x'], name, { type: 'image/png' })) } });
+    Object.defineProperty(event, 'clipboardData', { value: { files: names.map(file) } });
     prompt.dispatchEvent(event);
   };
+  const drop = transfer => {
+    const event = new dom.window.Event('drop', { bubbles: true, cancelable: true });
+    const data = { files: (transfer.files ?? []).map(file), types: [...(transfer.files?.length ? ['Files'] : []), ...Object.keys(transfer.data ?? {})], getData: type => transfer.data?.[type] ?? '' };
+    Object.defineProperty(event, 'dataTransfer', { value: data });
+    d.querySelector('.composer').dispatchEvent(event);
+    return event;
+  };
+  const refusals = () => [...d.querySelectorAll('.image-refusal')].map(item => item.firstChild.textContent);
   const submit = () => d.querySelector('.composer').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
   const chips = () => [...d.querySelectorAll('.pending-image')].map(chip => chip.firstChild.textContent);
   const error = () => d.querySelector('.composer .command-error');
   const sends = () => page.posts.filter(post => post.type === 'send');
-  return { ...page, readers, prompt, paste, submit, chips, error, sends };
+  return { ...page, readers, prompt, paste, drop, submit, chips, error, sends, refusals };
 }
 
 test('an over-limit image selection reads only what fits and names every omitted file', () => {
-  const { dom, readers, paste, chips, error } = imagePage();
+  const { dom, readers, paste, chips, refusals } = imagePage();
   paste(['1.png', '2.png', '3.png', '4.png', '5.png', '6.png', '7.png', '8.png', '9.png', '10.png']);
   assert.equal(readers.length, 8, 'no read starts for a file that cannot be attached');
   assert.equal(chips().length, 8);
-  assert.equal(error().hidden, false);
-  assert.equal(error().textContent, 'A message carries at most 8 images; not attached: 9.png, 10.png.');
+  assert.deepEqual(refusals(), ['A message carries at most 8 images; not attached: 9.png, 10.png.']);
   for (const reader of [...readers].reverse()) reader.load();
   assert.deepEqual(chips(), ['1.png · 1 KiB', '2.png · 1 KiB', '3.png · 1 KiB', '4.png · 1 KiB', '5.png · 1 KiB', '6.png · 1 KiB', '7.png · 1 KiB', '8.png · 1 KiB'], 'selection order survives out-of-order reads');
   dom.window.close();
@@ -567,12 +578,12 @@ test('a message waits for every image read and leaves with all of them', () => {
 });
 
 test('a refused send keeps its images, and failed or removed reads never block sending', () => {
-  const { dom, d, readers, prompt, paste, submit, chips, sends, receive, error } = imagePage();
+  const { dom, d, readers, prompt, paste, submit, chips, sends, receive, refusals } = imagePage();
   prompt.value = '/compact';
   paste(['keep.png', 'broken.png', 'gone.png']);
   readers[0].load();
   readers[1].fail();
-  assert.equal(error().textContent, 'broken.png could not be read.');
+  assert.deepEqual(refusals(), ['broken.png could not be read.']);
   d.querySelectorAll('.pending-image-remove')[1].click();
   readers[2].load();
   assert.deepEqual(chips(), ['keep.png · 1 KiB'], 'a read that ends after its removal changes nothing');
@@ -629,5 +640,138 @@ test('each send result settles the images of its own submission, whatever the te
   result(3, true);
   assert.deepEqual(chips(), []);
   assert.deepEqual(sends().map(post => [...post.images].map(image => image.name)), [['skill.png'], ['a.png'], ['a.png', 'b.png'], ['b.png']]);
+  dom.window.close();
+});
+
+// ---- Image admission: every selected file is attached or refused by name --------------------
+
+test('an empty image added alone is refused by name, never read, and the refusal outlasts typing and other sends', () => {
+  const { dom, d, readers, prompt, paste, submit, chips, refusals, sends } = imagePage();
+  paste([{ name: 'empty.png', content: '', type: 'image/png' }]);
+  assert.equal(readers.length, 0, 'a 0-byte file has nothing to read');
+  assert.deepEqual(chips(), []);
+  assert.deepEqual(refusals(), ['empty.png is empty.']);
+  prompt.value = 'hello'; prompt.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  submit();
+  assert.deepEqual(refusals(), ['empty.png is empty.'], 'typing and sending are not a dismissal');
+  assert.equal(sends().at(-1).images, undefined, 'the refused file never reaches the payload');
+  const list = d.querySelector('.image-refusals');
+  assert.equal(list.getAttribute('aria-label'), 'Images not attached');
+  assert.doesNotMatch(list.innerHTML, /base64|data:/, 'a refusal carries no image data');
+  d.querySelector('.image-refusal-dismiss').click();
+  assert.deepEqual(refusals(), []);
+  assert.equal(list.hidden, true);
+  dom.window.close();
+});
+
+test('a valid image with an empty one sends only the valid image and keeps the named refusal visible', () => {
+  const { dom, d, readers, prompt, paste, submit, chips, refusals, sends } = imagePage();
+  paste(['img1.png', { name: 'empty.png', content: '', type: 'image/png' }]);
+  assert.deepEqual(refusals(), ['empty.png is empty.']);
+  readers[0].load();
+  assert.deepEqual(refusals(), ['empty.png is empty.'], 'another read finishing keeps the refusal');
+  prompt.value = 'E2'; prompt.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  submit();
+  assert.deepEqual(sends().map(post => [...post.images].map(image => image.name)), [['img1.png']]);
+  assert.deepEqual(refusals(), ['empty.png is empty.']);
+  assert.equal(d.querySelector('.image-refusal-dismiss').getAttribute('aria-label'), 'Dismiss empty.png');
+  dom.window.close();
+});
+
+test('a file whose read yields no bytes is refused, and a refusal survives the next batch', () => {
+  const { dom, readers, paste, chips, refusals } = imagePage();
+  paste(['shrunk.png']);
+  readers[0].loadEmpty();
+  assert.deepEqual(chips(), []);
+  assert.deepEqual(refusals(), ['shrunk.png could not be read.']);
+  paste(['next.png']);
+  readers[1].load();
+  assert.deepEqual(chips(), ['next.png · 1 KiB']);
+  assert.deepEqual(refusals(), ['shrunk.png could not be read.'], 'a later batch does not replace an earlier refusal');
+  dom.window.close();
+});
+
+test('an unreadable file in a mixed batch stays refused by name after the other reads complete', () => {
+  const { dom, readers, prompt, paste, submit, chips, refusals, sends } = imagePage();
+  paste(['a.png', 'broken.png', 'c.png']);
+  readers[1].fail();
+  readers[2].load();
+  readers[0].load();
+  assert.deepEqual(chips(), ['a.png · 1 KiB', 'c.png · 1 KiB']);
+  assert.deepEqual(refusals(), ['broken.png could not be read.']);
+  prompt.value = 'go'; submit();
+  assert.deepEqual([...sends().at(-1).images].map(image => image.name), ['a.png', 'c.png']);
+  assert.deepEqual(refusals(), ['broken.png could not be read.']);
+  dom.window.close();
+});
+
+test('a non-image file in a pasted or dropped batch is refused by name instead of skipped', () => {
+  const { dom, readers, paste, drop, chips, refusals } = imagePage();
+  paste(['ok.png', { name: 'notes.txt', type: 'text/plain' }]);
+  assert.deepEqual(refusals(), ['notes.txt is not an image: attach a PNG, JPEG, GIF, WebP or SVG file.']);
+  // A supported extension without an image MIME type is still a candidate: the server reads the bytes.
+  paste([{ name: 'mislabeled.webp', type: '' }]);
+  assert.equal(readers.length, 2);
+  const event = drop({ files: ['dropped.png', { name: 'run.sh', type: 'application/x-sh' }] });
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(readers.length, 3, 'a dropped file goes through the same admission as a pasted one');
+  for (const reader of readers) reader.load();
+  assert.deepEqual(chips(), ['ok.png · 1 KiB', 'mislabeled.webp · 1 KiB', 'dropped.png · 1 KiB']);
+  assert.deepEqual(refusals(), ['notes.txt is not an image: attach a PNG, JPEG, GIF, WebP or SVG file.', 'run.sh is not an image: attach a PNG, JPEG, GIF, WebP or SVG file.']);
+  dom.window.close();
+});
+
+test('a drop that carries links instead of files names what was not attached and fetches nothing', () => {
+  const { dom, readers, drop, refusals, posts } = imagePage();
+  const before = posts.length;
+  const event = drop({ data: { 'text/uri-list': 'file:///home/me/shot%201.png\r\nhttps://example.com/remote.png' } });
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(readers.length, 0);
+  assert.equal(posts.length, before, 'no host read and no remote fetch is asked for');
+  assert.deepEqual(refusals(), ['shot 1.png, remote.png not attached: this drop carried links, not files. Use Attach images.']);
+  // Text and links to other files keep the textarea's own drop behaviour.
+  assert.equal(drop({ data: { 'text/uri-list': 'file:///home/me/notes.md', 'text/plain': 'notes' } }).defaultPrevented, false);
+  dom.window.close();
+});
+
+test('the image chooser has its own control, blocks sending until it answers and ignores a stale answer', () => {
+  const { dom, d, readers, prompt, submit, chips, refusals, sends, posts, receive, error, paste } = imagePage();
+  const editorContext = d.querySelector('.attach-btn');
+  assert.equal(editorContext.getAttribute('aria-label'), 'Attach editor context', 'the editor-context control keeps its purpose');
+  const chooser = d.querySelector('.image-btn');
+  assert.equal(chooser.getAttribute('aria-label'), 'Attach images');
+  paste(['first.png']); readers[0].load();
+  chooser.click();
+  const ask = posts.filter(post => post.type === 'pickImages').at(-1);
+  assert.equal(ask.room, 7, 'the chooser is told how many images still fit');
+  assert.equal(chooser.disabled, true, 'one chooser at a time');
+  prompt.value = 'look'; submit();
+  assert.equal(sends().length, 0, 'no send while the chooser is open');
+  assert.equal(error().textContent, 'Wait until the images finish loading.');
+  receive({ type: 'pickedImages', request: ask.request, images: [
+    { name: 'a.png', size: 3, data: 'AAAA' },
+    { name: 'empty.png', problem: 'empty' },
+    { name: 'huge.png', problem: 'large' },
+    { name: 'locked.png', problem: 'unreadable' },
+    { name: 'ninth.png', problem: 'omitted' },
+  ] });
+  assert.equal(chooser.disabled, false);
+  assert.deepEqual(chips(), ['first.png · 1 KiB', 'a.png · 1 KiB']);
+  assert.deepEqual(refusals(), ['A message carries at most 8 images; not attached: ninth.png.', 'empty.png is empty.', 'huge.png is too large to attach.', 'locked.png could not be read.']);
+  submit();
+  assert.deepEqual([...sends().at(-1).images].map(image => [image.name, image.data]), [['first.png', 'first.png'], ['a.png', 'AAAA']]);
+  // Cancelling answers with no images; a second answer to the same request changes nothing.
+  chooser.click();
+  const cancel = posts.filter(post => post.type === 'pickImages').at(-1);
+  receive({ type: 'pickedImages', request: cancel.request, images: [] });
+  receive({ type: 'pickedImages', request: cancel.request, images: [{ name: 'late.png', size: 3, data: 'AAAA' }] });
+  assert.deepEqual(chips(), ['first.png · 1 KiB', 'a.png · 1 KiB']);
+  // A conversation reset abandons the chooser: the composer is not left blocked.
+  chooser.click();
+  const stale = posts.filter(post => post.type === 'pickImages').at(-1);
+  dom.window.dispatchEvent(new dom.window.MessageEvent('message', { data: { tab: 't1', type: 'conversationOpened', id: 'S2', title: 'Other', generation: 2 } }));
+  assert.equal(chooser.disabled, false);
+  receive({ type: 'pickedImages', request: stale.request, images: [{ name: 'stale.png', size: 3, data: 'AAAA' }] });
+  assert.deepEqual(chips(), ['first.png · 1 KiB', 'a.png · 1 KiB'], 'an answer from before the reset is dropped');
   dom.window.close();
 });

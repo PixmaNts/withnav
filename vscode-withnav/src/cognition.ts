@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { createHash } from "node:crypto";
 import { ContextSnapshot, parseContext } from "./contextMeter";
-import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PendingImage, PermissionDecision } from "./chatProtocol";
+import { ChatBackend, ConversationSummary, HostToWebview, ImageRefusal, ImageRefusalError, ModelInfo, PendingImage, PermissionDecision } from "./chatProtocol";
 import { ConversationControls, eventView, imageRefs, permissionCall, PermissionCallReplay, permissionEvidence, secretInfo, WireEnvelope } from "./eventView";
 import type { ServerInfoParams } from "./protocol";
 import { CLIENT_COMMANDS, SERVER_COMMAND_NAME, routeComposer } from "./commands";
@@ -711,24 +711,42 @@ export class CognitionBackend implements ChatBackend {
     });
   }
 
-  /** Stores each image in the session first, so a message can name it by id. */
+  /**
+   * Stores each image in the session first, so a message can name it by id. Every image is tried:
+   * when the server refuses some (bytes it cannot decode, an empty or oversized file), the send
+   * fails naming each of them, and no message refers to an image that was not stored.
+   */
   private async storeImages(session: string, images: PendingImage[]): Promise<{ type: "image"; attachment_id: string }[]> {
     const stored: { type: "image"; attachment_id: string }[] = [];
+    const refused: ImageRefusal[] = [];
     for (const image of images) {
+      const name = image.name || "image";
       // A retry after a failed send reuses what was already stored rather than filling the quota.
       const key = `${session}:${createHash("sha256").update(image.data).digest("hex")}`;
       const known = this.uploaded.get(key);
       if (known) { stored.push({ type: "image", attachment_id: known }); continue; }
-      const ref = await this.request(`/v1/sessions/${encodeURIComponent(session)}/attachments?name=${encodeURIComponent(image.name || "image")}`, {
-        method: "POST",
-        headers: { "content-type": "application/octet-stream" },
-        body: Buffer.from(image.data, "base64"),
-      });
+      let ref: { attachment_id?: unknown } | undefined;
+      try {
+        ref = await this.request(`/v1/sessions/${encodeURIComponent(session)}/attachments?name=${encodeURIComponent(name)}`, {
+          method: "POST",
+          headers: { "content-type": "application/octet-stream" },
+          body: Buffer.from(image.data, "base64"),
+        });
+      } catch (error) {
+        // 400, 413 and 415 judge this file's bytes; anything else (unreachable, token, gone
+        // session) is not about the file and fails the send as before.
+        if (error instanceof HttpError && [400, 413, 415].includes(error.status)) {
+          refused.push({ name, reason: error.message.replace(/^cognition server: /, "") });
+          continue;
+        }
+        throw error;
+      }
       const id = String(ref?.attachment_id);
       this.uploaded.set(key, id);
       if (this.uploaded.size > 64) this.uploaded.delete(this.uploaded.keys().next().value as string);
       stored.push({ type: "image", attachment_id: id });
     }
+    if (refused.length) throw new ImageRefusalError(refused);
     return stored;
   }
 

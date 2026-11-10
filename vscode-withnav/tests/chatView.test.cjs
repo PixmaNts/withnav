@@ -784,3 +784,106 @@ test("host echoes the webview submission id in its send result, accepted or fail
   assert.deepEqual(operations.map(operation => operation.submission), [4, 5], "deferred skill results can name their submission");
   assert.deepEqual(posted.filter(message => message.type === "sendResult").map(message => [message.submission, message.accepted]), [[4, false], [5, false]]);
 });
+
+/** The shipped composer of `fullChat` with a FileReader the test settles by hand. */
+function imageComposer(dom) {
+  const d = dom.window.document;
+  const readers = [];
+  dom.window.FileReader = class {
+    readAsDataURL(file) { this.file = file; readers.push(this); }
+    load() { this.result = `data:image/png;base64,${Buffer.from(this.file.name).toString('base64')}`; this.onload(); }
+  };
+  const paste = names => {
+    const event = new dom.window.Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: { files: names.map(name => new dom.window.File(['x'], name, { type: 'image/png' })) } });
+    d.querySelector('.prompt').dispatchEvent(event);
+  };
+  const submit = () => d.querySelector('.composer').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+  const chips = () => [...d.querySelectorAll('.pending-image')].map(chip => chip.firstChild.textContent.split(' · ')[0]);
+  const refusals = () => [...d.querySelectorAll('.image-refusal')].map(item => item.firstChild.textContent);
+  return { d, readers, paste, submit, chips, refusals };
+}
+
+/** A cognition server that stores PNG bytes and refuses the files named in `refused`. */
+function imageServer(t, refused) {
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, init = {}) => {
+    calls.push({ url, body: init.body });
+    if (url.includes('/attachments?')) {
+      const name = decodeURIComponent(url.split('name=')[1]);
+      if (refused[name]) return new Response(JSON.stringify({ error: refused[name] }), { status: refused[name].startsWith('empty') ? 400 : 415 });
+      return new Response(JSON.stringify({ attachment_id: `A-${name}` }));
+    }
+    if (url.endsWith('/messages')) return new Response(JSON.stringify({ accepted: true }));
+    return new Response(JSON.stringify({ session_id: 'S' }));
+  });
+  return calls;
+}
+const UNSUPPORTED = 'unsupported image type (unrecognised file type): attach a PNG, JPEG, GIF, WebP or SVG file';
+
+test('a refused upload is named in a lasting refusal, posts no message and keeps the draft and the images', async t => {
+  const { dom, prompt, tick } = fullChat(t);
+  const { readers, paste, submit, chips, refusals } = imageComposer(dom);
+  const calls = imageServer(t, { 'notimage.png': UNSUPPORTED });
+  paste(['img1.png', 'notimage.png']); readers.forEach(reader => reader.load());
+  prompt.value = 'E2'; submit();
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(calls.filter(call => call.url.endsWith('/messages')).length, 0, 'no message names an image the server refused');
+  assert.deepEqual(refusals(), [`notimage.png was refused: ${UNSUPPORTED}`]);
+  assert.deepEqual(chips(), ['img1.png', 'notimage.png']);
+  assert.equal(prompt.value, 'E2');
+  prompt.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  assert.deepEqual(refusals(), [`notimage.png was refused: ${UNSUPPORTED}`], 'typing does not hide which file was refused');
+  // Removing the refused file and sending again reuses the stored valid image.
+  dom.window.document.querySelectorAll('.pending-image-remove')[1].click();
+  submit();
+  for (let i = 0; i < 5; i++) await tick();
+  const messages = calls.filter(call => call.url.endsWith('/messages'));
+  assert.equal(messages.length, 1);
+  assert.deepEqual(JSON.parse(messages[0].body).content, [{ type: 'text', text: 'E2' }, { type: 'image', attachment_id: 'A-img1.png' }]);
+  assert.equal(calls.filter(call => call.url.includes('name=img1.png')).length, 1, 'the stored image is not uploaded twice');
+  assert.deepEqual(chips(), []);
+});
+
+test('every refused upload of a batch is named, and none is sent', async t => {
+  const { dom, prompt, tick } = fullChat(t);
+  const { readers, paste, submit, refusals } = imageComposer(dom);
+  const calls = imageServer(t, { 'a.png': UNSUPPORTED, 'b.png': 'empty file' });
+  paste(['a.png', 'ok.png', 'b.png']); readers.forEach(reader => reader.load());
+  prompt.value = 'two bad'; submit();
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(refusals(), [`a.png was refused: ${UNSUPPORTED}`, 'b.png was refused: empty file']);
+  assert.equal(calls.filter(call => call.url.endsWith('/messages')).length, 0);
+  assert.equal(prompt.value, 'two bad');
+});
+
+test('the image chooser selects many images, reads only what fits and names what it skipped', async t => {
+  const { dom, tick } = fullChat(t);
+  const { d, chips, refusals } = imageComposer(dom);
+  const uri = name => ({ scheme: 'file', path: `/pics/${name}`, fsPath: `/pics/${name}` });
+  const sizes = { 'empty.png': 0, 'big.png': 5_000_000 };
+  const read = [];
+  vscode.workspace.fs = {
+    stat: async target => ({ type: 1, size: sizes[target.path.split('/').pop()] ?? 4 }),
+    readFile: async target => { read.push(target.path.split('/').pop()); return new Uint8Array([137, 80, 78, 71]); },
+  };
+  const names = ['a.png', 'empty.png', 'big.png', 'b.png', 'c.png', 'd.png', 'e.png', 'f.png', 'g.png', 'h.png', 'i.png'];
+  let options;
+  vscode.window.showOpenDialog = async value => { options = value; return names.map(uri); };
+  const chooser = d.querySelector('.image-btn');
+  chooser.click();
+  for (let i = 0; i < 10; i++) await tick();
+  assert.equal(options.canSelectMany, true);
+  assert.deepEqual(options.filters, { Images: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'] });
+  assert.deepEqual(read, ['a.png', 'b.png', 'c.png', 'd.png', 'e.png', 'f.png', 'g.png', 'h.png'], 'empty, too large and over-limit files are not read');
+  assert.deepEqual(chips(), ['a.png', 'b.png', 'c.png', 'd.png', 'e.png', 'f.png', 'g.png', 'h.png']);
+  assert.deepEqual(refusals(), ['A message carries at most 8 images; not attached: i.png.', 'empty.png is empty.', 'big.png is too large to attach.']);
+  // Cancelling the dialog attaches nothing and frees the control.
+  vscode.window.showOpenDialog = async () => undefined;
+  d.querySelectorAll('.pending-image-remove')[0].click();
+  chooser.click();
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(chooser.disabled, false);
+  assert.equal(chips().length, 7);
+});
+

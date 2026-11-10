@@ -93,8 +93,11 @@ requests land in `develop`.
 - A conversation saved before image support was known, or while the gateway could not tell,
   learns it from the gateway's model list when it resumes, instead of keeping images unsent.
 - Images in the browser client and the VS Code extension: paste or drop images into the message
-  (the browser also has an attach button; at most eight per message, a message may be images only).
-  The Captain's images and those returned by tools show as thumbnails in the conversation, also
+  (both also have an attach button, a multi-select file chooser in VS Code; at most eight per
+  message, a message may be images only). In VS Code, each file left out (not an image, empty, too
+  large, unreadable, over the limit, or refused by the server when sending) is named with its
+  reason and stays listed until dismissed; a drop that carries links instead of files names the
+  images it left out and fetches nothing. The Captain's images and those returned by tools show as thumbnails in the conversation, also
   after a reload; a click opens one at full size, in the Image tab of the browser's session panel or
   in an editor panel beside the VS Code chat.
 - Images in the terminal client beyond `/attach`: dropping an image file on the terminal attaches

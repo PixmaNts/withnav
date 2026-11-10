@@ -455,7 +455,7 @@ async fn a_browser_runs_the_app_in_a_sandbox_that_reaches_nothing_it_did_not_dec
             .any(|t| t.starts_with("/report?"))
     };
     let started = tokio::time::Instant::now();
-    let deadline = started + std::time::Duration::from_secs(20);
+    let deadline = started + std::time::Duration::from_secs(120);
     // When each step reached the collector, in milliseconds after the browser was started.
     let mut timeline: Vec<String> = Vec::new();
     let record = |timeline: &mut Vec<String>| {
@@ -496,6 +496,9 @@ async fn a_browser_runs_the_app_in_a_sandbox_that_reaches_nothing_it_did_not_dec
             log_tail(&log_path, &[token, TOKEN])
         );
     }
+    record(&mut timeline);
+    panic!("DIAGNOSTIC timeline: {timeline:?} total {} ms\nlog:\n{}", started.elapsed().as_millis(), log_tail(&log_path, &[TOKEN]));
+    #[allow(unreachable_code)]
     let _ = browser.kill().await;
     let target = reports
         .lock()

@@ -15,28 +15,35 @@ answers prompts, and hands you images. Every check ends with a verdict backed by
    the matching skill: `withnav-testing-tui`, `withnav-testing-extension` or `withnav-testing-web`.
    Its **hooks** run inside the shared scenario they name; its **client checks** run after the
    shared scenarios.
-2. **V1 Version.** Ask the Captain which version they expect. Run `command -v nav` and
-   `nav --version`; record both. PASS when the version is the expected one: a pre-release reads
-   `0.8.3-<branch>+<sha>`, a release `0.8.3`; `+dirty` or `.dirty` at the end means a build from an
-   uncommitted tree (note it, not a FAIL). The client skill says how to read the client's own
-   version when it can differ from the `nav` on the PATH.
-3. Pick a run id: `date +%Y%m%d-%H%M%S`. The run folder is `withnav-selftest-<run id>` at the
+2. **Brief the operator first.** Explain the checks in order, the Captain's actions, the tools
+   you will use, and the run folder and cleanup. Ask which version and, for a branch build, which
+   commit they expect. Wait for the Captain's "go" before version commands or fixture creation,
+   and before touching any workspace file, secret or permission.
+3. **V1 Version.** Run `command -v nav` and `nav --version`; record both. PASS only when the
+   agreed package version and, when supplied, commit match. A branch build reads
+   `<package version>-<normalized branch>+<sha>`: the branch name alone does not prove its package
+   version. For example, `0.8.2-release-v0-8-3+<sha>` is still package version `0.8.2`, not `0.8.3`.
+   Record a dirty suffix and what is unverified; it is not evidence of a clean expected commit.
+   The client skill says how to read the client's own version, which can differ from PATH.
+4. Pick a run id: `date +%Y%m%d-%H%M%S`. The run folder is `withnav-selftest-<run id>` at the
    workspace root. Create the fixtures with
    `python3 <this skill's base_dir>/fixtures.py withnav-selftest-<run id>` (the `skill` tool's
    answer gives `base_dir`). The script refuses an existing folder; its docstring says what each
    file is for.
-4. Run the shared scenarios in order, then the client checks. One scenario at a time: say what you
-   are about to do and what the Captain should watch for, act, then collect the observation.
-5. Collect every human observation with the `ask` tool, as a closed question with options
+5. Run the shared scenarios in order, then the client checks. One scenario at a time. Before each
+   scenario, tell the Captain, in order: (a) what the Captain must do or watch, (b) the exact text
+   to type or click, (c) what you will do next. Only then act. After the act, collect the
+   observation. Never act first and ask afterwards.
+6. Collect every human observation with the `ask` tool, as a closed question with options
    (`Yes` / `No` / `Not shown`), one observation per question.
-6. A verdict is **PASS**, **FAIL** or **SKIP** (prerequisite missing, or the Captain chose to skip).
+7. A verdict is **PASS**, **FAIL** or **SKIP** (prerequisite missing, or the Captain chose to skip).
    FAIL quotes the evidence: the tool output, the error text, the Captain's answer. A FAIL stays a
    FAIL; retry only after an obvious slip of yours, and report both runs. A check that depends on the
    model's behaviour (a subagent that stops early, a batched call) is **SKIP — invalid run**, not a
    product FAIL.
-7. Finish with the report, then clean up.
-8. Once the client's last check (if it has one) is in the report, run the post-analysis: read `post-analysis.md` in this skill's `base_dir` and follow it. It turns
-   this run's findings into proposed changes to these skills.
+8. Finish with the report, then clean up.
+9. Once the client's last check (if it has one) is in the report, read `post-analysis.md` in this
+   skill's `base_dir` and follow it to turn the findings into proposed changes to these skills.
 
 Touch only what this run created: the run folder, the report, the test secret. Leave every other
 file, secret, rule and conversation as it was.
@@ -54,8 +61,9 @@ are SKIP) or a rule of the Captain's denies it (record the denial and SKIP).
 - **P1** Before acting, ask the Captain to **Reject** the coming question with the message
   `rejected for the test: answer BANANA`. Then `write` `KEY=placeholder` to `<run>/.env`. PASS when
   the rejection reaches you with that message verbatim.
-- **P2** Ask the Captain to answer **Once**, then repeat the call. PASS when it runs. Ask whether
-  **Always** was offered on either question: FAIL if it was.
+- **P2** Ask the Captain to accept once (**Once** or **Allow**, depending on the client), then
+  repeat the call. PASS when it runs. Ask whether **Always** was offered on either question:
+  FAIL if it was.
 - **P3** `write` any text to `/tmp/withnav-selftest-<run id>.txt`. PASS when it runs without a
   question (writes to the temp folder run unasked unless a rule of the Captain's asks or denies;
   if one did, record it and SKIP).
@@ -69,7 +77,7 @@ Run `read` on each fixture and report what you got: an image, text, or a note.
 | I1 | `ok.png` | An image. With a model that takes images, describe it: a blue square top-left on red. Without, a note that an image was shown counts as PASS. The Captain sees it (client skill: thumbnail or numbered line). |
 | I2 | `drawing.svg` | An image (rendered to PNG): a blue circle on yellow. |
 | I3 | `empty.svg` | An image, not text. |
-| I4 | `fake.svg` | Its text, no image. |
+| I4 | `fake.svg` | The model receives its text, no image. The client need not display the read result. |
 | I5 | `truncated.png` | The call succeeds with a note `[image … not kept: …]` naming a corrupt or truncated image; nothing shown. |
 | I6 | `corrupt.png` | Same as I5 (the note names the damaged data). |
 

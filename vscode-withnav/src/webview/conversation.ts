@@ -88,11 +88,30 @@ const TEMPLATE = `
     <button type="submit" class="icon-button send-btn" aria-label="Send" title="Send (Enter)" disabled>${ICON.send}</button>
   </div>
   <div class="agent-popover" hidden>
-    <input class="picker-search agent-search" type="search" placeholder="Search agents · Ctrl+F favorite" aria-label="Search agents" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-keyshortcuts="Control+F">
-    <span class="sr-only agent-favorite-hint">Ctrl+F adds or removes the highlighted agent from favorites.</span>
+    <input class="picker-search agent-search" type="search" placeholder="Search agents · Ctrl+Alt+F favorite" aria-label="Search agents" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-keyshortcuts="Control+Alt+F">
+    <span class="sr-only agent-favorite-hint">Ctrl+Alt+F adds or removes the highlighted agent from favorites.</span>
     <ul class="agent-list" role="listbox" aria-label="Agents"></ul>
   </div>
 </form>`;
+
+/**
+ * The picker action a keydown in a picker search box asks for: Ctrl+Alt+F toggles the highlighted
+ * favorite, Ctrl+Alt+A folds or unfolds the model groups. The pickers do not handle plain Ctrl+F or Alt+A:
+ * the 2026-11-10 self-test in VS Code saw Ctrl+F open the host's search alongside the favorite toggle,
+ * and Alt+A is a host binding too.
+ * AltGr is reported as Ctrl+Alt on Windows and types letters on many layouts (Polish AltGr+A is ą),
+ * so a key with AltGraph held is typing, not a shortcut. The letter comes from `key`, so a non-QWERTY
+ * layout uses the letter printed on the key; a single non-ASCII character (macOS Ctrl+Option+F gives
+ * ƒ) falls back to the physical key. Dead keys and IME keys ("Dead", "Process") never match.
+ */
+function pickerShortcut(event: KeyboardEvent): "favorite" | "fold" | undefined {
+  if (event.isComposing || !event.ctrlKey || !event.altKey || event.shiftKey || event.metaKey || event.getModifierState("AltGraph")) return undefined;
+  const key = event.key.toLowerCase();
+  const letter = /^[a-z]$/.test(key) ? key
+    : [...event.key].length === 1 && !/^[\x00-\x7f]$/.test(event.key) && /^Key[A-Z]$/.test(event.code) ? event.code.slice(3).toLowerCase()
+    : undefined;
+  return letter === "f" ? "favorite" : letter === "a" ? "fold" : undefined;
+}
 
 /** One conversation: its header, transcript and composer. The shell keeps one per tab. */
 export function createConversation(env: ConversationEnv): ConversationView {
@@ -274,8 +293,9 @@ agentSearch.addEventListener("keydown", event => {
     if (agentRows.length) { agentIndex = (agentIndex + (event.key === "ArrowDown" ? 1 : -1) + agentRows.length) % agentRows.length; renderAgents(); }
   } else if (event.key === "Enter") { event.preventDefault(); const row = agentRows[agentIndex]; if (row) pickAgent(row.id); }
   else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeAgents(true); }
-  else if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "f") {
-    event.preventDefault();
+  else if (pickerShortcut(event) === "favorite") {
+    // Handled here only: the default is prevented and the event stops bubbling out of the search box.
+    event.preventDefault(); event.stopPropagation();
     const row = agentRows[agentIndex];
     if (row) post({ type: "toggleFavoriteAgent", name: row.id });
   }
@@ -430,8 +450,8 @@ pickerSearch.setAttribute("aria-label", "Search choices");
 pickerSearch.setAttribute("role", "combobox");
 pickerSearch.setAttribute("aria-autocomplete", "list");
 pickerSearch.setAttribute("aria-controls", `picker-options-${uid}`);
-// Model picker only: the stars take no focus, so Ctrl+F on the search box is their keyboard path.
-const pickerFavoriteHint = el("span", "sr-only", "Ctrl+F adds or removes the highlighted model from favorites.");
+// Model picker only: the stars take no focus, so Ctrl+Alt+F on the search box is their keyboard path.
+const pickerFavoriteHint = el("span", "sr-only", "Ctrl+Alt+F adds or removes the highlighted model from favorites. Ctrl+Alt+A folds or unfolds all groups.");
 pickerFavoriteHint.id = `picker-favorite-hint-${uid}`;
 const pickerCount = document.createElement("div");
 pickerCount.className = "picker-count";
@@ -508,13 +528,13 @@ function renderPalette(): void {
   // Hidden outside the model picker so browse mode does not read a shortcut that does nothing there.
   pickerFavoriteHint.hidden = pickerKind !== "model";
   if (pickerKind === "model") {
-    pickerSearch.setAttribute("aria-keyshortcuts", "Control+F");
+    pickerSearch.setAttribute("aria-keyshortcuts", "Control+Alt+F Control+Alt+A");
     pickerSearch.setAttribute("aria-describedby", pickerFavoriteHint.id);
   } else {
     pickerSearch.removeAttribute("aria-keyshortcuts");
     pickerSearch.removeAttribute("aria-describedby");
   }
-  pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${narrowHint(matches.length)}${pickerKind === "model" ? " · Alt+A folds or unfolds all · Ctrl+F favorite" : ""}`;
+  pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${narrowHint(matches.length)}${pickerKind === "model" ? " · Ctrl+Alt+A folds or unfolds all · Ctrl+Alt+F favorite" : ""}`;
   if (favoriteAnchor) {
     const found = favoriteAnchor.inSection ? paletteRows.findIndex((row, i) => i < favoriteRows.length && row.name === favoriteAnchor!.name) : -1;
     const anywhere = found >= 0 ? found : paletteRows.findIndex((row, i) => i >= favoriteRows.length && row.name === favoriteAnchor!.name);
@@ -627,6 +647,7 @@ function toggleFavorite(index: number): void {
 pickerSearch.addEventListener("input", () => { paletteIndex = 0; renderPalette(); });
 pickerSearch.addEventListener("keydown", event => {
   if (event.isComposing) return;
+  let shortcut: ReturnType<typeof pickerShortcut>;
   if (event.key === "Escape") {
     event.preventDefault();
     if (pickerSearch.value) { pickerSearch.value = ""; paletteIndex = 0; renderPalette(); }
@@ -634,12 +655,10 @@ pickerSearch.addEventListener("keydown", event => {
   } else if (["ArrowUp", "ArrowDown"].includes(event.key)) {
     event.preventDefault();
     if (paletteRows.length) { paletteIndex = (paletteIndex + (event.key === "ArrowDown" ? 1 : -1) + paletteRows.length) % paletteRows.length; renderPalette(); }
-  } else if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "f" && pickerKind === "model") {
-    event.preventDefault();
-    toggleFavorite(paletteIndex);
-  } else if (event.altKey && event.code === "KeyA" && pickerKind === "model") {
-    event.preventDefault();
-    toggleAllGroups();
+  } else if (pickerKind === "model" && (shortcut = pickerShortcut(event))) {
+    // Handled here only: the default is prevented and the event stops bubbling out of the search box.
+    event.preventDefault(); event.stopPropagation();
+    if (shortcut === "favorite") toggleFavorite(paletteIndex); else toggleAllGroups();
   } else if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); choosePalette(paletteIndex); }
 });
 // Folds every gateway and provider, or unfolds them all once everything is folded.

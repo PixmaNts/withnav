@@ -1530,16 +1530,16 @@ fn configured_paths_invalid_entries_and_escapes() {
     let regular_file = fx.repo.join("regular_file.txt");
     fs::write(&regular_file, "just a file").unwrap();
 
-    let mut paths: Vec<serde_json::Value> = vec![
+    let paths: Vec<serde_json::Value> = vec![
         serde_json::json!(""),
         serde_json::json!(42),
         serde_json::json!("missing/folder/does/not/exist"),
         serde_json::json!("regular_file.txt"),
         serde_json::json!("../outside_worktree"),
         serde_json::json!("valid_custom"),
+        #[cfg(unix)]
+        serde_json::json!("symlink_outside"),
     ];
-    #[cfg(unix)]
-    paths.push(serde_json::json!("symlink_outside"));
 
     let mut settings = crate::settings::Settings::default();
     settings.set_dotted("skills.paths", serde_json::Value::Array(paths));

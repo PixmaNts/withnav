@@ -288,16 +288,58 @@ test('model picker search keeps levels, collapse hides children and group keys n
   assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))),{type:'selectModel',name:'omniroute/kimi/k2',generation:1});
   dom.window.close();
 });
-test('model picker alt+a folds every group, then unfolds them all',()=>{
-  const {dom,d,rows}=modelPicker(hierarchy);
+test('model picker ctrl+alt+a folds every group, then unfolds them all; alt+a alone does nothing',()=>{
+  const {dom,d,posts,rows}=modelPicker(hierarchy);
   const search=d.querySelector('.command-palette .picker-search');search.focus();
-  const altA=()=>search.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'a',code:'KeyA',altKey:true,bubbles:true,cancelable:true}));
-  const all=rows();
-  altA();
+  const all=rows();const before=posts.length;
+  // Alt+A is a VS Code host shortcut: the picker leaves it alone.
+  const plain=pickerKey(dom,search,'a',{altKey:true});
+  assert.equal(plain.defaultPrevented,false);assert.equal(plain.propagated,true);assert.deepEqual(rows(),all);
+  // Alt+F was reported as a host shortcut too; the picker never claimed it.
+  const altF=pickerKey(dom,search,'f',{altKey:true});
+  assert.equal(altF.defaultPrevented,false);assert.equal(altF.propagated,true);assert.equal(posts.length,before);
+  const e=pickerKey(dom,search,'a',{ctrlKey:true,altKey:true});
+  assert.equal(e.defaultPrevented,true);assert.equal(e.propagated,false,'the fold shortcut does not bubble out of the search box');
   assert.deepEqual(rows().map(r=>r.text),['direct','omniroute']);
-  assert.match(d.querySelector('.command-palette .picker-count').textContent,/Alt\+A/);
-  altA();
-  assert.deepEqual(rows(),all);
+  assert.match(d.querySelector('.command-palette .picker-count').textContent,/Ctrl\+Alt\+A folds or unfolds all/);
+  assert.doesNotMatch(d.querySelector('.command-palette .picker-count').textContent,/(^|[^+])Alt\+A/);
+  assert.equal(d.activeElement,search,'focus stays in the search box');
+  pickerKey(dom,search,'a',{ctrlKey:true,altKey:true});
+  assert.deepEqual(rows(),all);assert.equal(posts.length,before,'folding never posts');
+  dom.window.close();
+});
+test('model picker: AltGr, Shift and Meta variants of the shortcuts are typing or host keys, not picker actions',()=>{
+  const {dom,d,posts,rows}=modelPicker(hierarchy);
+  const search=d.querySelector('.command-palette .picker-search');search.focus();
+  const all=rows();const before=posts.length;
+  // Windows reports AltGr as Ctrl+Alt: AltGr+A types a letter on Polish and other layouts.
+  for(const extra of [{key:'ą',code:'KeyA',modifierAltGraph:true},{key:'a',code:'KeyA',modifierAltGraph:true},{shiftKey:true},{metaKey:true}]){
+    for(const letter of ['a','f']){
+      const e=pickerKey(dom,search,letter,{ctrlKey:true,altKey:true,...extra});
+      assert.equal(e.defaultPrevented,false,JSON.stringify(extra));assert.equal(e.propagated,true,JSON.stringify(extra));
+    }
+  }
+  // Dead keys, IME processing and composition carry no letter, whatever physical key was pressed.
+  for(const extra of [{key:'Dead'},{key:'Process'},{key:'Unidentified'},{isComposing:true}]){
+    const e=pickerKey(dom,search,'a',{ctrlKey:true,altKey:true,...extra});
+    assert.equal(e.defaultPrevented,false,JSON.stringify(extra));assert.equal(e.propagated,true);
+  }
+  // A letter key wins over its physical position: on AZERTY the A key sits where QWERTY has Q.
+  assert.equal(pickerKey(dom,search,'q',{code:'KeyA',ctrlKey:true,altKey:true}).defaultPrevented,false);
+  assert.deepEqual(rows(),all);assert.equal(posts.length,before);
+  assert.equal(pickerKey(dom,search,'a',{code:'KeyQ',ctrlKey:true,altKey:true}).defaultPrevented,true);
+  assert.deepEqual(rows().map(r=>r.text),['direct','omniroute']);
+  dom.window.close();
+});
+test('model picker: Ctrl+Option on macOS yields a symbol key; the physical key still matches',()=>{
+  const {dom,d,posts,rows,key}=modelPicker(hierarchy);
+  const search=d.querySelector('.command-palette .picker-search');search.focus();
+  key('ArrowDown');
+  const before=posts.length;
+  assert.equal(pickerKey(dom,search,'f',{key:'ƒ',ctrlKey:true,altKey:true}).defaultPrevented,true);
+  assert.equal(posts.length,before+1);assert.equal(posts.at(-1).type,'toggleFavorite');
+  pickerKey(dom,search,'a',{key:'å',ctrlKey:true,altKey:true});
+  assert.deepEqual(rows().map(r=>r.text),['direct','omniroute']);
   dom.window.close();
 });
 test('model picker long canonical names stay whole in the title and wrap inside the indented row',()=>{
@@ -308,7 +350,15 @@ test('model picker long canonical names stay whole in the title and wrap inside 
   dom.window.close();
 });
 
-const ctrlF=(dom,target)=>{const e=new dom.window.KeyboardEvent('keydown',{key:'f',code:'KeyF',ctrlKey:true,bubbles:true,cancelable:true});target.dispatchEvent(e);return e;};
+// Dispatches a letter key on `target`; `propagated` tells whether the event reached the document.
+const pickerKey=(dom,target,letter,extra={})=>{
+  const e=new dom.window.KeyboardEvent('keydown',{key:letter,code:`Key${letter.toUpperCase()}`,bubbles:true,cancelable:true,...extra});
+  let propagated=false;const seen=()=>{propagated=true;};
+  dom.window.document.addEventListener('keydown',seen);target.dispatchEvent(e);dom.window.document.removeEventListener('keydown',seen);
+  e.propagated=propagated;return e;
+};
+const ctrlAltF=(dom,target)=>pickerKey(dom,target,'f',{ctrlKey:true,altKey:true});
+const ctrlF=(dom,target)=>pickerKey(dom,target,'f',{ctrlKey:true});
 const optionTitles=d=>[...d.querySelectorAll('.picker-options [role=option]')].map(o=>o.title);
 test('favorites section: first, unfoldable, starred, hidden when empty and filtered by search',()=>{
   const {dom,d,receive,rows,type}=modelPicker(hierarchy);
@@ -333,10 +383,10 @@ test('favorites section: first, unfoldable, starred, hidden when empty and filte
   assert.deepEqual(stars.map(s=>s.getAttribute('aria-pressed')),titles.map(t=>String(['direct/solo','omniroute/kimi/k2'].includes(t))));
   assert.equal(stars[0].getAttribute('aria-label'),'Remove from favorites');
   assert.equal(stars.find(s=>s.getAttribute('aria-pressed')==='false').getAttribute('aria-label'),'Add to favorites');
-  assert.match(d.querySelector('.command-palette .picker-count').textContent,/Ctrl\+F favorite/);
-  // Alt+A folds every group; the section stays.
+  assert.match(d.querySelector('.command-palette .picker-count').textContent,/Ctrl\+Alt\+F favorite/);
+  // Ctrl+Alt+A folds every group; the section stays.
   const search=d.querySelector('.command-palette .picker-search');search.focus();
-  search.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'a',code:'KeyA',altKey:true,bubbles:true,cancelable:true}));
+  pickerKey(dom,search,'a',{ctrlKey:true,altKey:true});
   assert.deepEqual(optionTitles(d),['direct/solo','omniroute/kimi/k2']);
   assert.deepEqual([...d.querySelectorAll('.picker-options .picker-group')].map(g=>g.getAttribute('aria-expanded')),['false','false']);
   // Search shows only the matching favorites; none matching hides the heading.
@@ -347,13 +397,17 @@ test('favorites section: first, unfoldable, starred, hidden when empty and filte
   assert(!d.querySelector('.picker-section'));assert.deepEqual(optionTitles(d),['omniroute/cc/claude-opus']);
   dom.window.close();
 });
-test('favorites: ctrl+f posts toggleFavorite for the highlighted model, keeps the highlight and heals when the last one goes',()=>{
+test('favorites: ctrl+alt+f posts toggleFavorite for the highlighted model, keeps the highlight and heals when the last one goes',()=>{
   const {dom,d,posts,receive,key}=modelPicker(hierarchy);
   const search=d.querySelector('.command-palette .picker-search');search.focus();
   const active=()=>d.getElementById(search.getAttribute('aria-activedescendant')).title;
   key('ArrowDown');assert.equal(active(),'omniroute/cc/claude-opus');
-  const before=posts.length;const e=ctrlF(dom,search);assert.equal(e.defaultPrevented,true);
+  // Plain Ctrl+F is VS Code's find: the picker neither acts on it nor blocks it.
+  const before=posts.length;
+  const plain=ctrlF(dom,search);assert.equal(plain.defaultPrevented,false);assert.equal(plain.propagated,true);assert.equal(posts.length,before);
+  const e=ctrlAltF(dom,search);assert.equal(e.defaultPrevented,true);assert.equal(e.propagated,false);
   assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))),{type:'toggleFavorite',name:'omniroute/cc/claude-opus',generation:1});assert.equal(posts.length,before+1);
+  assert.equal(d.activeElement,search,'focus stays in the search box');
   assert.equal(d.querySelector('.picker-section'),null,'nothing changes until the host answers');
   receive({type:'favorites',items:['omniroute/cc/claude-opus']});
   assert(d.querySelector('.picker-section'));assert.equal(active(),'omniroute/cc/claude-opus','highlight stays on the same model');
@@ -361,19 +415,19 @@ test('favorites: ctrl+f posts toggleFavorite for the highlighted model, keeps th
   // Toggled from the section row: removing the last favorite hides the section and keeps a valid row.
   key('ArrowUp');key('ArrowUp');
   assert.match(search.getAttribute('aria-activedescendant'),/^command-option-\d+-0$/);assert.equal(active(),'omniroute/cc/claude-opus','the section row');
-  ctrlF(dom,search);assert.equal(posts.at(-1).name,'omniroute/cc/claude-opus');
+  const n=posts.length;ctrlAltF(dom,search);assert.equal(posts.length,n+1,'one toggle per press');assert.equal(posts.at(-1).name,'omniroute/cc/claude-opus');
   receive({type:'favorites',items:[]});
   assert(!d.querySelector('.picker-section'));
   assert.equal(active(),'omniroute/cc/claude-opus');
   assert(d.getElementById(search.getAttribute('aria-activedescendant')));
-  // ctrl+f never posts selectModel and Enter on a favorite row picks the model.
+  // ctrl+alt+f never posts selectModel and Enter on a favorite row picks the model.
   receive({type:'favorites',items:['direct/solo']});
   key('ArrowUp');
   assert.match(search.getAttribute('aria-activedescendant'),/^command-option-\d+-0$/);
   key('Enter');assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))),{type:'selectModel',name:'direct/solo',generation:1});
   dom.window.close();
 });
-test('favorites: the star toggles with the mouse without choosing the model and ctrl+f is ignored outside the model picker',()=>{
+test('favorites: the star toggles with the mouse without choosing the model and ctrl+alt+f is ignored outside the model picker',()=>{
   const {dom,d,posts,receive}=modelPicker(hierarchy);
   const star=d.querySelector('.picker-options .favorite-toggle');
   const before=posts.length;star.click();
@@ -382,22 +436,26 @@ test('favorites: the star toggles with the mouse without choosing the model and 
   assert.equal(star.tagName,'BUTTON');assert.equal(star.getAttribute('aria-label'),'Add to favorites');
   receive({type:'favorites',items:['direct/solo']});
   assert.equal(d.querySelector('.picker-options .favorite-toggle').getAttribute('aria-label'),'Remove from favorites');
-  // Another picker kind has no stars and ignores ctrl+f.
+  // Another picker kind has no stars and ignores ctrl+alt+f and ctrl+alt+a.
   receive({type:'commandPicker',kind:'variant',items:[{name:'low',description:''}]});
   assert.equal(d.querySelectorAll('.favorite-toggle').length,0);
   const search=d.querySelector('.command-palette .picker-search');const n=posts.length;
-  const e=ctrlF(dom,search);assert.equal(e.defaultPrevented,false);assert.equal(posts.length,n);
+  const e=ctrlAltF(dom,search);assert.equal(e.defaultPrevented,false);assert.equal(e.propagated,true);assert.equal(posts.length,n);
+  const fold=pickerKey(dom,search,'a',{ctrlKey:true,altKey:true});assert.equal(fold.defaultPrevented,false);assert.equal(fold.propagated,true);assert.equal(posts.length,n);
   assert.equal(search.hasAttribute('aria-keyshortcuts'),false,'no favorite shortcut announced outside the model picker');
   assert.equal(search.hasAttribute('aria-describedby'),false);
   assert.equal(d.querySelector('.command-palette .sr-only').hidden,true,'the model shortcut hint is hidden too');
   dom.window.close();
 });
-test('favorites: the model search announces the ctrl+f shortcut and grouped rows announce their favorite state',()=>{
+test('favorites: the model search announces the ctrl+alt+f and ctrl+alt+a shortcuts and grouped rows announce their favorite state',()=>{
   const {dom,d,receive}=modelPicker(hierarchy);
   const search=d.querySelector('.command-palette .picker-search');
-  assert.equal(search.getAttribute('aria-keyshortcuts'),'Control+F');
+  assert.equal(search.getAttribute('aria-keyshortcuts'),'Control+Alt+F Control+Alt+A');
   const hint=d.getElementById(search.getAttribute('aria-describedby'));
-  assert(hint,'the description exists');assert.match(hint.textContent,/Ctrl\+F adds or removes the highlighted model from favorites/);
+  assert(hint,'the description exists');
+  assert.match(hint.textContent,/Ctrl\+Alt\+F adds or removes the highlighted model from favorites/);
+  assert.match(hint.textContent,/Ctrl\+Alt\+A folds or unfolds all groups/);
+  assert.doesNotMatch(hint.textContent+d.querySelector('.command-palette .picker-count').textContent,/Ctrl\+F/);
   const label=()=>d.querySelector('.picker-options [role=option][title="omniroute/cc/claude-opus"][aria-label]').getAttribute('aria-label');
   assert.equal(label(),'omniroute/cc/claude-opus');
   receive({type:'favorites',items:['omniroute/cc/claude-opus']});

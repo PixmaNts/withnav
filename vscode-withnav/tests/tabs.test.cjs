@@ -812,33 +812,66 @@ test("image thumbnails: each button is named after the image and the open-beside
   dom.window.close();
 });
 
-test("agent picker: Ctrl+F toggles the highlighted agent's favorite from the keyboard and is announced", () => {
+test("agent picker: Ctrl+Alt+F toggles the highlighted agent's favorite from the keyboard and is announced", () => {
   const { dom, send, view, posts, key } = agentPage();
   view.querySelector(".agent-btn").click();
   const search = view.querySelector(".agent-search");
-  assert.equal(search.getAttribute("aria-keyshortcuts"), "Control+F");
+  assert.equal(search.getAttribute("aria-keyshortcuts"), "Control+Alt+F");
   const hint = dom.window.document.getElementById(search.getAttribute("aria-describedby"));
   assert(hint, "the search box is described by the shortcut hint");
-  assert.match(hint.textContent, /Ctrl\+F adds or removes the highlighted agent from favorites/);
-  assert.match(search.placeholder, /Ctrl\+F favorite/);
+  assert.match(hint.textContent, /Ctrl\+Alt\+F adds or removes the highlighted agent from favorites/);
+  assert.match(search.placeholder, /Ctrl\+Alt\+F favorite/);
+  assert.doesNotMatch(hint.textContent + search.placeholder, /Ctrl\+F/);
   assert.equal(search.getAttribute("aria-controls"), view.querySelector(".agent-list").id, "the combobox names the listbox it drives");
-  const ctrlF = (extra = {}) => { const e = new dom.window.KeyboardEvent("keydown", { key: "f", code: "KeyF", ctrlKey: true, bubbles: true, cancelable: true, ...extra }); search.dispatchEvent(e); return e; };
+  // `propagated` tells whether the event bubbled out of the search box to the document.
+  const press = (extra = {}) => {
+    const e = new dom.window.KeyboardEvent("keydown", { key: "f", code: "KeyF", ctrlKey: true, altKey: true, bubbles: true, cancelable: true, ...extra });
+    let propagated = false; const seen = () => { propagated = true; };
+    dom.window.document.addEventListener("keydown", seen); search.dispatchEvent(e); dom.window.document.removeEventListener("keydown", seen);
+    e.propagated = propagated; return e;
+  };
   key(search, "ArrowDown");
   const before = posts.length;
-  const e = ctrlF();
+  const e = press();
   assert.equal(e.defaultPrevented, true);
-  assert.equal(posts.length, before + 1);
+  assert.equal(e.propagated, false, "the shortcut does not bubble out of the search box");
+  assert.equal(posts.length, before + 1, "one toggle per press");
   assert.deepEqual(posts.at(-1), { type: "toggleFavoriteAgent", name: "plan", tab: "t1", generation: 1 });
   assert.equal(view.querySelector(".agent-popover").hidden, false, "the popover stays open");
   send({ type: "favoriteAgents", items: ["plan"] });
   assert.equal(view.querySelector('.agent-row[aria-selected="true"]').dataset.id, "plan", "the highlight follows the agent to its new place");
   assert.equal(dom.window.document.activeElement, search, "focus stays in the search box");
-  // Ctrl+Alt+F, an IME composition or an empty list send nothing.
+  // Removing it again goes through the same shortcut, on the same highlighted agent.
+  const added = posts.length;
+  press();
+  assert.equal(posts.length, added + 1, "one toggle for the removal");
+  assert.deepEqual(posts.at(-1), { type: "toggleFavoriteAgent", name: "plan", tab: "t1", generation: 1 });
+  send({ type: "favoriteAgents", items: [] });
+  assert.equal(view.querySelector('.agent-row[aria-selected="true"]').dataset.id, "plan");
+  assert.equal(dom.window.document.activeElement, search);
+  // Plain Ctrl+F is VS Code's find, Alt+F was reported as a host key, Ctrl+Alt+A belongs to the model picker, AltGr and Shift/Meta
+  // variants are typing or host keys, and a composition is the IME's: none acts, none is blocked.
   const n = posts.length;
-  ctrlF({ altKey: true }); ctrlF({ isComposing: true });
+  for (const extra of [{ altKey: false }, { ctrlKey: false }, { key: "a", code: "KeyA" }, { key: "f", modifierAltGraph: true }, { shiftKey: true }, { metaKey: true }, { isComposing: true }, { key: "Dead" }]) {
+    const ignored = press(extra);
+    assert.equal(ignored.defaultPrevented, false, JSON.stringify(extra));
+    assert.equal(ignored.propagated, true, JSON.stringify(extra));
+  }
+  // An empty list sends nothing.
   search.value = "zzz"; search.dispatchEvent(new dom.window.Event("input"));
-  ctrlF();
+  press();
   assert.equal(posts.length, n);
+  dom.window.close();
+});
+
+test("agent picker: the star still toggles a favorite with the mouse", () => {
+  const { dom, view, posts } = agentPage();
+  view.querySelector(".agent-btn").click();
+  const before = posts.length;
+  view.querySelector('.agent-row[data-id="plan"] .agent-star').click();
+  assert.equal(posts.length, before + 1);
+  assert.deepEqual(posts.at(-1), { type: "toggleFavoriteAgent", name: "plan", tab: "t1", generation: 1 });
+  assert.equal(view.querySelector(".agent-popover").hidden, false, "the popover stays open");
   dom.window.close();
 });
 

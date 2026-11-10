@@ -128,6 +128,11 @@ requests land in `develop`.
     (search, current mark, favourites kept under `withnav.favoriteAgents`) and send/stop.
   - The composer grows with its text, from about three lines up to 40% of the view height.
   - New commands: `WithNav: Show Sessions` and `WithNav: New Conversation`.
+- VS Code extension: new picker shortcuts. Ctrl+Alt+F adds or removes the highlighted agent or
+  model from favourites (it was Ctrl+F, which also opened VS Code's search), and Ctrl+Alt+A folds or
+  unfolds every model group (it was Alt+A, also a VS Code binding). The pickers no longer handle
+  Ctrl+F or Alt+A; the stars and group headers still work with the mouse. With AltGr held the keys
+  type as usual. On macOS the combination is Control+Option, which VoiceOver also uses.
 - Dependency updates: rusqlite 0.41, base64 0.23, vscode-languageclient 11, jsdom 31, the web UI's
   minor and patch releases and the CI actions.
 

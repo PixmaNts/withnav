@@ -173,18 +173,9 @@ mod tests {
         // One worktree beside the checkout, one nested under it.
         let beside = root.join("beside");
         let nested = main.join("nested");
-        for (path, branch) in [(&beside, "b"), (&nested, "n")] {
-            git(
-                &main,
-                &[
-                    "worktree",
-                    "add",
-                    "--quiet",
-                    "-b",
-                    branch,
-                    path.to_str().unwrap(),
-                ],
-            );
+        // Git for Windows rejects Rust's verbatim absolute path as a worktree destination.
+        for (path, branch) in [("../beside", "b"), ("nested", "n")] {
+            git(&main, &["worktree", "add", "--quiet", "-b", branch, path]);
         }
         std::fs::create_dir_all(main.join("src")).unwrap();
 

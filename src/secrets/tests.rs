@@ -891,12 +891,14 @@ fn an_expiry_whose_rewrite_fails_still_applies_in_memory() {
 fn invalid_saved_entries_are_dropped_from_memory_and_from_the_file() {
     let data = tempfile::tempdir().unwrap();
     let ws = workspace();
+    // Saved entries use the same canonical workspace identity as SecretStore::put.
+    let canonical_ws = canonical(ws.path());
     let path = data.path().join("credentials").join("secrets.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let ttl = serde_json::to_value(SecretTtl::Day).unwrap();
     let entry = |name: &str, value: &str, created_at: i64, expires_at: i64| {
         serde_json::json!({
-            "name": name, "value": value, "workspace": ws.path(), "ttl": ttl,
+            "name": name, "value": value, "workspace": canonical_ws, "ttl": ttl,
             "created_at": created_at, "expires_at": expires_at, "use_count": 0,
         })
     };

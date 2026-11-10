@@ -54,6 +54,9 @@ Same protocol as `withnav-testing`. `<run>` is the run folder.
   shortcut twice on a highlighted agent, then twice on a highlighted model. Use the advertised
   group-folding shortcut twice in the model picker. PASS when each action toggles once per press,
   focus stays in the picker, and no VS Code search, editor folding, or other host action runs.
+  The corrected build advertises Ctrl+Alt+F for favourites and Ctrl+Alt+A for model groups.
+  Check that plain Ctrl+F and Alt+A no longer toggle picker controls, and that AltGr typing is
+  not captured. On macOS record whether VoiceOver uses Control+Option before trying those keys.
 - **E7 Tabs.** With two conversation tabs open, the Captain closes the one that is not this test,
   then resizes the window. PASS when this composer resizes and no error appears. Deleting a
   conversation is not tested: a refused delete cannot be forced from here, and a real delete would
@@ -75,6 +78,11 @@ Same protocol as `withnav-testing`. `<run>` is the run folder.
   the conversation, and the filters agree with its observed state. Close the list without deleting.
 - **E14 Font size.** The Captain records `withnav.chat.fontSize`, changes it to another valid
   value, then restores it. PASS when the chat text updates both times without reloading.
+- **E15 Image chooser.** The Captain uses **Attach images**, selects `img1.png` and `empty.png`,
+  then types in the composer. PASS when only `img1.png` is pending and the refusal still names
+  `empty.png` after typing and sending. They dismiss that refusal explicitly. Open the chooser
+  again and cancel: PASS when the draft is unchanged and Send unlocks. The paperclip is editor
+  context, not this chooser; verify it still offers editor context separately.
 - **E11 Reload.** The Captain runs `Developer: Reload Window` and reopens this conversation. PASS
   when the thumbnails of I1 and C1 show again. Write the report before this check and append its
   row when the Captain is back.

@@ -359,24 +359,53 @@ async fn recording_listener() -> (u16, Arc<Mutex<Vec<String>>>) {
 
 /// The panel's side of the bridge, reduced to what the probe needs: answer `ui/initialize`,
 /// and send the app's report to `collector`, since a headless run cannot be read back reliably
-/// from the page.
+/// from the page. Each step also reaches `collector` as `/stage/<name>`, so a run that never
+/// reports says how far it got. The frame is created only once the bridge listens, so its
+/// `ui/initialize` cannot arrive before anyone answers it.
 fn host_page(frame_url: &str, collector: u16) -> String {
     format!(
         r#"<!doctype html><body>
-<iframe id="f" sandbox="allow-scripts allow-forms" src="{frame_url}"></iframe>
 <script>
-const frame = document.getElementById("f");
+const collector = "http://127.0.0.1:{collector}";
+const stage = (name) => fetch(collector + "/stage/" + name, {{mode: "no-cors"}}).catch(() => {{}});
+stage("host");
+const frame = document.createElement("iframe");
+frame.setAttribute("sandbox", "allow-scripts allow-forms");
+frame.addEventListener("load", () => stage("frame-load"));
 window.addEventListener("message", (event) => {{
   if (event.source !== frame.contentWindow) return;
   const data = event.data;
   if (data.method === "ui/initialize") {{
+    stage("initialize");
     frame.contentWindow.postMessage({{jsonrpc: "2.0", id: data.id, result: {{protocolVersion: "2025-11-25"}}}}, "*");
   }} else if (data.method === "probe/result") {{
-    fetch("http://127.0.0.1:{collector}/report?" + encodeURIComponent(JSON.stringify(data.params)), {{mode: "no-cors"}});
+    fetch(collector + "/report?" + encodeURIComponent(JSON.stringify(data.params)), {{mode: "no-cors"}});
   }}
 }});
+frame.src = "{frame_url}";
+document.body.appendChild(frame);
 </script></body>"#
     )
+}
+
+/// The last lines of the browser's log, each one bounded, with the document token and the
+/// bearer token replaced: a failure message must not hand either to whoever reads the CI log.
+fn log_tail(path: &Path, secrets: &[&str]) -> String {
+    let text = std::fs::read(path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_else(|error| format!("<no browser log: {error}>"));
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(40)..]
+        .iter()
+        .map(|line| {
+            let mut line = (*line).to_string();
+            for secret in secrets {
+                line = line.replace(secret, "<redacted>");
+            }
+            line.chars().take(400).collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -401,6 +430,8 @@ async fn a_browser_runs_the_app_in_a_sandbox_that_reaches_nothing_it_did_not_dec
     let profile = tempfile::tempdir().unwrap();
     let host_file = profile.path().join("host.html");
     std::fs::write(&host_file, host_page(&frame_url, collector_port)).unwrap();
+    let log_path = profile.path().join("browser.log");
+    let log = std::fs::File::create(&log_path).unwrap();
     let mut browser = tokio::process::Command::new(&browser)
         .args([
             "--headless",
@@ -408,22 +439,78 @@ async fn a_browser_runs_the_app_in_a_sandbox_that_reaches_nothing_it_did_not_dec
             "--disable-gpu",
             "--no-first-run",
             "--no-proxy-server",
+            "--enable-logging=stderr",
         ])
         .arg(format!("--user-data-dir={}", profile.path().display()))
         .arg(format!("file://{}", host_file.display()))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
         .kill_on_drop(true)
         .spawn()
         .unwrap();
-    wait_for("the app's report", || {
+    let has_report = || {
         reports
             .lock()
             .unwrap()
             .iter()
             .any(|t| t.starts_with("/report?"))
-    })
-    .await;
+    };
+    // Two bounds, so a slow browser and a stuck app stay apart. A cold Chromium on the hosted
+    // Linux runner first ran the host page 11.7 s after it was spawned (2026-11-10), and printed
+    // nothing for 16.5 s in a run that then missed a single 20 s bound; the app itself went from
+    // the host page to its report in 0.2 s. Startup gets 40 s, which keeps the frame's load
+    // inside the 60 s a minted document waits; once the host page runs, the app keeps the 20 s
+    // it always had.
+    let started = tokio::time::Instant::now();
+    let startup_deadline = started + std::time::Duration::from_secs(40);
+    let app_bound = std::time::Duration::from_secs(20);
+    let mut host_ran: Option<tokio::time::Instant> = None;
+    // When each step reached the collector, in milliseconds after the browser was started.
+    let mut timeline: Vec<String> = Vec::new();
+    let record = |timeline: &mut Vec<String>| {
+        let seen = reports.lock().unwrap();
+        for target in &seen[timeline.len()..] {
+            let step = target.split('?').next().unwrap_or("");
+            timeline.push(format!("{} ms {step}", started.elapsed().as_millis()));
+        }
+    };
+    while !has_report() {
+        record(&mut timeline);
+        if host_ran.is_none() && timeline.iter().any(|step| step.ends_with(" /stage/host")) {
+            host_ran = Some(tokio::time::Instant::now());
+        }
+        let deadline = host_ran.map_or(startup_deadline, |at| at + app_bound);
+        let exited = browser.try_wait().unwrap();
+        if exited.is_none() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            continue;
+        }
+        let failure = match (exited, host_ran) {
+            (Some(status), _) => format!("the browser exited before the app's report ({status})"),
+            (None, None) => "timed out waiting for the browser to run the host page".to_string(),
+            (None, Some(_)) => "timed out waiting for the app's report".to_string(),
+        };
+        let _ = browser.kill().await;
+        // The document is single use and expires: a 404 now means taken or expired.
+        let document = client
+            .get(format!("http://{addr}{path}"))
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .await
+            .map(|response| match response.status().as_u16() {
+                404 => "already taken or expired".to_string(),
+                200 => "never taken".to_string(),
+                other => format!("status {other}"),
+            })
+            .unwrap_or_else(|error| format!("unknown: {}", error.without_url()));
+        record(&mut timeline);
+        let token = path.trim_start_matches("/mcp-app/");
+        panic!(
+            "{failure} after {} ms\nstages reached: {timeline:?}\napp document: {document}\nbrowser log:\n{}",
+            started.elapsed().as_millis(),
+            log_tail(&log_path, &[token, TOKEN])
+        );
+    }
     let _ = browser.kill().await;
     let target = reports
         .lock()

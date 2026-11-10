@@ -454,8 +454,19 @@ async fn a_browser_runs_the_app_in_a_sandbox_that_reaches_nothing_it_did_not_dec
             .iter()
             .any(|t| t.starts_with("/report?"))
     };
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let started = tokio::time::Instant::now();
+    let deadline = started + std::time::Duration::from_secs(20);
+    // When each step reached the collector, in milliseconds after the browser was started.
+    let mut timeline: Vec<String> = Vec::new();
+    let record = |timeline: &mut Vec<String>| {
+        let seen = reports.lock().unwrap();
+        for target in &seen[timeline.len()..] {
+            let step = target.split('?').next().unwrap_or("");
+            timeline.push(format!("{} ms {step}", started.elapsed().as_millis()));
+        }
+    };
     while !has_report() {
+        record(&mut timeline);
         let exited = browser.try_wait().unwrap();
         if exited.is_none() && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -477,10 +488,11 @@ async fn a_browser_runs_the_app_in_a_sandbox_that_reaches_nothing_it_did_not_dec
                 other => format!("status {other}"),
             })
             .unwrap_or_else(|error| format!("unknown: {error}"));
-        let stages: Vec<String> = reports.lock().unwrap().clone();
+        record(&mut timeline);
         let token = path.trim_start_matches("/mcp-app/");
         panic!(
-            "{failure}\nstages reached: {stages:?}\napp document: {document}\nbrowser log:\n{}",
+            "{failure} after {} ms\nstages reached: {timeline:?}\napp document: {document}\nbrowser log:\n{}",
+            started.elapsed().as_millis(),
             log_tail(&log_path, &[token, TOKEN])
         );
     }

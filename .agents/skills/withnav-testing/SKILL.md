@@ -60,7 +60,8 @@ are SKIP) or a rule of the Captain's denies it (record the denial and SKIP).
 
 - **P1** Before acting, ask the Captain to **Reject** the coming question with the message
   `rejected for the test: answer BANANA`. Then `write` `KEY=placeholder` to `<run>/.env`. PASS when
-  the rejection reaches you with that message verbatim.
+  the rejection reaches you with the message the Captain typed (the relay is exact; a typo of theirs
+  is not a FAIL — quote what you received).
 - **P2** Ask the Captain to accept once (**Once** or **Allow**, depending on the client), then
   repeat the call. PASS when it runs. Ask whether **Always** was offered on either question:
   FAIL if it was.
@@ -141,6 +142,9 @@ If the child ends or batches before a park, record A as SKIP — invalid run.
   Captain sees it (client skill says how), or you get a note naming a limit and nothing is shown.
 - **M2** If a tool offers an app (**Open App**; browser and VS Code), the Captain opens it and uses
   one control that calls the server. PASS when it works.
+- **M3** (SKIP when no server offers prompts) The Captain runs `/<server>:<prompt>`, with its
+  arguments if any. PASS when its messages arrive as your message inside a block marked as the
+  server's untrusted text.
 
 ## Report
 

@@ -10,6 +10,10 @@ what to type. `<run>` is the run folder.
 
 ## Hooks in the shared scenarios
 
+- **Actions in the client.** For every check where the Captain acts inside the TUI (C, S4, S5,
+  T1–T4, T6–T9), state the action in plain text and end your turn; the Captain replies with the
+  observation in their own message. Never hold an `ask` question while the Captain has an action to
+  do: a pending question owns the keyboard and they cannot type in the client.
 - **V1**: `nav tui` is the `nav` binary, so `nav --version` is the client's version.
 - **P**: questions are inline: `o` Once, `a` Always, `r` Reject (then a message).
 - **I1 / M1**: a stored image shows as a numbered line; `/image <n>` opens it in the system viewer.
@@ -24,7 +28,8 @@ what to type. `<run>` is the run folder.
 ## Client checks
 
 - **T1 Refused at attach.** `/attach <run>/big.png`, then `/attach <run>/empty.png`. PASS when each
-  is refused with its reason (too large; empty) and neither is listed.
+  is refused with its reason and neither is listed. As of 0.8.2 the reasons are
+  `<file> is over the 3.9 MB limit; downscale the image first` and `<file> is empty`.
 - **T2 Refused at send.** `/attach` only checks size and emptiness; the server judges the bytes
   when the message is sent. `/attach <run>/truncated.png` and send "T2". PASS when the send reports
   the image refused (corrupt or truncated) and you receive no image. `/attach clear`, then the same
@@ -42,3 +47,6 @@ what to type. `<run>` is the run folder.
   conversation, then sends "resumed". PASS when the images of the conversation are listed with their
   numbers again and `/image 1` opens the first. Write the report before this check, and append T8's
   row when the Captain is back.
+- **T9 Drop.** The Captain drags `<run>/ok.png` from their file manager onto the terminal window,
+  then sends "dropped". PASS when the image is attached (a chip or a numbered line) and you receive
+  it.

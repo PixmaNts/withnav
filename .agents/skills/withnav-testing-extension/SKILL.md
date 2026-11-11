@@ -55,6 +55,10 @@ Same protocol as `withnav-testing`. `<run>` is the run folder.
   group-folding shortcut twice in the model picker. PASS when each action toggles once per press,
   focus stays in the picker, and no VS Code search, editor folding, or other host action runs.
   The corrected build advertises Ctrl+Alt+F for favourites and Ctrl+Alt+A for model groups.
+  Ask the Captain to read the displayed shortcut; quote their answer and the keys they actually
+  pressed in the report. Do not reuse shortcut names from an older run or infer them from the
+  expected build. If the displayed key and the report's key disagree, resolve that discrepancy
+  with the Captain before recording a verdict.
   Check that plain Ctrl+F and Alt+A no longer toggle picker controls, and that AltGr typing is
   not captured. On macOS record whether VoiceOver uses Control+Option before trying those keys.
 - **E7 Tabs.** With two conversation tabs open, the Captain closes the one that is not this test,

@@ -27,10 +27,11 @@ nav lsp   (one process, two channels: ADR 0006)
    ├─ agent/       the coding-agent loop (the cognition runs on it)
    ├─ tools/       nine registry tools: read, write, edit, grep, glob, fetch, bash, ask, request_secret; each session adds `skill`
    ├─ secrets/     the Captain's secrets: store, bash environment, redaction
-   ├─ mcp/         service-owned stdio clients; ready tools frozen into each session registry
+   ├─ mcp/         service-owned stdio and HTTP clients; root tools refreshed between turns, child tools frozen
    └─ provider/    model access, re-exported from withnav-provider (config, auth, one HTTP client, chat SSE, FIM, System One) plus the assignments and layers that read `config.json`
 
-nav tui   (the terminal client; an HTTP + SSE client of a session server, embedded or `--url`)
+nav tui   (the terminal client; an HTTP + SSE client of a session server: the editor's `nav lsp` one
+           for the same workspace when published, else embedded, or `--url`)
    └─ withnav-tui → withnav-client (HTTP + SSE) → withnav-client-api (wire contract)
                  └→ withnav-client-state (events → conversation state)
 ```
@@ -50,7 +51,7 @@ server (`cargo test -p withnav-tui` does not compile `withnav`); the model acces
 | Crate | Owns | Depends on (normal dependencies) |
 | --- | --- | --- |
 | `withnav-client-api` | the wire contract: the event envelope and every payload (`event.rs`), the HTTP request and response bodies (`protocol.rs`), the settings bodies (`settings.rs`), and the value types they refer to (`provider.rs`, `tools.rs`, `permissions.rs`, `command.rs`). Data only. | `serde`, `serde_json`, `ulid`, `time`, `thiserror`; no tokio, no reqwest, no ratatui |
-| `withnav-client` | the Rust HTTP client of the session server (`client.rs`) and the SSE subscription with reconnect and `Last-Event-ID` resume (`stream.rs`, which yields its own `StreamEvent`) | `withnav-client-api`, `reqwest`, `tokio`, `sse-stream` |
+| `withnav-client` | the Rust HTTP client of the session server (`client.rs`) and the SSE subscription with reconnect and `Last-Event-ID` resume (`stream.rs`, which yields its own `StreamEvent` and ends the subscription on a frame past `MAX_FRAME_BYTES`, 4 MiB, counted since the last blank line) | `withnav-client-api`, `reqwest`, `tokio`, `sse-stream` |
 | `withnav-client-state` | what a client keeps of one conversation, rebuilt from the events: blocks, activity, the model selection, child agents, pending requests (`apply_envelope`, `SessionState`); no I/O, no terminal | `withnav-client-api`; no tokio, no reqwest, no ratatui |
 | `withnav-tui` | the ratatui client: input and editor, reducer, views, themes, the settings screen, the runtime loop and the effects | `withnav-client`, `withnav-client-state`, `withnav-client-api`, `ratatui`, `crossterm`; never `withnav` |
 | `withnav-provider` | the model access layer: the `models.json` catalogue and its model-list cache (`config.rs`, `catalog.rs`), canonical identities (`model_name.rs`), keys (`auth.rs`, with `auth/windows.rs` for the credential-file DACL), the config and data directories and their `WITHNAV_CONFIG_DIR` / `WITHNAV_DATA_DIR` overrides (`dirs.rs`), one `ModelClient` per endpoint (`client.rs`, `openai.rs`), the chat SSE adapter over `sse-stream` (`sse.rs`: delivers an unterminated last event, fails an event past `MAX_FRAME_BYTES`, 4 MiB) and the chat-completion accumulator (`lib.rs`), the FIM and System One wire clients (`fim.rs`, `systemone.rs`), the provider errors (`error.rs`). The `test-support` feature exposes `test_support` (scripted SSE bodies) to other crates' tests. | `withnav-client-api`, `instinct-flow`, `reqwest`, `sse-stream`, `tokio`, `serde_json`; no `withnav`, no axum, no rusqlite, no ratatui |
@@ -75,7 +76,7 @@ Dependencies point down this list. A module never imports one above it.
 
 | Module | Owns | Does not own |
 | --- | --- | --- |
-| `mcp/` | global stdio MCP servers: configuration under `mcp` in `config.json` (`config.rs`), the shared `McpManager`, bounded discovery and process-group supervision (`connection.rs`), provider-safe `mcp__<server>__<tool>` names and schemas, cancellable bounded calls (`tool.rs`), output redaction (`redaction.rs`), the clients' redacted status snapshot and its change `watch` | permission policy (an MCP tool is decided like any other), session persistence, HTTP transport, publishing to sessions (`session/mcp.rs`), live refresh |
+| `mcp/` | global stdio and Streamable HTTP MCP servers: configuration under `mcp` in `config.json` (`config.rs`), the shared `McpManager`, bounded discovery and tool-list refresh, process-group supervision and the HTTP connection (`connection.rs`), provider-safe `mcp__<server>__<tool>` names and schemas, cancellable bounded calls (`tool.rs`), the `list_resources`/`read_resource` tools of a server that offers resources (`resource.rs`), its prompts as `/<server>:<prompt>` commands: discovery, argument checks, the bounded prompt block (`prompt.rs`), output redaction (`redaction.rs`), the clients' redacted status snapshot and its change `watch` | permission policy (an MCP tool is decided like any other), session persistence, OAuth, publishing to sessions (`session/mcp.rs`), applying an idle session's registry refresh (`bus/runtime/mcp_tools.rs`) |
 | `permission/` | the permission model of ADR 0015, shared by the agent loop and `nav permissions`: the SQLite tables in `withnav.db` (`store.rs`), rules and their matching (`rules.rs`), the decision history (`decisions.rs`), skill and flow validations (`validation.rs`), shell splitting and arity prefixes (`shell.rs`), the fixed floor (`floor.rs`) and the decision order (`decide.rs`: a pure `decide` over a `PermissionFlows` trait, plus `DoomTracker`) | running tools, flows, events |
 | `flows/` | the flow store (built-in, global and workspace definitions, validation-gated loading, reload marker; `store.rs`), the runtime that evaluates a trigger, aggregates the permission verdicts and runs the compiled-in protected check (`runtime.rs`), the built-in flows (`builtin/`), run records, redaction, the decision client to Instinct | the decision order, which lives in `permission/` |
 | `app/` | `nav` command dispatch; `entry.rs` selects stderr-only LSP logging; `lsp.rs` dispatches editor startup and offline replay | language-server wiring and replay reports, which live in `navigator/` |
@@ -86,8 +87,8 @@ Dependencies point down this list. A module never imports one above it.
 | `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the permission store, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission decision of each tool call (`authorize.rs`: the input of `permission::decide`, the session's permission flows, the decision table and the `PermissionRequest`; the rules, floor and shell splitting live in `src/permission/`), the wire types of a question (`permissions.rs`: `PermissionRequest`, `PermissionDecision`, `Scope`), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`vigie`/`lux` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events; `runtime/bypass.rs`: the `Control::Bypass` handler (durable `session.bypass` commit, then the live state, then the eligible pending request) | HTTP, storage |
 | `session/` | the `Service` (registry/router, `service.rs`; `set_bypass` sets a root and then its live children under the root's bypass gate, which child creation also takes, and a resume appends `session.bypass` off before its runtime starts), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), the shared permission store, the session's permission flows and the parent's Captain evidence for a child, primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
-| `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`; `web.rs`: the embedded browser-client files, workspace listing/hide/unhide and optional session-tree deletion, `GET /v1/intent` | session state, the model layers |
-| `workspace/` | what is known of a workspace directory regardless of any session: `git.rs` reads its branch and changed files (`git status -z`, bounded by a deadline, `None` outside a repository); used by the terminal client's header and panel (through `TuiHost`) and by `GET /v1/workspaces` | sessions, HTTP |
+| `server/` | HTTP routes and SSE with `Last-Event-ID` resume; `AppState` wraps the `Service`; `web.rs`: the embedded browser-client files, workspace listing/hide/unhide and optional session-tree deletion, `GET /v1/intent`; `mcp_app.rs`: MCP app documents served once under their own CSP (below) | session state, the model layers |
+| `workspace/` | what is known of a workspace directory regardless of any session: `git.rs` reads its branch and changed files (`git status -z`, bounded by a deadline, `None` outside a repository), and `worktrees.rs` lists the other git worktrees of its repository (`git worktree list --porcelain -z`, empty when git or the repository is missing); used by the terminal client's header and panel (through `TuiHost`) and by `GET /v1/workspaces` | sessions, HTTP |
 | `navigator/` | everything the Captain perceives as the navigator, below | session internals |
 
 ### Inside `navigator/`
@@ -199,6 +200,12 @@ bash are checked too, best effort: certain writes (redirections, output options,
 SQLite `.save`) are `Floor::Protected`; any other command naming a protected file is
 `Floor::NamesProtected` and goes through the same check, which also passes a pure read; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
 from the parent's execution snapshot, and its no-follow descriptor/inode validation is repeated.
+
+The other git worktrees of the workspace's repository are part of the project: `authorize` reads
+them (`workspace/worktrees.rs`) on a call whose target falls outside the project or in the temp
+directory, never at session start and never cached, and passes them as `FloorContext::worktree_roots`.
+Reads, writes, `location` and `inside_project` then treat them as the workspace; the floor, written
+rules and yolo apply as ever, and a link leaving a worktree resolves outside it.
 
 An allowed write or edit is bound to the canonical file the decision was made for, without
 expanding writable roots. Sessions install private scratch storage from `permissions.scratch_dirs`
@@ -428,6 +435,19 @@ Empty overrides are also unset. Relative overrides resolve to absolute paths
 against the nav process working directory, not a tool's workspace; storage and
 the protected floor therefore refer to the same files.
 
+**MCP app documents.** A client that opens an MCP App asks `POST /v1/mcp/{server}/app` (bearer token
+required; the server refuses it when it has none) with the app's `ui://` resource or its inline HTML.
+`server/mcp_app.rs` parks the document (at most 512 KiB, redacted) under an unguessable token for 60
+seconds, at most 32 at a time, and answers `/mcp-app/{token}`. `GET /mcp-app/{token}` is the one route
+besides the static files and health that needs no bearer (an iframe cannot send one): it checks the
+method and a loopback `Host`, then removes the document, so it loads once. It carries its own
+Content-Security-Policy, built from `_meta.ui.csp` (`connectDomains`, `resourceDomains`,
+`frameDomains`, `baseUriDomains`, each entry validated as scheme, host and port, never pasted
+through): inline scripts and styles run, everything that reaches the network is `'none'` unless
+declared, and a `sandbox` directive makes it an opaque origin even outside a client's own iframe.
+`vscode-withnav/src/mcpAppPanel.ts` embeds that URL with `sandbox="allow-scripts allow-forms"` and
+allows only its origin as `frame-src`; the bridge stays `postMessage` between frame and panel.
+
 MCP declarations live only in the global `config.json` under `mcp`. Connections, restart
 counters, tool inventories and bounded stderr tails are memory-only. Environment references
 are resolved only for child launch, never saved to configuration, history or events; declared
@@ -436,8 +456,12 @@ or stderr eviction (including chunk boundaries). Application subscribers exclude
 even under verbose user filters because dependency diagnostics can include raw wire payloads.
 Wire-name collisions are resolved across the ready inventory in server-id/original-name order,
 keeping the first and reporting skipped definitions. No workspace MCP
-configuration is loaded. Config changes require a service restart; new sessions snapshot only
-currently ready tools, and existing registries stay frozen, including across connection restarts.
+configuration is loaded. HTTP header values are resolved the same way, only to build the
+connection's headers (marked sensitive), and each value is redacted like an `env` value. Config changes
+require a service restart. New root sessions start with currently ready tools, then refresh their
+registries between turns when discovery, a tool-list notification or a connection change alters
+the inventory. A held question or permission request defers the refresh. Children keep the inventory
+inherited at creation; a new child takes its parent's current inventory.
 
 Clients see the servers' status, never their configuration. `McpManager::status_snapshot` builds
 one `{incarnation, revision, servers}` value: redacted, with bounded errors, skipped tools and
@@ -446,7 +470,7 @@ channel; `session/mcp.rs` (the service's bridge task) wakes on it, builds one sn
 publishes it as the live-only `mcp.status` event to every live session. Changes close together are
 sent once, as the latest snapshot. The event is not replayed, so a client reads `GET /v1/mcp` when
 its stream connects and keeps the higher revision of one incarnation, whichever arrives first. The
-status is the service's: a conversation keeps the tools it was created with.
+status is the service's; the same change asks root runtimes to reconcile their tools when idle.
 
 WithNav writes the new paths below. During 0.7, absent `.withnav/` directories
 fall back to `.navai/` then `.navigator/`; old config/data paths and `navai.db` /
@@ -571,7 +595,8 @@ as before; no supervision state is restored. The event catalog (`bus/event.rs`,
 | `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `app/tui.rs`, `withnav-provider`'s `catalog.rs` |
 | `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of every permission decision (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
 | `~/.config/withnav/flows/`, `<workspace>/.withnav/flows/` | global and workspace flow definitions; they load only once validated at their current content | the Captain, the Studio |
-| `~/.config/withnav/config.json` key `mcp` | stdio MCP server declarations | the Captain |
+| `~/.config/withnav/config.json` key `mcp` | stdio and HTTP MCP server declarations | the Captain |
+| `$XDG_RUNTIME_DIR/withnav-servers/<key>-<instance>.json` | the port and bearer token of a running `nav lsp` server, mode 0600 (directory 0700), so `nav tui` can join it; removed when the LSP exits | `server/discovery.rs` (`nav lsp`; `nav tui` removes stale ones) |
 | `~/.local/share/withnav/credentials/secrets.json` | workspace-scoped secrets with a timed availability, in plain text, mode 0600 (directory 0700), each with its expiry; removed when empty | `secrets/` (`Service::submit_secret`, expiry, revocation) |
 
 Data and config paths come from `paths.rs` and `withnav-provider`'s `dirs.rs` (`config_dir`, `data_dir`, with `auth::default_config_dir`). On every start `paths::migrate_legacy`
@@ -672,9 +697,20 @@ the later 0.6 scope, not this contract.
 
 - MCP configuration and environment isolation belong in `mcp/config.rs`; transport supervision
   and bounded paginated discovery in `mcp/connection.rs`; naming, schema hygiene and result
-  conversion in `mcp/tool.rs`. The session service owns one manager and `session/actor.rs`
+  conversion in `mcp/tool.rs`; a server's resources, as the two added tools `list_resources` and
+  `read_resource` (`McpTool` with a `Kind` other than `Call`, after the server's own tools so a
+  server tool keeps its name), in `mcp/resource.rs`; a server's prompts in `mcp/prompt.rs`, run as
+  Captain commands by `session/prompt_command.rs` (listed by `GET /v1/commands` after the
+  built-ins; the result is the Captain's message with an `<mcp_prompt>` block that
+  `agent/captain_messages.rs` never counts as the Captain's words). The session service owns one manager and `session/actor.rs`
   installs its ready snapshot before role/tool filtering. Shutdown joins supervision tasks and
   kills child process groups. MCP adds no event kind in the stdio delivery.
+  A server's `tools/list_changed` makes `mcp/connection.rs` reread its list; `session/mcp.rs`
+  then asks every root session's runtime to refresh (`bus/runtime/mcp_tools.rs`), which reconciles
+  the session's `InstalledTools` (`mcp/mod.rs`: an already held name wins over a later claimant)
+  with the manager's current inventory only when no turn runs and nothing is held, and publishes a
+  `command.result` named `mcp_tools` listing what was added, removed or refused. Children are
+  created from their parent's current tools and never refreshed.
 
 - Workspace visibility belongs in `session/store.rs` (`hidden_workspaces`, canonical paths, cleared on session creation); its bearer-protected HTTP actions and canonical workspace matching live in `server/web.rs`. Workspace deletion uses `Service::delete`, never direct SQL session deletion.
 
@@ -782,7 +818,12 @@ the later 0.6 scope, not this contract.
   producer (wire, endpoint, model), and `opaque::retain_for` is the only replay rule, applied in
   `compaction::project_reasoning` and again in `ModelClient::chat_turn`. A new wire marks its
   kinds in `opaque::sendable` and writes them in its own serializer. Opaque data never goes into
-  an event, a summary or a client type.
+  an event, a summary or a client type. Chat Completions captures OpenRouter's `reasoning_details`
+  (`reasoning_details.rs`): one item per assembled entry (grouped by `index`, `text`/`summary`
+  fragments concatenated, a later chunk at the same index adds its `signature`), kind
+  `reasoning_details`, written back as `"reasoning_details": [...]` on the assistant message for the
+  same producer. Entries in `format: openai-responses-v1` are captured under kind
+  `reasoning_details.openai-responses-v1`, which no wire sends until replaying them is verified.
 - A new model call goes through `ModelClient`. A new navigator layer seam goes in `ports.rs`, with
   its adapter in `models.rs` and its fake in `tests/common/navigator.rs`.
 - `nav run` exit status mapping lives in `app.rs`: 0 complete, 1 error, 2 yielded, 3 permission
@@ -799,6 +840,11 @@ the later 0.6 scope, not this contract.
   `mcp__<server>__<tool>`, so permissions, events and the context budget need no MCP-specific code.
 - Historical `pipeline.toml` parsing belongs only in `src/flows/migrate/legacy.rs`; it has no runtime engine.
 - The embedded server both clients start (`EmbeddedServer`, the bearer token, the health check) is in `app/embedded.rs`; do not copy it into a new subcommand.
+- Finding a running server for a workspace is `server/discovery.rs`: `nav lsp` publishes its
+  server there (`publish_for`, one owner-only file per process under
+  `$XDG_RUNTIME_DIR/withnav-servers/`, removed on exit) and `nav tui` joins it (`find`: pid, health
+  and an authenticated request decide live, proven-stale files are removed). Another client that
+  should join an editor's server uses the same two functions, never its own file.
 - A workspace's git state is read by `workspace/git.rs`, for any caller; the server must not import `withnav-tui`.
 - `crates/withnav-tui` is a server client: HTTP + SSE only, through `withnav-client`. It shares the wire types of `withnav-client-api` and never depends on the root package: anything it needs from the machine is a method of `TuiHost`. A type that must be on the wire goes in `withnav-client-api`; per-conversation state derived from events goes in `withnav-client-state`.
 - Tests use `tests/common/`: `server.rs` (configs, servers, sessions, messages), `sse.rs` (scripted

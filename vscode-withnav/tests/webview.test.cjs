@@ -288,16 +288,58 @@ test('model picker search keeps levels, collapse hides children and group keys n
   assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))),{type:'selectModel',name:'omniroute/kimi/k2',generation:1});
   dom.window.close();
 });
-test('model picker alt+a folds every group, then unfolds them all',()=>{
-  const {dom,d,rows}=modelPicker(hierarchy);
+test('model picker ctrl+alt+a folds every group, then unfolds them all; alt+a alone does nothing',()=>{
+  const {dom,d,posts,rows}=modelPicker(hierarchy);
   const search=d.querySelector('.command-palette .picker-search');search.focus();
-  const altA=()=>search.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'a',code:'KeyA',altKey:true,bubbles:true,cancelable:true}));
-  const all=rows();
-  altA();
+  const all=rows();const before=posts.length;
+  // Alt+A is a VS Code host shortcut: the picker leaves it alone.
+  const plain=pickerKey(dom,search,'a',{altKey:true});
+  assert.equal(plain.defaultPrevented,false);assert.equal(plain.propagated,true);assert.deepEqual(rows(),all);
+  // Alt+F was reported as a host shortcut too; the picker never claimed it.
+  const altF=pickerKey(dom,search,'f',{altKey:true});
+  assert.equal(altF.defaultPrevented,false);assert.equal(altF.propagated,true);assert.equal(posts.length,before);
+  const e=pickerKey(dom,search,'a',{ctrlKey:true,altKey:true});
+  assert.equal(e.defaultPrevented,true);assert.equal(e.propagated,false,'the fold shortcut does not bubble out of the search box');
   assert.deepEqual(rows().map(r=>r.text),['direct','omniroute']);
-  assert.match(d.querySelector('.command-palette .picker-count').textContent,/Alt\+A/);
-  altA();
-  assert.deepEqual(rows(),all);
+  assert.match(d.querySelector('.command-palette .picker-count').textContent,/Ctrl\+Alt\+A folds or unfolds all/);
+  assert.doesNotMatch(d.querySelector('.command-palette .picker-count').textContent,/(^|[^+])Alt\+A/);
+  assert.equal(d.activeElement,search,'focus stays in the search box');
+  pickerKey(dom,search,'a',{ctrlKey:true,altKey:true});
+  assert.deepEqual(rows(),all);assert.equal(posts.length,before,'folding never posts');
+  dom.window.close();
+});
+test('model picker: AltGr, Shift and Meta variants of the shortcuts are typing or host keys, not picker actions',()=>{
+  const {dom,d,posts,rows}=modelPicker(hierarchy);
+  const search=d.querySelector('.command-palette .picker-search');search.focus();
+  const all=rows();const before=posts.length;
+  // Windows reports AltGr as Ctrl+Alt: AltGr+A types a letter on Polish and other layouts.
+  for(const extra of [{key:'ą',code:'KeyA',modifierAltGraph:true},{key:'a',code:'KeyA',modifierAltGraph:true},{shiftKey:true},{metaKey:true}]){
+    for(const letter of ['a','f']){
+      const e=pickerKey(dom,search,letter,{ctrlKey:true,altKey:true,...extra});
+      assert.equal(e.defaultPrevented,false,JSON.stringify(extra));assert.equal(e.propagated,true,JSON.stringify(extra));
+    }
+  }
+  // Dead keys, IME processing and composition carry no letter, whatever physical key was pressed.
+  for(const extra of [{key:'Dead'},{key:'Process'},{key:'Unidentified'},{isComposing:true}]){
+    const e=pickerKey(dom,search,'a',{ctrlKey:true,altKey:true,...extra});
+    assert.equal(e.defaultPrevented,false,JSON.stringify(extra));assert.equal(e.propagated,true);
+  }
+  // A letter key wins over its physical position: on AZERTY the A key sits where QWERTY has Q.
+  assert.equal(pickerKey(dom,search,'q',{code:'KeyA',ctrlKey:true,altKey:true}).defaultPrevented,false);
+  assert.deepEqual(rows(),all);assert.equal(posts.length,before);
+  assert.equal(pickerKey(dom,search,'a',{code:'KeyQ',ctrlKey:true,altKey:true}).defaultPrevented,true);
+  assert.deepEqual(rows().map(r=>r.text),['direct','omniroute']);
+  dom.window.close();
+});
+test('model picker: Ctrl+Option on macOS yields a symbol key; the physical key still matches',()=>{
+  const {dom,d,posts,rows,key}=modelPicker(hierarchy);
+  const search=d.querySelector('.command-palette .picker-search');search.focus();
+  key('ArrowDown');
+  const before=posts.length;
+  assert.equal(pickerKey(dom,search,'f',{key:'ƒ',ctrlKey:true,altKey:true}).defaultPrevented,true);
+  assert.equal(posts.length,before+1);assert.equal(posts.at(-1).type,'toggleFavorite');
+  pickerKey(dom,search,'a',{key:'å',ctrlKey:true,altKey:true});
+  assert.deepEqual(rows().map(r=>r.text),['direct','omniroute']);
   dom.window.close();
 });
 test('model picker long canonical names stay whole in the title and wrap inside the indented row',()=>{
@@ -308,7 +350,15 @@ test('model picker long canonical names stay whole in the title and wrap inside 
   dom.window.close();
 });
 
-const ctrlF=(dom,target)=>{const e=new dom.window.KeyboardEvent('keydown',{key:'f',code:'KeyF',ctrlKey:true,bubbles:true,cancelable:true});target.dispatchEvent(e);return e;};
+// Dispatches a letter key on `target`; `propagated` tells whether the event reached the document.
+const pickerKey=(dom,target,letter,extra={})=>{
+  const e=new dom.window.KeyboardEvent('keydown',{key:letter,code:`Key${letter.toUpperCase()}`,bubbles:true,cancelable:true,...extra});
+  let propagated=false;const seen=()=>{propagated=true;};
+  dom.window.document.addEventListener('keydown',seen);target.dispatchEvent(e);dom.window.document.removeEventListener('keydown',seen);
+  e.propagated=propagated;return e;
+};
+const ctrlAltF=(dom,target)=>pickerKey(dom,target,'f',{ctrlKey:true,altKey:true});
+const ctrlF=(dom,target)=>pickerKey(dom,target,'f',{ctrlKey:true});
 const optionTitles=d=>[...d.querySelectorAll('.picker-options [role=option]')].map(o=>o.title);
 test('favorites section: first, unfoldable, starred, hidden when empty and filtered by search',()=>{
   const {dom,d,receive,rows,type}=modelPicker(hierarchy);
@@ -333,10 +383,10 @@ test('favorites section: first, unfoldable, starred, hidden when empty and filte
   assert.deepEqual(stars.map(s=>s.getAttribute('aria-pressed')),titles.map(t=>String(['direct/solo','omniroute/kimi/k2'].includes(t))));
   assert.equal(stars[0].getAttribute('aria-label'),'Remove from favorites');
   assert.equal(stars.find(s=>s.getAttribute('aria-pressed')==='false').getAttribute('aria-label'),'Add to favorites');
-  assert.match(d.querySelector('.command-palette .picker-count').textContent,/Ctrl\+F favorite/);
-  // Alt+A folds every group; the section stays.
+  assert.match(d.querySelector('.command-palette .picker-count').textContent,/Ctrl\+Alt\+F favorite/);
+  // Ctrl+Alt+A folds every group; the section stays.
   const search=d.querySelector('.command-palette .picker-search');search.focus();
-  search.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'a',code:'KeyA',altKey:true,bubbles:true,cancelable:true}));
+  pickerKey(dom,search,'a',{ctrlKey:true,altKey:true});
   assert.deepEqual(optionTitles(d),['direct/solo','omniroute/kimi/k2']);
   assert.deepEqual([...d.querySelectorAll('.picker-options .picker-group')].map(g=>g.getAttribute('aria-expanded')),['false','false']);
   // Search shows only the matching favorites; none matching hides the heading.
@@ -347,13 +397,17 @@ test('favorites section: first, unfoldable, starred, hidden when empty and filte
   assert(!d.querySelector('.picker-section'));assert.deepEqual(optionTitles(d),['omniroute/cc/claude-opus']);
   dom.window.close();
 });
-test('favorites: ctrl+f posts toggleFavorite for the highlighted model, keeps the highlight and heals when the last one goes',()=>{
+test('favorites: ctrl+alt+f posts toggleFavorite for the highlighted model, keeps the highlight and heals when the last one goes',()=>{
   const {dom,d,posts,receive,key}=modelPicker(hierarchy);
   const search=d.querySelector('.command-palette .picker-search');search.focus();
   const active=()=>d.getElementById(search.getAttribute('aria-activedescendant')).title;
   key('ArrowDown');assert.equal(active(),'omniroute/cc/claude-opus');
-  const before=posts.length;const e=ctrlF(dom,search);assert.equal(e.defaultPrevented,true);
+  // Plain Ctrl+F is VS Code's find: the picker neither acts on it nor blocks it.
+  const before=posts.length;
+  const plain=ctrlF(dom,search);assert.equal(plain.defaultPrevented,false);assert.equal(plain.propagated,true);assert.equal(posts.length,before);
+  const e=ctrlAltF(dom,search);assert.equal(e.defaultPrevented,true);assert.equal(e.propagated,false);
   assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))),{type:'toggleFavorite',name:'omniroute/cc/claude-opus',generation:1});assert.equal(posts.length,before+1);
+  assert.equal(d.activeElement,search,'focus stays in the search box');
   assert.equal(d.querySelector('.picker-section'),null,'nothing changes until the host answers');
   receive({type:'favorites',items:['omniroute/cc/claude-opus']});
   assert(d.querySelector('.picker-section'));assert.equal(active(),'omniroute/cc/claude-opus','highlight stays on the same model');
@@ -361,19 +415,19 @@ test('favorites: ctrl+f posts toggleFavorite for the highlighted model, keeps th
   // Toggled from the section row: removing the last favorite hides the section and keeps a valid row.
   key('ArrowUp');key('ArrowUp');
   assert.match(search.getAttribute('aria-activedescendant'),/^command-option-\d+-0$/);assert.equal(active(),'omniroute/cc/claude-opus','the section row');
-  ctrlF(dom,search);assert.equal(posts.at(-1).name,'omniroute/cc/claude-opus');
+  const n=posts.length;ctrlAltF(dom,search);assert.equal(posts.length,n+1,'one toggle per press');assert.equal(posts.at(-1).name,'omniroute/cc/claude-opus');
   receive({type:'favorites',items:[]});
   assert(!d.querySelector('.picker-section'));
   assert.equal(active(),'omniroute/cc/claude-opus');
   assert(d.getElementById(search.getAttribute('aria-activedescendant')));
-  // ctrl+f never posts selectModel and Enter on a favorite row picks the model.
+  // ctrl+alt+f never posts selectModel and Enter on a favorite row picks the model.
   receive({type:'favorites',items:['direct/solo']});
   key('ArrowUp');
   assert.match(search.getAttribute('aria-activedescendant'),/^command-option-\d+-0$/);
   key('Enter');assert.deepEqual(JSON.parse(JSON.stringify(posts.at(-1))),{type:'selectModel',name:'direct/solo',generation:1});
   dom.window.close();
 });
-test('favorites: the star toggles with the mouse without choosing the model and ctrl+f is ignored outside the model picker',()=>{
+test('favorites: the star toggles with the mouse without choosing the model and ctrl+alt+f is ignored outside the model picker',()=>{
   const {dom,d,posts,receive}=modelPicker(hierarchy);
   const star=d.querySelector('.picker-options .favorite-toggle');
   const before=posts.length;star.click();
@@ -382,11 +436,30 @@ test('favorites: the star toggles with the mouse without choosing the model and 
   assert.equal(star.tagName,'BUTTON');assert.equal(star.getAttribute('aria-label'),'Add to favorites');
   receive({type:'favorites',items:['direct/solo']});
   assert.equal(d.querySelector('.picker-options .favorite-toggle').getAttribute('aria-label'),'Remove from favorites');
-  // Another picker kind has no stars and ignores ctrl+f.
+  // Another picker kind has no stars and ignores ctrl+alt+f and ctrl+alt+a.
   receive({type:'commandPicker',kind:'variant',items:[{name:'low',description:''}]});
   assert.equal(d.querySelectorAll('.favorite-toggle').length,0);
   const search=d.querySelector('.command-palette .picker-search');const n=posts.length;
-  const e=ctrlF(dom,search);assert.equal(e.defaultPrevented,false);assert.equal(posts.length,n);
+  const e=ctrlAltF(dom,search);assert.equal(e.defaultPrevented,false);assert.equal(e.propagated,true);assert.equal(posts.length,n);
+  const fold=pickerKey(dom,search,'a',{ctrlKey:true,altKey:true});assert.equal(fold.defaultPrevented,false);assert.equal(fold.propagated,true);assert.equal(posts.length,n);
+  assert.equal(search.hasAttribute('aria-keyshortcuts'),false,'no favorite shortcut announced outside the model picker');
+  assert.equal(search.hasAttribute('aria-describedby'),false);
+  assert.equal(d.querySelector('.command-palette .sr-only').hidden,true,'the model shortcut hint is hidden too');
+  dom.window.close();
+});
+test('favorites: the model search announces the ctrl+alt+f and ctrl+alt+a shortcuts and grouped rows announce their favorite state',()=>{
+  const {dom,d,receive}=modelPicker(hierarchy);
+  const search=d.querySelector('.command-palette .picker-search');
+  assert.equal(search.getAttribute('aria-keyshortcuts'),'Control+Alt+F Control+Alt+A');
+  const hint=d.getElementById(search.getAttribute('aria-describedby'));
+  assert(hint,'the description exists');
+  assert.match(hint.textContent,/Ctrl\+Alt\+F adds or removes the highlighted model from favorites/);
+  assert.match(hint.textContent,/Ctrl\+Alt\+A folds or unfolds all groups/);
+  assert.doesNotMatch(hint.textContent+d.querySelector('.command-palette .picker-count').textContent,/Ctrl\+F/);
+  const label=()=>d.querySelector('.picker-options [role=option][title="omniroute/cc/claude-opus"][aria-label]').getAttribute('aria-label');
+  assert.equal(label(),'omniroute/cc/claude-opus');
+  receive({type:'favorites',items:['omniroute/cc/claude-opus']});
+  assert.equal(label(),'omniroute/cc/claude-opus, favorite');
   dom.window.close();
 });
 test('favorites: the first-50 cut applies to the groups only and option ids stay aligned with rows',()=>{
@@ -416,7 +489,7 @@ test('model rows inside a group show the short name; favorites show the full nam
     ['omniroute/kimi/k2','omniroute/kimi/k2',null],
     ['solo','direct/solo','direct/solo'],
     ['claude-opus','omniroute/cc/claude-opus','omniroute/cc/claude-opus'],
-    ['k2','omniroute/kimi/k2','omniroute/kimi/k2'],
+    ['k2','omniroute/kimi/k2','omniroute/kimi/k2, favorite'],
   ]);
   // Search still matches the canonical name.
   const search=d.querySelector('.command-palette .picker-search');search.value='omniroute/kimi';search.dispatchEvent(new dom.window.Event('input'));
@@ -497,5 +570,274 @@ test('unavailable permission rules reuse the warning control with error detail',
   const badge = d.querySelector('.bypass-toggle');
   assert.match(badge.textContent, /Permission rules unavailable/);
   assert.equal(badge.title, 'withnav.db: open failed');
+  dom.window.close();
+});
+
+/** The composer with a FileReader the test settles by hand, in any order. */
+function imagePage() {
+  const page = keyboardPage();
+  const { dom, d } = page;
+  const readers = [];
+  dom.window.FileReader = class {
+    readAsDataURL(file) { this.file = file; readers.push(this); }
+    load() { this.result = `data:image/png;base64,${this.file.name}`; this.onload(); }
+    // What Chromium's FileReader returns for a 0-byte image/png File (headless Chromium, 2026-11-10).
+    loadEmpty() { this.result = 'data:image/png;base64,'; this.onload(); }
+    fail() { this.onerror(); }
+  };
+  const prompt = d.querySelector('.prompt');
+  // A name is a 1-byte image/png file; `{ name, content, type }` describes any other file.
+  const file = spec => typeof spec === 'string' ? new dom.window.File(['x'], spec, { type: 'image/png' }) : new dom.window.File(spec.content === undefined ? ['x'] : [spec.content], spec.name, { type: spec.type ?? '' });
+  const paste = names => {
+    const event = new dom.window.Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: { files: names.map(file) } });
+    prompt.dispatchEvent(event);
+  };
+  const drop = transfer => {
+    const event = new dom.window.Event('drop', { bubbles: true, cancelable: true });
+    const data = { files: (transfer.files ?? []).map(file), types: [...(transfer.files?.length ? ['Files'] : []), ...Object.keys(transfer.data ?? {})], getData: type => transfer.data?.[type] ?? '' };
+    Object.defineProperty(event, 'dataTransfer', { value: data });
+    d.querySelector('.composer').dispatchEvent(event);
+    return event;
+  };
+  const refusals = () => [...d.querySelectorAll('.image-refusal')].map(item => item.firstChild.textContent);
+  const submit = () => d.querySelector('.composer').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+  const chips = () => [...d.querySelectorAll('.pending-image')].map(chip => chip.firstChild.textContent);
+  const error = () => d.querySelector('.composer .command-error');
+  const sends = () => page.posts.filter(post => post.type === 'send');
+  return { ...page, readers, prompt, paste, drop, submit, chips, error, sends, refusals };
+}
+
+test('an over-limit image selection reads only what fits and names every omitted file', () => {
+  const { dom, readers, paste, chips, refusals } = imagePage();
+  paste(['1.png', '2.png', '3.png', '4.png', '5.png', '6.png', '7.png', '8.png', '9.png', '10.png']);
+  assert.equal(readers.length, 8, 'no read starts for a file that cannot be attached');
+  assert.equal(chips().length, 8);
+  assert.deepEqual(refusals(), ['A message carries at most 8 images; not attached: 9.png, 10.png.']);
+  for (const reader of [...readers].reverse()) reader.load();
+  assert.deepEqual(chips(), ['1.png · 1 KiB', '2.png · 1 KiB', '3.png · 1 KiB', '4.png · 1 KiB', '5.png · 1 KiB', '6.png · 1 KiB', '7.png · 1 KiB', '8.png · 1 KiB'], 'selection order survives out-of-order reads');
+  dom.window.close();
+});
+
+test('a message waits for every image read and leaves with all of them', () => {
+  const { dom, d, readers, prompt, paste, submit, sends, error } = imagePage();
+  prompt.value = 'look';
+  paste(['a.png', 'b.png']);
+  readers[0].load();
+  assert.equal(d.querySelector('.send-btn').disabled, true);
+  submit();
+  assert.equal(sends().length, 0, 'no send while b.png is still reading');
+  assert.equal(error().textContent, 'Wait until the images finish loading.');
+  readers[1].load();
+  assert.equal(d.querySelector('.send-btn').disabled, false);
+  submit();
+  assert.deepEqual(sends().map(post => [...post.images].map(image => image.name)), [['a.png', 'b.png']]);
+  dom.window.close();
+});
+
+test('a refused send keeps its images, and failed or removed reads never block sending', () => {
+  const { dom, d, readers, prompt, paste, submit, chips, sends, receive, refusals } = imagePage();
+  prompt.value = '/compact';
+  paste(['keep.png', 'broken.png', 'gone.png']);
+  readers[0].load();
+  readers[1].fail();
+  assert.deepEqual(refusals(), ['broken.png could not be read.']);
+  d.querySelectorAll('.pending-image-remove')[1].click();
+  readers[2].load();
+  assert.deepEqual(chips(), ['keep.png · 1 KiB'], 'a read that ends after its removal changes nothing');
+  submit();
+  receive({ type: 'sendResult', text: '/compact', accepted: false, submission: sends().at(-1).submission });
+  assert.deepEqual(chips(), ['keep.png · 1 KiB']);
+  prompt.value = 'retry';
+  submit();
+  assert.deepEqual(sends().map(post => [...post.images].map(image => image.name)), [['keep.png'], ['keep.png']]);
+  dom.window.close();
+});
+
+test('an accepted send removes only the images it carried, also on the first message of a conversation', () => {
+  const { dom, readers, prompt, paste, submit, chips, sends, receive } = imagePage();
+  prompt.value = 'first';
+  paste(['sent.png']);
+  readers[0].load();
+  submit();
+  assert.equal(sends().length, 1);
+  paste(['later.png']);
+  // A first message opens its conversation while the send is in flight.
+  receive({ type: 'conversationOpened', title: 'Starting conversation' });
+  receive({ type: 'conversationOpened', id: 'S2', title: 'Conversation' });
+  receive({ type: 'sendResult', text: 'first', accepted: true, submission: sends()[0].submission });
+  assert.deepEqual(chips(), ['later.png · reading…'], 'the image added after submission stays for the next message');
+  readers[1].load();
+  prompt.value = 'second';
+  submit();
+  assert.deepEqual([...sends().at(-1).images].map(image => image.name), ['later.png']);
+  dom.window.close();
+});
+
+test('each send result settles the images of its own submission, whatever the text', () => {
+  const { dom, readers, prompt, paste, submit, chips, sends, receive } = imagePage();
+  const result = (index, accepted) => receive({ type: 'sendResult', text: sends()[index].text, accepted, submission: sends()[index].submission });
+  // A skill send reports `accepted: false` while it is pending, then `accepted: true` once settled.
+  prompt.value = '/skill review go';
+  paste(['skill.png']); readers[0].load(); submit();
+  result(0, false);
+  assert.deepEqual(chips(), ['skill.png · 1 KiB']);
+  result(0, true);
+  assert.deepEqual(chips(), []);
+  // Two image-only sends (same empty text) overlap while the conversation opens; the second is refused.
+  prompt.value = '';
+  paste(['a.png']); readers[1].load(); submit();
+  receive({ type: 'conversationOpened', title: 'Starting conversation' });
+  receive({ type: 'conversationOpened', id: 'S3', title: 'Conversation' });
+  paste(['b.png']); readers[2].load(); submit();
+  result(2, false);
+  result(1, true);
+  assert.deepEqual(chips(), ['b.png · 1 KiB'], 'the refused send keeps the image only it carried');
+  prompt.value = 'retry';
+  submit();
+  result(3, true);
+  assert.deepEqual(chips(), []);
+  assert.deepEqual(sends().map(post => [...post.images].map(image => image.name)), [['skill.png'], ['a.png'], ['a.png', 'b.png'], ['b.png']]);
+  dom.window.close();
+});
+
+// ---- Image admission: every selected file is attached or refused by name --------------------
+
+test('an empty image added alone is refused by name, never read, and the refusal outlasts typing and other sends', () => {
+  const { dom, d, readers, prompt, paste, submit, chips, refusals, sends } = imagePage();
+  paste([{ name: 'empty.png', content: '', type: 'image/png' }]);
+  assert.equal(readers.length, 0, 'a 0-byte file has nothing to read');
+  assert.deepEqual(chips(), []);
+  assert.deepEqual(refusals(), ['empty.png is empty.']);
+  prompt.value = 'hello'; prompt.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  submit();
+  assert.deepEqual(refusals(), ['empty.png is empty.'], 'typing and sending are not a dismissal');
+  assert.equal(sends().at(-1).images, undefined, 'the refused file never reaches the payload');
+  const list = d.querySelector('.image-refusals');
+  assert.equal(list.getAttribute('aria-label'), 'Images not attached');
+  assert.doesNotMatch(list.innerHTML, /base64|data:/, 'a refusal carries no image data');
+  d.querySelector('.image-refusal-dismiss').click();
+  assert.deepEqual(refusals(), []);
+  assert.equal(list.hidden, true);
+  dom.window.close();
+});
+
+test('a valid image with an empty one sends only the valid image and keeps the named refusal visible', () => {
+  const { dom, d, readers, prompt, paste, submit, chips, refusals, sends } = imagePage();
+  paste(['img1.png', { name: 'empty.png', content: '', type: 'image/png' }]);
+  assert.deepEqual(refusals(), ['empty.png is empty.']);
+  readers[0].load();
+  assert.deepEqual(refusals(), ['empty.png is empty.'], 'another read finishing keeps the refusal');
+  prompt.value = 'E2'; prompt.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  submit();
+  assert.deepEqual(sends().map(post => [...post.images].map(image => image.name)), [['img1.png']]);
+  assert.deepEqual(refusals(), ['empty.png is empty.']);
+  assert.equal(d.querySelector('.image-refusal-dismiss').getAttribute('aria-label'), 'Dismiss empty.png');
+  dom.window.close();
+});
+
+test('a file whose read yields no bytes is refused, and a refusal survives the next batch', () => {
+  const { dom, readers, paste, chips, refusals } = imagePage();
+  paste(['shrunk.png']);
+  readers[0].loadEmpty();
+  assert.deepEqual(chips(), []);
+  assert.deepEqual(refusals(), ['shrunk.png could not be read.']);
+  paste(['next.png']);
+  readers[1].load();
+  assert.deepEqual(chips(), ['next.png · 1 KiB']);
+  assert.deepEqual(refusals(), ['shrunk.png could not be read.'], 'a later batch does not replace an earlier refusal');
+  dom.window.close();
+});
+
+test('an unreadable file in a mixed batch stays refused by name after the other reads complete', () => {
+  const { dom, readers, prompt, paste, submit, chips, refusals, sends } = imagePage();
+  paste(['a.png', 'broken.png', 'c.png']);
+  readers[1].fail();
+  readers[2].load();
+  readers[0].load();
+  assert.deepEqual(chips(), ['a.png · 1 KiB', 'c.png · 1 KiB']);
+  assert.deepEqual(refusals(), ['broken.png could not be read.']);
+  prompt.value = 'go'; submit();
+  assert.deepEqual([...sends().at(-1).images].map(image => image.name), ['a.png', 'c.png']);
+  assert.deepEqual(refusals(), ['broken.png could not be read.']);
+  dom.window.close();
+});
+
+test('a non-image file in a pasted or dropped batch is refused by name instead of skipped', () => {
+  const { dom, d, readers, paste, drop, chips, refusals } = imagePage();
+  paste(['ok.png', { name: 'notes.txt', type: 'text/plain' }]);
+  assert.deepEqual(refusals(), ['notes.txt is not an image: attach a PNG, JPEG, GIF, WebP or SVG file.']);
+  // A supported extension without an image MIME type is still a candidate: the server reads the bytes.
+  paste([{ name: 'mislabeled.webp', type: '' }]);
+  assert.equal(readers.length, 2);
+  const event = drop({ files: ['dropped.png', { name: 'run.sh', type: 'application/x-sh' }] });
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(readers.length, 3, 'a dropped file goes through the same admission as a pasted one');
+  for (const reader of readers) reader.load();
+  assert.deepEqual(chips(), ['ok.png · 1 KiB', 'mislabeled.webp · 1 KiB', 'dropped.png · 1 KiB']);
+  // A paste without files is plain text: the textarea handles it.
+  const text = new dom.window.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(text, 'clipboardData', { value: { files: [] } });
+  d.querySelector('.prompt').dispatchEvent(text);
+  assert.equal(text.defaultPrevented, false);
+  assert.deepEqual(refusals(), ['notes.txt is not an image: attach a PNG, JPEG, GIF, WebP or SVG file.', 'run.sh is not an image: attach a PNG, JPEG, GIF, WebP or SVG file.']);
+  dom.window.close();
+});
+
+test('a drop that carries links instead of files names what was not attached and fetches nothing', () => {
+  const { dom, readers, drop, refusals, posts } = imagePage();
+  const before = posts.length;
+  const event = drop({ data: { 'text/uri-list': 'file:///home/me/shot%201.png\r\nhttps://example.com/remote.png' } });
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(readers.length, 0);
+  assert.equal(posts.length, before, 'no host read and no remote fetch is asked for');
+  assert.deepEqual(refusals(), ['shot 1.png, remote.png not attached: this drop carried links, not files. Use Attach images.']);
+  // VS Code's own URI list format is read the same way.
+  drop({ data: { 'application/vnd.code.uri-list': 'file:///w/a.gif' } });
+  assert.equal(refusals().at(-1), 'a.gif not attached: this drop carried links, not files. Use Attach images.');
+  // Text and links to other files keep the textarea's own drop behaviour.
+  assert.equal(drop({ data: { 'text/uri-list': 'file:///home/me/notes.md', 'text/plain': 'notes' } }).defaultPrevented, false);
+  dom.window.close();
+});
+
+test('the image chooser has its own control, blocks sending until it answers and ignores a stale answer', () => {
+  const { dom, d, readers, prompt, submit, chips, refusals, sends, posts, receive, error, paste } = imagePage();
+  const editorContext = d.querySelector('.attach-btn');
+  assert.equal(editorContext.getAttribute('aria-label'), 'Attach editor context', 'the editor-context control keeps its purpose');
+  const chooser = d.querySelector('.image-btn');
+  assert.equal(chooser.getAttribute('aria-label'), 'Attach images');
+  paste(['first.png']); readers[0].load();
+  chooser.click();
+  const ask = posts.filter(post => post.type === 'pickImages').at(-1);
+  assert.equal(ask.room, 7, 'the chooser is told how many images still fit');
+  assert.equal(chooser.disabled, true, 'one chooser at a time');
+  prompt.value = 'look'; submit();
+  assert.equal(sends().length, 0, 'no send while the chooser is open');
+  assert.equal(error().textContent, 'Wait until the images finish loading.');
+  receive({ type: 'pickedImages', request: ask.request, images: [
+    { name: 'a.png', size: 3, data: 'AAAA' },
+    { name: 'empty.png', problem: 'empty' },
+    { name: 'huge.png', problem: 'large' },
+    { name: 'locked.png', problem: 'unreadable' },
+    { name: 'ninth.png', problem: 'omitted' },
+  ] });
+  assert.equal(chooser.disabled, false);
+  assert.deepEqual(chips(), ['first.png · 1 KiB', 'a.png · 1 KiB']);
+  assert.deepEqual(refusals(), ['A message carries at most 8 images; not attached: ninth.png.', 'empty.png is empty.', 'huge.png is too large to attach.', 'locked.png could not be read.']);
+  submit();
+  assert.deepEqual([...sends().at(-1).images].map(image => [image.name, image.data]), [['first.png', 'first.png'], ['a.png', 'AAAA']]);
+  // Cancelling answers with no images; a second answer to the same request changes nothing.
+  chooser.click();
+  const cancel = posts.filter(post => post.type === 'pickImages').at(-1);
+  receive({ type: 'pickedImages', request: cancel.request, images: [] });
+  receive({ type: 'pickedImages', request: cancel.request, images: [{ name: 'late.png', size: 3, data: 'AAAA' }] });
+  assert.deepEqual(chips(), ['first.png · 1 KiB', 'a.png · 1 KiB']);
+  // A conversation reset abandons the chooser: the composer is not left blocked.
+  chooser.click();
+  const stale = posts.filter(post => post.type === 'pickImages').at(-1);
+  dom.window.dispatchEvent(new dom.window.MessageEvent('message', { data: { tab: 't1', type: 'conversationOpened', id: 'S2', title: 'Other', generation: 2 } }));
+  assert.equal(chooser.disabled, false);
+  receive({ type: 'pickedImages', request: stale.request, images: [{ name: 'stale.png', size: 3, data: 'AAAA' }] });
+  assert.deepEqual(chips(), ['first.png · 1 KiB', 'a.png · 1 KiB'], 'an answer from before the reset is dropped');
   dom.window.close();
 });

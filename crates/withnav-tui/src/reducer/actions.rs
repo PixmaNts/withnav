@@ -840,13 +840,18 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             if attach_refused(s) {
                 return vec![];
             }
-            vec![Effect::CheckAttachment { path }]
+            vec![Effect::CheckAttachment {
+                path,
+                revision: s.attachments_revision,
+            }]
         }
         Action::PasteImage => {
             if attach_refused(s) {
                 return vec![];
             }
-            vec![Effect::PasteImage]
+            vec![Effect::PasteImage {
+                revision: s.attachments_revision,
+            }]
         }
         Action::OpenImage(number) => open_image(s, number.trim()),
         Action::ClearAttachments => {
@@ -854,6 +859,8 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             let kept = s.attachments_sending.min(s.pending_attachments.len());
             let dropped = s.pending_attachments.len() - kept;
             s.pending_attachments.truncate(kept);
+            // A file check still running was asked for before the clear: its result is dropped.
+            s.attachments_revision += 1;
             let text = match (dropped, kept) {
                 (0, 0) => "no images attached".to_string(),
                 (0, _) => "the images being sent cannot be dropped".to_string(),
@@ -1068,7 +1075,9 @@ fn secret_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> {
             }
             let value = std::mem::take(&mut entry.value);
             entry.shown = false;
+            entry.error = None;
             let call_id = entry.call_id.clone();
+            let name = entry.name.clone();
             let submission = withnav_client_api::secrets::SecretSubmission {
                 name: entry.later.then(|| entry.name.clone()),
                 value: Some(value),
@@ -1083,6 +1092,7 @@ fn secret_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> {
             vec![Effect::SubmitSecret {
                 session_id,
                 call_id,
+                name,
                 submission,
             }]
         }
@@ -1094,6 +1104,7 @@ fn secret_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> {
             vec![Effect::SubmitSecret {
                 session_id,
                 call_id: entry.call_id,
+                name: entry.name,
                 submission: withnav_client_api::secrets::SecretSubmission {
                     decline: true,
                     ..Default::default()

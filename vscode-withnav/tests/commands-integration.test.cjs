@@ -125,3 +125,37 @@ for (const resume of [false,true]) test(`R10 skill ${resume ? 'resumes' : 'creat
   event('command.result', { operation_id: 'SK', name: 'message', ok: false, error: 'disabled' });
   assert.equal(b.state.commands.has('SK'), false);
 });
+for (const early of [false, true]) test(`a skill's deferred acceptance ${early ? 'before' : 'after'} HTTP names the webview submission that sent it`, async t => {
+  const { b, messages, event } = backend();
+  let finish; t.mock.method(globalThis, 'fetch', () => new Promise(resolve => finish = resolve));
+  const operation = { ...b.captureOperation(), submission: 7 };
+  const pending = b.runComposerCommand('/skill review check', operation.generation, operation);
+  await Promise.resolve(); await Promise.resolve();
+  const admission = () => event('message.received', { command_id: 'SK', source: 'user:http', content: 'check' });
+  if (early) admission();
+  finish(new Response(JSON.stringify({ command_id: 'SK', accepted: true })));
+  assert.equal(await pending, false);
+  if (!early) admission();
+  const accepted = messages.filter(m => m.type === 'sendResult' && m.accepted);
+  assert.equal(accepted.length, 1);
+  assert.equal(accepted[0].submission, 7);
+});
+
+test('an MCP prompt command is listed, refreshed on an mcp.status change and run on the server', async t => {
+  const { b, event } = backend();
+  const posted = [];
+  let listed = [{ name: 'help', description: 'help', args_hint: '' }];
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (String(url).endsWith('/v1/commands')) return new Response(JSON.stringify({ commands: listed }));
+    posted.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ operation_id: 'P', ok: true }));
+  });
+  await b.refreshCommands();
+  assert.equal(b.commands.some(c => c.name === 'fake:review'), false);
+  listed = [...listed, { name: 'fake:review', description: 'Review some code', args_hint: '<topic> [depth]' }, { name: 'Bad:name', description: '', args_hint: '' }];
+  event('mcp.status', { incarnation: 'I', revision: 2, servers: [] });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(b.commands.map(c => c.name), ['help', 'fake:review']);
+  await b.runComposerCommand('/fake:review topic=parser');
+  assert.deepEqual(posted.at(-1), { name: 'fake:review', arguments: 'topic=parser' });
+});

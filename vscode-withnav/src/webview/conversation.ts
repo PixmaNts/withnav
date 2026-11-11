@@ -2,13 +2,14 @@
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfm } from "micromark-extension-gfm";
 import { gfmFromMarkdown } from "mdast-util-gfm";
-import type { HostToWebview, WebviewToHost, PermissionEvidence, PermissionDecision, ImageRef, PendingImage } from "../chatProtocol";
+import type { HostToWebview, WebviewToHost, PermissionEvidence, PermissionDecision, ImageRef, ImageProblem, ImageRefusal, PickedImage } from "../chatProtocol";
 import { evidenceLabel, permissionOutcome } from "../eventView";
 import { contextMeter } from "../contextMeter";
 import { displayTitle } from "../sessionTitle";
 import { ConversationIdentity } from "./conversationIdentity";
 import { diffKind, parseWake } from "./wake";
-import { ranked, PICKER_LIMIT } from "./pickerSearch";
+import { ranked, narrowHint, PICKER_LIMIT } from "./pickerSearch";
+import { ImageCache } from "./imageCache";
 import { createSecretCard, expiresIn, KEY_ICON, scopeText, type SecretCard } from "./secretCard";
 import type { SecretInfo } from "../chatProtocol";
 import type { CommandInfo } from "../chatProtocol";
@@ -57,6 +58,7 @@ const ICON = {
   stop: svg("M4.5 4.5h7v7h-7Z"),
   attach: svg("M10.5 5.5 6 10a1.4 1.4 0 0 0 2 2l5-5a3 3 0 0 0-4.2-4.2L4.2 7.6a4.5 4.5 0 0 0 6.4 6.4"),
   close: svg("m4.5 4.5 7 7m0-7-7 7"),
+  image: svg("M3.5 2.5h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1ZM2.5 10.5l3-3L9 11m-1-1 2.5-2.5 3 3M10.5 5h.01"),
 };
 
 const TEMPLATE = `
@@ -79,6 +81,7 @@ const TEMPLATE = `
   <textarea class="prompt" rows="2" placeholder="Message Nav…" aria-label="Message Nav" disabled></textarea>
   <div class="toolbar">
     <button type="button" class="icon-button attach-btn" aria-pressed="true" aria-label="Attach editor context" title="Attach editor context to your messages">${ICON.attach}</button>
+    <button type="button" class="icon-button image-btn" aria-label="Attach images" title="Attach images">${ICON.image}</button>
     <span class="pending-model"></span>
     <span class="spacer"></span>
     <button type="button" class="model-btn" disabled aria-haspopup="listbox" aria-label="Model"><span class="model-spark" aria-hidden="true">✦</span><span class="model-name">Default model</span>${ICON.chevron}</button>
@@ -87,10 +90,30 @@ const TEMPLATE = `
     <button type="submit" class="icon-button send-btn" aria-label="Send" title="Send (Enter)" disabled>${ICON.send}</button>
   </div>
   <div class="agent-popover" hidden>
-    <input class="picker-search agent-search" type="search" placeholder="Search agents" aria-label="Search agents" role="combobox" aria-autocomplete="list" aria-expanded="true">
+    <input class="picker-search agent-search" type="search" placeholder="Search agents · Ctrl+Alt+F favorite" aria-label="Search agents" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-keyshortcuts="Control+Alt+F">
+    <span class="sr-only agent-favorite-hint">Ctrl+Alt+F adds or removes the highlighted agent from favorites.</span>
     <ul class="agent-list" role="listbox" aria-label="Agents"></ul>
   </div>
 </form>`;
+
+/**
+ * The picker action a keydown in a picker search box asks for: Ctrl+Alt+F toggles the highlighted
+ * favorite, Ctrl+Alt+A folds or unfolds the model groups. The pickers do not handle plain Ctrl+F or Alt+A:
+ * the 2026-11-10 self-test in VS Code saw Ctrl+F open the host's search alongside the favorite toggle,
+ * and Alt+A is a host binding too.
+ * AltGr is reported as Ctrl+Alt on Windows and types letters on many layouts (Polish AltGr+A is ą),
+ * so a key with AltGraph held is typing, not a shortcut. The letter comes from `key`, so a non-QWERTY
+ * layout uses the letter printed on the key; a single non-ASCII character (macOS Ctrl+Option+F gives
+ * ƒ) falls back to the physical key. Dead keys and IME keys ("Dead", "Process") never match.
+ */
+function pickerShortcut(event: KeyboardEvent): "favorite" | "fold" | undefined {
+  if (event.isComposing || !event.ctrlKey || !event.altKey || event.shiftKey || event.metaKey || event.getModifierState("AltGraph")) return undefined;
+  const key = event.key.toLowerCase();
+  const letter = /^[a-z]$/.test(key) ? key
+    : [...event.key].length === 1 && !/^[\x00-\x7f]$/.test(event.key) && /^Key[A-Z]$/.test(event.code) ? event.code.slice(3).toLowerCase()
+    : undefined;
+  return letter === "f" ? "favorite" : letter === "a" ? "fold" : undefined;
+}
 
 /** One conversation: its header, transcript and composer. The shell keeps one per tab. */
 export function createConversation(env: ConversationEnv): ConversationView {
@@ -142,6 +165,7 @@ const modelBtn = q<HTMLButtonElement>(".model-btn");
 const modelNameEl = q<HTMLElement>(".model-name");
 const pendingModel = q<HTMLElement>(".pending-model");
 const attachBtn = q<HTMLButtonElement>(".attach-btn");
+const imageButton = q<HTMLButtonElement>(".image-btn");
 const chips = q<HTMLElement>(".ctx-chips");
 const childHeader = q<HTMLElement>(".child-header");
 let readOnly = false;
@@ -188,6 +212,13 @@ const agentName = q<HTMLElement>(".agent-btn .agent-name");
 const agentPop = q<HTMLElement>(".agent-popover");
 const agentSearch = q<HTMLInputElement>(".agent-search");
 const agentList = q<HTMLElement>(".agent-list");
+// The stars sit inside listbox options and take no focus, so the search box carries the favorite
+// shortcut and describes it to screen readers.
+const agentFavoriteHint = q<HTMLElement>(".agent-favorite-hint");
+agentFavoriteHint.id = `agent-favorite-hint-${uid}`;
+agentSearch.setAttribute("aria-describedby", agentFavoriteHint.id);
+agentList.id = `agent-list-${uid}`;
+agentSearch.setAttribute("aria-controls", agentList.id);
 let agentFavorites = new Set<string>();
 let agentRows: AgentRow[] = [];
 let agentIndex = 0;
@@ -265,6 +296,12 @@ agentSearch.addEventListener("keydown", event => {
     if (agentRows.length) { agentIndex = (agentIndex + (event.key === "ArrowDown" ? 1 : -1) + agentRows.length) % agentRows.length; renderAgents(); }
   } else if (event.key === "Enter") { event.preventDefault(); const row = agentRows[agentIndex]; if (row) pickAgent(row.id); }
   else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeAgents(true); }
+  else if (pickerShortcut(event) === "favorite") {
+    // Handled here only: the default is prevented and the event stops bubbling out of the search box.
+    event.preventDefault(); event.stopPropagation();
+    const row = agentRows[agentIndex];
+    if (row) post({ type: "toggleFavoriteAgent", name: row.id });
+  }
 });
 const onAgentOutside = (event: MouseEvent): void => {
   if (agentPop.hidden) return;
@@ -416,6 +453,9 @@ pickerSearch.setAttribute("aria-label", "Search choices");
 pickerSearch.setAttribute("role", "combobox");
 pickerSearch.setAttribute("aria-autocomplete", "list");
 pickerSearch.setAttribute("aria-controls", `picker-options-${uid}`);
+// Model picker only: the stars take no focus, so Ctrl+Alt+F on the search box is their keyboard path.
+const pickerFavoriteHint = el("span", "sr-only", "Ctrl+Alt+F adds or removes the highlighted model from favorites. Ctrl+Alt+A folds or unfolds all groups.");
+pickerFavoriteHint.id = `picker-favorite-hint-${uid}`;
 const pickerCount = document.createElement("div");
 pickerCount.className = "picker-count";
 pickerCount.setAttribute("role", "status");
@@ -424,7 +464,7 @@ const pickerOptions = document.createElement("div");
 pickerOptions.id = `picker-options-${uid}`; pickerOptions.className = "picker-options";
 pickerOptions.setAttribute("role", "listbox");
 pickerOptions.setAttribute("aria-label", "Choices");
-palette.append(pickerSearch, pickerCount, pickerOptions);
+palette.append(pickerSearch, pickerFavoriteHint, pickerCount, pickerOptions);
 palette.hidden = true;
 form.prepend(palette);
 const commandError = document.createElement("div");
@@ -484,11 +524,20 @@ function renderPalette(): void {
   const allMatches = ranked(pickerItems, pickerSearch.value, row => row.name, row => row.description);
   const matches = pickerKind === "model" && !pickerSearch.value ? allMatches.filter(row => !row.gateway || (!collapsedGroups.has(row.gateway) && !collapsedGroups.has(`${row.gateway}/${row.provider_group}`))) : allMatches;
   const groupRows = matches.slice(0, PICKER_LIMIT);
-  // The Favorites section sits first, is never folded and is not part of the first-50 cut; its rows
+  // The Favorites section sits first, is never folded and is not part of the PICKER_LIMIT cut; its rows
   // come before the groups' rows in `paletteRows`, so indices and option ids stay unique.
   favoriteRows = pickerKind === "model" ? allMatches.filter(row => favorites.has(row.name)).sort((a, b) => a.name.localeCompare(b.name)) : [];
   paletteRows = [...favoriteRows, ...groupRows];
-  pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}${pickerKind === "model" ? " · Alt+A folds or unfolds all · Ctrl+F favorite" : ""}`;
+  // Hidden outside the model picker so browse mode does not read a shortcut that does nothing there.
+  pickerFavoriteHint.hidden = pickerKind !== "model";
+  if (pickerKind === "model") {
+    pickerSearch.setAttribute("aria-keyshortcuts", "Control+Alt+F Control+Alt+A");
+    pickerSearch.setAttribute("aria-describedby", pickerFavoriteHint.id);
+  } else {
+    pickerSearch.removeAttribute("aria-keyshortcuts");
+    pickerSearch.removeAttribute("aria-describedby");
+  }
+  pickerCount.textContent = `${allMatches.length} of ${pickerItems.length}${narrowHint(matches.length)}${pickerKind === "model" ? " · Ctrl+Alt+A folds or unfolds all · Ctrl+Alt+F favorite" : ""}`;
   if (favoriteAnchor) {
     const found = favoriteAnchor.inSection ? paletteRows.findIndex((row, i) => i < favoriteRows.length && row.name === favoriteAnchor!.name) : -1;
     const anywhere = found >= 0 ? found : paletteRows.findIndex((row, i) => i >= favoriteRows.length && row.name === favoriteAnchor!.name);
@@ -528,7 +577,8 @@ function renderPalette(): void {
     option.setAttribute("role", "option");
     // The group headers already show gateway and provider, so a row inside a group shows the
     // short name; the accessible name stays the full canonical name.
-    if (inGroup) option.setAttribute("aria-label", row.name);
+    // This label replaces the option's content, star included, so it carries the favorite state itself.
+    if (inGroup) option.setAttribute("aria-label", `${row.name}${pickerKind === "model" && favorites.has(row.name) ? ", favorite" : ""}`);
     option.setAttribute("aria-selected", String(index === paletteIndex));
     const name = document.createElement("strong");
     name.textContent = `${pickerKind ? "" : "/"}${inGroup ? shortModelName(row) : row.name}${row.args_hint ? ` ${row.args_hint}` : ""}`;
@@ -600,6 +650,7 @@ function toggleFavorite(index: number): void {
 pickerSearch.addEventListener("input", () => { paletteIndex = 0; renderPalette(); });
 pickerSearch.addEventListener("keydown", event => {
   if (event.isComposing) return;
+  let shortcut: ReturnType<typeof pickerShortcut>;
   if (event.key === "Escape") {
     event.preventDefault();
     if (pickerSearch.value) { pickerSearch.value = ""; paletteIndex = 0; renderPalette(); }
@@ -607,12 +658,10 @@ pickerSearch.addEventListener("keydown", event => {
   } else if (["ArrowUp", "ArrowDown"].includes(event.key)) {
     event.preventDefault();
     if (paletteRows.length) { paletteIndex = (paletteIndex + (event.key === "ArrowDown" ? 1 : -1) + paletteRows.length) % paletteRows.length; renderPalette(); }
-  } else if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "f" && pickerKind === "model") {
-    event.preventDefault();
-    toggleFavorite(paletteIndex);
-  } else if (event.altKey && event.code === "KeyA" && pickerKind === "model") {
-    event.preventDefault();
-    toggleAllGroups();
+  } else if (pickerKind === "model" && (shortcut = pickerShortcut(event))) {
+    // Handled here only: the default is prevented and the event stops bubbling out of the search box.
+    event.preventDefault(); event.stopPropagation();
+    if (shortcut === "favorite") toggleFavorite(paletteIndex); else toggleAllGroups();
   } else if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); choosePalette(paletteIndex); }
 });
 // Folds every gateway and provider, or unfolds them all once everything is folded.
@@ -710,6 +759,7 @@ function autosizePrompt(): void {
   prompt.style.overflowY = wanted > max ? "auto" : "hidden";
 }
 window.addEventListener("resize", autosizePrompt);
+disposers.push(() => window.removeEventListener("resize", autosizePrompt));
 
 function updateControls(): void {
   autosizePrompt();
@@ -717,7 +767,8 @@ function updateControls(): void {
   if (compacting) prompt.placeholder = "Messages you send now are queued until compaction ends";
   else if (!readOnly) prompt.placeholder = secretWaiting() ? "Nav is waiting for the key above… (or write to answer otherwise)" : "Message WithNav…";
   if (readOnly) modelBtn.disabled = true;
-  send.disabled = prompt.disabled || sending || (!prompt.value.trim() && !pendingImages.length);
+  send.disabled = prompt.disabled || sending || imagesReading() || (!prompt.value.trim() && !pendingImages.length);
+  imageButton.disabled = prompt.disabled || imports.size > 0;
   stop.hidden = readOnly || (state !== "busy" && !compacting);
 }
 
@@ -790,43 +841,153 @@ function decorateCrew(byline: HTMLElement, agent = "build"): void {
 /** Most images a message carries, and the largest file read: the server's 3.75 MiB per image. */
 const MAX_IMAGES = 8;
 const MAX_IMAGE_FILE = 3_932_160;
-let pendingImages: (PendingImage & { size: number })[] = [];
+// Each tab keeps its own cache and the chat shows up to 12 tabs, so these bound one view: 64
+// pictures, and 16 Mi characters, three full-size attachments or many screenshots.
+const IMAGE_CACHE_ENTRIES = 64;
+const IMAGE_CACHE_CHARS = 16 * 1024 * 1024;
+/**
+ * Composer images in the order the Captain added them. A slot is reserved when its file is
+ * accepted, before the read finishes (`data` stays undefined meanwhile), so the cap counts reads
+ * in flight and a send waits for every slot instead of leaving late reads behind.
+ */
+type PendingSlot = { name: string; size: number; data?: string };
+let pendingImages: PendingSlot[] = [];
+/**
+ * Submissions that carried images and have no acceptance yet, by the id the host echoes in
+ * `sendResult`. Text cannot tell submissions apart (every image-only message is ""). A refusal
+ * keeps its entry: a `/skill` send reports `accepted: false` while the skill is pending and
+ * `accepted: true` once it settles, and only that later result may take its images away.
+ */
+const submittedImages = new Map<number, PendingSlot[]>();
+let nextSubmission = 0;
 const pendingList = el("ul", "pending-images");
 pendingList.setAttribute("aria-label", "Images to send");
 pendingList.hidden = true;
+/**
+ * Chooser requests the host has not answered, by request id, with the conversation generation
+ * they were asked in. Each one blocks sending like a read in flight: its images are part of the
+ * message being composed. A newer generation abandons them (the host's answer is dropped then).
+ */
+const imports = new Map<number, number>();
+let nextImport = 0;
+const imagesReading = (): boolean => imports.size > 0 || pendingImages.some(image => image.data === undefined);
 
 function renderPending(): void {
-  pendingList.replaceChildren(...pendingImages.map((image, index) => {
-    const item = el("li", "pending-image", `${image.name} · ${Math.ceil(image.size / 1024)} KiB`);
+  pendingList.replaceChildren(...pendingImages.map(image => {
+    const item = el("li", "pending-image", `${image.name} · ${image.data === undefined ? "reading…" : `${Math.ceil(image.size / 1024)} KiB`}`);
     const remove = el("button", "pending-image-remove", "×");
     remove.type = "button";
     remove.setAttribute("aria-label", `Remove ${image.name}`);
-    remove.addEventListener("click", () => { pendingImages.splice(index, 1); renderPending(); updateControls(); });
+    remove.addEventListener("click", () => { pendingImages = pendingImages.filter(other => other !== image); renderPending(); updateControls(); });
     item.append(remove);
     return item;
   }));
   pendingList.hidden = !pendingImages.length;
 }
 
-function addImageFiles(files: Iterable<File>): void {
-  for (const file of files) {
-    if (!file.type.startsWith("image/") && !/\.(png|jpe?g|gif|webp|svg)$/i.test(file.name)) continue;
-    if (pendingImages.length >= MAX_IMAGES) { commandError.textContent = `A message carries at most ${MAX_IMAGES} images.`; commandError.hidden = false; return; }
-    if (file.size > MAX_IMAGE_FILE) { commandError.textContent = `${file.name} is too large to attach.`; commandError.hidden = false; continue; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const url = String(reader.result ?? "");
-      const data = url.slice(url.indexOf(",") + 1);
-      if (!data || pendingImages.length >= MAX_IMAGES) return;
-      pendingImages.push({ name: file.name || "image", data, size: file.size });
-      renderPending(); updateControls();
-    };
-    reader.readAsDataURL(file);
+/**
+ * Files the Captain added that are not in the composer, each named with its reason. They stay
+ * until the Captain dismisses them: typing, sending or another read finishing must not hide which
+ * file was left out (self-test 2026-11-10: an empty file's transient error vanished on typing and
+ * the Captain believed it had been sent). They hold names and reasons only, never image data.
+ */
+type Refusal = { name?: string; text: string };
+let refusals: Refusal[] = [];
+const refusalList = el("ul", "image-refusals");
+refusalList.setAttribute("aria-label", "Images not attached");
+refusalList.setAttribute("aria-live", "polite");
+refusalList.hidden = true;
+
+function renderRefusals(): void {
+  refusalList.replaceChildren(...refusals.map(refusal => {
+    const item = el("li", "image-refusal");
+    item.append(el("span", "image-refusal-text", refusal.text));
+    const dismiss = el("button", "image-refusal-dismiss", "×");
+    dismiss.type = "button";
+    dismiss.setAttribute("aria-label", `Dismiss ${refusal.name ?? "notice"}`);
+    dismiss.addEventListener("click", () => { refusals = refusals.filter(other => other !== refusal); renderRefusals(); });
+    item.append(dismiss);
+    return item;
+  }));
+  refusalList.hidden = !refusals.length;
+}
+
+function refuse(items: Refusal[]): void {
+  for (const item of items) if (!refusals.some(other => other.text === item.text)) refusals.push(item);
+  renderRefusals();
+}
+
+const IMAGE_NAME = /\.(png|jpe?g|gif|webp|svg)$/i;
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+function problemText(name: string, problem: Exclude<ImageProblem, "omitted">): string {
+  switch (problem) {
+    case "notImage": return `${name} is not an image: attach a PNG, JPEG, GIF, WebP or SVG file.`;
+    case "empty": return `${name} is empty.`;
+    case "large": return `${name} is too large to attach.`;
+    case "unreadable": return `${name} could not be read.`;
   }
 }
 
-/** Per attachment: its `data:` URL, `null` while it loads, `false` once it is known unavailable. */
-const imageUrls = new Map<string, string | null | false>();
+/** A file to admit: read in the webview (`file`), or already read by the host (`data` or `problem`). */
+type Incoming = { name: string; size?: number; type?: string; file?: File; data?: string; problem?: ImageProblem };
+
+/**
+ * The one admission path of pasted, dropped and chosen files: each one becomes a composer slot or
+ * a named refusal. A file counts as an image by MIME type or by extension; its bytes are the
+ * server's to judge, so a mislabeled but valid picture still goes through.
+ */
+function admitImages(incoming: Iterable<Incoming>): void {
+  const refused: Refusal[] = [];
+  const omitted: string[] = [];
+  for (const item of incoming) {
+    const name = item.name || "image";
+    if (item.problem === "omitted") { omitted.push(name); continue; }
+    if (item.problem) { refused.push({ name, text: problemText(name, item.problem) }); continue; }
+    if (!(item.type ?? "").startsWith("image/") && !IMAGE_NAME.test(name)) { refused.push({ name, text: problemText(name, "notImage") }); continue; }
+    if (pendingImages.length >= MAX_IMAGES) { omitted.push(name); continue; }
+    if (item.size === 0) { refused.push({ name, text: problemText(name, "empty") }); continue; }
+    if ((item.size ?? 0) > MAX_IMAGE_FILE) { refused.push({ name, text: problemText(name, "large") }); continue; }
+    if (!item.file) {
+      if (item.data && BASE64.test(item.data)) pendingImages.push({ name, size: item.size ?? Math.floor(item.data.length * 3 / 4), data: item.data });
+      else refused.push({ name, text: problemText(name, "unreadable") });
+      continue;
+    }
+    const slot: PendingSlot = { name, size: item.file.size };
+    pendingImages.push(slot);
+    // A read that ends after the Captain removed its slot changes nothing and reports nothing.
+    const settle = (data: string): void => {
+      if (!pendingImages.includes(slot)) return;
+      if (data) slot.data = data;
+      else { pendingImages = pendingImages.filter(other => other !== slot); refuse([{ name, text: problemText(name, "unreadable") }]); }
+      renderPending(); updateControls();
+    };
+    const reader = new FileReader();
+    // Chromium reads a file that is empty by then as "data:<type>;base64,": no bytes, refused.
+    reader.onload = () => { const url = String(reader.result ?? ""); const comma = url.indexOf(","); settle(comma < 0 ? "" : url.slice(comma + 1)); };
+    reader.onerror = () => settle("");
+    reader.onabort = () => settle("");
+    try { reader.readAsDataURL(item.file); } catch { pendingImages = pendingImages.filter(other => other !== slot); refused.push({ name, text: problemText(name, "unreadable") }); }
+  }
+  if (omitted.length) refused.unshift({ text: `A message carries at most ${MAX_IMAGES} images; not attached: ${omitted.join(", ")}.` });
+  refuse(refused);
+  renderPending(); updateControls();
+}
+
+const admitFiles = (files: File[]): void => admitImages(files.map(file => ({ name: file.name, size: file.size, type: file.type, file })));
+
+function showPickedImages(request: number, images: PickedImage[]): void {
+  if (!imports.delete(request)) return;
+  admitImages(images.map(image => ({ name: image.name, size: image.size, data: image.data, problem: image.problem })));
+}
+
+function showImageRefusals(items: ImageRefusal[]): void {
+  refuse(items.map(item => ({ name: item.name, text: `${item.name} was refused: ${item.reason}` })));
+}
+
+/** Per attachment: its `data:` URL, or `false` once it is known unavailable; bounded, see ImageCache. */
+const imageUrls = new ImageCache(IMAGE_CACHE_ENTRIES, IMAGE_CACHE_CHARS);
+/** Attachments asked of the extension host and not answered yet: one request each, whatever the cache evicts. */
+const imagesLoading = new Set<string>();
 function thumbnails(images: ImageRef[] | undefined): HTMLElement | undefined {
   if (!images?.length) return undefined;
   const row = el("div", "thumbs");
@@ -835,6 +996,8 @@ function thumbnails(images: ImageRef[] | undefined): HTMLElement | undefined {
     const button = el("button", "thumb");
     button.type = "button";
     button.title = `${name}${image.width && image.height ? ` · ${image.width}×${image.height}` : ""}: open beside`;
+    // The image alt only names the picture; the button's name says what activating it does.
+    button.setAttribute("aria-label", `Open ${name} beside`);
     button.dataset.attachment = image.attachment_id;
     const img = el("img") as HTMLImageElement;
     img.alt = name;
@@ -844,16 +1007,17 @@ function thumbnails(images: ImageRef[] | undefined): HTMLElement | undefined {
     const known = imageUrls.get(image.attachment_id);
     if (known) img.src = known;
     else if (known === false) button.classList.add("missing");
-    else if (known === undefined) { imageUrls.set(image.attachment_id, null); post({ type: "loadImage", attachmentId: image.attachment_id }); }
+    else if (!imagesLoading.has(image.attachment_id)) { imagesLoading.add(image.attachment_id); post({ type: "loadImage", attachmentId: image.attachment_id }); }
   }
   return row;
 }
 
 function showImageData(attachmentId: string, url: string | undefined): void {
+  imagesLoading.delete(attachmentId);
   imageUrls.set(attachmentId, url ?? false);
   for (const button of transcript.querySelectorAll<HTMLButtonElement>(`.thumb[data-attachment="${CSS.escape(attachmentId)}"]`)) {
     const img = button.querySelector("img");
-    if (url && img) img.src = url;
+    if (url && img) { img.src = url; button.classList.remove("missing"); }
     else button.classList.add("missing");
   }
 }
@@ -1188,13 +1352,17 @@ function activity(item: Turn, event: Extract<HostToWebview, { type: "tool" }>): 
     if (!group.chosen) group.details.open = true;
     const grid = el("div", "mcp-media-grid");
     event.mcpMedia.forEach((media, idx) => {
-      const card = el("div", "mcp-media-card");
+      // A button, so the zoom works from the keyboard; aria-pressed reports whether it is enlarged.
+      const card = el("button", "mcp-media-card");
+      card.type = "button";
+      card.setAttribute("aria-label", `Zoom ${event.name} preview ${idx + 1}`);
+      card.setAttribute("aria-pressed", "false");
       const img = document.createElement("img");
       img.src = media.svg
         ? `data:image/svg+xml;utf8,${encodeURIComponent(media.svg)}`
         : `data:${media.mime_type};base64,${media.data ?? ""}`;
       img.alt = `${event.name} preview ${idx + 1}`;
-      img.addEventListener("click", () => card.classList.toggle("zoomed"));
+      card.addEventListener("click", () => card.setAttribute("aria-pressed", String(card.classList.toggle("zoomed"))));
       card.append(img);
       grid.append(card);
     });
@@ -1397,6 +1565,7 @@ function renderPause(event: Extract<HostToWebview, { type: "pause" }>): void {
 function receive(event: HostToWebview): void {
   // Favorites are shared by every conversation and name none.
   if (event.type !== "favorites" && event.type !== "favoriteAgents" && !identity.receive(event)) return;
+  for (const [request, generation] of imports) if (generation < identity.generation) { imports.delete(request); updateControls(); }
   if (event.type === "conversationOpened") {
     renderBypass(false);
     form.hidden = false;
@@ -1565,6 +1734,8 @@ function receive(event: HostToWebview): void {
       break;
     }
     case "imageData": showImageData(event.attachmentId, event.url); break;
+    case "pickedImages": showPickedImages(event.request, event.images); break;
+    case "imageRefusals": showImageRefusals(event.items); break;
     case "questionState": {
       const card = questionCards.get(event.questionCallId);
       if (card && !card.answered) {
@@ -1573,8 +1744,18 @@ function receive(event: HostToWebview): void {
       }
       break;
     }
-    case "sendResult":
-      if (pendingSendText === event.text) { sending = false; pendingSendText = undefined; if (event.accepted) { pendingImages = []; renderPending(); } }
+    case "sendResult": {
+      if (pendingSendText === event.text) { sending = false; pendingSendText = undefined; }
+      // Matched on its own record, not on `pendingSendText`: a first message opens its
+      // conversation mid-send, and `conversationOpened` clears `pendingSendText` before this
+      // result arrives. Only the slots that went out leave; images added since stay.
+      const submission = event.accepted ? event.submission : undefined;
+      const sent = submission === undefined ? undefined : submittedImages.get(submission);
+      if (submission !== undefined && sent) {
+        submittedImages.delete(submission);
+        pendingImages = pendingImages.filter(image => !sent.includes(image));
+        renderPending();
+      }
       if (event.accepted && prompt.value === event.text) { lastConsumedDraft = event.text; prompt.value = ""; }
       if (!event.accepted && event.restoreDraft && !prompt.value && lastConsumedDraft === event.text) {
         prompt.value = event.text;
@@ -1582,6 +1763,7 @@ function receive(event: HostToWebview): void {
       }
       updateControls();
       break;
+    }
     case "permission": renderPermission(event); break;
     case "permissionCall": {
       const card = permissionCards.get(event.requestId);
@@ -1842,35 +2024,67 @@ function renderMarkdown(root: HTMLElement, source: string): void {
 }
 
 prompt.before(pendingList);
+pendingList.before(refusalList);
+// A paste without files is ordinary text; one with files sends every file through admission,
+// so a non-image among them is named instead of skipped.
 prompt.addEventListener("paste", event => {
   const files = Array.from(event.clipboardData?.files ?? []);
-  if (!files.some(file => file.type.startsWith("image/"))) return;
+  if (!files.length) return;
   event.preventDefault();
-  addImageFiles(files);
+  admitFiles(files);
 });
+const URI_LIST_TYPES = ["application/vnd.code.uri-list", "text/uri-list"];
 form.addEventListener("dragover", event => {
-  if (!event.dataTransfer?.types.includes("Files") || prompt.disabled) return;
+  const types = Array.from(event.dataTransfer?.types ?? []);
+  if (prompt.disabled || !(types.includes("Files") || URI_LIST_TYPES.some(type => types.includes(type)))) return;
   event.preventDefault();
   form.classList.add("dropping");
 });
 form.addEventListener("dragleave", () => form.classList.remove("dropping"));
+/**
+ * Only a drop that delivers file bytes attaches images. A drop of links (a VS Code explorer
+ * drag can deliver URIs instead of files) is never fetched: the image names it carries are
+ * reported with the chooser as the way in, and links to other files keep the textarea's own drop.
+ */
 form.addEventListener("drop", event => {
   form.classList.remove("dropping");
-  if (!event.dataTransfer?.files.length || prompt.disabled) return;
+  const transfer = event.dataTransfer;
+  if (!transfer || prompt.disabled) return;
+  if (transfer.files.length) { event.preventDefault(); admitFiles(Array.from(transfer.files)); return; }
+  const links = URI_LIST_TYPES.map(type => transfer.getData(type)).find(Boolean) ?? "";
+  const names = links.split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith("#"))
+    .map(line => { const last = line.split(/[?#]/)[0].split("/").pop() ?? ""; try { return decodeURIComponent(last); } catch { return last; } })
+    .filter(name => IMAGE_NAME.test(name));
+  if (!names.length) return;
   event.preventDefault();
-  addImageFiles(Array.from(event.dataTransfer.files));
+  refuse([{ text: `${names.join(", ")} not attached: this drop carried links, not files. Use Attach images.` }]);
+});
+imageButton.addEventListener("click", () => {
+  if (imageButton.disabled) return;
+  const request = ++nextImport;
+  imports.set(request, identity.generation);
+  post({ type: "pickImages", request, room: Math.max(0, MAX_IMAGES - pendingImages.length) });
+  updateControls();
 });
 
 form.addEventListener("submit", event => {
   event.preventDefault();
   const text = prompt.value;
   if ((!text.trim() && !pendingImages.length) || prompt.disabled || sending) return;
+  // A message leaves with every image in the composer or not at all.
+  if (imagesReading()) { commandError.textContent = "Wait until the images finish loading."; commandError.hidden = false; return; }
   closePalette();
   commandError.hidden = true;
   // Idle compaction holds its HTTP response until completion. It must not own
   // the ordinary message submission lock while the server queues input safely.
   if (!/^\/compact(?:\s|$)/.test(text)) { sending = true; pendingSendText = text; }
-  post({ type: "send", text, includeContext: contextOn(), ...(pendingImages.length ? { images: pendingImages.map(({ name, data }) => ({ name, data })) } : {}) });
+  const slots = pendingImages.slice();
+  // An entry is spent once its images all left the composer (a later message carried them, or
+  // the Captain removed them): no result can take anything away from it any more.
+  for (const [id, sent] of submittedImages) if (!sent.some(slot => pendingImages.includes(slot))) submittedImages.delete(id);
+  const submission = ++nextSubmission;
+  if (slots.length) submittedImages.set(submission, slots);
+  post({ type: "send", text, includeContext: contextOn(), submission, ...(slots.length ? { images: slots.map(({ name, data }) => ({ name, data: data ?? "" })) } : {}) });
   // Dropping the chip applies to one message only.
   skipNext = false; renderContext();
   updateControls();

@@ -11,24 +11,8 @@ pub mod v1 {
         pub schema: u16,
         pub seq: u64,
         pub session_id: String,
-        #[serde(flatten, deserialize_with = "lenient")]
+        #[serde(flatten)]
         pub event: Event,
-    }
-
-    /// `#[serde(other)]` only accepts an unknown kind that carries no `payload`, and every real
-    /// kind carries one. Retrying without the payload turns an unknown kind into `Unknown`,
-    /// while a known kind with a broken payload still fails (the retry fails too).
-    fn lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Event, D::Error> {
-        let mut raw = Value::deserialize(d)?;
-        match Event::deserialize(&raw) {
-            Ok(event) => Ok(event),
-            Err(first) => {
-                if let Some(map) = raw.as_object_mut() {
-                    map.remove("payload");
-                }
-                Event::deserialize(raw).map_err(|_| serde::de::Error::custom(first))
-            }
-        }
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -68,25 +52,73 @@ pub mod v1 {
         pub finish: String,
     }
 
-    /// Wire names are the ones in use today. `Unknown` lets a client built before a new kind
-    /// existed keep reading the stream; it never serialises a payload back.
-    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-    #[serde(tag = "kind", content = "payload")]
+    /// Wire names are the ones in use today. `Unknown` retains an unrecognized kind and its
+    /// payload as a JSON value so older clients can display or forward it. Original JSON
+    /// bytes are not preserved; an absent payload is serialized as null.
+    #[derive(Debug, Clone, PartialEq)]
     pub enum Event {
-        #[serde(rename = "message.received")]
         MessageReceived(MessageReceived),
-        #[serde(rename = "llm.delta")]
         LlmDelta(LlmDelta),
-        #[serde(rename = "tool.pre_call")]
         ToolPreCall(ToolPreCall),
-        #[serde(rename = "tool.post_call")]
         ToolPostCall(ToolPostCall),
-        #[serde(rename = "permission.requested")]
         PermissionRequested(PermissionRequested),
-        #[serde(rename = "turn.end")]
         TurnEnd(TurnEnd),
-        #[serde(other)]
-        Unknown,
+        Unknown { kind: String, payload: Value },
+    }
+
+    /// Hand-written serde: the derived `tag`/`content` shape cannot represent `Unknown`
+    /// (a data-carrying `#[serde(other)]` does not exist, and deriving would nest the
+    /// retained kind under a literal `"Unknown"` tag). Only an unknown `kind` falls back
+    /// to `Unknown`; a known kind with a malformed payload is a hard error, not a fallback.
+    impl Serialize for Event {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeMap;
+            let (kind, payload) = match self {
+                Event::MessageReceived(v) => ("message.received", serde_json::to_value(v)),
+                Event::LlmDelta(v) => ("llm.delta", serde_json::to_value(v)),
+                Event::ToolPreCall(v) => ("tool.pre_call", serde_json::to_value(v)),
+                Event::ToolPostCall(v) => ("tool.post_call", serde_json::to_value(v)),
+                Event::PermissionRequested(v) => ("permission.requested", serde_json::to_value(v)),
+                Event::TurnEnd(v) => ("turn.end", serde_json::to_value(v)),
+                Event::Unknown { kind, payload } => (kind.as_str(), Ok(payload.clone())),
+            };
+            let payload = payload.map_err(serde::ser::Error::custom)?;
+            let mut map = serializer.serialize_map(Some(2))?;
+            map.serialize_entry("kind", kind)?;
+            map.serialize_entry("payload", &payload)?;
+            map.end()
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Event {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            #[derive(Deserialize)]
+            struct Raw {
+                kind: String,
+                #[serde(default)]
+                payload: Value,
+            }
+
+            let raw = Raw::deserialize(d)?;
+            let bad_payload = |e: serde_json::Error| serde::de::Error::custom(e.to_string());
+            match raw.kind.as_str() {
+                "message.received" => {
+                    Ok(Event::MessageReceived(serde_json::from_value(raw.payload).map_err(bad_payload)?))
+                }
+                "llm.delta" => Ok(Event::LlmDelta(serde_json::from_value(raw.payload).map_err(bad_payload)?)),
+                "tool.pre_call" => {
+                    Ok(Event::ToolPreCall(serde_json::from_value(raw.payload).map_err(bad_payload)?))
+                }
+                "tool.post_call" => {
+                    Ok(Event::ToolPostCall(serde_json::from_value(raw.payload).map_err(bad_payload)?))
+                }
+                "permission.requested" => {
+                    Ok(Event::PermissionRequested(serde_json::from_value(raw.payload).map_err(bad_payload)?))
+                }
+                "turn.end" => Ok(Event::TurnEnd(serde_json::from_value(raw.payload).map_err(bad_payload)?)),
+                _ => Ok(Event::Unknown { kind: raw.kind, payload: raw.payload }),
+            }
+        }
     }
 }
 
@@ -144,13 +176,28 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_kind_decodes_to_unknown() {
+    fn an_unknown_kind_is_kept_untouched() {
         let raw = json!({
             "schema": 1, "seq": 9, "session_id": "s1",
             "kind": "plugin.future_thing", "payload": {"anything": [1, 2]}
         });
-        let env: EventEnvelope = serde_json::from_value(raw).unwrap();
-        assert_eq!(env.event, Event::Unknown);
+        let env: EventEnvelope = serde_json::from_value(raw.clone()).unwrap();
+        // The original kind and raw payload are retained, not dropped.
+        assert_eq!(
+            env.event,
+            Event::Unknown { kind: "plugin.future_thing".into(), payload: json!({"anything": [1, 2]}) }
+        );
         assert_eq!(env.seq, 9);
+        // Round-trip preserves this envelope's JSON value, not its original encoded bytes.
+        assert_eq!(serde_json::to_value(&env).unwrap(), raw);
+    }
+
+    #[test]
+    fn a_known_kind_with_a_malformed_payload_is_an_error() {
+        let raw = json!({
+            "schema": 1, "seq": 10, "session_id": "s1",
+            "kind": "message.received", "payload": {"nonsense": true}
+        });
+        assert!(serde_json::from_value::<EventEnvelope>(raw).is_err());
     }
 }

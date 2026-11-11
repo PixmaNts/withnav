@@ -3,10 +3,17 @@
 //!
 //! Response bodies are FROZEN:
 //! - `GET  /v1/health`        -> `{status:"ok"}`
+//! - `POST /v1/mcp/{server}/app` `{uri}|{html}` -> `{path,expires_in_ms}`: parks an MCP app document (see `mcp_app.rs`); `GET /mcp-app/{token}` serves it once, without the bearer, under its own CSP
 //! - `GET  /v1/mcp`           -> `{incarnation,revision,servers:[{server_id,transport,state,tool_count,skipped_tools,skipped_more,error,stderr_tail,stderr_truncated}]}`;
 //!   the service's MCP servers (global, not per workspace). `state` is starting/ready/failed/disabled;
 //!   `tool_count` is 0 unless ready; text is redacted and bounded. Keep the highest `revision` of one
 //!   `incarnation`; the live-only `mcp.status` event carries the same body.
+//! - `GET /v1/mcp/:server/resource?uri=ui://…` -> `{uri,mime_type,text,blob}`;
+//!   `POST /v1/mcp/:server/call` `{name,arguments}` -> the tool's MCP result (an `isError` result
+//!   is still 200). Failures are `{error,reason}`: 400 `mcp_invalid_request`/`mcp_invalid_params`,
+//!   404 `mcp_unknown_server`/`mcp_unknown_tool`, 502 `mcp_rejected`/`mcp_invalid_response`,
+//!   503 `mcp_unavailable`, 504 `mcp_timeout`. A server's own error text is redacted, one line and
+//!   at most `mcp::UI_ERROR_DETAIL_CHARS` characters; the longer diagnostic goes to the log.
 //! - `GET /v1/layers?workspace=` -> `{layers:[{layer,status,model,variant,gateway,upstream_id,api,reason,variant_diagnostic?}]}`; exactly three lower layers, usable means validated assignment/API, not connectivity. Cached-only unresolved preferred-low is explicit, never a resolved runtime variant.
 //! - `GET /v1/agents?workspace=&session_id=` -> `{default_agent,agents:[{id,description,mode,assignment,effective,override?,warning,inherits_parent}]}`; canonical model identities and sanitized source/variant summaries only.
 //!   Session definitions are pinned for live sessions; base assignments project current config.
@@ -181,6 +188,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/mcp", get(mcp_status))
         .route("/v1/mcp/{server}/resource", get(get_mcp_resource))
         .route("/v1/mcp/{server}/call", post(post_mcp_call))
+        .route("/v1/mcp/{server}/app", post(super::mcp_app::mint))
+        .route("/mcp-app/{token}", get(super::mcp_app::load))
         .route("/v1/layers", get(list_layers))
         .route("/v1/agents", get(list_agents))
         .route(
@@ -242,8 +251,9 @@ pub fn app(state: AppState) -> Router {
             let token = token.clone();
             async move {
                 let path = request.uri().path();
-                let public =
-                    path == "/v1/health" || (web && crate::server::web::is_public_asset_path(path));
+                let public = path == "/v1/health"
+                    || (web && crate::server::web::is_public_asset_path(path))
+                    || super::mcp_app::is_app_load(request.method(), path);
                 if !public && let Some(token) = token {
                     use axum::http::header::AUTHORIZATION;
                     let expected = format!("Bearer {token}");
@@ -379,25 +389,47 @@ struct McpCallBody {
     arguments: serde_json::Map<String, serde_json::Value>,
 }
 
+/// An extractor rejection on an MCP App route: the app sees a stable message. The rejection text
+/// quotes request values (tool arguments may hold tokens) and the app renders whatever it gets,
+/// so only the rejection's status is logged.
+fn mcp_bad_request(route: &'static str, rejected: StatusCode) -> Response {
+    tracing::warn!(
+        route,
+        status = rejected.as_u16(),
+        "MCP App request rejected"
+    );
+    error_response(ServerError::Mcp(crate::mcp::McpUiError::InvalidRequest(
+        "invalid MCP App request",
+    )))
+}
+
+type McpServerPath = Result<Path<String>, axum::extract::rejection::PathRejection>;
+
 async fn get_mcp_resource(
     State(state): State<AppState>,
-    Path(server): Path<String>,
-    axum::extract::Query(query): axum::extract::Query<McpResourceQuery>,
+    server: McpServerPath,
+    query: Result<axum::extract::Query<McpResourceQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
+    let (server, query) = match (server, query) {
+        (Ok(Path(server)), Ok(axum::extract::Query(query))) => (server, query),
+        (Err(rejection), _) => return mcp_bad_request("resource", rejection.status()),
+        (_, Err(rejection)) => return mcp_bad_request("resource", rejection.status()),
+    };
     match state.service().mcp_read_resource(&server, &query.uri).await {
         Ok(body) => Json(body).into_response(),
-        Err(message) => error_response(ServerError::MalformedBody(message)),
+        Err(error) => error_response(error.into()),
     }
 }
 
 async fn post_mcp_call(
     State(state): State<AppState>,
-    Path(server): Path<String>,
+    server: McpServerPath,
     body: Result<Json<McpCallBody>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let body = match json_body(body) {
-        Ok(b) => b,
-        Err(err) => return error_response(err),
+    let (server, body) = match (server, body) {
+        (Ok(Path(server)), Ok(Json(body))) => (server, body),
+        (Err(rejection), _) => return mcp_bad_request("call", rejection.status()),
+        (_, Err(rejection)) => return mcp_bad_request("call", rejection.status()),
     };
     match state
         .service()
@@ -405,7 +437,7 @@ async fn post_mcp_call(
         .await
     {
         Ok(result) => Json(result).into_response(),
-        Err(message) => error_response(ServerError::MalformedBody(message)),
+        Err(error) => error_response(error.into()),
     }
 }
 
@@ -876,9 +908,14 @@ async fn get_skills(State(state): State<AppState>, Path(id): Path<String>) -> Re
     json_result(state.skills(parsed).await)
 }
 
-/// `GET /v1/commands`: the registered session commands.
+/// `GET /v1/commands`: the registered session commands, then the prompts of the ready MCP
+/// servers as `<server>:<prompt>` commands.
 async fn list_commands(State(state): State<AppState>) -> Json<serde_json::Value> {
-    Json(json!({ "commands": state.list_commands() }))
+    let mut commands = json!(state.list_commands());
+    if let Some(list) = commands.as_array_mut() {
+        list.extend(state.prompt_commands().into_iter().map(|c| json!(c)));
+    }
+    Json(json!({ "commands": commands }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1198,11 +1235,15 @@ fn attachment_error_response(error: crate::session::attachments::AttachmentError
     } else {
         reason
     };
-    (
-        status,
-        Json(json!({ "error": error.to_string(), "reason": reason })),
-    )
-        .into_response()
+    // A store failure carries SQLite or file-system text: logged here, never sent to the client.
+    let message = match &error {
+        E::Db(detail) => {
+            tracing::error!(%detail, "attachment store failed");
+            ServerError::AttachmentStore.to_string()
+        }
+        _ => error.to_string(),
+    };
+    (status, Json(json!({ "error": message, "reason": reason }))).into_response()
 }
 
 fn attachments_unavailable() -> Response {
@@ -1232,6 +1273,13 @@ async fn upload_attachment(
     let Some(store) = state.attachments() else {
         return attachments_unavailable();
     };
+    // An archived conversation refuses uploads exactly as the message route refuses
+    // a message, so it cannot stage bytes nothing would ever carry. A stopped
+    // conversation still accepts them: its messages answer 409 `resume_required`,
+    // and the resume that follows turns it live again with the upload in place.
+    if let Err(err) = state.ensure_not_archived(session).await {
+        return error_response(err);
+    }
     let bytes = match body {
         Ok(bytes) => bytes,
         Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
@@ -1243,7 +1291,10 @@ async fn upload_attachment(
             );
         }
         Err(rejection) => {
-            return error_response(ServerError::MalformedBody(rejection.body_text()));
+            tracing::warn!(detail = ?rejection.body_text(), "attachment upload body rejected");
+            return error_response(ServerError::MalformedBody(
+                "the upload body could not be read".into(),
+            ));
         }
     };
     let session = session.to_string();
@@ -1343,12 +1394,43 @@ async fn continue_child(
 /// [`ServerError`] mapped onto a status code + JSON body. The full-inbox
 /// rejection carries the FROZEN `{accepted:false, reason:"inbox_full"}`
 /// body; every other failure shares `{"error": ...}`.
+/// The status of an MCP App failure: the caller's own mistakes are 4xx, the server's
+/// failures are 5xx, so a client can tell "fix the request" from "the server is down".
+fn mcp_status_code(error: &crate::mcp::McpUiError) -> StatusCode {
+    use crate::mcp::McpUiError as E;
+    match error {
+        E::InvalidRequest(_) | E::InvalidParams { .. } => StatusCode::BAD_REQUEST,
+        E::UnknownServer | E::UnknownTool => StatusCode::NOT_FOUND,
+        E::Rejected { .. } | E::InvalidResponse { .. } | E::ResponseTooLarge { .. } => {
+            StatusCode::BAD_GATEWAY
+        }
+        E::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        E::Timeout { .. } => StatusCode::GATEWAY_TIMEOUT,
+    }
+}
+
+fn mcp_reason(error: &crate::mcp::McpUiError) -> &'static str {
+    use crate::mcp::McpUiError as E;
+    match error {
+        E::InvalidRequest(_) => "mcp_invalid_request",
+        E::InvalidParams { .. } => "mcp_invalid_params",
+        E::UnknownServer => "mcp_unknown_server",
+        E::UnknownTool => "mcp_unknown_tool",
+        E::Unavailable => "mcp_unavailable",
+        E::Rejected { .. } => "mcp_rejected",
+        E::InvalidResponse { .. } => "mcp_invalid_response",
+        E::ResponseTooLarge { .. } => "mcp_response_too_large",
+        E::Timeout { .. } => "mcp_timeout",
+    }
+}
+
 pub(crate) fn error_response(err: ServerError) -> Response {
     let status = match &err {
         ServerError::SessionArchived { .. } => StatusCode::FORBIDDEN,
         ServerError::ChildReadOnly => StatusCode::FORBIDDEN,
         ServerError::SubagentCapacity { .. } => StatusCode::TOO_MANY_REQUESTS,
         ServerError::SubagentSettings(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        ServerError::SessionTreeTooDeep { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::SessionNotFound(_) => StatusCode::NOT_FOUND,
         ServerError::SessionStopping
         | ServerError::ChildNotParked
@@ -1356,6 +1438,9 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         | ServerError::ResumeRequired
         | ServerError::PermissionStale
         | ServerError::SecretStale => StatusCode::CONFLICT,
+        ServerError::SecretNotSaved | ServerError::AttachmentStore => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
         ServerError::NonLoopbackBind(_) | ServerError::Bind(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::InboxFull => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::NonTextContent | ServerError::MalformedBody(_) => StatusCode::BAD_REQUEST,
@@ -1373,6 +1458,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::SavedResolutionInvalid { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::History(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::Config(_) | ServerError::Model(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        ServerError::Mcp(error) => mcp_status_code(error),
     };
     if matches!(err, ServerError::InboxFull) {
         return (
@@ -1394,6 +1480,8 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::SubagentCapacity { .. } => Some("subagent_capacity"),
         ServerError::PermissionStale => Some("permission_stale"),
         ServerError::SecretStale => Some("secret_stale"),
+        ServerError::SecretNotSaved => Some("secret_not_saved"),
+        ServerError::AttachmentStore => Some("attachments_failed"),
         ServerError::NoContextWindow { .. } => Some("no_context_window"),
         ServerError::SavedAgentUnavailable { .. } => Some("saved_agent_unavailable"),
         ServerError::ImpossibleBudget { .. } => Some("impossible_context_budget"),
@@ -1401,6 +1489,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
         ServerError::VariantUnavailable { .. } => Some("variant_unavailable"),
         ServerError::VariantOfferUnknown { .. } => Some("variant_offer_unknown"),
         ServerError::UnknownVariant { .. } => Some("unknown_variant"),
+        ServerError::Mcp(error) => Some(mcp_reason(error)),
         _ => None,
     };
     if let Some(reason) = reason {
@@ -1561,9 +1650,70 @@ mod tests {
         }
     }
 
+    // Given an upload whose body stream fails with a distinctive message
+    // When the attachment handler reads it
+    // Then the client gets a stable 400 message, never the transport's error text
+    #[tokio::test]
+    async fn unreadable_upload_body_is_a_stable_400() {
+        let (_dir, state) = test_state();
+        let session = Ulid::generate();
+        state
+            .history()
+            .record_session(session, "/w", "m", false)
+            .await
+            .expect("record");
+        let failing = futures::stream::iter([Err::<axum::body::Bytes, _>(std::io::Error::other(
+            "upload-stream-sentinel",
+        ))]);
+        let response = app(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{session}/attachments"))
+                    .body(Body::from_stream(failing))
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("json error body");
+        assert_eq!(
+            value["error"],
+            "malformed request body: the upload body could not be read"
+        );
+    }
+
     // Given a session POST with a malformed body
     // When the handler runs
     // Then 400 with the shared {"error": ...} shape (not a panic/plain text)
+    #[tokio::test]
+    async fn an_attachment_store_failure_is_a_500_without_its_detail() {
+        let response = attachment_error_response(crate::session::attachments::AttachmentError::Db(
+            "no such table: attachments (/home/me/.local/share/withnav/withnav.db)".into(),
+        ));
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(
+            body,
+            json!({
+                "error": "the attachment store failed; see the server log",
+                "reason": "attachments_failed",
+            })
+        );
+    }
+
     #[tokio::test]
     async fn malformed_create_body_is_a_structured_400() {
         let (_dir, state) = test_state();

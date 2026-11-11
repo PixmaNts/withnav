@@ -248,11 +248,16 @@ fn add(dir: &Path, name: &str, description: &str) -> PathBuf {
 }
 
 fn load(fx: &Fixture) -> Skills {
+    load_with_settings(fx, &crate::settings::Settings::default())
+}
+
+fn load_with_settings(fx: &Fixture, settings: &crate::settings::Settings) -> Skills {
     Skills::load(
         &RulesRoots {
             home: Some(fx.home.clone()),
         },
         &fx.ws,
+        settings,
     )
 }
 
@@ -767,7 +772,11 @@ fn without_git_only_the_workspace_scope_is_searched() {
     let ws = base.join("a/b");
     add(&base.join(".agents/skills/up"), "up", "Above.");
     add(&ws.join(".agents/skills/here"), "here", "Here.");
-    let skills = Skills::load(&RulesRoots { home: None }, &ws);
+    let skills = Skills::load(
+        &RulesRoots { home: None },
+        &ws,
+        &crate::settings::Settings::default(),
+    );
     assert_eq!(catalog_lines(&skills), ["here — Here."]);
 }
 
@@ -1281,4 +1290,269 @@ fn a_manifest_swapped_between_check_and_open_is_refused() {
     std::os::unix::fs::symlink(&outside, &manifest).unwrap();
     let err = skills.snapshot("race").unwrap_err();
     assert!(err.contains("symbolic link"), "{err}");
+}
+
+// Given a project root with a `.skills/<name>/SKILL.md` folder
+// When skills are discovered
+// Then the skill appears in the catalog and can be loaded
+#[tokio::test]
+async fn dot_skills_folder_in_project_is_discovered_and_loads() {
+    let fx = fixture();
+    let skill_dir = fx.repo.join(".skills/sample-skill");
+    add(
+        &skill_dir,
+        "sample-skill",
+        "Sample skill from .skills directory",
+    );
+
+    let mut skills = load(&fx);
+    skills.validation = Arc::new(validation::SkillValidation {
+        data_dir: Some(fx.home.join("data")),
+        ..Default::default()
+    });
+    assert_eq!(
+        catalog_lines(&skills),
+        ["sample-skill — Sample skill from .skills directory"]
+    );
+    assert!(matches!(
+        skills.resolve("sample-skill"),
+        Resolution::Found(_)
+    ));
+
+    let snapshot = skills.snapshot("sample-skill").expect("valid snapshot");
+    skills
+        .validation
+        .approve(&snapshot, true)
+        .expect("approved");
+    let result = skills.load_listed("sample-skill").await;
+    assert_eq!(result.status, ToolStatus::Ok);
+    assert!(result.output.contains("Body of sample-skill"));
+
+    let (_, cx) = context(&fx);
+    let tool_res = call(&skills, "sample-skill", &cx).await;
+    assert_eq!(tool_res.status, ToolStatus::Ok);
+    assert!(tool_res.output.contains("Body of sample-skill"));
+}
+
+// Given user settings with relative and absolute skills.paths
+// When skills are discovered
+// Then both appear in the catalog, validate, and load
+#[tokio::test]
+async fn configured_relative_and_absolute_paths_appear_and_load() {
+    let fx = fixture();
+    let rel_dir = fx.repo.join("custom/rel-skill");
+    add(&rel_dir, "rel-skill", "Relative configured skill");
+
+    let abs_dir = fx.home.join("extra/abs-skill");
+    add(&abs_dir, "abs-skill", "Absolute configured skill");
+
+    let mut settings = crate::settings::Settings::default();
+    settings.set_dotted(
+        "skills.paths",
+        serde_json::json!(["custom", fx.home.join("extra").to_str().unwrap()]),
+    );
+
+    let mut skills = load_with_settings(&fx, &settings);
+    skills.validation = Arc::new(validation::SkillValidation {
+        data_dir: Some(fx.home.join("data")),
+        ..Default::default()
+    });
+    // Project skills beat user skills in rank order:
+    assert_eq!(
+        catalog_lines(&skills),
+        [
+            "rel-skill — Relative configured skill",
+            "abs-skill — Absolute configured skill"
+        ]
+    );
+
+    let (_, cx) = context(&fx);
+    for name in ["rel-skill", "abs-skill"] {
+        let snapshot = skills.snapshot(name).expect("snapshot");
+        skills.validation.approve(&snapshot, true).expect("approve");
+        let result = skills.load_listed(name).await;
+        assert_eq!(result.status, ToolStatus::Ok);
+        assert!(result.output.contains(&format!("Body of {name}")));
+
+        let tool_res = call(&skills, name, &cx).await;
+        assert_eq!(tool_res.status, ToolStatus::Ok);
+        assert!(tool_res.output.contains(&format!("Body of {name}")));
+    }
+}
+
+// Given a nested workspace, with skills at both workspace and ancestor levels
+// When skills are discovered
+// Then nearer workspace scope wins, and within the same level .agents > .claude > .opencode > .skills > configured relative
+#[test]
+fn nested_workspace_and_rank_precedence() {
+    let fx = fixture();
+    // fx.ws is fx.repo.join("packages/app")
+    // Put duplicate in workspace and ancestor .skills:
+    add(
+        &fx.ws.join(".skills/scoped"),
+        "scoped",
+        "Closer workspace skill",
+    );
+    add(
+        &fx.repo.join(".skills/scoped"),
+        "scoped",
+        "Farther ancestor skill",
+    );
+
+    // Put skills with same name in all project roots at ancestor level to verify source order:
+    add(
+        &fx.repo.join(".agents/skills/order-test"),
+        "order-test",
+        "From .agents",
+    );
+    add(
+        &fx.repo.join(".claude/skills/order-test"),
+        "order-test",
+        "From .claude",
+    );
+    add(
+        &fx.repo.join(".opencode/skills/order-test"),
+        "order-test",
+        "From .opencode",
+    );
+    add(
+        &fx.repo.join(".skills/order-test"),
+        "order-test",
+        "From .skills",
+    );
+    add(
+        &fx.repo.join("configured-extra/order-test"),
+        "order-test",
+        "From configured",
+    );
+
+    let mut settings = crate::settings::Settings::default();
+    settings.set_dotted("skills.paths", serde_json::json!(["configured-extra"]));
+
+    let skills = load_with_settings(&fx, &settings);
+    // Nearer workspace scope won for "scoped":
+    assert_eq!(
+        path_of(&skills, "scoped"),
+        crate::tools::canonical_path(&fx.ws.join(".skills/scoped/SKILL.md")).unwrap()
+    );
+    // .agents won for "order-test":
+    assert_eq!(
+        path_of(&skills, "order-test"),
+        crate::tools::canonical_path(&fx.repo.join(".agents/skills/order-test/SKILL.md")).unwrap()
+    );
+}
+
+// Given multiple configured paths and duplicates
+// When skills are discovered
+// Then earlier configured path wins, equal-rank duplicate within same root is ambiguous,
+// and project configured beats user absolute configured
+#[test]
+fn configured_paths_rank_collisions_and_shadowing() {
+    let fx = fixture();
+    // Earlier relative path beats later relative path:
+    add(&fx.repo.join("rel1/shared"), "shared", "From rel1");
+    add(&fx.repo.join("rel2/shared"), "shared", "From rel2");
+
+    // Equal rank within same root is ambiguous:
+    add(&fx.repo.join("rel1/dup_a"), "ambig", "Ambig A");
+    add(&fx.repo.join("rel1/dup_b"), "ambig", "Ambig B");
+
+    // Configured relative beats configured absolute:
+    add(
+        &fx.repo.join("rel1/rel_vs_abs"),
+        "rel_vs_abs",
+        "From project",
+    );
+    add(
+        &fx.home.join("user_extra/rel_vs_abs"),
+        "rel_vs_abs",
+        "From user extra",
+    );
+
+    // User standard root beats configured absolute:
+    add(
+        &fx.home.join(".agents/skills/std_vs_cfg"),
+        "std_vs_cfg",
+        "From std user",
+    );
+    add(
+        &fx.home.join("user_extra/std_vs_cfg"),
+        "std_vs_cfg",
+        "From cfg user",
+    );
+
+    let mut settings = crate::settings::Settings::default();
+    settings.set_dotted(
+        "skills.paths",
+        serde_json::json!(["rel1", "rel2", fx.home.join("user_extra").to_str().unwrap()]),
+    );
+
+    let skills = load_with_settings(&fx, &settings);
+    // rel1 won over rel2:
+    assert_eq!(
+        path_of(&skills, "shared"),
+        crate::tools::canonical_path(&fx.repo.join("rel1/shared/SKILL.md")).unwrap()
+    );
+    // ambig is ambiguous:
+    assert!(matches!(skills.resolve("ambig"), Resolution::Ambiguous(_)));
+    // project relative won over user absolute:
+    assert_eq!(
+        path_of(&skills, "rel_vs_abs"),
+        crate::tools::canonical_path(&fx.repo.join("rel1/rel_vs_abs/SKILL.md")).unwrap()
+    );
+    // std user won over user absolute:
+    assert_eq!(
+        path_of(&skills, "std_vs_cfg"),
+        crate::tools::canonical_path(&fx.home.join(".agents/skills/std_vs_cfg/SKILL.md")).unwrap()
+    );
+}
+
+// Given invalid entries, empty paths, non-directories, missing folders and worktree escapes
+// When skills are discovered
+// Then diagnostics are reported, startup/load does not fail, and valid entries are kept
+#[test]
+fn configured_paths_invalid_entries_and_escapes() {
+    let fx = fixture();
+    let valid_dir = fx.repo.join("valid_custom/ok_skill");
+    add(&valid_dir, "ok-skill", "Valid skill");
+
+    // Outside directory for escapes:
+    let outside = fx.home.join("outside_worktree");
+    fs::create_dir_all(&outside).unwrap();
+
+    // Symlink escaping worktree:
+    #[cfg(unix)]
+    let link_outside = fx.repo.join("symlink_outside");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, &link_outside).unwrap();
+
+    // Regular file configured as path:
+    let regular_file = fx.repo.join("regular_file.txt");
+    fs::write(&regular_file, "just a file").unwrap();
+
+    let paths: Vec<serde_json::Value> = vec![
+        serde_json::json!(""),
+        serde_json::json!(42),
+        serde_json::json!("missing/folder/does/not/exist"),
+        serde_json::json!("regular_file.txt"),
+        serde_json::json!("../outside_worktree"),
+        serde_json::json!("valid_custom"),
+        #[cfg(unix)]
+        serde_json::json!("symlink_outside"),
+    ];
+
+    let mut settings = crate::settings::Settings::default();
+    settings.set_dotted("skills.paths", serde_json::Value::Array(paths));
+
+    let skills = load_with_settings(&fx, &settings);
+    // Valid skill is discovered:
+    assert!(matches!(skills.resolve("ok-skill"), Resolution::Found(_)));
+
+    // Diagnostics include invalid and escapes:
+    assert!(has(&skills, |k| matches!(k, DiagnosticKind::Invalid(_))));
+    #[cfg(unix)]
+    assert!(has(&skills, |k| matches!(
+        k,
+        DiagnosticKind::Escapes { .. }
+    )));
 }

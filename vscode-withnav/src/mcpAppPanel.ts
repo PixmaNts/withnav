@@ -1,7 +1,20 @@
 import * as vscode from "vscode";
 import type { ChatBackend, McpAppDescriptor } from "./chatProtocol";
 
-const activePanels = new Map<string, vscode.WebviewPanel>();
+// One entry per open panel. The panel has a single message receiver, registered
+// when the panel is created; it reads `backend` and `app` from this entry, so a
+// reopen or reload only updates them. Registering a receiver per open made one
+// webview RPC run the MCP tool once per earlier open or reload.
+interface PanelEntry {
+  panel: vscode.WebviewPanel;
+  backend: ChatBackend;
+  app: McpAppDescriptor;
+  // Incremented by every open; a render whose resource read was overtaken by a
+  // newer open drops its HTML instead of replacing the newer one.
+  render: number;
+}
+
+const activePanels = new Map<string, PanelEntry>();
 
 function escapeHtml(text: string): string {
   return text
@@ -19,96 +32,131 @@ function randomNonce(): string {
 
 export async function openMcpAppPanel(backend: ChatBackend, app: McpAppDescriptor): Promise<void> {
   const key = `${app.server}:${app.resourceUri ?? app.url ?? app.tool}`;
-  let panel = activePanels.get(key);
   const title = `MCP App · ${app.server} (${app.tool})`;
-  if (panel) {
-    panel.title = title;
-    panel.reveal(vscode.ViewColumn.Beside);
+  let entry = activePanels.get(key);
+  if (entry) {
+    entry.panel.title = title;
+    entry.panel.reveal(vscode.ViewColumn.Beside);
   } else {
-    panel = vscode.window.createWebviewPanel(
+    const panel = vscode.window.createWebviewPanel(
       "withnav.mcpApp",
       title,
       vscode.ViewColumn.Beside ?? vscode.ViewColumn.Active,
       { enableScripts: true, retainContextWhenHidden: true },
     );
-    activePanels.set(key, panel);
+    const created: PanelEntry = { panel, backend, app, render: 0 };
+    entry = created;
+    activePanels.set(key, created);
+    const sub = panel.webview.onDidReceiveMessage((msg: unknown) => handlePanelMessage(created, msg));
     panel.onDidDispose(() => {
-      if (activePanels.get(key) === panel) activePanels.delete(key);
+      sub.dispose();
+      if (activePanels.get(key) === created) activePanels.delete(key);
     });
   }
+  const render = ++entry.render;
 
-  let html = app.html;
+  // The app runs in its own document, served by WithNav with a Content-Security-Policy of its
+  // own, never in a srcdoc that would inherit this panel's.
+  let frameUrl: string | undefined;
   let loadError: string | undefined;
-  if (!html && app.resourceUri && backend.readMcpResource) {
+  const source = app.html ? { html: app.html } : app.resourceUri ? { uri: app.resourceUri } : undefined;
+  if (source) {
     try {
-      const res = await backend.readMcpResource(app.server, app.resourceUri);
-      if (res.text) html = res.text;
-      else if (res.blob) html = Buffer.from(res.blob, "base64").toString("utf8");
-      else loadError = "MCP resource returned no HTML content.";
+      if (!backend.mcpAppFrame) throw new Error("MCP apps are not supported by this backend");
+      frameUrl = await backend.mcpAppFrame(app.server, source);
     } catch (error) {
       loadError = error instanceof Error ? error.message : String(error);
     }
   }
 
-  const nonce = randomNonce();
-  panel.webview.html = renderMcpAppHtml(nonce, app, html, loadError);
+  // Closed while the resource was read, or overtaken by a newer open.
+  if (activePanels.get(key) !== entry || entry.render !== render) return;
+  // Switch the context together with the HTML: until then the displayed app's
+  // RPCs keep going to the backend that opened it.
+  entry.backend = backend;
+  entry.app = app;
+  entry.panel.webview.html = renderMcpAppHtml(randomNonce(), app, frameUrl, loadError);
+}
 
-  const sub = panel.webview.onDidReceiveMessage(async (msg: any) => {
-    if (!msg || typeof msg !== "object") return;
-    if (msg.type === "openExternal" && typeof msg.url === "string") {
-      if (msg.url.startsWith("http://") || msg.url.startsWith("https://")) {
-        await vscode.env.openExternal(vscode.Uri.parse(msg.url));
-      }
-      return;
-    }
-    if (msg.type === "reload") {
-      await openMcpAppPanel(backend, app);
-      return;
-    }
-    if (msg.type === "rpc") {
-      const { id, method, params } = msg;
+async function handlePanelMessage(entry: PanelEntry, msg: any): Promise<void> {
+  if (!msg || typeof msg !== "object") return;
+  // Snapshot the context: a reopen during an await must not mix backends.
+  const { panel, backend, app } = entry;
+  if (msg.type === "openExternal" && typeof msg.url === "string") {
+    if (msg.url.startsWith("http://") || msg.url.startsWith("https://")) {
       try {
-        if (method === "tools/call") {
-          if (!backend.callMcpTool) throw new Error("MCP tool calls are not supported by this backend");
-          const name = typeof params?.name === "string" ? params.name : "";
-          const args = params?.arguments && typeof params.arguments === "object" ? params.arguments : {};
-          const result = await backend.callMcpTool(app.server, name, args);
-          void panel?.webview.postMessage({ type: "rpcReply", id, result });
-        } else if (method === "resources/read") {
-          if (!backend.readMcpResource) throw new Error("MCP resource reads are not supported by this backend");
-          const uri = typeof params?.uri === "string" ? params.uri : "";
-          const res = await backend.readMcpResource(app.server, uri);
-          void panel?.webview.postMessage({
-            type: "rpcReply",
-            id,
-            result: {
-              contents: [
-                {
-                  uri: res.uri,
-                  mimeType: res.mime_type,
-                  ...(res.text ? { text: res.text } : {}),
-                  ...(res.blob ? { blob: res.blob } : {}),
-                },
-              ],
-            },
-          });
-        }
+        await vscode.env.openExternal(vscode.Uri.parse(msg.url));
       } catch (error) {
-        void panel?.webview.postMessage({
+        const reason = error instanceof Error ? error.message : String(error);
+        void panel.webview.postMessage({ type: "hostError", message: `Could not open the browser: ${reason}` });
+      }
+    }
+    return;
+  }
+  if (msg.type === "reload") {
+    await openMcpAppPanel(backend, app);
+    return;
+  }
+  if (msg.type === "rpc") {
+    const { id, method, params } = msg;
+    try {
+      if (method === "tools/call") {
+        if (!backend.callMcpTool) throw new Error("MCP tool calls are not supported by this backend");
+        const name = typeof params?.name === "string" ? params.name : "";
+        const args = params?.arguments && typeof params.arguments === "object" ? params.arguments : {};
+        const result = await backend.callMcpTool(app.server, name, args);
+        void panel.webview.postMessage({ type: "rpcReply", id, result });
+      } else if (method === "resources/read") {
+        if (!backend.readMcpResource) throw new Error("MCP resource reads are not supported by this backend");
+        const uri = typeof params?.uri === "string" ? params.uri : "";
+        const res = await backend.readMcpResource(app.server, uri);
+        void panel.webview.postMessage({
           type: "rpcReply",
           id,
-          error: { code: -32000, message: error instanceof Error ? error.message : String(error) },
+          result: {
+            contents: [
+              {
+                uri: res.uri,
+                mimeType: res.mime_type,
+                ...(res.text ? { text: res.text } : {}),
+                ...(res.blob ? { blob: res.blob } : {}),
+              },
+            ],
+          },
         });
       }
+    } catch (error) {
+      void panel.webview.postMessage({
+        type: "rpcReply",
+        id,
+        error: { code: -32000, message: error instanceof Error ? error.message : String(error) },
+      });
     }
-  });
-  panel.onDidDispose(() => sub.dispose());
+  }
 }
+
+/**
+ * The origin of a URL as a CSP source, or undefined when it is not a plain http(s) origin of
+ * letters, digits, dots, dashes and a port: anything else would be pasted into the policy.
+ */
+function originOf(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
+    return /^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?$/.test(parsed.origin) ? parsed.origin : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** What an external `app.url` page has always been allowed to embed, redirects included. */
+const EXTERNAL_FRAME_SOURCES = "http://127.0.0.1:* http://localhost:* https:";
 
 export function renderMcpAppHtml(
   nonce: string,
   app: McpAppDescriptor,
-  html?: string,
+  frameUrl?: string,
   loadError?: string,
 ): string {
   const payloadJson = JSON.stringify({
@@ -120,19 +168,27 @@ export function renderMcpAppHtml(
     output: app.output,
     metadata: app.metadata ?? {},
   }).replace(/</g, "\\u003c");
-  const showUrl = !html && !!app.url;
-  const srcdocAttr = html ? `srcdoc="${escapeHtml(html)}"` : "";
-  const srcAttr = showUrl && app.url ? `src="${escapeHtml(app.url)}"` : "";
+  // A document served by WithNav is a one-time URL under its own CSP, in an opaque-origin
+  // sandbox: it runs, but cannot reach this panel, VS Code's API or local files. A bare
+  // `app.url` is an external page and keeps the sandbox it had.
+  const showUrl = !frameUrl && !!app.url;
+  const frameSrc = frameUrl ?? (showUrl ? app.url : undefined);
+  const srcAttr = frameSrc ? `src="${escapeHtml(frameSrc)}"` : "";
   const sandbox = showUrl
     ? "allow-scripts allow-same-origin allow-forms allow-downloads"
     : "allow-scripts allow-forms";
+  // The panel may embed only the one origin of a document WithNav served, so a frame that
+  // navigates itself cannot land on another page that the bridge would still answer. An
+  // external `app.url` keeps the wider list it had, since such pages redirect.
+  const frameSources = showUrl ? EXTERNAL_FRAME_SOURCES : (originOf(frameSrc) ?? "'none'");
+  const policy = `default-src 'none'; frame-src ${frameSources}; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';`;
 
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src http://127.0.0.1:* http://localhost:* https: data: blob:; img-src https: http: data: blob:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="${escapeHtml(policy)}">
   <title>${escapeHtml(app.server)} · ${escapeHtml(app.tool)}</title>
   <style>
     html, body { height: 100%; margin: 0; padding: 0; background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); font-family: var(--vscode-font-family, sans-serif); font-size: 12px; display: flex; flex-direction: column; overflow: hidden; }
@@ -153,7 +209,8 @@ export function renderMcpAppHtml(
     </div>
   </div>
   ${loadError && !showUrl ? `<div class="error">${escapeHtml(loadError)}</div>` : ""}
-  ${html || showUrl ? `<iframe id="mcp-frame" sandbox="${sandbox}" ${srcdocAttr} ${srcAttr}></iframe>` : ""}
+  <div class="error" id="host-error" role="alert" hidden></div>
+  ${frameSrc ? `<iframe id="mcp-frame" sandbox="${sandbox}" ${srcAttr}></iframe>` : ""}
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const app = ${payloadJson};
@@ -163,6 +220,12 @@ export function renderMcpAppHtml(
     window.addEventListener("message", (event) => {
       const data = event.data;
       if (!data || typeof data !== "object") return;
+      if (data.type === "hostError" && event.source !== frame?.contentWindow) {
+        const box = document.getElementById("host-error");
+        box.textContent = String(data.message || "");
+        box.hidden = false;
+        return;
+      }
       if (data.type === "rpcReply" && frame?.contentWindow) {
         const msg = data.error
           ? { jsonrpc: "2.0", id: data.id, error: data.error }

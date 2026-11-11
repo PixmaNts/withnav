@@ -44,6 +44,11 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Extra skill roots declared under `skills.paths`.
+    pub fn skills_paths(&self) -> Option<&Value> {
+        self.get_dotted("skills.paths")
+    }
+
     /// Global MCP server declarations, preserving invalid entries for diagnostics.
     pub fn mcp(&self) -> Vec<(String, Result<crate::mcp::config::ServerConfig, String>)> {
         crate::mcp::config::parse(self.root.get("mcp"))

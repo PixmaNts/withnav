@@ -60,7 +60,7 @@ impl Engine {
                 match self.run_call(cx, transcript, call).await {
                     CallEnd::Settled(output) => {
                         let block = ContentBlock::ToolResult { call: id.clone(), output };
-                        transcript.push(message(&id.0, Role::Tool, Origin::Host, block));
+                        transcript.push(message(&id.0, Role::Tool, Origin::new(OriginKind::Host), block));
                     }
                     CallEnd::Waiting(request) => return Ok(TurnOutcome::Waiting(request)),
                 }
@@ -101,7 +101,7 @@ impl Engine {
         transcript.push(Message {
             id: "assistant".into(),
             role: Role::Assistant,
-            origin: Origin::Host,
+            origin: Origin::new(OriginKind::Host),
             content,
         });
         Ok(calls)
@@ -198,7 +198,7 @@ mod tests {
     }
 
     fn user(text: &str) -> Vec<Message> {
-        vec![message("u1", Role::User, Origin::Captain, ContentBlock::Text(text.into()))]
+        vec![message("u1", Role::User, Origin::new(OriginKind::Captain), ContentBlock::Text(text.into()))]
     }
 
     fn results(t: &[Message]) -> Vec<(ToolCallId, ToolOutput)> {
@@ -223,7 +223,11 @@ mod tests {
         ]);
         let rig = build(provider, InMemoryRules::default().allow("echo"));
         let mut t = user("go");
-        let out = rig.engine.run_turn(&ctx(PipelinePlan::default(), Control::Normal), &mut t).await.unwrap();
+        let out = rig
+            .engine
+            .run_turn(&ctx(PipelinePlan::default(), Control::new(ControlKind::Normal)), &mut t)
+            .await
+            .unwrap();
         assert_eq!(out, TurnOutcome::Done);
         assert_eq!(results(&t), [("c1".into(), ToolOutput { status: ToolStatus::Ok, text: "hello".into() })]);
         // user, assistant(call), tool result, assistant(final).
@@ -236,7 +240,11 @@ mod tests {
         let provider = ScriptedProvider::new(vec![call_script("", "c1", "echo", r#"{"text":"x"}"#)]);
         let rig = build(provider, InMemoryRules::default());
         let mut t = user("go");
-        let out = rig.engine.run_turn(&ctx(PipelinePlan::default(), Control::Normal), &mut t).await.unwrap();
+        let out = rig
+            .engine
+            .run_turn(&ctx(PipelinePlan::default(), Control::new(ControlKind::Normal)), &mut t)
+            .await
+            .unwrap();
         assert!(matches!(out, TurnOutcome::Waiting(r) if r.call == "c1".into()));
         assert!(results(&t).is_empty());
     }
@@ -261,7 +269,7 @@ mod tests {
             .review(ReviewStage::Flow(flow.clone()))
             .unwrap();
         let mut t = user("go");
-        rig.engine.run_turn(&ctx(plan, Control::Normal), &mut t).await.unwrap();
+        rig.engine.run_turn(&ctx(plan, Control::new(ControlKind::Normal)), &mut t).await.unwrap();
         assert_eq!(flow.seen()[0].call.args, ToolArguments(json!({"text": "rewritten"})));
         assert_eq!(results(&t)[0].1.text, "rewritten");
         // A rewrite into a denied tool is judged under the new name.
@@ -272,7 +280,7 @@ mod tests {
         });
         let mut t = user("go");
         let plan = PipelinePlan::default().prepare(rename).unwrap();
-        rig2.engine.run_turn(&ctx(plan, Control::Normal), &mut t).await.unwrap();
+        rig2.engine.run_turn(&ctx(plan, Control::new(ControlKind::Normal)), &mut t).await.unwrap();
         // Preflight refuses the unknown rewritten tool before the deny rule is even needed.
         assert_eq!(results(&t)[0].1.status, ToolStatus::Error);
     }
@@ -289,7 +297,10 @@ mod tests {
         });
         let mut t = user("go");
         rig.engine
-            .run_turn(&ctx(PipelinePlan::default().result(redact).unwrap(), Control::Normal), &mut t)
+            .run_turn(
+                &ctx(PipelinePlan::default().result(redact).unwrap(), Control::new(ControlKind::Normal)),
+                &mut t,
+            )
             .await
             .unwrap();
         let (id, out) = results(&t).remove(0);
@@ -310,7 +321,7 @@ mod tests {
             Ok(StageStep::Continue(ToolPatch::default()))
         });
         store.swap(PipelinePlan::default().prepare(swapper).unwrap());
-        let cx = TurnContext { plan: store.snapshot(), control: Control::Normal };
+        let cx = TurnContext { plan: store.snapshot(), control: Control::new(ControlKind::Normal) };
         let mut t = user("go");
         rig.engine.run_turn(&cx, &mut t).await.unwrap();
         // The swap happened during the first call; the second call still ran the old stage.

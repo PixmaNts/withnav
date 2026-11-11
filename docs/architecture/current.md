@@ -189,8 +189,10 @@ flowchart TD
 **Works (keep):** one server API for every client · sequencer + `seq` + SSE replay · pure
 `decide` over a trait · flows as data · durable child delivery, with budget renewal ·
 `instinct-flow`, `withnav-provider` and the four client crates extracted with Cargo-enforced
-boundaries · one wire contract crate (`withnav-client-api`) for the Rust side · attachments and
-secrets that never reach events or logs.
+boundaries · one wire contract crate (`withnav-client-api`) for the Rust side · attachment bytes
+stored separately from transcripts and events, which carry references · secrets redacted from
+events and logs (a value split across two pieces of a live stream can still appear there;
+the stored response is redacted).
 
 **Hurts:**
 - **Cycles inside the root** (section 2): engine, permission, tools and session still cannot be

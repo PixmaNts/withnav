@@ -43,7 +43,8 @@ export function McpAppHost({
         if (res.text) {
           setHtml(res.text);
         } else if (res.blob) {
-          setHtml(atob(res.blob));
+          // `atob` gives one character per byte: decoding those bytes as UTF-8 keeps non-ASCII text intact.
+          setHtml(new TextDecoder("utf-8").decode(Uint8Array.from(atob(res.blob), (c) => c.charCodeAt(0))));
         } else {
           setError("MCP resource returned no HTML content.");
         }

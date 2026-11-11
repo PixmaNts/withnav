@@ -1,5 +1,5 @@
 import { BrandMark, Crew, crewLabel } from "./components/Crew";
-import { Compass, FlowArrow, GearSix, Key, List, SidebarSimple, WifiSlash } from "@phosphor-icons/react";
+import { Compass, FlowArrow, GearSix, List, SidebarSimple, WifiSlash } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api/client";
@@ -18,7 +18,7 @@ import { launchedReason, RemoveWorkspaceDialog, type RemoveRequest } from "./com
 import { DeleteSessionDialog, type DeleteSessionRequest } from "./components/SessionActions";
 import { SubagentView } from "./components/SubagentView";
 import { EmptySession, Transcript } from "./components/Transcript";
-import { SecretsList } from "./components/SecretCard";
+import { SecretsMenu } from "./components/SecretCard";
 import { waitingSecret } from "./session/reducer";
 import { sessionTitle, type ClientCommand } from "./lib/compose";
 import { baseName, modKey, shortPath } from "./lib/format";
@@ -346,7 +346,6 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const variantLabel = chat.selection.variant ?? (offered.length ? "off" : "");
   const modelLabel = chat.selection.model ? `${chat.selection.model}${variantLabel ? ` · ${variantLabel}` : ""}` : "no model";
   const connection = chat.stream.status === "reconnecting" ? "Reconnecting…" : chat.stream.status === "error" ? chat.stream.error ?? "Disconnected" : null;
-  const [secretsOpen, setSecretsOpen] = useState(false);
   // A settled secret in the history needs the server's list for its last characters and state.
   const storedSecrets = useMemo(() => chat.view.items.reduce((n, item) => n + (item.kind === "turn" ? item.parts.filter((p) => p.type === "question" && p.secretNote?.outcome === "stored").length : 0), 0), [chat.view.items]);
   const { refreshSecrets } = chat;
@@ -399,13 +398,8 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             <span aria-hidden="true">{chat.bypassPending ? "◌" : bypass ? "⚠" : "🛡"}</span> {bypass ? "Bypass active" : "Safe mode"}
           </button>
           {chat.secrets && (
-            <span className="secrets-anchor">
-              <button type="button" className="icon-btn" aria-haspopup="dialog" aria-expanded={secretsOpen} aria-label="Secrets of this session" title="Secrets"
-                onClick={() => { const open = !secretsOpen; setSecretsOpen(open); if (open) void chat.refreshSecrets(); }}>
-                <Key size={16} />
-              </button>
-              {secretsOpen && <SecretsList list={chat.secrets.list} error={chat.secretError} onRevoke={(name) => void chat.secrets?.revoke(name).catch((e) => chat.setError(e instanceof Error ? e.message : String(e)))} />}
-            </span>
+            <SecretsMenu list={chat.secrets.list} error={chat.secretError} onOpen={refreshSecrets}
+              onRevoke={(name) => void chat.secrets?.revoke(name).catch((e) => chat.setError(e instanceof Error ? e.message : String(e)))} />
           )}
           <button type="button" className="icon-btn st-gear" onClick={openStudio} disabled={!workspace} aria-label="InstinctFlow Studio" title={workspace ? "InstinctFlow Studio: flows" : "Choose a workspace first"}>
             <FlowArrow size={16} />

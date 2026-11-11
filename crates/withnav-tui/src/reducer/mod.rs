@@ -61,6 +61,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Context { generation, .. }
         | ClientEvent::Submitted { generation, .. }
         | ClientEvent::AttachmentChecked { generation, .. }
+        | ClientEvent::AttachmentsUploaded { generation, .. }
         | ClientEvent::ImageOpened { generation, .. }
         | ClientEvent::Commands { generation, .. }
         | ClientEvent::PermissionAnswered { generation, .. }
@@ -200,7 +201,7 @@ pub(super) fn refresh_start_variant(
 
 #[cfg(test)]
 pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
-    send_effect_with(text, revision, vec![])
+    send_effect_with(text, revision, vec![], 0)
 }
 
 /// The send of the active tab's message: its pending images ride with it, and stay in the tab
@@ -208,13 +209,15 @@ pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
 pub(crate) fn send_for_tab(s: &mut State, text: String, revision: u64) -> Effect {
     let attachments = s.pending_attachments.clone();
     s.attachments_sending = attachments.len();
-    send_effect_with(text, revision, attachments)
+    s.attachments_send += 1;
+    send_effect_with(text, revision, attachments, s.attachments_send)
 }
 
 fn send_effect_with(
     text: String,
     revision: u64,
     attachments: Vec<crate::state::PendingAttachment>,
+    send: u64,
 ) -> Effect {
     use withnav_client_api::command::ContentBlock;
     let content = if text.trim().is_empty() && !attachments.is_empty() {
@@ -262,6 +265,7 @@ fn send_effect_with(
             request,
             revision,
             attachments,
+            send,
         }
     }
 }
@@ -362,6 +366,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 .or(s.resuming.clone());
             let read_only = s.read_only();
             let default_agent = s.tabs[s.active].default_agent.clone();
+            let mcp_before = mcp_version(&s.mcp);
             let State {
                 tabs,
                 active,
@@ -380,6 +385,10 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     mcp,
                 },
             )?;
+            // The prompts of a server that just became ready are commands of their own.
+            if mcp_version(&s.mcp) != mcp_before {
+                effects.push(Effect::FetchCommands);
+            }
             if selection_changed
                 && let Some(id) = s
                     .session
@@ -561,7 +570,11 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         // A failed read keeps what is shown: the next event or reconnection brings it back.
         ClientEvent::Mcp { result, .. } => {
             if let Ok(snapshot) = result {
+                let before = mcp_version(&s.mcp);
                 keep_newer_mcp(&mut s.mcp, snapshot);
+                if mcp_version(&s.mcp) != before {
+                    effects.push(Effect::FetchCommands);
+                }
             }
         }
         ClientEvent::PermissionAnswered {
@@ -963,6 +976,8 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         ClientEvent::ImageOpened { result, .. } => {
             push_local(s, BlockKind::Notice(result.unwrap_or_else(|e| e)));
         }
+        // Checked before an `/attach clear`: the Captain dropped it already.
+        ClientEvent::AttachmentChecked { revision, .. } if revision != s.attachments_revision => {}
         ClientEvent::AttachmentChecked { result, .. } => match result {
             Ok(attachment) => {
                 if s.pending_attachments.len() >= crate::state::MAX_ATTACHMENTS {
@@ -983,6 +998,22 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             }
             Err(why) => push_local(s, BlockKind::Notice(format!("/attach: {why}"))),
         },
+        // Reported for an earlier message: its images may be gone and a same-named file
+        // attached since must not take an id that holds other bytes.
+        ClientEvent::AttachmentsUploaded { send, .. } if send != s.attachments_send => {}
+        ClientEvent::AttachmentsUploaded { uploads, .. } => {
+            // Matched by the attachment itself, not its position: an image attached during the
+            // send lands after the ones in flight and never takes a stored id.
+            let sending = s.attachments_sending.min(s.pending_attachments.len());
+            for (attachment, uploaded) in uploads {
+                if let Some(pending) = s.pending_attachments[..sending]
+                    .iter_mut()
+                    .find(|p| p.uploaded.is_none() && **p == attachment)
+                {
+                    pending.uploaded = Some(uploaded);
+                }
+            }
+        }
         ClientEvent::Submitted {
             revision, result, ..
         } => match result {
@@ -1177,6 +1208,13 @@ fn seed_children(s: &mut State) {
             }
         }
     }
+}
+
+/// Which MCP status the client holds: the server list (and so the prompt commands) can only
+/// have changed when this does.
+fn mcp_version(mcp: &Option<withnav_client_api::event::McpStatus>) -> Option<(String, u64)> {
+    mcp.as_ref()
+        .map(|m| (m.incarnation.to_string(), m.revision))
 }
 
 #[cfg(test)]

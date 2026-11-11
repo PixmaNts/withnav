@@ -60,4 +60,25 @@ describe("MCP media and MCP App extraction & rendering", () => {
     root.unmount();
     host.remove();
   });
+
+  it("zooms a media preview with a toggle button that has a name and a pressed state", async () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    root.render(<ToolList calls={[sampleCall]} />);
+    await new Promise((r) => setTimeout(r, 20));
+    const zoom = host.querySelector<HTMLButtonElement>(".mcp-media-card button");
+    expect(zoom?.type).toBe("button");
+    expect(zoom?.getAttribute("aria-label")).toBe("Enlarge mcp__excalidraw__get_canvas_screenshot preview 1");
+    expect(zoom?.getAttribute("aria-pressed")).toBe("false");
+    zoom?.click();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(zoom?.getAttribute("aria-pressed")).toBe("true");
+    expect(host.querySelector(".mcp-media-card")?.classList.contains("zoomed")).toBe(true);
+    zoom?.click();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(zoom?.getAttribute("aria-pressed")).toBe("false");
+    expect(host.querySelector(".mcp-media-card")?.classList.contains("zoomed")).toBe(false);
+    root.unmount();
+    host.remove();
+  });
 });

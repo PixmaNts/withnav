@@ -197,11 +197,20 @@ async fn nav_run_waits_for_a_server_that_initialises_after_a_delay() {
     assert!(tools.iter().any(|t| t == "mcp__fake__echo"), "{tools:?}");
 }
 
+fn mcp_note(e: &withnav::bus::event::EventEnvelope) -> bool {
+    e.kind == "command.result" && e.payload["name"] == "mcp_tools"
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_child_inherits_the_parents_frozen_inventory_not_later_servers() {
+async fn a_child_keeps_the_tools_it_was_created_with_and_a_later_one_gets_the_parents_current_list()
+{
     let env = common::TestEnv::new();
     install_agents(&env.ws);
-    let provider = spawn_capturing_provider(vec![text_response("child done")]).await;
+    let provider = spawn_capturing_provider(vec![
+        text_response("early done"),
+        text_response("late done"),
+    ])
+    .await;
     let cfg = TestServerConfig::mock(&env.root, &provider.url)
         .chat_tools(128_000)
         .rules_home(&env.home)
@@ -212,25 +221,197 @@ async fn a_child_inherits_the_parents_frozen_inventory_not_later_servers() {
         false,
     );
     let state = AppState::new(cfg).unwrap();
-    // The parent freezes its inventory before the server is ready.
+    // The parent starts before the server is ready, and so does the first child.
     let parent = state.create_session(&env.ws, None, false).await.unwrap();
-    ready(&state).await;
-    let child = state
+    let sub = state.subscribe(parent, None).await.unwrap();
+    let early = state
         .create_child_session(parent, "mcpchild", "inspect")
         .await
         .unwrap();
-    let policy: Value = serde_json::from_str(
-        &state
-            .child_metadata(child)
+    let policy = |id| {
+        let state = state.clone();
+        async move {
+            serde_json::from_str::<Value>(
+                &state
+                    .child_metadata(id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .policy_snapshot,
+            )
+            .unwrap()
+        }
+    };
+    assert!(policy(early).await.get("mcp__fake__echo").is_none());
+    // The idle parent takes the server's tools once it is ready, and says so.
+    let events = common::server::collect_until(sub, mcp_note).await;
+    let note = events.iter().find(|e| mcp_note(e)).unwrap();
+    let added = note.payload["data"]["added"].as_array().unwrap();
+    assert!(added.iter().any(|t| t == "mcp__fake__echo"), "{note:?}");
+    // The first child still holds what it was created with; the next one gets the new list.
+    assert!(
+        common::server::stored_events(&state, early, "command.result")
             .await
-            .unwrap()
-            .unwrap()
-            .policy_snapshot,
-    )
-    .unwrap();
-    assert!(policy.get("mcp__fake__echo").is_none(), "{policy}");
+            .iter()
+            .all(|e| !mcp_note(e))
+    );
+    let late = state
+        .create_child_session(parent, "mcpchild", "inspect again")
+        .await
+        .unwrap();
+    assert_eq!(policy(late).await["mcp__fake__echo"], json!(true));
     let tools = tool_names(&provider, 0).await;
     assert!(!tools.iter().any(|t| t.starts_with("mcp__")), "{tools:?}");
+    state.service().close_all().await;
+}
+
+// Given MCP App tool calls over the route, under its 2 MiB body limit
+// Then arguments over 1 MiB or nested deeper than 64 levels get a 400 naming the bound, and
+//      a call within both bounds reaches the server
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_mcp_app_call_route_refuses_oversized_and_deep_arguments() {
+    let env = common::TestEnv::new();
+    let provider = spawn_capturing_provider(vec![]).await;
+    let cfg = TestServerConfig::mock(&env.root, &provider.url)
+        .rules_home(&env.home)
+        .config();
+    with_mcp(&cfg, json!({"command":[common::python(),FIXTURE]}), false);
+    let state = AppState::new(cfg).unwrap();
+    ready(&state).await;
+    let router = withnav::server::app(state.clone());
+    let call = |arguments: Value| {
+        let router = router.clone();
+        async move {
+            let body = json!({"name": "echo", "arguments": arguments});
+            common::server::request_json(&router, "POST", "/v1/mcp/fake/call", Some(&body)).await
+        }
+    };
+    let (status, body) = call(json!({"text": "x".repeat(1536 * 1024)})).await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(
+        body.to_string()
+            .contains("MCP tool arguments are larger than 1024 KiB"),
+        "{body}"
+    );
+    let mut deep = json!(1);
+    for _ in 0..64 {
+        deep = json!([deep]);
+    }
+    let (status, body) = call(json!({"text": deep})).await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(
+        body.to_string()
+            .contains("MCP tool arguments are nested deeper than 64 levels"),
+        "{body}"
+    );
+    let (status, body) = call(json!({"text": "ok"})).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert_eq!(body["content"][0]["text"], "{\"text\": \"ok\"}");
+    state.service().close_all().await;
+}
+
+fn tools_file(dir: &Path, names: &[&str]) -> std::path::PathBuf {
+    let path = dir.join("tools.json");
+    std::fs::write(&path, json!(names).to_string()).unwrap();
+    path
+}
+
+/// Waits until the manager serves exactly `count` tools of the `fake` server.
+async fn serving(state: &AppState, count: usize) {
+    wait_for("the server's new tool list", || {
+        state
+            .service()
+            .mcp_statuses()
+            .iter()
+            .any(|s| s.server_id == "fake" && s.state == "ready" && s.tool_count == count)
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tools_list_changed_reaches_an_idle_session_only_between_turns() {
+    let env = common::TestEnv::new();
+    let file = tools_file(&env.root, &["echo"]);
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let provider = common::sse::spawn_gated_provider(
+        vec![
+            text_response("one"),
+            text_response("two"),
+            text_response("three"),
+        ],
+        release.clone(),
+    )
+    .await;
+    let cfg = TestServerConfig::mock(&env.root, &provider.url)
+        .chat_tools(128_000)
+        .rules_home(&env.home)
+        .config();
+    with_mcp(
+        &cfg,
+        json!({"command":[common::python(),FIXTURE],"env":{"TOOLS_FILE":file}}),
+        false,
+    );
+    let state = AppState::new(cfg).unwrap();
+    ready(&state).await;
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    state
+        .send(captain_command(id, "first".into()))
+        .await
+        .unwrap();
+    // The first turn is in flight (its request is held) while the server adds a tool.
+    wait_for("the first request", || !provider.bodies().is_empty()).await;
+    let sub = state.subscribe(id, None).await.unwrap();
+    tools_file(&env.root, &["echo", "alpha"]);
+    serving(&state, 2).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        common::server::stored_events(&state, id, "command.result")
+            .await
+            .iter()
+            .all(|e| !mcp_note(e)),
+        "the registry changed during a turn"
+    );
+    release.notify_one();
+    let events = common::server::collect_until(sub, mcp_note).await;
+    let note = &events.iter().find(|e| mcp_note(e)).unwrap().payload["data"];
+    assert_eq!(note["added"], json!(["mcp__fake__alpha"]));
+    assert!(note.get("removed").is_none(), "{note}");
+    // The next turn offers it; the one that was running did not.
+    state
+        .send(captain_command(id, "second".into()))
+        .await
+        .unwrap();
+    let first = tool_names(&provider, 0).await;
+    let second = tool_names(&provider, 1).await;
+    assert!(!first.iter().any(|t| t == "mcp__fake__alpha"), "{first:?}");
+    assert!(second.iter().any(|t| t == "mcp__fake__alpha"), "{second:?}");
+
+    // A tool the server drops disappears from the tools offered the same way.
+    let mut finished = 0;
+    for _ in 0..200 {
+        finished = common::server::stored_events(&state, id, "task.done")
+            .await
+            .len();
+        if finished == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(finished, 2, "the second turn ends");
+    let sub = state.subscribe(id, None).await.unwrap();
+    tools_file(&env.root, &["alpha"]);
+    let events = common::server::collect_until(sub, |e| {
+        mcp_note(e) && e.payload["data"]["removed"] == json!(["mcp__fake__echo"])
+    })
+    .await;
+    assert!(events.iter().any(mcp_note));
+    state
+        .send(captain_command(id, "third".into()))
+        .await
+        .unwrap();
+    let third = tool_names(&provider, 2).await;
+    assert!(!third.iter().any(|t| t == "mcp__fake__echo"), "{third:?}");
+    assert!(third.iter().any(|t| t == "mcp__fake__alpha"), "{third:?}");
     state.service().close_all().await;
 }
 
@@ -241,15 +422,18 @@ async fn a_live_session_hears_the_mcp_status_and_the_route_returns_the_same_snap
     let cfg = TestServerConfig::mock(&env.root, &provider.url)
         .rules_home(&env.home)
         .config();
-    // The server answers after a delay, so it turns ready while the session is open.
+    // The server answers initialize once the gate file exists, created after the session
+    // subscribed: it turns ready while the session listens, however slow the runner is.
+    let gate = env.root.join("mcp-ready");
     with_mcp(
         &cfg,
-        json!({"command":[common::python(),FIXTURE],"env":{"INIT_DELAY_SECONDS":"1"},"startup_timeout_ms":5000}),
+        json!({"command":[common::python(),FIXTURE],"env":{"INIT_GATE":gate},"startup_timeout_ms":30000}),
         false,
     );
     let state = AppState::new(cfg).unwrap();
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
+    std::fs::write(&gate, "").unwrap();
     let events = common::server::collect_until(sub, |e| {
         e.kind == "mcp.status" && e.payload["servers"][0]["state"] == "ready"
     })
@@ -284,5 +468,196 @@ async fn a_live_session_hears_the_mcp_status_and_the_route_returns_the_same_snap
         "{body}"
     );
     assert_eq!(body["servers"][0]["state"], "ready");
+    state.service().close_all().await;
+}
+
+async fn raw(router: &axum::Router, method: &str, path: &str, body: &str) -> (u16, Value) {
+    use tower::ServiceExt;
+    let request = axum::http::Request::builder()
+        .method(method)
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body.to_owned()))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status().as_u16();
+    let bytes = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+// Given MCP servers in every state an app can meet: ready, slow, crashing, disabled and
+// misconfigured
+// When an app reads resources and calls tools through the HTTP bridge
+// Then each failure class has its own status and reason, and a server's oversized error text
+// reaches the app redacted, on one line and cut to the documented bound
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_app_routes_map_each_failure_class_and_bound_server_errors() {
+    let env = common::TestEnv::new();
+    let cfg = TestServerConfig::unreachable(&env.root).config();
+    let secret = "tok-sentinel-0123456789";
+    let mut settings = withnav::settings::load(&cfg.config_dir).unwrap();
+    settings.set_dotted(
+        "mcp",
+        json!({
+            "fake": {"command": [common::python(), FIXTURE], "env": {"API_TOKEN": secret}},
+            "slow": {"command": [common::python(), FIXTURE], "call_timeout_ms": 300, "env": {"SLOW_SECONDS": "30"}},
+            "crashy": {"command": [common::python(), FIXTURE]},
+            "off": {"command": [common::python(), FIXTURE], "enabled": false},
+            "broken": {"command": [common::python(), FIXTURE], "call_timeout_ms": 0},
+        }),
+    );
+    withnav::settings::save(&cfg.config_dir, &settings).unwrap();
+    let state = AppState::new(cfg).unwrap();
+    wait_for("MCP discovery", || {
+        let statuses = state.service().mcp_statuses();
+        ["fake", "slow", "crashy"].iter().all(|id| {
+            statuses
+                .iter()
+                .any(|s| s.server_id == *id && s.state == "ready")
+        })
+    })
+    .await;
+    let router = withnav::server::app(state.clone());
+    let call = |server: &str, body: Value| {
+        let router = router.clone();
+        let path = format!("/v1/mcp/{server}/call");
+        async move { raw(&router, "POST", &path, &body.to_string()).await }
+    };
+    let resource = |server: &str, uri: &str| {
+        let router = router.clone();
+        let path = format!("/v1/mcp/{server}/resource?uri={uri}");
+        async move { raw(&router, "GET", &path, "").await }
+    };
+
+    let (status, body) = resource("fake", "ui://fixture/app.html").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["mime_type"], "text/html;profile=mcp-app");
+    let (status, body) = call("fake", json!({"name": "fail"})).await;
+    assert_eq!(
+        status, 200,
+        "an isError result is a successful call: {body}"
+    );
+    assert_eq!(body["isError"], true);
+
+    // The caller's mistakes: 400, with a stable message that never quotes the request back.
+    let (status, body) = resource("fake", "file:///etc/passwd").await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (400, Some("mcp_invalid_request"))
+    );
+    let (status, body) = raw(&router, "GET", "/v1/mcp/fake/resource", "").await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (400, Some("mcp_invalid_request"))
+    );
+    let quoted = "q".repeat(10_000);
+    let (status, body) = call("fake", json!({"name": "echo", "arguments": quoted})).await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (400, Some("mcp_invalid_request"))
+    );
+    assert_eq!(body["error"], "invalid MCP App request");
+    for (method, path) in [
+        ("GET", "/v1/mcp/%FF/resource?uri=ui://fixture/app.html"),
+        ("POST", "/v1/mcp/%FF/call"),
+    ] {
+        let (status, body) = raw(&router, method, path, "{\"name\":\"echo\"}").await;
+        assert_eq!(
+            (status, body["reason"].as_str()),
+            (400, Some("mcp_invalid_request")),
+            "{path}"
+        );
+    }
+    let (status, body) = raw(&router, "POST", "/v1/mcp/fake/call", "{\"name\":").await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (400, Some("invalid MCP App request"))
+    );
+    let (status, body) = call(
+        "fake",
+        json!({"name": "echo", "arguments": {"rpc_error": "text must be a string"}}),
+    )
+    .await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (400, Some("mcp_invalid_params")),
+        "{body}"
+    );
+    assert_eq!(
+        body["error"],
+        "MCP server refused the tools/call arguments: text must be a string"
+    );
+
+    // Unknown names: 404, and the requested id is not echoed.
+    let long_id = "u".repeat(2_000);
+    let (status, body) = call(&long_id, json!({"name": "echo"})).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (404, Some("unknown MCP server"))
+    );
+    assert_eq!(body["reason"], "mcp_unknown_server");
+    let (status, body) = call("fake", json!({"name": "missing"})).await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (404, Some("mcp_unknown_tool"))
+    );
+
+    // Configured but not serving: 503, whether disabled, misconfigured or gone mid-call.
+    for server in ["off", "broken"] {
+        let (status, body) = call(server, json!({"name": "echo"})).await;
+        assert_eq!(
+            (status, body["reason"].as_str()),
+            (503, Some("mcp_unavailable")),
+            "{server}"
+        );
+        let (status, body) = resource(server, "ui://fixture/app.html").await;
+        assert_eq!(
+            (status, body["reason"].as_str()),
+            (503, Some("mcp_unavailable")),
+            "{server}"
+        );
+    }
+    let (status, body) = call("crashy", json!({"name": "crash"})).await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (503, Some("mcp_unavailable")),
+        "{body}"
+    );
+
+    // No answer within the server's call timeout: 504.
+    let (status, body) = call("slow", json!({"name": "slow"})).await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (504, Some("mcp_timeout"))
+    );
+    assert_eq!(body["error"], "MCP tools/call timed out");
+
+    // A server-side JSON-RPC error: 502, its oversized text redacted, one line, bounded.
+    let oversized = format!("boom\n{}{secret}{}", "a".repeat(200), "z".repeat(10_000));
+    let (status, body) = call(
+        "fake",
+        json!({"name": "echo", "arguments": {"rpc_error": oversized, "rpc_code": -32603}}),
+    )
+    .await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (502, Some("mcp_rejected")),
+        "{body}"
+    );
+    let error = body["error"].as_str().unwrap();
+    let detail = error
+        .strip_prefix("MCP server rejected tools/call: ")
+        .unwrap_or_else(|| panic!("unexpected message: {error}"));
+    assert_eq!(detail.chars().count(), withnav::mcp::UI_ERROR_DETAIL_CHARS);
+    assert!(
+        detail.starts_with("boom a") && detail.ends_with('…'),
+        "{detail}"
+    );
+    assert!(detail.contains("[redacted]"), "{detail}");
+    assert!(!error.contains("tok-") && !error.contains('\n'), "{error}");
+
     state.service().close_all().await;
 }

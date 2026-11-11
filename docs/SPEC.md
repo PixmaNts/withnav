@@ -1095,8 +1095,9 @@ The agent may explain the denial, choose a safer command, or use `ask`. It MUST 
 
 ## 13. MCP Integration
 
-> **Status: stdio client delivered.** `src/mcp/` uses `rmcp` 3.5 with no HTTP/TLS
-> transport features. HTTP, live tool refresh and client status panels are follow-ups.
+> **Status: stdio and Streamable HTTP clients delivered.** `src/mcp/` uses `rmcp` with its
+> reqwest Streamable HTTP client (rustls, static headers, no OAuth). Live tool refresh is a
+> follow-up.
 
 The core is an MCP client using `rmcp`.
 
@@ -1544,10 +1545,12 @@ An agent definition says what the agent is for. It does not say what it may exec
 
 A session finds `SKILL.md` files once, lists them in a bounded catalog message after the rules, and lets the model load one with the `skill` tool. Where it looks, nearest first:
 
-1. For each directory from the workspace up to the worktree root: `.agents/skills`, `.claude/skills`, `.opencode/skills`.
-2. The user's `~/.agents/skills`, then `~/.claude/skills`.
+1. For each directory from the workspace up to the worktree root: `.agents/skills`, `.claude/skills`, `.opencode/skills`, and `.skills` (containing skill folders directly).
+2. Configured relative paths under `skills.paths` in user settings, resolved against the worktree root and refused if escaping it.
+3. The user's `~/.agents/skills`, then `~/.claude/skills`.
+4. Configured absolute paths under `skills.paths` in user settings.
 
-Each root is walked recursively (nested folders count), down to 8 levels and 20,000 entries, without `.git`, `node_modules` or `target`. Two skills with one id: the nearer project scope wins, then `.agents` before `.claude` before `.opencode`, then the user's. Equal ranks make the id ambiguous and neither is offered.
+Each root is walked recursively (nested folders count), down to 8 levels and 20,000 entries, without `.git`, `node_modules` or `target`. Two skills with one id: the nearer project scope wins, then `.agents` before `.claude` before `.opencode` before `.skills` before configured relative paths in order, then standard user roots, then configured absolute paths. Equal ranks make the id ambiguous and neither is offered.
 
 The header needs `name` and `description`. `disable-model-invocation: true` keeps a skill out of the catalog. Other keys are ignored. The catalog is capped at about 8,192 estimated tokens and 256 characters per description. `read` and `grep` may open skill files outside the workspace; this adds no write permission.
 
@@ -1791,7 +1794,9 @@ Model fields:
 - `context_window`: optional. When it is absent, the window comes from the provider's `GET /models` list (`context_length`, else `max_input_tokens`), cached for a day under `<data dir>/model-catalog/`. An explicit value wins over a discovered one. It does not always avoid the network: an alias on a provider with `catalog_format` and no `variants` of its own still fetches the model list, to generate its variants from the effort tiers. A chat alias with no window from either source is refused at session creation: HTTP 422 `no_context_window` (`nav run` prints it and exits 1).
 - `max_input_tokens`, `max_output_tokens`: optional limits. They feed the context budget (section 24).
 - `supports_tools`, `supports_parallel_tool_calls`: capability flags. Tool calls are executed serially.
-- `images`: whether the model accepts image input. Absent means `false`; the model then gets a text placeholder in place of each image.
+- `images`: whether the model accepts image input. An explicit `true` or `false` wins over the
+  provider's model list; absent means the gateway's model list decides, and when that cannot tell
+  either, support is unknown and the model gets a text placeholder in place of each image.
 - `default_variant`: the variant a new conversation starts with.
 - `variants`: named request overrides, each a JSON object merged shallowly into the chat request (`{"high": {"reasoning_effort": "high"}}`). Omitted: generated from the provider's effort tiers when `catalog_format` is `omniroute`. `{}`: none. A variant may not set a key the request owns (`model`, `messages`, `tools`, `stream`, `max_tokens`, `temperature` and a few more), and may not be named `off`, the word that clears the variant.
 - `reasoning_history`: `preserve` (default) or `omit`, whether earlier reasoning is sent back.

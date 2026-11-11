@@ -42,12 +42,21 @@ secret is removed from it, and the file is deleted when it holds none. WithNav d
 operating system's keychain. Because the path contains `credentials`, a tool call that names it
 asks you, as for any other credential file.
 
-If the file cannot be written (read-only data folder, full disk), saving a workspace secret
-fails with that reason: the card shows the error, and the value is kept in memory only, until
-WithNav stops. A file WithNav cannot read (damaged, unknown version) is left untouched at start-up,
-and nothing from it is loaded. Two WithNav servers using the same data folder each rewrite the
-whole file: the last one to save wins. How many commands received a secret is counted in memory
-and reaches the file with the next save, so a count can be lower after a restart.
+A save replaces the file whole and returns once the new content is on disk (the file and its
+folder are synced; on Windows the replacement is a write-through move), so a power cut cannot
+bring the previous content back. If the file cannot be written (read-only data folder, full
+disk), saving a workspace secret fails with that reason and changes nothing: the card shows the
+error, the secret is not active, and a secret it would have replaced stays as it was. When the
+failure comes after the file was replaced (syncing the folder), the file may already hold the
+new value, so a restart can find it. If rewriting the file fails when a secret expires or is
+revoked, the secret is still gone for this server (the failure is logged); it can reappear after
+a restart. At start-up, an entry that has expired or is not valid (name, value or time) is
+dropped from memory and from the file. A file WithNav cannot read (damaged, unknown version) is
+left untouched at start-up, and nothing from it is loaded. On Unix its permissions are
+tightened to owner-only before it is read, and a file that cannot be tightened is not loaded. Two WithNav
+servers using the same data folder each rewrite the whole file: the last one to save wins. How
+many commands received a secret is counted in memory and reaches the file with the next save
+(never written on every command), so a count can be lower after a restart.
 
 A session secret can have the same name as a workspace one: the conversation then sees the
 session secret. Revoking that name removes the session secret only, and the workspace one
@@ -69,6 +78,12 @@ more is replaced by `[secret NAME]`: tool output (`echo $OPENAI_API_KEY` shows
 values are stored and given to commands but not redacted, so that ordinary words are not replaced; the card warns you when the value you type is that short.
 A revoked or expired value is no longer redacted.
 
+Reasoning some models return only to themselves (signed thinking blocks, thought signatures) is
+kept to replay it to the same model. It cannot be redacted in place without invalidating it, so an
+item that contains a stored value of 8 characters or more is dropped from the conversation
+instead, and that step's reasoning is not replayed. An encrypted item cannot be decrypted to find a
+value; it is kept unless the value appears literally in its text.
+
 ## What this does not protect against
 
 - Nav never sees the value **in the chat**, but an agent that can run commands can still read it:
@@ -78,8 +93,9 @@ A revoked or expired value is no longer redacted.
   yourself with that variable exported, and prefer keys with narrow rights and short lifetimes.
 - Streamed text is redacted piece by piece: a value split across two pieces of a live stream can
   appear on screen while it streams; the stored response is redacted.
-- **MCP servers do not receive secrets.** They are started once, with WithNav, for every
-  conversation, and their `{env:NAME}` references read WithNav's own environment. To give one a
-  key, export it before starting WithNav.
+- **MCP servers do not receive secrets.** The session service starts them once at startup and
+  shares them across its conversations (not one set per conversation); their `{env:NAME}`
+  references read WithNav's own environment. To give one a key, export it before starting
+  WithNav.
 - Revoking a secret stops new commands from receiving it; a command already running keeps the
   environment it started with.

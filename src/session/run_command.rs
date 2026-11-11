@@ -80,17 +80,23 @@ impl Service {
             return Err(ServerError::ChildReadOnly);
         }
         let spec = commands::find(name);
-        let name = match spec {
-            Some(spec) => spec.name.to_string(),
-            None => commands::normalize_name(name)
+        let prompt = spec.is_none().then(|| self.find_prompt(name)).flatten();
+        let name = match (spec, &prompt) {
+            (Some(spec), _) => spec.name.to_string(),
+            (None, Some(prompt)) => prompt.command(),
+            (None, None) => commands::normalize_name(name)
                 .chars()
                 .take(UNKNOWN_NAME_CAP)
                 .collect(),
         };
         let operation_id = Ulid::generate();
         let mut created = None;
-        let result = match spec {
-            Some(spec) => {
+        let result = match (spec, prompt) {
+            (None, Some(prompt)) => {
+                self.prompt_command(session_id, &handle, prompt, arguments.trim(), &mut gate)
+                    .await
+            }
+            (Some(spec), _) => {
                 self.dispatch(
                     session_id,
                     &handle,
@@ -101,7 +107,7 @@ impl Service {
                 )
                 .await
             }
-            None => Err(CommandFailure::Refused(commands::unknown_error(&name))),
+            (None, None) => Err(CommandFailure::Refused(commands::unknown_error(&name))),
         };
         // `/compact` is published by the runtime, in order with the rest of
         // its operation, before it answers.
@@ -577,7 +583,7 @@ impl Service {
 }
 
 /// Why a command produced no data.
-enum CommandFailure {
+pub(super) enum CommandFailure {
     /// The command's own error: reported in the result.
     Refused(String),
     /// Refused, and the runtime already published the result.
@@ -632,7 +638,7 @@ impl Service {
 }
 
 /// What a successful command produced.
-struct Done {
+pub(super) struct Done {
     data: Value,
     /// A session the command created, to close again if its result cannot
     /// be published.
@@ -642,7 +648,7 @@ struct Done {
 }
 
 impl Done {
-    fn data(data: Value) -> Self {
+    pub(super) fn data(data: Value) -> Self {
         Self {
             data,
             created: None,

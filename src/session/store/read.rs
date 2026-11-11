@@ -252,7 +252,7 @@ impl HistoryStore {
                             .payload
                             .get("content")
                             .and_then(|v| v.as_str())
-                            .map(str::to_string));
+                            .map(|text| crate::mcp::captain_prose(text).to_string()));
                     }
                 }
                 Ok(None)

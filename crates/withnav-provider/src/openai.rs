@@ -71,17 +71,32 @@ impl Serialize for ChatRequest {
 /// log, an event or a stored transcript would carry the Captain's screenshot with it.
 #[derive(Clone)]
 pub struct ImagePayload {
-    pub media_type: String,
-    pub base64: String,
+    media_type: String,
+    base64: String,
 }
 
+/// The image types a request may carry: the four the attachment store's header check produces.
+/// Anything else would be refused by the provider, after the upload and the request were paid for.
+const SUPPORTED_IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
 impl ImagePayload {
-    pub fn from_bytes(media_type: impl Into<String>, bytes: &[u8]) -> Self {
+    /// Refuses a media type outside [`SUPPORTED_IMAGE_TYPES`], so a bad type fails here, as a
+    /// placeholder for that image, rather than as a provider error for the whole request.
+    pub fn from_bytes(media_type: impl Into<String>, bytes: &[u8]) -> Result<Self, String> {
         use base64::Engine as _;
-        Self {
-            media_type: media_type.into(),
-            base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        let media_type = media_type.into();
+        if !SUPPORTED_IMAGE_TYPES.contains(&media_type.as_str()) {
+            return Err(format!("unsupported image type {media_type:?}"));
         }
+        Ok(Self {
+            media_type,
+            base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        })
+    }
+
+    /// The length of the encoded payload, for logs that must not carry the bytes.
+    pub fn base64_len(&self) -> usize {
+        self.base64.len()
     }
 
     fn data_url(&self) -> String {
@@ -143,7 +158,8 @@ pub enum ChatMessage {
         #[serde(default)]
         tool_calls: Vec<RequestToolCall>,
         /// Reasoning only its producer can read back. Kept in the stored
-        /// transcript, never written by the Chat Completions serializer.
+        /// transcript; the Chat Completions serializer writes only the kinds
+        /// `opaque::sendable` allows for that wire.
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
@@ -355,11 +371,12 @@ impl Serialize for Wire<'_> {
                 content,
                 reasoning_content,
                 tool_calls,
-                ..
+                opaque,
             } => {
-                // Same keys, same order as the derived form; `opaque` is stored
-                // in the transcript but is never part of this wire body.
-                let mut object = serializer.serialize_struct("ChatMessage", 4)?;
+                // Same keys, same order as the derived form, then the opaque
+                // reasoning this wire can send. The producer was checked
+                // before the request reached the serializer.
+                let mut object = serializer.serialize_struct("ChatMessage", 5)?;
                 object.serialize_field("role", "assistant")?;
                 if let Some(content) = content {
                     object.serialize_field("content", content)?;
@@ -370,11 +387,34 @@ impl Serialize for Wire<'_> {
                 if !tool_calls.is_empty() {
                     object.serialize_field("tool_calls", tool_calls)?;
                 }
+                let details = reasoning_details_to_send(opaque);
+                if !details.is_empty() {
+                    object.serialize_field("reasoning_details", &details)?;
+                }
                 object.end()
             }
             other => other.serialize(serializer),
         }
     }
+}
+
+/// The stored entries of `opaque` that Chat Completions writes back, as the JSON
+/// text they were stored with (emitted as is, not re-encoded).
+fn reasoning_details_to_send(
+    opaque: &Option<OpaqueReasoning>,
+) -> Vec<Box<serde_json::value::RawValue>> {
+    let Some(opaque) = opaque else {
+        return Vec::new();
+    };
+    opaque
+        .items
+        .iter()
+        .filter(|item| {
+            item.kind == crate::reasoning_details::KIND
+                && crate::opaque::sendable(crate::opaque::CHAT_COMPLETIONS, &item.kind)
+        })
+        .filter_map(|item| serde_json::value::RawValue::from_string(item.data.clone()).ok())
+        .collect()
 }
 
 struct UserParts<'a> {
@@ -466,6 +506,10 @@ pub struct ChunkDelta {
     pub content: Option<String>,
     #[serde(default)]
     pub reasoning_content: Option<String>,
+    /// OpenRouter's entries for this chunk; any shape is accepted here and the
+    /// assembler ignores what is not an array of objects.
+    #[serde(default)]
+    pub reasoning_details: Option<Value>,
     #[serde(default, deserialize_with = "null_to_default")]
     pub tool_calls: Vec<ToolCallDelta>,
 }
@@ -775,11 +819,11 @@ mod tests {
         let payloads = HashMap::from([
             (
                 "a".to_string(),
-                ImagePayload::from_bytes("image/png", b"one"),
+                ImagePayload::from_bytes("image/png", b"one").unwrap(),
             ),
             (
                 "b".to_string(),
-                ImagePayload::from_bytes("image/jpeg", b"two"),
+                ImagePayload::from_bytes("image/jpeg", b"two").unwrap(),
             ),
         ]);
         let body = serde_json::to_value(request(
@@ -810,8 +854,10 @@ mod tests {
 
     #[test]
     fn a_message_without_images_keeps_its_plain_string_content() {
-        let with_map =
-            HashMap::from([("a".to_string(), ImagePayload::from_bytes("image/png", b"x"))]);
+        let with_map = HashMap::from([(
+            "a".to_string(),
+            ImagePayload::from_bytes("image/png", b"x").unwrap(),
+        )]);
         let body = serde_json::to_string(&request(vec![user("hi", vec![])], with_map)).unwrap();
         assert_eq!(
             body,
@@ -821,10 +867,30 @@ mod tests {
 
     #[test]
     fn an_image_payload_never_prints_its_bytes() {
-        let payload = ImagePayload::from_bytes("image/png", &[7u8; 300]);
+        let payload = ImagePayload::from_bytes("image/png", &[7u8; 300]).unwrap();
         let shown = format!("{payload:?}");
         assert!(!shown.contains(&payload.base64[..40]));
         assert!(shown.contains("400"));
+    }
+
+    // Given a media type outside the four raster types a request may carry
+    // Then the payload is refused at construction, not at the provider
+    #[test]
+    fn an_image_payload_refuses_a_media_type_no_provider_reads() {
+        for bad in ["image/svg+xml", "text/html", "", "image/png;x", "IMAGE/PNG"] {
+            assert!(
+                ImagePayload::from_bytes(bad, b"x").is_err(),
+                "{bad:?} was accepted"
+            );
+        }
+        for good in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
+            let payload = ImagePayload::from_bytes(good, b"x").unwrap();
+            assert!(
+                payload
+                    .data_url()
+                    .starts_with(&format!("data:{good};base64,"))
+            );
+        }
     }
 
     #[test]

@@ -1,4 +1,9 @@
 //! Stands in for the `withnav-core` crate: ids, domain messages and the ports the engine injects.
+//!
+//! Host-owned values (`Origin`, `Control`) have private fields and crate-visible constructors,
+//! so external crates cannot construct them from a kind. Within this single-crate sketch,
+//! construction is reserved for engine code by convention, not by module privacy.
+//! The doctests prove the external-crate boundary, not the future multi-crate design.
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use serde_json::Value;
@@ -27,14 +32,34 @@ pub enum Role {
     Tool,
 }
 
-/// Who produced a message. A plain enum: any code can write `Origin::Captain`, unlike the design.
+/// Who produced a message. The private field and crate-visible constructor prevent external
+/// crates from constructing an origin from a kind. Engine-only construction within this
+/// sketch is a convention.
+///
+/// ```compile_fail
+/// use withnav_sketch::core::{Origin, OriginKind};
+/// let _forged = Origin(OriginKind::Captain);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Origin {
+pub struct Origin(OriginKind);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OriginKind {
     Captain,
     Parent,
     Subagent,
     Navigator,
     Host,
+}
+
+impl Origin {
+    pub(crate) fn new(kind: OriginKind) -> Self {
+        Self(kind)
+    }
+
+    pub fn kind(&self) -> OriginKind {
+        self.0
+    }
 }
 
 /// Provider-neutral transcript unit (images, thinking and skill blocks are left out of the sketch).
@@ -82,12 +107,31 @@ pub enum ToolClass {
     Write,
 }
 
-/// How much the Captain delegated for this turn.
+/// How much the Captain delegated for this turn. External crates cannot construct this
+/// value from a kind; engine-only construction within this sketch is a convention.
+///
+/// ```compile_fail
+/// use withnav_sketch::core::{Control, ControlKind};
+/// let _forged = Control(ControlKind::Yolo);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Control {
+pub struct Control(ControlKind);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlKind {
     Normal,
     Bypass,
     Yolo,
+}
+
+impl Control {
+    pub(crate) fn new(kind: ControlKind) -> Self {
+        Self(kind)
+    }
+
+    pub fn kind(&self) -> ControlKind {
+        self.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

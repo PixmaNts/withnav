@@ -929,14 +929,19 @@ pub fn dropped_image(text: &str) -> Option<String> {
     .then_some(path)
 }
 
-/// `%20` and the like decoded; `None` when the result is not UTF-8 or an escape is cut.
+/// `%20` and the like decoded; `None` when a `%` is not followed by two hex digits or the
+/// result is not UTF-8. Same escape grammar as the LSP's `uri::percent_decode`; unlike it,
+/// invalid UTF-8 is refused rather than replaced, because the result names a file to read and
+/// a replaced character would name another one (the paste then stays text).
 fn percent_decode(text: &str) -> Option<String> {
+    // Digits only: `u8::from_str_radix` also takes a sign, so `%+F` would decode to 0x0F.
+    let digit = |b: &u8| char::from(*b).to_digit(16);
     let mut bytes = Vec::with_capacity(text.len());
     let mut rest = text.as_bytes();
     while let Some((&b, tail)) = rest.split_first() {
         if b == b'%' {
-            let hex = std::str::from_utf8(tail.get(..2)?).ok()?;
-            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            let (hi, lo) = (digit(tail.first()?)?, digit(tail.get(1)?)?);
+            bytes.push((hi * 16 + lo) as u8);
             rest = &tail[2..];
         } else {
             bytes.push(b);
@@ -970,6 +975,11 @@ pub fn route_paste(
         return None;
     }
     if state.read_only() {
+        return None;
+    }
+    // A paste while the answer is being sent is dropped: it would linger as an unintended value
+    // if the request fails.
+    if ui.overlay.is_none() && crate::secret::sending(state, ui) {
         return None;
     }
     if ui.overlay.is_none() && crate::secret::paste(&text, ui) {
@@ -1135,7 +1145,7 @@ mod tests {
 
 #[cfg(test)]
 mod dropped_image_tests {
-    use super::dropped_image;
+    use super::{dropped_image, percent_decode};
 
     #[test]
     fn a_dropped_image_path_is_recognized_in_the_forms_terminals_type() {
@@ -1179,5 +1189,44 @@ mod dropped_image_tests {
         ] {
             assert_eq!(dropped_image(text), None, "{text:?}");
         }
+    }
+
+    #[test]
+    fn a_file_uri_is_percent_decoded() {
+        for (uri, path) in [
+            ("file:///tmp/caf%C3%A9.png", "/tmp/caf\u{e9}.png"),
+            ("file:///tmp/a%2Fb.png", "/tmp/a/b.png"),
+            ("file:///tmp/100%25.png", "/tmp/100%.png"),
+            ("file:///tmp/100%2525.png", "/tmp/100%25.png"),
+            ("file://localhost/tmp/x%2epng", "/tmp/x.png"),
+        ] {
+            assert_eq!(dropped_image(uri).as_deref(), Some(path), "{uri:?}");
+        }
+    }
+
+    #[test]
+    fn a_malformed_file_uri_stays_text() {
+        for text in [
+            // An escape cut short by the next character.
+            "file:///tmp/a%2.png",
+            "file:///tmp/a%.png",
+            // Not two hex digits; a sign is not a digit either.
+            "file:///tmp/a%+F.png",
+            "file:///tmp/a%-1.png",
+            "file:///tmp/a%G0.png",
+            // Bytes that are not UTF-8: a lossy path would name another file.
+            "file:///tmp/%FF.png",
+            "file:///tmp/%C3.png",
+        ] {
+            assert_eq!(dropped_image(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn an_escape_cut_at_the_end_is_refused_by_the_decoder() {
+        // Through `dropped_image` these would fail on the extension anyway.
+        assert_eq!(percent_decode("/tmp/a%"), None);
+        assert_eq!(percent_decode("/tmp/a%2"), None);
+        assert_eq!(percent_decode("/tmp/a%20").as_deref(), Some("/tmp/a "));
     }
 }

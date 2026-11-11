@@ -12,7 +12,11 @@
 //! * scope `workspace` with a timed availability: also in `<data dir>/credentials/secrets.json`
 //!   (mode 0600, directory 0700), in plain text, with its expiry, so other conversations of the
 //!   workspace and a restarted server find it. Expiry and revocation rewrite the file; the last
-//!   secret gone removes it. The `credentials` component puts the file under the fixed floor's
+//!   secret gone removes it. Storing a secret whose save fails changes nothing: the store keeps
+//!   what it held before. An expiry or revocation whose rewrite fails still takes effect in
+//!   memory (the failure is logged); the entry can reappear after a restart, and is dropped
+//!   again then. How many commands received a secret is kept in memory and reaches the file
+//!   with the next save: best effort, never written per use. The `credentials` component puts the file under the fixed floor's
 //!   credential names, so a tool touching it asks the Captain.
 //!
 //! Redaction is literal: exact occurrences of a value of 8 or more characters. A value the
@@ -22,6 +26,7 @@ mod file;
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ulid::Ulid;
@@ -149,8 +154,10 @@ pub enum SecretError {
     TooLarge,
     #[error("the secret value contains a NUL character")]
     Nul,
-    /// Kept for this server's life, but the workspace file could not be written.
-    #[error("the secret is kept in memory only: the secrets file could not be written ({0})")]
+    /// The workspace file could not be written: the secret was not activated in this process.
+    /// The file may or may not hold it (a failure after the replacement, such as syncing the
+    /// directory, cannot be undone), so a restart can still find it.
+    #[error("the secret was not stored: the secrets file could not be written ({0})")]
     NotSaved(String),
 }
 
@@ -158,6 +165,9 @@ pub enum SecretError {
 pub struct SecretStore {
     file: Option<PathBuf>,
     entries: Mutex<Vec<Entry>>,
+    /// Seconds added to the wall clock when expiry is checked: always 0 in a running server;
+    /// tests move it forward to reach a 1 h or 24 h expiry without waiting for it.
+    clock_offset: AtomicI64,
 }
 
 impl std::fmt::Debug for SecretStore {
@@ -174,6 +184,7 @@ impl SecretStore {
         Self {
             file: None,
             entries: Mutex::new(Vec::new()),
+            clock_offset: AtomicI64::new(0),
         }
     }
 
@@ -188,8 +199,13 @@ impl SecretStore {
         let entries = match file::load(&path) {
             Ok(saved) => saved
                 .into_iter()
-                .inspect(|saved| rewrite |= saved.expires_at <= now)
-                .filter(|saved| saved.expires_at > now && check_name(&saved.name).is_ok())
+                // An entry that cannot be kept (expired, or one `put` would have refused) is
+                // also removed from the file, so its plaintext value does not stay on disk.
+                .filter(|saved| {
+                    let keep = restorable(saved, now);
+                    rewrite |= !keep;
+                    keep
+                })
                 .map(|saved| Entry {
                     name: saved.name,
                     value: saved.value,
@@ -210,9 +226,10 @@ impl SecretStore {
         let store = Self {
             file: Some(path),
             entries: Mutex::new(entries),
+            clock_offset: AtomicI64::new(0),
         };
         if rewrite {
-            let _ = store.save(&store.lock());
+            store.flush(&store.lock());
         }
         store
     }
@@ -220,6 +237,18 @@ impl SecretStore {
     /// Where workspace secrets are saved, if anywhere.
     pub fn file(&self) -> Option<&Path> {
         self.file.as_deref()
+    }
+
+    /// The time expiry is measured against: the wall clock plus the test offset.
+    fn now(&self) -> i64 {
+        now().saturating_add(self.clock_offset.load(Ordering::Relaxed))
+    }
+
+    /// Moves this store's clock `seconds` forward, so a test sees a secret expire.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn advance_clock_test(&self, seconds: i64) {
+        self.clock_offset.fetch_add(seconds, Ordering::Relaxed);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Entry>> {
@@ -235,6 +264,13 @@ impl SecretStore {
             alive
         });
         persisted
+    }
+
+    /// Rewrites the file after entries left memory (expiry, revocation, a dropped invalid
+    /// one). Best effort: [`Self::save`] logs a failure, and the store keeps enforcing the
+    /// removal in memory either way.
+    fn flush(&self, entries: &[Entry]) {
+        let _ = self.save(entries);
     }
 
     fn save(&self, entries: &[Entry]) -> std::io::Result<()> {
@@ -271,17 +307,9 @@ impl SecretStore {
         scope: SecretScope,
     ) -> Result<SecretView, SecretError> {
         check_name(name)?;
-        if value.is_empty() {
-            return Err(SecretError::EmptyValue);
-        }
-        if value.len() > MAX_VALUE_BYTES {
-            return Err(SecretError::TooLarge);
-        }
-        if value.contains('\0') {
-            return Err(SecretError::Nul);
-        }
+        check_value(value)?;
         let workspace = canonical(workspace);
-        let now = now();
+        let now = self.now();
         let entry = Entry {
             name: name.to_owned(),
             value: value.to_owned(),
@@ -296,14 +324,21 @@ impl SecretStore {
         let view = entry.view();
         let mut entries = self.lock();
         Self::purge(&mut entries, now);
+        let persisted = entry.persisted();
+        // What a failed save puts back: expired entries stay gone, the replaced one returns.
+        let previous = persisted.then(|| entries.clone());
         // Replaces the secret of that name in the same scope; a session secret then hides a
         // workspace one of the same name for this conversation only.
         entries
             .retain(|e| !(e.name == name && e.scope == scope && e.visible_to(owner, &workspace)));
-        let persisted = entry.persisted();
         entries.push(entry);
         match self.save(&entries) {
-            Err(error) if persisted => Err(SecretError::NotSaved(error.to_string())),
+            Err(error) if persisted => {
+                if let Some(previous) = previous {
+                    *entries = previous;
+                }
+                Err(SecretError::NotSaved(error.to_string()))
+            }
             _ => Ok(view),
         }
     }
@@ -314,7 +349,7 @@ impl SecretStore {
     pub fn revoke(&self, owner: Ulid, workspace: &Path, name: &str) -> bool {
         let workspace = canonical(workspace);
         let mut entries = self.lock();
-        let purged = Self::purge(&mut entries, now());
+        let purged = Self::purge(&mut entries, self.now());
         let matches = |e: &Entry, scope| {
             e.name == name && e.scope == scope && e.visible_to(owner, &workspace)
         };
@@ -330,7 +365,7 @@ impl SecretStore {
             entries.remove(index);
         }
         if target.is_some() || purged {
-            let _ = self.save(&entries);
+            self.flush(&entries);
         }
         target.is_some()
     }
@@ -361,8 +396,8 @@ impl SecretStore {
     pub fn list(&self, owner: Ulid, workspace: &Path) -> Vec<SecretView> {
         let workspace = canonical(workspace);
         let mut entries = self.lock();
-        if Self::purge(&mut entries, now()) {
-            let _ = self.save(&entries);
+        if Self::purge(&mut entries, self.now()) {
+            self.flush(&entries);
         }
         Self::visible(&mut entries, owner, &workspace)
             .into_iter()
@@ -376,7 +411,7 @@ impl SecretStore {
     pub fn environment(&self, owner: Ulid, workspace: &Path) -> Vec<(String, String)> {
         let workspace = canonical(workspace);
         let mut entries = self.lock();
-        let purged = Self::purge(&mut entries, now());
+        let purged = Self::purge(&mut entries, self.now());
         let env = Self::visible(&mut entries, owner, &workspace)
             .into_iter()
             .map(|e| {
@@ -385,7 +420,7 @@ impl SecretStore {
             })
             .collect();
         if purged {
-            let _ = self.save(&entries);
+            self.flush(&entries);
         }
         env
     }
@@ -395,7 +430,9 @@ impl SecretStore {
     pub fn redact<'t>(&self, owner: Ulid, workspace: &Path, text: &'t str) -> Cow<'t, str> {
         let workspace = canonical(workspace);
         let mut entries = self.lock();
-        Self::purge(&mut entries, now());
+        if Self::purge(&mut entries, self.now()) {
+            self.flush(&entries);
+        }
         let mut values: Vec<(String, String)> = entries
             .iter()
             .filter(|e| {
@@ -491,7 +528,7 @@ impl SecretAccess {
                 content,
                 reasoning_content,
                 tool_calls,
-                ..
+                opaque,
             } => {
                 for text in [content, reasoning_content].into_iter().flatten() {
                     self.redact_in_place(text);
@@ -499,8 +536,60 @@ impl SecretAccess {
                 for call in tool_calls {
                     self.redact_in_place(&mut call.function.arguments);
                 }
+                self.drop_secret_opaque(opaque);
             }
         }
+    }
+
+    /// Drops every provider-opaque reasoning item that echoes a value this access redacts.
+    ///
+    /// An item is signed or encrypted by its producer, so editing its bytes would invalidate
+    /// it: a forged or altered Anthropic thinking signature is refused with `400 Invalid
+    /// signature in thinking block` (measured through OmniRoute, 2026-10-20). Dropping the
+    /// whole item keeps the secret out of the transcript and `withnav.db` at the cost of that
+    /// item's replay; the remaining items keep the producer's order, and `None` when none
+    /// survive. Encrypted payloads cannot be read to find a value and stay as received.
+    fn drop_secret_opaque(&self, opaque: &mut Option<crate::provider::openai::OpaqueReasoning>) {
+        let Some(reasoning) = opaque else {
+            return;
+        };
+        reasoning
+            .items
+            .retain(|item| !self.json_text_holds_secret(&item.data));
+        if reasoning.items.is_empty() {
+            *opaque = None;
+        }
+    }
+
+    /// Whether any string of `json_text` (a provider payload) echoes a redacted value.
+    ///
+    /// The item's `data` is the provider's JSON text. The raw text is checked first, so a value
+    /// that appears literally anywhere in it — not only inside a JSON string — is found; the
+    /// parsed strings and object keys are then scanned too, which reaches a value stored
+    /// escaped (a `"` becomes `\"`). Text that does not parse is only checked as-is.
+    fn json_text_holds_secret(&self, json_text: &str) -> bool {
+        fn any_string(value: &serde_json::Value, holds: &impl Fn(&str) -> bool) -> bool {
+            match value {
+                serde_json::Value::String(text) => holds(text),
+                serde_json::Value::Array(items) => items.iter().any(|v| any_string(v, holds)),
+                serde_json::Value::Object(map) => map
+                    .iter()
+                    .any(|(key, v)| holds(key) || any_string(v, holds)),
+                _ => false,
+            }
+        }
+        if self.holds_secret(json_text) {
+            return true;
+        }
+        match serde_json::from_str::<serde_json::Value>(json_text) {
+            Ok(value) => any_string(&value, &|text| self.holds_secret(text)),
+            Err(_) => false,
+        }
+    }
+
+    /// Whether `text` contains a value this access replaces with `[secret NAME]`.
+    fn holds_secret(&self, text: &str) -> bool {
+        matches!(self.redact(text), Cow::Owned(_))
     }
 }
 
@@ -513,15 +602,41 @@ fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
 
-/// RFC 3339 for a unix time in seconds.
+/// RFC 3339 for a unix time in seconds; the empty string for a time that has none (outside
+/// years 0000 to 9999). Stored secrets never have one: `open` drops a saved entry whose
+/// times cannot be formatted, and `put` takes the current time.
 pub fn rfc3339(unix: i64) -> String {
+    format_rfc3339(unix).unwrap_or_default()
+}
+
+fn format_rfc3339(unix: i64) -> Option<String> {
     time::OffsetDateTime::from_unix_timestamp(unix)
+        .ok()?
+        .format(&time::format_description::well_known::Rfc3339)
         .ok()
-        .and_then(|t| {
-            t.format(&time::format_description::well_known::Rfc3339)
-                .ok()
-        })
-        .unwrap_or_default()
+}
+
+/// The checks on a value, for a new secret and for one read back from the file.
+fn check_value(value: &str) -> Result<(), SecretError> {
+    if value.is_empty() {
+        return Err(SecretError::EmptyValue);
+    }
+    if value.len() > MAX_VALUE_BYTES {
+        return Err(SecretError::TooLarge);
+    }
+    if value.contains('\0') {
+        return Err(SecretError::Nul);
+    }
+    Ok(())
+}
+
+/// Whether a saved entry is kept at start-up: not expired, and valid as `put` requires.
+fn restorable(saved: &file::Saved, now: i64) -> bool {
+    saved.expires_at > now
+        && check_name(&saved.name).is_ok()
+        && check_value(&saved.value).is_ok()
+        && format_rfc3339(saved.created_at).is_some()
+        && format_rfc3339(saved.expires_at).is_some()
 }
 
 /// The metadata a model reads for a stored secret, e.g.

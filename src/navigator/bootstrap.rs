@@ -312,6 +312,12 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
             None
         }
     };
+    // The terminal client of this workspace joins this server through the discovery file,
+    // which lives exactly as long as the server answers here: it is removed below, before the
+    // server shuts down.
+    let published = http.as_ref().and_then(|http| {
+        crate::server::discovery::publish_for(&root, http.info.port, &http.info.token)
+    });
     let flow_host = http
         .as_ref()
         .map(|http| http.flows.clone())
@@ -369,8 +375,9 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
     )
     .await;
 
-    // LSP exit/EOF: close every chat session and let the server drain, so
-    // the process exits instead of leaking the HTTP task.
+    // LSP exit/EOF: unpublish first so no new client joins, then close every chat session and
+    // let the server drain, so the process exits instead of leaking the HTTP task.
+    drop(published);
     if let Some(http) = http {
         let _ = http.shutdown.send(());
         let _ = tokio::time::timeout(std::time::Duration::from_secs(10), http.task).await;

@@ -63,6 +63,13 @@ pub struct Tab {
     /// acknowledged yet. Another send is refused meanwhile (it would carry the same images
     /// twice); an `/attach` made meanwhile lands after them and stays for the next message.
     pub attachments_sending: usize,
+    /// Bumped by `/attach clear`. A file check started before the clear reports an older value
+    /// and is dropped: an image the Captain cleared must not come back into the next message.
+    pub attachments_revision: u64,
+    /// Numbers each message sent with images. Stored ids reported for an earlier one are
+    /// dropped: its images may have left the tab, and a same-named file attached since must not
+    /// take an id that holds other bytes.
+    pub attachments_send: u64,
     pub pending_model_pick: bool,
     pub editor_revision: u64,
     /// The variant chosen in the model picker for a conversation not created yet: `None` leaves
@@ -93,7 +100,8 @@ pub struct Tab {
 /// under 5 MB, the lowest per-image limit among the providers a gateway can route to. The server
 /// refuses more; checking here spares the upload and tells the Captain at `/attach` time.
 pub const MAX_ATTACHMENT_BYTES: u64 = 3_932_160;
-/// The most images one message may carry; the server refuses more.
+/// The most images one message may carry; the server refuses more. A test in the root crate keeps
+/// this equal to the server's `MAX_IMAGES_PER_MESSAGE`.
 pub const MAX_ATTACHMENTS: usize = 8;
 
 /// An image the Captain attached with `/attach`, still on disk: it is uploaded to the session
@@ -106,6 +114,17 @@ pub struct PendingAttachment {
     pub name: String,
     /// Size on disk when it was attached.
     pub size: u64,
+    /// Where an earlier, failed send already stored this image. The retry names it instead of
+    /// uploading the file again, so a failed send does not fill the session's attachment quota
+    /// with copies (the server has no route to delete an attachment).
+    pub uploaded: Option<Uploaded>,
+}
+
+/// One image stored in a conversation's attachment store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Uploaded {
+    pub session_id: String,
+    pub attachment_id: String,
 }
 
 impl PendingAttachment {

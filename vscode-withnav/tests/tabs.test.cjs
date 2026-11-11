@@ -8,23 +8,34 @@ const { JSDOM } = require("jsdom");
 const originalLoad = Module._load;
 const noop = () => ({ dispose() {} });
 let provider;
+let createdPanel;
 const vscode = {
   commands: { registerCommand() { return noop(); } },
+  env: { async openExternal() { return true; } },
   Disposable: { from(...items) { return { dispose() { items.forEach(item => item.dispose()); } }; } },
-  ViewColumn: { Active: 1 },
+  ViewColumn: { Active: 1, Beside: 2 },
   window: {
     showErrorMessage() {}, visibleTextEditors: [],
+    createWebviewPanel() {
+      let listener;
+      createdPanel = {
+        posted: [], title: "", reveal() {}, onDidDispose: noop,
+        webview: { html: "", postMessage(m) { createdPanel.posted.push(m); return Promise.resolve(true); }, onDidReceiveMessage(l) { listener = l; return noop(); } },
+        receive: m => listener(m),
+      };
+      return createdPanel;
+    },
     registerWebviewViewProvider(_id, value) { provider = value; return noop(); },
     onDidChangeActiveTextEditor: noop, onDidChangeTextEditorSelection: noop, onDidChangeVisibleTextEditors: noop,
     tabGroups: { onDidChangeTabs: noop, all: [] },
   },
   workspace: { workspaceFolders: [] },
-  Uri: { joinPath(_uri, ...parts) { return parts.join("/"); } },
+  Uri: { joinPath(_uri, ...parts) { return parts.join("/"); }, parse(value) { return value; } },
 };
 Module._load = function (id, ...args) { return id === "vscode" ? vscode : originalLoad.call(this, id, ...args); };
 const { registerChatView } = require("../out/tests/chatView.js");
 const { ChatHub } = require("../out/tests/chatHub.js");
-const { renderMcpAppHtml } = require("../out/tests/mcpAppPanel.js");
+const { renderMcpAppHtml, openMcpAppPanel } = require("../out/tests/mcpAppPanel.js");
 Module._load = originalLoad;
 const { stripChildren, filterChildren, footerText, actionsSummary, durationLabel, childGroup } = require("../out/tests/webview/agentStrip.js");
 const { visibleSessions, filterCounts, sessionStatus, matchesFilter } = require("../out/tests/webview/conversations.js");
@@ -121,6 +132,48 @@ test("hub: tabs are restored from the store and reopen their sessions after a se
   assert.deepEqual(backends.map(b => b.endpoint.port), [2, 2, 2]);
 });
 
+test("hub: a conversation's tabs close only once the server delete succeeds; a refused delete keeps tabs and list", async () => {
+  const { hub, lister } = makeHub();
+  lister.list = [{ id: "A", title: "A" }, { id: "B", title: "B" }];
+  await hub.listConversations();
+  const a = hub.open("A");
+  let pending;
+  lister.deleteConversation = () => new Promise((resolve, reject) => { pending = { resolve, reject }; });
+  const refused = hub.deleteConversation("A");
+  assert.notEqual(hub.backend(a), undefined, "the tab stays open while the delete is in flight");
+  pending.reject(new Error("HTTP 500"));
+  await assert.rejects(refused, /HTTP 500/);
+  assert.notEqual(hub.backend(a), undefined, "a refused delete keeps the tab");
+  assert.deepEqual(hub.conversations().map(item => item.id), ["A", "B"]);
+  const accepted = hub.deleteConversation("A");
+  assert.notEqual(hub.backend(a), undefined);
+  pending.resolve();
+  await accepted;
+  assert.equal(hub.backend(a), undefined, "the tab closes once the server dropped the conversation");
+  assert.deepEqual(hub.conversations().map(item => item.id), ["B"]);
+});
+
+test("hub: a failed coalesced list refresh is reported, unless the hub was disposed meanwhile", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  const errors = []; const backends = []; const lister = fakeBackend();
+  const hub = new ChatHub(() => { const b = fakeBackend(); backends.push(b); return b; }, lister, undefined, error => errors.push(error.message));
+  hub.setServerInfo({ port: 1, token: "t" });
+  let pending;
+  lister.listConversations = () => new Promise((_resolve, reject) => { pending = reject; });
+  backends[0].emit({ type: "turnEnd", id: "T" });
+  t.mock.timers.tick(800);
+  pending(new Error("HTTP 503"));
+  await flush();
+  assert.deepEqual(errors, ["HTTP 503"]);
+  backends[0].emit({ type: "turnEnd", id: "U" });
+  t.mock.timers.tick(800);
+  hub.dispose();
+  pending(new Error("late"));
+  await flush();
+  assert.deepEqual(errors, ["HTTP 503"], "a refresh failing after disposal stays silent");
+});
+
 // --- The chat view routes by tab --------------------------------------------------------------------
 test("chat view: backend messages carry their tab, webview messages reach the backend of their tab and generation", async () => {
   const { hub, backends } = makeHub();
@@ -158,12 +211,60 @@ test("chat view: backend messages carry their tab, webview messages reach the ba
   assert.equal(hub.tabs().length, 2, "a session id must be a string");
 });
 
+test("chat view: an image answer arriving after the tab switched conversation is dropped", async () => {
+  const { hub, backends } = makeHub();
+  const tab = hub.open("B");
+  const backend = backends[1];
+  const pending = [];
+  backend.imageDataUrl = () => new Promise(resolve => pending.push(resolve));
+  registerChatView({ extensionUri: "extension", globalState: memento() }, hub);
+  const messages = []; let receive;
+  provider.resolveWebviewView({ webview: { cspSource: "t", asWebviewUri: v => v, postMessage(m) { messages.push(m); }, onDidReceiveMessage(l) { receive = l; return noop(); } }, onDidDispose() {} });
+  receive({ type: "ready" });
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  receive({ type: "loadImage", attachmentId: "img1", tab, generation: 1 });
+  pending.shift()("data:image/png;base64,AA");
+  await flush();
+  assert.deepEqual(messages.filter(m => m.type === "imageData").map(m => [m.tab, m.attachmentId, m.url]), [[tab, "img1", "data:image/png;base64,AA"]], "a timely answer reaches its tab");
+  receive({ type: "loadImage", attachmentId: "img2", tab, generation: 1 });
+  backend.generation = 2; // a stop and resume of the same conversation
+  pending.shift()("data:image/png;base64,BB");
+  await flush();
+  assert.equal(messages.filter(m => m.type === "imageData" && m.attachmentId === "img2").length, 1, "the same conversation still gets its answer");
+  receive({ type: "loadImage", attachmentId: "img3", tab, generation: 2 });
+  backend.session = "C"; backend.generation = 3; // another conversation opened in this tab
+  pending.shift()("data:image/png;base64,CC");
+  await flush();
+  assert.equal(messages.filter(m => m.type === "imageData" && m.attachmentId === "img3").length, 0, "a late answer for the previous conversation is dropped");
+});
+
+test("mcp app: a browser that fails to open shows a panel error instead of escaping as an unhandled rejection", async () => {
+  const original = vscode.env.openExternal;
+  vscode.env.openExternal = async () => { throw new Error("no browser found"); };
+  try {
+    await openMcpAppPanel({}, { server: "s", tool: "t", callId: "c", html: "<p>app</p>", url: "https://example.com" });
+    await assert.doesNotReject(createdPanel.receive({ type: "openExternal", url: "https://example.com" }));
+    assert.deepEqual(createdPanel.posted, [{ type: "hostError", message: "Could not open the browser: no browser found" }]);
+  } finally { vscode.env.openExternal = original; }
+  const dom = new JSDOM(renderMcpAppHtml("n", { server: "s", tool: "t", callId: "c" }), {
+    runScripts: "dangerously",
+    beforeParse(window) { window.acquireVsCodeApi = () => ({ postMessage() {} }); },
+  });
+  const box = dom.window.document.getElementById("host-error");
+  assert.equal(box.hidden, true, "no error before one is reported");
+  dom.window.dispatchEvent(new dom.window.MessageEvent("message", { data: { type: "hostError", message: "Could not open the browser: no browser found" } }));
+  assert.equal(box.hidden, false);
+  assert.equal(box.textContent, "Could not open the browser: no browser found");
+  dom.window.close();
+});
+
 // --- The page: tabs, agent strip, session list ------------------------------------------------------
-function page() {
+function page(beforeScript) {
   const { chatHtml } = require("../out/tests/chatHtml.js");
   const dom = new JSDOM(chatHtml("n", "chat.js", "chat.css", "resource:"), { runScripts: "outside-only", pretendToBeVisual: true });
   const posts = []; const states = [];
   dom.window.acquireVsCodeApi = () => ({ postMessage: m => posts.push(JSON.parse(JSON.stringify(m))), getState() {}, setState(state) { states.push(state); } });
+  beforeScript?.(dom.window);
   dom.window.eval(fs.readFileSync("out/chat.js", "utf8"));
   const d = dom.window.document;
   const send = data => dom.window.dispatchEvent(new dom.window.MessageEvent("message", { data }));
@@ -191,7 +292,7 @@ test("page: messages are routed to the tab they name and each tab keeps its own 
   views[0].querySelector(".prompt").value = "hello";
   tab("t1", { type: "status", state: "ready" });
   views[0].querySelector(".composer").dispatchEvent(new dom.window.Event("submit", { cancelable: true }));
-  assert.deepEqual(posts.at(-1), { type: "send", text: "hello", includeContext: true, tab: "t1", generation: 1 });
+  assert.deepEqual(posts.at(-1), { type: "send", text: "hello", includeContext: true, submission: 1, tab: "t1", generation: 1 });
   // Focusing the other tab tells the host, and its composer posts with its own tab.
   d.querySelectorAll(".tab-main")[1].click();
   assert.deepEqual(posts.at(-1), { type: "focusTab", tab: "t2" });
@@ -208,6 +309,28 @@ test("page: messages are routed to the tab they name and each tab keeps its own 
   tabs(["t2"], "t2");
   assert.equal(d.querySelectorAll(".tab-view").length, 1, "a tab the host closed is gone");
   dom.window.close();
+});
+
+test("page: closing conversation tabs removes their window resize listeners", () => {
+  // Track resize listeners on window by identity; a closed tab that keeps one stays reachable and
+  // keeps resizing a detached composer on every window resize.
+  const resize = new Set();
+  const { dom, tabs } = page(win => {
+    const add = win.addEventListener.bind(win); const remove = win.removeEventListener.bind(win);
+    win.addEventListener = (type, listener, options) => { if (type === "resize") resize.add(listener); return add(type, listener, options); };
+    win.removeEventListener = (type, listener, options) => { if (type === "resize") resize.delete(listener); return remove(type, listener, options); };
+  });
+  try {
+    const baseline = resize.size;
+    for (let cycle = 0; cycle < 3; cycle++) {
+      tabs(["a", "b", "c"], "a");
+      assert.equal(resize.size, baseline + 3, "each open conversation listens for resizes");
+      tabs([]);
+      assert.equal(resize.size, baseline, "closed conversations leave no resize listener behind");
+    }
+  } finally {
+    dom.window.close();
+  }
 });
 
 test("page: tab icons show running, waiting for you and error; beyond four tabs the rest go into a menu", () => {
@@ -676,6 +799,82 @@ test("agent picker: the star asks the host to toggle a favourite, and favourites
   dom.window.close();
 });
 
+test("image thumbnails: each button is named after the image and the open-beside action", () => {
+  const { dom, d, posts, tab, tabs } = page();
+  tabs(["t1"], "t1");
+  tab("t1", { type: "conversationOpened", id: "S", title: "S" });
+  tab("t1", { type: "message", id: "m", author: "captain", text: "look", images: [{ attachment_id: "a1", name: "shot.png", width: 640, height: 480 }, { attachment_id: "a2", name: "" }] });
+  const thumbs = [...d.querySelectorAll(".thumb")];
+  assert.deepEqual(thumbs.map(b => b.tagName), ["BUTTON", "BUTTON"]);
+  assert.deepEqual(thumbs.map(b => b.getAttribute("aria-label")), ["Open shot.png beside", "Open image beside"]);
+  thumbs[0].click();
+  assert.deepEqual(posts.at(-1), { type: "openImage", attachmentId: "a1", name: "shot.png", tab: "t1", generation: 1 });
+  dom.window.close();
+});
+
+test("agent picker: Ctrl+Alt+F toggles the highlighted agent's favorite from the keyboard and is announced", () => {
+  const { dom, send, view, posts, key } = agentPage();
+  view.querySelector(".agent-btn").click();
+  const search = view.querySelector(".agent-search");
+  assert.equal(search.getAttribute("aria-keyshortcuts"), "Control+Alt+F");
+  const hint = dom.window.document.getElementById(search.getAttribute("aria-describedby"));
+  assert(hint, "the search box is described by the shortcut hint");
+  assert.match(hint.textContent, /Ctrl\+Alt\+F adds or removes the highlighted agent from favorites/);
+  assert.match(search.placeholder, /Ctrl\+Alt\+F favorite/);
+  assert.doesNotMatch(hint.textContent + search.placeholder, /Ctrl\+F/);
+  assert.equal(search.getAttribute("aria-controls"), view.querySelector(".agent-list").id, "the combobox names the listbox it drives");
+  // `propagated` tells whether the event bubbled out of the search box to the document.
+  const press = (extra = {}) => {
+    const e = new dom.window.KeyboardEvent("keydown", { key: "f", code: "KeyF", ctrlKey: true, altKey: true, bubbles: true, cancelable: true, ...extra });
+    let propagated = false; const seen = () => { propagated = true; };
+    dom.window.document.addEventListener("keydown", seen); search.dispatchEvent(e); dom.window.document.removeEventListener("keydown", seen);
+    e.propagated = propagated; return e;
+  };
+  key(search, "ArrowDown");
+  const before = posts.length;
+  const e = press();
+  assert.equal(e.defaultPrevented, true);
+  assert.equal(e.propagated, false, "the shortcut does not bubble out of the search box");
+  assert.equal(posts.length, before + 1, "one toggle per press");
+  assert.deepEqual(posts.at(-1), { type: "toggleFavoriteAgent", name: "plan", tab: "t1", generation: 1 });
+  assert.equal(view.querySelector(".agent-popover").hidden, false, "the popover stays open");
+  send({ type: "favoriteAgents", items: ["plan"] });
+  assert.equal(view.querySelector('.agent-row[aria-selected="true"]').dataset.id, "plan", "the highlight follows the agent to its new place");
+  assert.equal(dom.window.document.activeElement, search, "focus stays in the search box");
+  // Removing it again goes through the same shortcut, on the same highlighted agent.
+  const added = posts.length;
+  press();
+  assert.equal(posts.length, added + 1, "one toggle for the removal");
+  assert.deepEqual(posts.at(-1), { type: "toggleFavoriteAgent", name: "plan", tab: "t1", generation: 1 });
+  send({ type: "favoriteAgents", items: [] });
+  assert.equal(view.querySelector('.agent-row[aria-selected="true"]').dataset.id, "plan");
+  assert.equal(dom.window.document.activeElement, search);
+  // Plain Ctrl+F is VS Code's find, Alt+F was reported as a host key, Ctrl+Alt+A belongs to the model picker, AltGr and Shift/Meta
+  // variants are typing or host keys, and a composition is the IME's: none acts, none is blocked.
+  const n = posts.length;
+  for (const extra of [{ altKey: false }, { ctrlKey: false }, { key: "a", code: "KeyA" }, { key: "f", modifierAltGraph: true }, { shiftKey: true }, { metaKey: true }, { isComposing: true }, { key: "Dead" }]) {
+    const ignored = press(extra);
+    assert.equal(ignored.defaultPrevented, false, JSON.stringify(extra));
+    assert.equal(ignored.propagated, true, JSON.stringify(extra));
+  }
+  // An empty list sends nothing.
+  search.value = "zzz"; search.dispatchEvent(new dom.window.Event("input"));
+  press();
+  assert.equal(posts.length, n);
+  dom.window.close();
+});
+
+test("agent picker: the star still toggles a favorite with the mouse", () => {
+  const { dom, view, posts } = agentPage();
+  view.querySelector(".agent-btn").click();
+  const before = posts.length;
+  view.querySelector('.agent-row[data-id="plan"] .agent-star').click();
+  assert.equal(posts.length, before + 1);
+  assert.deepEqual(posts.at(-1), { type: "toggleFavoriteAgent", name: "plan", tab: "t1", generation: 1 });
+  assert.equal(view.querySelector(".agent-popover").hidden, false, "the popover stays open");
+  dom.window.close();
+});
+
 test("agent picker: disabled while the view is locked, and unusable in a read-only child view", () => {
   const { dom, tab, view } = agentPage();
   assert.equal(view.querySelector(".agent-btn").disabled, false);
@@ -740,8 +939,19 @@ test("mcp app: tool row renders inline media preview and Open App button posts o
   const img = view.querySelector(".mcp-media-card img");
   assert(img, "inline image preview is rendered");
   assert.equal(img.getAttribute("src"), "data:image/png;base64,AAAA");
+  const zoom = view.querySelector(".mcp-media-card");
+  const style = dom.window.document.createElement("style"); style.textContent = fs.readFileSync("out/chat.css", "utf8"); dom.window.document.head.append(style);
+  assert.equal(dom.window.getComputedStyle(view.querySelector(".mcp-media-grid")).overflow, "visible", "the grid does not clip the button's focus outline");
+  assert.equal(zoom.tagName, "BUTTON", "the zoom is a native button, so Tab, Enter and Space reach it");
+  assert.equal(zoom.type, "button");
+  assert.equal(zoom.getAttribute("aria-label"), "Zoom mcp__excalidraw__get_canvas_screenshot preview 1");
+  assert.equal(zoom.getAttribute("aria-pressed"), "false");
   img.click();
-  assert(view.querySelector(".mcp-media-card").classList.contains("zoomed"), "clicking toggles zoom");
+  assert(zoom.classList.contains("zoomed"), "clicking toggles zoom");
+  assert.equal(zoom.getAttribute("aria-pressed"), "true");
+  zoom.click();
+  assert.equal(zoom.classList.contains("zoomed"), false);
+  assert.equal(zoom.getAttribute("aria-pressed"), "false");
   const openBtn = view.querySelector(".mcp-open-btn");
   assert(openBtn, "Open App button is rendered");
   openBtn.click();
@@ -750,8 +960,182 @@ test("mcp app: tool row renders inline media preview and Open App button posts o
   assert.equal(posted.app.server, "excalidraw");
   assert.equal(posted.app.resourceUri, "ui://excalidraw/app.html");
   assert.equal(posted.app.url, "http://127.0.0.1:3000");
-  const html = renderMcpAppHtml("nonce1", posted.app, "<!doctype html><p>Canvas</p>");
-  assert.match(html, /sandbox="allow-scripts allow-forms"/);
-  assert.match(html, /srcdoc="&lt;!doctype html&gt;&lt;p&gt;Canvas&lt;\/p&gt;"/);
+  // The app's document is served by WithNav, never inlined into the panel.
+  const frameUrl = "http://127.0.0.1:4321/mcp-app/abc";
+  const html = renderMcpAppHtml("nonce1", { ...posted.app, html: "<script>alert(1)</script>" }, frameUrl);
+  assert.match(html, /<iframe id="mcp-frame" sandbox="allow-scripts allow-forms" src="http:\/\/127\.0\.0\.1:4321\/mcp-app\/abc">/);
+  assert.doesNotMatch(html, /srcdoc|alert\(1\)/, "resource HTML never reaches the panel document");
+  const csp = html.match(/Content-Security-Policy" content="([^"]*)"/)[1];
+  assert.match(csp, /frame-src http:\/\/127\.0\.0\.1:4321;/, "the panel may embed only the app's own origin");
+  assert.match(csp, /script-src 'nonce-nonce1';/, "the host script is the only script the panel runs");
+  assert.doesNotMatch(csp, /unsafe-inline'?;?\s*$|script-src[^;]*unsafe-inline/);
+  const failed = renderMcpAppHtml("nonce1", { ...posted.app, url: undefined }, undefined, "no app");
+  assert.doesNotMatch(failed, /<iframe/);
+  assert.match(failed, /frame-src 'none'/);
+  dom.window.close();
+});
+
+// --- Keyboard and accessibility structure of the tab strip and the session list -------------------------
+const press = (dom, target, key, init = {}) => {
+  const event = new dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init });
+  target.dispatchEvent(event);
+  return event;
+};
+
+test("tab strip: the tab is the focusable element, with a roving tabindex and a mouse-only close button", () => {
+  const { dom, d, tabs, tab } = page();
+  tabs(["a", "b", "c"], "b");
+  for (const id of ["a", "b", "c"]) tab(id, { type: "conversationOpened", id: `S-${id}`, title: id });
+  const strip = d.querySelector('[role="tablist"]');
+  const buttons = [...strip.querySelectorAll(".tab-main")];
+  assert.deepEqual(buttons.map(b => b.getAttribute("role")), ["tab", "tab", "tab"]);
+  assert.deepEqual(buttons.map(b => b.getAttribute("aria-selected")), ["false", "true", "false"]);
+  assert.deepEqual(buttons.map(b => b.tabIndex), [-1, 0, -1], "only the selected tab is in the Tab order");
+  assert.deepEqual([...strip.querySelectorAll(".tab")].map(w => w.getAttribute("role")), ["presentation", "presentation", "presentation"]);
+  assert.ok(buttons.every(b => b.closest('[role="tab"]') === b), "role=tab sits on the focusable button, not a wrapper");
+  assert.deepEqual([...strip.querySelectorAll(".tab-close")].map(c => [c.tabIndex, c.getAttribute("aria-hidden")]), [[-1, "true"], [-1, "true"], [-1, "true"]]);
+  assert.deepEqual(buttons.map(b => d.getElementById(b.getAttribute("aria-controls")).getAttribute("aria-labelledby")), buttons.map(b => b.id));
+  assert.equal(d.getElementById(buttons[1].getAttribute("aria-controls")).getAttribute("role"), "tabpanel");
+  dom.window.close();
+});
+
+test("tab strip: arrows wrap, Home and End jump, focus moves without activating, Enter activates and keeps focus on the tab", () => {
+  const { dom, d, tabs, tab, posts } = page();
+  tabs(["a", "b", "c"], "a");
+  for (const id of ["a", "b", "c"]) tab(id, { type: "conversationOpened", id: `S-${id}`, title: id });
+  const main = id => d.querySelector(`.tab[data-tab="${id}"] .tab-main`);
+  main("a").focus();
+  const before = posts.length;
+  assert.equal(press(dom, main("a"), "ArrowRight").defaultPrevented, true);
+  assert.equal(d.activeElement, main("b"));
+  assert.deepEqual([...d.querySelectorAll(".tab-main")].map(b => b.tabIndex), [-1, 0, -1], "tabindex follows focus");
+  press(dom, main("b"), "End"); assert.equal(d.activeElement, main("c"));
+  press(dom, main("c"), "ArrowRight"); assert.equal(d.activeElement, main("a"), "wraps to the first");
+  press(dom, main("a"), "ArrowLeft"); assert.equal(d.activeElement, main("c"), "wraps to the last");
+  press(dom, main("c"), "Home"); assert.equal(d.activeElement, main("a"));
+  assert.equal(posts.length, before, "moving focus activates and closes nothing");
+  assert.equal(d.querySelector('.tab[data-tab="a"] .tab-main').getAttribute("aria-selected"), "true");
+  // Keyboard activation (a click with no pointer) shows the tab and leaves focus on it.
+  press(dom, main("a"), "ArrowRight");
+  main("b").click();
+  assert.deepEqual(posts.at(-1), { type: "focusTab", tab: "b" });
+  assert.equal(main("b").getAttribute("aria-selected"), "true");
+  assert.equal(d.activeElement, main("b"), "focus stays on the tab, not the composer");
+  // A re-render caused by another tab's status keeps focus on the same tab.
+  press(dom, main("b"), "ArrowRight");
+  tab("a", { type: "turnStart", id: "T" });
+  assert.equal(d.activeElement, main("c"));
+  assert.deepEqual([...d.querySelectorAll(".tab-main")].map(b => b.tabIndex), [-1, -1, 0], "exactly one tab stop");
+  // Unrelated keys are left alone.
+  assert.equal(press(dom, main("c"), "a").defaultPrevented, false);
+  dom.window.close();
+});
+
+test("tab strip: Delete asks the host to close the focused tab and focus goes to a neighbour, not the composer", () => {
+  const { dom, d, tabs, tab, posts } = page();
+  tabs(["a", "b", "c"], "b");
+  for (const id of ["a", "b", "c"]) tab(id, { type: "conversationOpened", id: `S-${id}`, title: id });
+  const main = id => d.querySelector(`.tab[data-tab="${id}"] .tab-main`);
+  main("b").focus();
+  press(dom, main("b"), "Delete");
+  assert.deepEqual(posts.at(-1), { type: "closeTab", tab: "b" });
+  tabs(["a", "c"], "c");
+  assert.equal(d.activeElement, main("c"), "the next tab takes focus");
+  press(dom, main("c"), "Delete");
+  assert.deepEqual(posts.at(-1), { type: "closeTab", tab: "c" });
+  tabs(["a"], "a");
+  assert.equal(d.activeElement, main("a"), "the previous one when the last tab was closed");
+  dom.window.close();
+});
+
+test("session list: options hold no focusable control, both listboxes are controlled, and the keys act on the selected row", () => {
+  const { dom, d, send, tabs } = page();
+  tabs([], undefined);
+  const now = new Date().toISOString();
+  send({ type: "conversations", items: [
+    { id: "S-1", title: "One", updatedAt: now, messageCount: 1, live: true },
+    { id: "S-2", title: "Two", updatedAt: now, messageCount: 2 },
+  ] });
+  const search = d.querySelector(".sl-search");
+  assert.deepEqual(search.getAttribute("aria-controls").split(" ").map(id => d.getElementById(id)?.getAttribute("role")), ["listbox", "listbox"]);
+  assert.equal(search.getAttribute("aria-expanded"), "true");
+  for (const option of d.querySelectorAll('.sl-list [role="option"]')) {
+    const focusable = [...option.querySelectorAll("button, a, input, [tabindex]")].filter(e => e.tabIndex >= 0);
+    assert.deepEqual(focusable, [], "nothing in an option is in the Tab order");
+    assert.match(option.getAttribute("aria-label"), /, (Active|Done), /);
+    const del = option.querySelector(".sl-delete");
+    assert.equal(del.tabIndex, -1); assert.equal(del.getAttribute("aria-hidden"), "true");
+    assert.deepEqual(JSON.parse(option.dataset.vscodeContext), { webviewSection: "session", sessionId: option.dataset.id, preventDefaultContextMenuItems: true });
+  }
+  assert.equal(d.querySelectorAll("button.sl-open").length, 0);
+  assert.equal(search.getAttribute("aria-activedescendant"), "session-option-0");
+  press(dom, search, "ArrowDown");
+  assert.equal(search.getAttribute("aria-activedescendant"), "session-option-1");
+  // Enter opens the selected row.
+  const clicked = [];
+  d.querySelector('.sl-row[data-id="S-2"]').addEventListener("click", () => clicked.push("S-2"));
+  press(dom, search, "Enter");
+  assert.deepEqual(clicked, ["S-2"]);
+  dom.window.close();
+});
+
+test("session list: Delete removes the selected row only when it has no text to edit, and a collapsed section is skipped", () => {
+  const { dom, d, send, tabs, posts } = page();
+  tabs(["t1"], "t1");
+  const now = new Date().toISOString();
+  send({ type: "conversations", workspace: "w", items: [
+    { id: "S-1", title: "One", updatedAt: now, messageCount: 1 },
+    { id: "S-2", title: "Two", updatedAt: now, messageCount: 2 },
+  ] });
+  d.querySelector(".sh-back").click();
+  const search = d.querySelector(".sl-search");
+  press(dom, search, "ArrowDown");
+  const empty = press(dom, search, "Delete");
+  assert.equal(empty.defaultPrevented, true);
+  const [first, second] = [...d.querySelectorAll(".sl-row")].map(r => r.dataset.id);
+  assert.deepEqual(posts.at(-1), { type: "deleteConversation", id: second });
+  // With text, Delete at the end still has nothing to edit; in the middle it edits.
+  search.value = "On"; search.dispatchEvent(new dom.window.Event("input"));
+  search.setSelectionRange(0, 0);
+  assert.equal(press(dom, search, "Delete").defaultPrevented, false, "the caret has text after it: Delete edits the field");
+  posts.length = 0;
+  search.setSelectionRange(2, 2);
+  press(dom, search, "Delete");
+  assert.deepEqual(posts.at(-1), { type: "deleteConversation", id: first });
+  // Collapsing the group removes its rows from the keyboard model: no hidden row is selected, opened or deleted.
+  search.value = ""; search.dispatchEvent(new dom.window.Event("input"));
+  d.querySelector(".sl-group-toggle").click();
+  assert.equal(d.querySelectorAll(".sl-row").length, 0);
+  assert.equal(search.hasAttribute("aria-activedescendant"), false);
+  assert.equal(d.querySelector(".sl-note").hidden, true, "a collapsed list is not announced as empty");
+  posts.length = 0;
+  press(dom, search, "ArrowDown"); press(dom, search, "Enter"); press(dom, search, "Delete");
+  assert.deepEqual(posts, []);
+  d.querySelector(".sl-group-toggle").click();
+  assert.equal(d.querySelectorAll(".sl-row").length, 2);
+  assert.equal(search.getAttribute("aria-activedescendant"), "session-option-0");
+  dom.window.close();
+});
+
+test("tab strip: a keyboard activation never lingers, and a tab activated elsewhere takes focus to the composer", () => {
+  const { dom, d, tabs, tab } = page();
+  tabs(["a", "b"], "a");
+  for (const id of ["a", "b"]) tab(id, { type: "conversationOpened", id: `S-${id}`, title: id });
+  const main = id => d.querySelector(`.tab[data-tab="${id}"] .tab-main`);
+  // Enter on the already selected tab changes nothing to rebuild; the next status update must not pull focus back to it.
+  main("a").focus();
+  main("a").click();
+  assert.equal(d.activeElement, main("a"));
+  press(dom, main("a"), "ArrowRight");
+  tab("a", { type: "turnStart", id: "T" });
+  assert.equal(d.activeElement, main("b"), "focus stays where the arrow put it");
+  d.querySelector(".prompt").focus();
+  tab("a", { type: "turnEnd", id: "T" }); tab("b", { type: "status", state: "ready" });
+  assert.equal(d.activeElement, d.querySelector(".tab-view:not([hidden]) .prompt"), "leaving the strip is respected");
+  // The host activates another tab while focus sits on a tab: the composer of that tab gets it.
+  tab("b", { type: "status", state: "ready" });
+  main("a").focus();
+  tabs(["a", "b"], "b");
+  assert.equal(d.activeElement, d.querySelector(".tab-view:not([hidden]) .prompt"));
   dom.window.close();
 });

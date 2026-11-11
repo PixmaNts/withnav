@@ -6,7 +6,52 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-11-11
+
 ### Added
+
+- Project skills: WithNav discovers `.skills/` alongside the existing project skill folders.
+  `skills.paths` adds relative folders within the worktree or absolute user-level folders;
+  the existing validation and discovery limits still apply.
+- Reasoning kept across tool calls on OpenRouter-style gateways: when a model's stream carries
+  `reasoning_details` (signed `reasoning.text`, `reasoning.summary`, `reasoning.encrypted`), WithNav
+  assembles the entries and sends them back with the assistant message on the next step of the
+  turn, to the same model at the same endpoint only. Entries from the OpenAI Responses format
+  (`openai-responses-v1`) are kept but not sent back yet. A malformed stream frame no longer
+  quotes the frame in its error message.
+- Permissions: the other git worktrees of the workspace's repository (`git worktree list`) count as
+  the project. An agent working on a parallel branch in `../<repo>-wt/<name>` reads, searches and
+  writes there without an external-directory question, with the same rule and provenance as in the
+  workspace. The list is read when a call falls outside the workspace, so a worktree created
+  mid-session works on its first use. A worktree of another repository, a plain folder or a link
+  leading out of a worktree still asks; WithNav's configuration and database, credential files,
+  written `deny`/`ask` rules and yolo behave as before.
+- `nav tui` joins the server an editor's `nav lsp` runs for the same workspace, so a conversation
+  started in VS Code (or another editor) is listed and usable in the terminal client, and the
+  reverse. The LSP publishes its port and token in an owner-only file (`0600`, in a `0700`
+  directory) under `$XDG_RUNTIME_DIR/withnav-servers/` and removes it when it exits; the terminal
+  client ignores and removes a file whose process, port or token is gone. Without an editor, with
+  `--models`, without a private `$XDG_RUNTIME_DIR` or on Windows, `nav tui` starts its own server
+  as before. Requests from `nav tui` to a loopback server no longer go through `HTTP_PROXY` or
+  `ALL_PROXY`, which could otherwise receive its bearer token.
+- MCP: an idle session now refreshes its MCP tools between two turns, never during one (nor while
+  a question or permission request is held). A server that becomes ready after the session started,
+  one that sends `notifications/tools/list_changed`, and one that disconnects are all picked up, and
+  the conversation gets a short note listing the tools added and removed. When a new tool's name is
+  already held by another server's tool, the existing one is kept and the note says so. A subagent
+  keeps the tools it was created with; a new subagent is created from its parent's current tools.
+- MCP resources: a server that offers resources gets two agent tools,
+  `mcp__<server>__list_resources` (resources and URI templates) and
+  `mcp__<server>__read_resource` (one resource by URI; several pieces come back as a numbered
+  list). Results are untrusted text, redacted of the server's configured secrets and limited to
+  64 KiB; both tools are decided by the ordinary permission rules, like any MCP tool. See
+  [MCP servers](book/src/mcp-servers.md#resources).
+
+- MCP prompts: each prompt of a server is a `/<server>:<prompt>` command in the terminal client,
+  the WebUI and VS Code, listed with its arguments. Running it checks the arguments, asks the
+  server for the prompt and sends its messages as your message, inside a block marked as the
+  server's untrusted text, redacted and limited to 64 KiB. See
+  [MCP servers](book/src/mcp-servers.md#prompts).
 
 - Subagents: a child that uses its step budget (50 by default) no longer waits only for you. It
   pauses, and its parent is woken with a notice giving the steps used, the top-ups used and left,
@@ -23,6 +68,8 @@ requests land in `develop`.
   `declined by the Captain`. Commands the agent runs with `bash` (subagents included) get it as an
   environment variable, and every exact occurrence of a value of 8 characters or more is replaced
   by `[secret NAME]` in tool output, model text, Captain messages, events and the stored history.
+  Live-streamed text is redacted piece by piece, so a value split across two pieces of a live
+  stream can appear there while it streams; the stored response is redacted.
   `GET /v1/sessions/{id}/secrets` lists them (name, scope, expiry, use count, last four
   characters), `DELETE /v1/sessions/{id}/secrets/{name}` revokes one; the key icon of the
   conversation header (VS Code, browser) and `/secrets` in `nav tui` do the same. Session secrets
@@ -35,6 +82,34 @@ requests land in `develop`.
   - MCP tool calls returning images (`image/png`, `image/jpeg`, `image/webp`, `image/gif`, inline SVG, or board previews in `structuredContent`) render inline thumbnails in the transcript with click-to-zoom, while keeping the model's tool output text compact.
   - Tools declaring a `ui://` resource (`_meta.ui.resourceUri` / `text/html;profile=mcp-app`) or an app URL show an **Open App** button on the tool row that opens a sandboxed interactive MCP App view (in a dedicated `App` tab of the WebUI right panel, or in a `Beside` editor group in VS Code) with a JSON-RPC 2.0 `postMessage` bridge (`ui/initialize`, `ui/notifications/tool-input`, `ui/notifications/tool-result`, `ui/open-link`, `tools/call`, `resources/read`).
   - `scripts/package-vsix.sh` now names branch builds `withnav-<variant>-<version>-<branch>+<sha>.vsix`, matching `nav --version`.
+- Images in conversations, from the terminal client: `/attach <path>` adds a PNG, JPEG, GIF, WebP or SVG
+  image (at most 3.75 MiB and 8,000 px a side) to the next message. A model sees it when
+  `models.json` says `"images": true` or, without that field, when the gateway's model list reports
+  image input; any other model gets a short note saying an image was shown. `GET /v1/models` reports
+  `images` and where it came from.
+- Images from tools: `read` on a PNG, JPEG, GIF, WebP or SVG file returns the picture instead of
+  text, and image blocks in MCP tool results (browser or canvas screenshots) are kept rather than
+  reduced to a size note. They are stored with the session's other images (at most four per call)
+  and a model with image support sees them in the next request. An SVG, uploaded or read, is turned
+  into a PNG first; it may not load external files or declare a DTD.
+- A conversation saved before image support was known, or while the gateway could not tell,
+  learns it from the gateway's model list when it resumes, instead of keeping images unsent.
+- Images in the browser client and the VS Code extension: paste or drop images into the message
+  (both also have an attach button, a multi-select file chooser in VS Code; at most eight per
+  message, a message may be images only). In VS Code, each file left out (not an image, empty, too
+  large, unreadable, over the limit, or refused by the server when sending) is named with its
+  reason and stays listed until dismissed; a drop that carries links instead of files names the
+  images it left out and fetches nothing. The Captain's images and those returned by tools show as thumbnails in the conversation, also
+  after a reload; a click opens one at full size, in the Image tab of the browser's session panel or
+  in an editor panel beside the VS Code chat.
+- Images in the terminal client beyond `/attach`: dropping an image file on the terminal attaches
+  it, `/paste-image` attaches the clipboard image, every image of the conversation (also after a
+  resume) is listed with a number, and `/image [n]` opens it in the system viewer.
+- MCP servers over Streamable HTTP: `"type": "http"` with a `url` and optional static `headers`
+  (`{env:NAME}` expands in header values). Header values are redacted from tool results,
+  descriptions, statuses and logs like `env` values. Timeouts, tool naming, schemas, results and
+  permissions work as for stdio servers; `nav doctor` reports whether the server was reached and
+  its tool count. No OAuth. (#42)
 
 ### Changed
 
@@ -58,6 +133,160 @@ requests land in `develop`.
     (search, current mark, favourites kept under `withnav.favoriteAgents`) and send/stop.
   - The composer grows with its text, from about three lines up to 40% of the view height.
   - New commands: `WithNav: Show Sessions` and `WithNav: New Conversation`.
+- VS Code extension: new picker shortcuts. Ctrl+Alt+F adds or removes the highlighted agent or
+  model from favourites (it was Ctrl+F, which also opened VS Code's search), and Ctrl+Alt+A folds or
+  unfolds every model group (it was Alt+A, also a VS Code binding). The pickers no longer handle
+  Ctrl+F or Alt+A; the stars and group headers still work with the mouse. With AltGr held the keys
+  type as usual. On macOS the combination is Control+Option, which VoiceOver also uses.
+- Dependency updates: rusqlite 0.41, base64 0.23, vscode-languageclient 11, jsdom 31, the web UI's
+  minor and patch releases and the CI actions.
+
+### Fixed
+
+- Attachments uploaded to an archived conversation are refused with the message route's
+  `session_archived` error before anything is stored. Stopped conversations still accept images
+  for a later resume.
+- Model-only reasoning that contains a configured secret is dropped as a whole item before it
+  enters the transcript; clean items keep their original bytes and order. Existing stored rows
+  are not rewritten, and encrypted data can only be checked for literal occurrences.
+- `nav tui`: a secret paste is ignored while submission is in flight, Backspace removes a whole
+  grapheme, and clearing hides the next value again. Putting the prompt aside focuses the editor;
+  a failed submission names the requested secret.
+- Deleting a conversation now ends its conversation-lifetime secrets, including workspace-scoped
+  ones. Timed workspace secrets survive, and deleting a child leaves its parent's secrets intact.
+- MCP Apps: a resource read selects the one `text/html;profile=mcp-app` item instead of assuming
+  the first item is HTML. Missing, ambiguous or empty app items are refused; raw text is bounded
+  before redaction, and blobs must be valid base64 within encoded and decoded size limits.
+- `nav tui`: secret input refuses a paste or keystroke that would exceed 16 KiB without changing
+  the value already entered. Pasting removes at most one trailing line ending, preserving leading
+  and additional trailing newlines. Revealed values are sanitized for display without changing
+  the submitted bytes.
+- `nav tui`: an `/attach` or `/paste-image` still being checked when you run `/attach clear` no
+  longer adds its image back to the next message.
+- `nav tui`: when sending a message with images fails after some of them were stored, the retry
+  reuses the stored images instead of uploading them again, so a failed send no longer adds copies
+  to the conversation's attachment quota (an upload whose answer never came back can still leave
+  one).
+- Model-only reasoning kept in the transcript (signed thinking, encrypted reasoning) is now
+  bounded: 1 MiB per item, 4 MiB and 64 items per message, when it is captured and when a stored
+  conversation is read. An item past a limit is dropped whole, never cut; the items kept are
+  unchanged byte for byte. (#157)
+- VS Code chat: closing a conversation tab removes its window resize listener. Closed tabs no
+  longer stay in memory through it, nor resize a composer that is no longer shown.
+- `reveal` no longer opens the wrong place or claims a cursor move it did not make: a file whose
+  real path is not valid UTF-8 is refused instead of being sent under a lossy name that could
+  match another file; VS Code opens the path it checked, not a link retargeted since; a line past
+  the end of the file is refused before any tab opens when it would place the cursor, instead of
+  silently landing on the last line (with a symbol found, it still only picks the nearest
+  occurrence); a missing symbol puts the cursor on the requested line, else line 1, and the result
+  says which.
+- Tool images: one tool result keeps at most 4 images and 16 MiB of image bytes together. An MCP
+  result also keeps at most 8 MiB beyond its text, structured content (itself at most 4 MiB),
+  previews and images together. An MCP image past a limit is no longer decoded; the model reads
+  that it was not kept, and at most 8 such notes plus a count close the output.
+- MCP previews are typed from their bytes, not from the server's declared `mimeType`, and only
+  standard base64 is accepted, so a PNG declared as JPEG no longer shows as a broken image. Text
+  counts as an SVG preview only when it is one well-formed `<svg>` document.
+- MCP Apps: a tool call whose arguments are nested deeper than 64 levels or larger than 1 MiB is
+  refused (400 `mcp_invalid_request`) before anything reaches the server, and a response larger
+  than 8 MiB, before or after redaction, is refused (502 `mcp_response_too_large`).
+- Secrets: a session whose recorded parents form a chain longer than 16, or a cycle, gets an
+  explicit error instead of having its secrets filed under whichever session the lookup stopped at.
+- Subagents: a step-budget notice whose evidence lacks a valid top-up or step count is skipped and
+  logged instead of reporting zero.
+- MCP Apps: a failed resource read or tool call from an app no longer comes back as a 400 that
+  blames the request. A bad request is 400, an unknown server or tool 404, a server error 502, a
+  disabled, misconfigured or disconnected server 503 and a timeout 504, each with its own `reason`.
+  The server's own error text reaches the app redacted, on one line and cut to 256 characters; the
+  longer diagnostic goes to the log. A malformed app request or an unreadable image upload gets a
+  fixed message instead of the request quoted back.
+- Images: an SVG uploaded to an unknown conversation, or to one already holding its 64 attachments,
+  is refused before it is rendered, so it no longer waits for (and holds up) the one-at-a-time
+  SVG renderer. A step waits at most 30 s for the bytes of its images; past that they are sent as
+  `[image … unavailable]` and the turn goes on. A failed image-loading task is now logged instead
+  of silently sending every image as unavailable.
+- Secrets file: on Windows, `<data dir>/credentials/secrets.json` and its directory now carry a
+  protected DACL (current user, SYSTEM, Administrators), applied on save and at start. A secrets
+  file over 4 MiB is refused without being read, and a save that would exceed it fails.
+- A workspace secret that cannot be written now answers 500 `secret_not_saved` with a fixed
+  message instead of a 400 carrying the OS error; an attachment store failure (upload, download,
+  or an image in a message) answers 500 `attachments_failed` without the SQLite text. The details
+  go to the server log.
+- Subagents: when the notice that a child used its step budget could not be saved (a failed
+  history write), the child stayed paused and its parent was never asked to continue or stop it.
+  The notice is now retried until it is saved, and the parent receives it once.
+- VS Code images: a message no longer leaves without an image that was still loading, and an
+  image no longer rides along with the next message after a send (including the first message
+  of a new conversation). Send waits until every attached image has loaded; only the images a
+  message carried leave the composer. Picking more than 8 images names the ones not attached,
+  and an image that cannot be read is reported instead of vanishing.
+- VS Code: the keyboard reaches three controls that only took a mouse click. An MCP tool's image
+  preview is a button that zooms on Enter or Space and reports whether it is enlarged; Ctrl+F in
+  the agent picker's search adds or removes the highlighted agent from favorites, as it already
+  did in the model picker, and both search boxes describe that shortcut to screen readers; an
+  attached image's thumbnail is announced as "Open <name> beside".
+- Attachments: a PNG, JPEG, GIF or WebP is now decoded in full before it is stored, so a truncated
+  or corrupt image is refused at upload instead of failing at the provider on every later turn.
+  Repeated tool images are found by an indexed content hash rather than by comparing stored
+  images. `read` returns a file named `*.svg` as an image only when it is a well-formed SVG
+  document; anything else is returned as text.
+- The version stamped into nav binaries now marks uncommitted work: `0.8.2+dirty` at a release tag,
+  `0.8.2-develop+abc1234.dirty` on a branch, `0.8.2+abc1234.dirty` on a detached head. A clean tree
+  still builds the bare version, so release binaries are unchanged. The stamp is recomputed whenever
+  the worktree becomes dirty or clean again, and ignores a Git environment inherited from an IDE
+  terminal (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`). A source tree unpacked inside an unrelated
+  repository falls back to the plain version instead of adopting that repository's identity, and a
+  branch whose name is all digits (like `001`) no longer produces an invalid prerelease.
+- The HTTP user-agent of nav's fetch tool reports the build version instead of the Cargo package
+  version, so requests can be traced to a concrete build.
+- A VSIX packaged locally now carries the bundled binary's version in its manifest. The version
+  appeared only in the file name before; the manifest kept whatever `package.json` said, so a dirty
+  or branch build could install as a version it was not. Source manifests and the lockfile stay
+  untouched.
+- Providers: keep-alive comments between two events no longer end a streamed answer once they
+  add up to 4 MiB; the 4 MiB limit now applies to each SSE block, and every blank line starts a new
+  one. Events received in the same chunk before an oversized block are still delivered. A dropped
+  connection during the stream is reported as a transport error with its cause instead of a
+  malformed SSE frame.
+- `nav tui`: the session event stream now bounds one SSE frame to 4 MiB, as the provider stream
+  does. A body that never closes a frame (a broken proxy, an endless line) ends the subscription
+  with a protocol error instead of growing the client's memory without limit; nothing of that frame
+  is delivered. Keep-alive comments reset the count, so a long-idle stream is never cut. (#156)
+
+- SVG attachments: filter cost is now counted on the document as it will be drawn. A filtered
+  element repeated through `<use>`, or filtered by a style rule, is charged at each copy, weighted
+  by its primitives and the share of the image its filter region covers; a document past 32
+  full-image filter passes is refused instead of rendering for minutes. A malformed `order` or
+  `numOctaves`, or a second `order` value above the limit, is refused instead of read as zero.
+
+- Secrets: a workspace secret whose save fails is no longer left active (a secret it would have
+  replaced stays as it was). Saving now syncs the folder after the rename, so a power cut cannot
+  bring the previous file back. At start-up, saved entries that are expired or invalid (name,
+  value, time) are removed from the file too, and a permissive file is tightened before it is
+  read (Unix).
+
+- `nav tui` `/paste-image`: a clipboard that holds only a JPEG, WebP or GIF is attached (PNG is still
+  asked for first; on Linux the clipboard's offered types are listed otherwise). A clipboard
+  helper that hangs, or leaves a process holding its output, is killed with its process group at
+  the 5 s deadline instead of blocking the paste.
+
+- VS Code: an MCP App with inline scripts now runs. Its page was embedded in the panel and
+  inherited the panel's script policy, which only allows the panel's own script, so the app's
+  scripts were blocked and `ui/initialize` never arrived. The server now serves the app from a
+  single-use `http://127.0.0.1` address (`POST /v1/mcp/{server}/app`, then `GET /mcp-app/{token}`,
+  valid for one load within 60 seconds) under a Content-Security-Policy of its own: inline scripts
+  and styles run, and `connect-src`, `frame-src`, images, fonts and further scripts are limited to
+  the domains the resource declares in `_meta.ui.csp` (none by default). The panel embeds it with
+  `sandbox="allow-scripts allow-forms"`, so the app cannot reach the panel, VS Code's API or local
+  files, and the panel may embed that one origin only.
+
+- VS Code: the tab strip and the session list work from the keyboard and expose standard
+  structures to screen readers. Tabs: Left/Right move between tabs, Home/End jump, Enter or Space
+  opens the focused tab, Delete closes it; the close button is for the mouse. Sessions: the
+  arrows skip the sessions of a collapsed group, Enter opens the selected one and Delete (with
+  nothing after the cursor in the search field) deletes it after confirmation; a right click also
+  offers Delete. The sessions are plain list options with no buttons inside, and the search field
+  controls both lists.
 
 ## [0.8.2] - 2026-11-05
 
@@ -80,28 +309,6 @@ commit, and stops a corrupt conversation from overwriting its stored history.
 ### Fixed
 
 - A conversation whose stored transcript cannot be read no longer resumes empty (its next save overwrote the stored history): the resume fails and names the session, and the row is left as it was.
-### Added
-
-- Images in conversations, from the terminal client: `/attach <path>` adds a PNG, JPEG, GIF, WebP or SVG
-  image (at most 3.75 MiB and 8,000 px a side) to the next message. A model sees it when
-  `models.json` says `"images": true` or, without that field, when the gateway's model list reports
-  image input; any other model gets a short note saying an image was shown. `GET /v1/models` reports
-  `images` and where it came from.
-- Images from tools: `read` on a PNG, JPEG, GIF, WebP or SVG file returns the picture instead of
-  text, and image blocks in MCP tool results (browser or canvas screenshots) are kept rather than
-  reduced to a size note. They are stored with the session's other images (at most four per call)
-  and a model with image support sees them in the next request. An SVG, uploaded or read, is turned
-  into a PNG first; it may not load external files or declare a DTD.
-- A conversation saved before image support was known, or while the gateway could not tell,
-  learns it from the gateway's model list when it resumes, instead of keeping images unsent.
-- Images in the browser client and the VS Code extension: paste or drop images into the message
-  (the browser also has an attach button; at most eight per message, a message may be images only).
-  The Captain's images and those returned by tools show as thumbnails in the conversation, also
-  after a reload; a click opens one at full size, in the Image tab of the browser's session panel or
-  in an editor panel beside the VS Code chat.
-- Images in the terminal client beyond `/attach`: dropping an image file on the terminal attaches
-  it, `/paste-image` attaches the clipboard image, every image of the conversation (also after a
-  resume) is listed with a number, and `/image [n]` opens it in the system viewer.
 
 ## [0.8.1] - 2026-10-16
 

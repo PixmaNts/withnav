@@ -1,10 +1,10 @@
 import * as vscode from "vscode";
 import { createHash } from "node:crypto";
 import { ContextSnapshot, parseContext } from "./contextMeter";
-import { ChatBackend, ConversationSummary, HostToWebview, ModelInfo, PendingImage, PermissionDecision } from "./chatProtocol";
+import { ChatBackend, ConversationSummary, HostToWebview, ImageRefusal, ImageRefusalError, ModelInfo, PendingImage, PermissionDecision } from "./chatProtocol";
 import { ConversationControls, eventView, imageRefs, permissionCall, PermissionCallReplay, permissionEvidence, secretInfo, WireEnvelope } from "./eventView";
 import type { ServerInfoParams } from "./protocol";
-import { CLIENT_COMMANDS, routeComposer } from "./commands";
+import { CLIENT_COMMANDS, SERVER_COMMAND_NAME, routeComposer } from "./commands";
 import type { CommandInfo } from "./chatProtocol";
 import type { ComposerOperation } from "./chatProtocol";
 import type { ChildInfo } from "./chatProtocol";
@@ -50,7 +50,7 @@ class ConversationState {
   archiveReason?: string;
   modelRequestToken = 0;
   settledModelOps = new Set<string>();
-  commands: Map<string, { draft: string; name: string; arguments: string }> = new Map();
+  commands: Map<string, { draft: string; name: string; arguments: string; submission?: number }> = new Map();
   commandResults: Map<string, any> = new Map();
   acceptedMessages: Set<string> = new Set();
   pendingModel?: { name: string; operationId: string; agent: string };
@@ -313,7 +313,7 @@ export class CognitionBackend implements ChatBackend {
     const body = await this.request("/v1/commands", { method: "GET" }, "endpoint");
     if (endpoint !== this.endpoint) return;
     this.commands = (Array.isArray(body?.commands) ? body.commands : []).filter((c: any) =>
-      typeof c?.name === "string" && /^[a-z][a-z0-9_-]*$/.test(c.name) && typeof c.description === "string" && typeof c.args_hint === "string");
+      typeof c?.name === "string" && SERVER_COMMAND_NAME.test(c.name) && typeof c.description === "string" && typeof c.args_hint === "string");
     this.emit({ type: "commands", items: [...this.commands, ...CLIENT_COMMANDS.filter(c => !this.commands.some(s => s.name === c.name))] });
   }
 
@@ -336,7 +336,10 @@ export class CognitionBackend implements ChatBackend {
     if (this.state.starting && ["model", "variant", "agent", "skill"].includes(name)) throw new Error("Conversation is starting or opening. Try again when it is ready.");
     if (typeof args !== "string") throw new Error("Command arguments must be text");
     if (!this.commands.length) { await this.refreshCommands(); this.checkGeneration(generation); }
-    if (![...this.commands, ...CLIENT_COMMANDS].some(c => c.name === name)) throw new Error(`Unknown command: /${name}. Use /help.`);
+    const known = () => [...this.commands, ...CLIENT_COMMANDS].some(c => c.name === name);
+    // An MCP prompt appears when its server is ready: read the list again before refusing it.
+    if (!known() && name.includes(":")) { await this.refreshCommands(); this.checkGeneration(generation); }
+    if (!known()) throw new Error(`Unknown command: /${name}. Use /help.`);
     if (["help", "skills", "stop"].includes(name) && args) throw new Error(`/${name} takes no arguments`);
     if (name === "help") {
       this.emit({ type: "notice", text: [...this.commands, ...CLIENT_COMMANDS.filter(c => !this.commands.some(s => s.name === c.name))].map(c => `/${c.name} ${c.args_hint} — ${c.description}`).join("\n") });
@@ -386,7 +389,7 @@ export class CognitionBackend implements ChatBackend {
       const result = await this.request(`/v1/sessions/${encodeURIComponent(session)}/messages`, { method: "POST", body: JSON.stringify({ target_actor_id: ROOT_ACTOR, content: [{ type: "text", text: match[2] || `Apply the ${match[1]} skill.` }, { type: "skill", name: match[1] }, ...stored] }) });
       this.checkGeneration(generation);
       const operationId = result?.command_id ?? result?.operation_id;
-      if (typeof operationId === "string") this.trackCommand(operationId, { draft, name, arguments: args });
+      if (typeof operationId === "string") this.trackCommand(operationId, { draft, name, arguments: args, submission: operation?.submission });
       else if (result?.accepted === false || result?.ok === false) throw new Error(String(result.error ?? "Message refused"));
       return typeof operationId !== "string";
     }
@@ -445,11 +448,11 @@ export class CognitionBackend implements ChatBackend {
     return false; // Only the durable outcome consumes the draft.
   }
 
-  private trackCommand(operation: string, command: { draft: string; name: string; arguments: string }): void {
+  private trackCommand(operation: string, command: { draft: string; name: string; arguments: string; submission?: number }): void {
     this.state.commands.set(operation, command);
     const outcome = this.state.commandResults.get(operation);
     if (outcome) this.settleCommand(outcome);
-    else if (command.name === "skill" && this.state.acceptedMessages.has(operation)) this.emit({ type: "sendResult", text: command.draft, accepted: true });
+    else if (command.name === "skill" && this.state.acceptedMessages.has(operation)) this.emit({ type: "sendResult", text: command.draft, accepted: true, submission: command.submission });
   }
 
   private settleCommand(p: any, seq?: number): void {
@@ -465,7 +468,7 @@ export class CognitionBackend implements ChatBackend {
     }
     const command = this.state.commands.get(operation);
     if (command) {
-      this.emit({ type: "sendResult", text: command.draft, accepted: p.ok === true, restoreDraft: command.name === "skill" && p.ok !== true });
+      this.emit({ type: "sendResult", text: command.draft, accepted: p.ok === true, restoreDraft: command.name === "skill" && p.ok !== true, submission: command.submission });
       if (p.ok !== true && p.name !== "compact") this.emit({ type: "commandError", text: String(p.error ?? "Command refused. Your draft was kept.") });
       this.state.commands.delete(operation);
     }
@@ -686,7 +689,9 @@ export class CognitionBackend implements ChatBackend {
     } else {
       this.emitConversations();
     }
-    await this.listConversations();
+    // The server has dropped it and the list above no longer shows it: a failed re-read must not
+    // report the deletion as failed, or the caller keeps tabs open on a conversation that is gone.
+    await this.listConversations().catch(() => undefined);
   }
 
   async send(text: string, context?: string, operation?: ComposerOperation, images: PendingImage[] = []): Promise<void> {
@@ -706,24 +711,44 @@ export class CognitionBackend implements ChatBackend {
     });
   }
 
-  /** Stores each image in the session first, so a message can name it by id. */
+  /**
+   * Stores each image in the session first, so a message can name it by id. Every image is tried:
+   * when the server refuses some (bytes it cannot decode, an empty or oversized file), the send
+   * fails naming each of them, and no message refers to an image that was not stored.
+   */
   private async storeImages(session: string, images: PendingImage[]): Promise<{ type: "image"; attachment_id: string }[]> {
     const stored: { type: "image"; attachment_id: string }[] = [];
+    const refused: ImageRefusal[] = [];
     for (const image of images) {
+      const name = image.name || "image";
       // A retry after a failed send reuses what was already stored rather than filling the quota.
       const key = `${session}:${createHash("sha256").update(image.data).digest("hex")}`;
       const known = this.uploaded.get(key);
       if (known) { stored.push({ type: "image", attachment_id: known }); continue; }
-      const ref = await this.request(`/v1/sessions/${encodeURIComponent(session)}/attachments?name=${encodeURIComponent(image.name || "image")}`, {
-        method: "POST",
-        headers: { "content-type": "application/octet-stream" },
-        body: Buffer.from(image.data, "base64"),
-      });
+      let ref: { attachment_id?: unknown } | undefined;
+      try {
+        ref = await this.request(`/v1/sessions/${encodeURIComponent(session)}/attachments?name=${encodeURIComponent(name)}`, {
+          method: "POST",
+          headers: { "content-type": "application/octet-stream" },
+          body: Buffer.from(image.data, "base64"),
+        });
+      } catch (error) {
+        // 400, 413 and 415 judge this file's bytes; anything else (unreachable, token, gone
+        // session) is not about the file and ends the send, keeping the files already refused
+        // named rather than lost behind that error. The images not tried yet are not judged.
+        if (error instanceof HttpError && [400, 413, 415].includes(error.status)) {
+          refused.push({ name, reason: error.message.replace(/^cognition server: /, "") });
+          continue;
+        }
+        if (refused.length) throw new ImageRefusalError(refused, error instanceof Error ? error.message : String(error));
+        throw error;
+      }
       const id = String(ref?.attachment_id);
       this.uploaded.set(key, id);
       if (this.uploaded.size > 64) this.uploaded.delete(this.uploaded.keys().next().value as string);
       stored.push({ type: "image", attachment_id: id });
     }
+    if (refused.length) throw new ImageRefusalError(refused);
     return stored;
   }
 
@@ -1186,6 +1211,8 @@ export class CognitionBackend implements ChatBackend {
       }
       if (generation !== this.state.streamGeneration) return;
       void this.fetchContext();
+      // An MCP server may have become ready while no stream was open: its prompts are commands.
+      void this.refreshCommands().catch(() => undefined);
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -1579,12 +1606,14 @@ export class CognitionBackend implements ChatBackend {
     this.observeChildren(envelope);
     // Refresh context even when these events also project a notice.
     if (envelope.kind === "context.compacted" || envelope.kind === "model.changed") void this.fetchContext();
+    // A server that became ready brings its prompts as `/<server>:<prompt>` commands.
+    if (envelope.kind === "mcp.status") void this.refreshCommands().catch(() => undefined);
     for (const update of this.state.controls.envelopeUpdates(envelope)) this.emit(update);
     if (envelope.kind === "message.received" && typeof payload.command_id === "string") {
       this.state.acceptedMessages.add(payload.command_id);
       const command = this.state.commands.get(payload.command_id);
       if (command?.name === "skill") {
-        this.emit({ type: "sendResult", text: command.draft, accepted: true });
+        this.emit({ type: "sendResult", text: command.draft, accepted: true, submission: command.submission });
       }
     }
     if (envelope.kind === "session.end") {
@@ -1601,7 +1630,7 @@ export class CognitionBackend implements ChatBackend {
       // Replay without that row still renders the ordinary command notice.
       if (name === "compact" && payload.ok === false && this.state.compaction?.operationId === payload.operation_id && this.state.compaction?.ok === false) return undefined;
       const text = outcomeText(name, payload.ok === true, payload.data, payload.error);
-      const known = ["help", "model", "context", "variant", "agent", "stop", "new", "compact"].includes(name);
+      const known = ["help", "model", "context", "variant", "agent", "stop", "new", "compact", "mcp_tools"].includes(name);
       if (text === null && (known || payload.data?.applies === "now")) return undefined;
       return { type: "notice", operationId: payload.operation_id, name, ok: payload.ok === true,
         text: `/${name} · ${text ?? "done"}`, ...(text === null ? { details: JSON.stringify(payload.data ?? null, null, 2) } : {}) };
@@ -1867,6 +1896,23 @@ export class CognitionBackend implements ChatBackend {
     );
   }
 
+  /**
+   * Parks an MCP app's document on the server and returns the one-time `http://127.0.0.1` URL
+   * that serves it under the app's own Content-Security-Policy.
+   */
+  async mcpAppFrame(server: string, source: { uri: string } | { html: string }): Promise<string> {
+    const body = await this.request(
+      `/v1/mcp/${encodeURIComponent(server)}/app`,
+      { method: "POST", body: JSON.stringify(source) },
+      "operation",
+    );
+    const endpoint = this.endpoint;
+    if (!endpoint || typeof body?.path !== "string" || !body.path.startsWith("/mcp-app/")) {
+      throw new Error("The WithNav server did not return an app document.");
+    }
+    return `http://127.0.0.1:${endpoint.port}${body.path}`;
+  }
+
   async callMcpTool(server: string, name: string, args: Record<string, unknown> = {}): Promise<unknown> {
     return this.request(
       `/v1/mcp/${encodeURIComponent(server)}/call`,
@@ -1885,24 +1931,32 @@ function isAbort(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
-/** Maps the wire session list onto the panel's ConversationSummary. */
-function parseSessionList(body: any): ConversationSummary[] {
+/**
+ * Maps the wire session list onto the panel's ConversationSummary. Children are indexed by parent
+ * once, so the list costs time linear in its length: rescanning the whole list for every root grew
+ * with its square and stalled the panel on workspaces holding thousands of subagent sessions.
+ */
+export function parseSessionList(body: any): ConversationSummary[] {
   const sessions = Array.isArray(body?.sessions) ? body.sessions : [];
+  const children = new Map<unknown, any[]>();
+  for (const session of sessions) {
+    if (!session || session.parent_session_id == null) continue;
+    const siblings = children.get(session.parent_session_id);
+    if (siblings) siblings.push(session); else children.set(session.parent_session_id, [session]);
+  }
+  // Distinct session ids below `id`; the visited set stops on duplicated or self-parented ids.
   const descendants = (id: string): number => {
     const found = new Set<string>([id]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const child of sessions) {
-        if (child && typeof child.id === "string" && found.has(child.parent_session_id) && !found.has(child.id)) {
-          found.add(child.id); changed = true;
-        }
+    const stack = [id];
+    for (let parent = stack.pop(); parent !== undefined; parent = stack.pop()) {
+      for (const child of children.get(parent) ?? []) {
+        if (typeof child.id === "string" && !found.has(child.id)) { found.add(child.id); stack.push(child.id); }
       }
     }
     return found.size - 1;
   };
   const childCount = (id: string, statuses: string[]): number =>
-    sessions.filter((c: any) => c && c.parent_session_id === id && statuses.includes(c.child_status)).length;
+    (children.get(id) ?? []).filter((c: any) => statuses.includes(c.child_status)).length;
   return sessions
     .filter((s: any) => s && typeof s.id === "string" && !s.parent_session_id && s.promptable !== false)
     .map((s: any) => ({

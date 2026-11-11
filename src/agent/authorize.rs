@@ -163,6 +163,7 @@ pub(super) fn floor_context(actor: &AgentActor) -> FloorContext {
     FloorContext {
         workspace: actor.tool_context.workspace.clone(),
         writable_roots: actor.tool_context.writable_roots.clone(),
+        worktree_roots: Vec::new(),
         readable_roots: actor.tool_context.readable_roots.clone(),
         temp_roots: actor
             .permission_dirs
@@ -221,8 +222,7 @@ fn inside_project(call: &ToolCall, cx: &FloorContext, location: Option<Location>
     };
     let target = resolve_path(path, cx)?;
     Some(
-        std::iter::once(&cx.workspace)
-            .chain(&cx.writable_roots)
+        cx.project_roots()
             .filter_map(|root| resolve_path(&root.to_string_lossy(), cx))
             .any(|root| {
                 #[cfg(windows)]
@@ -281,7 +281,7 @@ pub(super) async fn authorize(
     } else {
         Vec::new()
     };
-    let cx = floor_context(actor);
+    let mut cx = floor_context(actor);
     let agent = agent_name(actor);
     let (mut captain_messages, mut captain_messages_cut) =
         captain_messages_with_cut(&actor.transcript);
@@ -310,7 +310,17 @@ pub(super) async fn authorize(
         .iter()
         .map(|root| root.path.clone())
         .collect();
-    let place = location(call, &commands, &cx, &scratch);
+    let mut place = location(call, &commands, &cx, &scratch);
+    // A call that would leave the project may be in another worktree of the repository. The list
+    // is read on this call, never kept: a worktree created a moment ago is already known, and a
+    // call inside the project never runs git.
+    if matches!(place, Some(Location::Outside | Location::Temp)) {
+        let worktrees = crate::workspace::worktrees::list(&cx.workspace).await;
+        if !worktrees.is_empty() {
+            cx.worktree_roots = worktrees;
+            place = location(call, &commands, &cx, &scratch);
+        }
+    }
     let flows = SessionFlows {
         reason: std::sync::Mutex::new(None),
         runs: Default::default(),

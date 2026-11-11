@@ -5,8 +5,9 @@ const originalLoad = Module._load;
 const noopDisposable = () => ({ dispose() {} });
 let provider;
 let deleteCommand;
+const commandsById = new Map();
 const vscode = {
-  commands: { registerCommand(_id, handler) { deleteCommand = handler; return noopDisposable(); } },
+  commands: { registerCommand(id, handler) { commandsById.set(id, handler); if (id === "withnav.deleteConversation") deleteCommand = handler; return noopDisposable(); } },
   Disposable: { from(...items) { return { dispose() { items.forEach(item => item.dispose()); } }; } },
   ViewColumn: { Active: 1 },
   window: {
@@ -33,6 +34,24 @@ function memento(initial = {}) {
 const { registerChatView } = require("../out/tests/chatView.js");
 const { CognitionBackend } = require("../out/tests/cognition.js");
 Module._load = originalLoad;
+
+test('the session list context menu deletes the right-clicked session after confirmation', async () => {
+  const deleted = [];
+  const backend = { listConversations: async () => [{ id: 'P', title: 'Work', updatedAt: '' }], deleteConversation: async id => deleted.push(id) };
+  registerChatView({ extensionUri: 'extension', globalState: memento() }, backend);
+  const menuDelete = commandsById.get('withnav.deleteSession');
+  vscode.window.showWarningMessage = async () => undefined;
+  await menuDelete({ sessionId: 'P' });
+  assert.deepEqual(deleted, [], 'declining the confirmation keeps the session');
+  vscode.window.showWarningMessage = async (_text, options) => { assert.equal(options.modal, true); return 'Delete'; };
+  await menuDelete({});
+  await menuDelete(undefined);
+  assert.deepEqual(deleted, [], 'a menu call without a session id does nothing');
+  await menuDelete({ sessionId: 'P' });
+  assert.deepEqual(deleted, ['P']);
+  const manifest = require('../package.json');
+  assert.ok(manifest.contributes.menus['webview/context'].some(item => item.command === 'withnav.deleteSession' && /webviewSection == 'session'/.test(item.when)));
+});
 
 test('delete palette selects a workspace root and confirms its subagent count; cancellation is safe', async () => {
   const deleted = [];
@@ -751,4 +770,157 @@ test("pending images from the webview are checked before anything is decoded", (
   ]) {
     assert.throws(() => pendingImages(bad));
   }
+});
+
+test("host echoes the webview submission id in its send result, accepted or failed", async () => {
+  let receive; const posted = []; const operations = [];
+  const backend = { isReadOnly: () => false, captureOperation: () => ({ owner: {}, generation: 2 }), ownsOperation: () => true, currentGeneration: () => 2, currentConversationId: () => "S", subscribe: () => () => {}, hasOpenPermissions: () => false,
+    runComposerCommand: async (text, _generation, operation) => { operations.push(operation); if (text.includes("fail")) throw new Error("refused"); return false; } };
+  registerChatView({ extensionUri: "extension", globalState: memento() }, backend);
+  provider.resolveWebviewView({ webview: { cspSource: "test", asWebviewUri: value => value, postMessage(message) { posted.push(message); }, onDidReceiveMessage(listener) { receive = listener; return noopDisposable(); } }, onDidDispose() {} });
+  receive({ type: "send", text: "/skill review check", tab: "main", generation: 2, submission: 4 });
+  receive({ type: "send", text: "/skill review fail", tab: "main", generation: 2, submission: 5 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(operations.map(operation => operation.submission), [4, 5], "deferred skill results can name their submission");
+  assert.deepEqual(posted.filter(message => message.type === "sendResult").map(message => [message.submission, message.accepted]), [[4, false], [5, false]]);
+});
+
+/** The shipped composer of `fullChat` with a FileReader the test settles by hand. */
+function imageComposer(dom) {
+  const d = dom.window.document;
+  const readers = [];
+  dom.window.FileReader = class {
+    readAsDataURL(file) { this.file = file; readers.push(this); }
+    load() { this.result = `data:image/png;base64,${Buffer.from(this.file.name).toString('base64')}`; this.onload(); }
+  };
+  const paste = names => {
+    const event = new dom.window.Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: { files: names.map(name => new dom.window.File(['x'], name, { type: 'image/png' })) } });
+    d.querySelector('.prompt').dispatchEvent(event);
+  };
+  const submit = () => d.querySelector('.composer').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+  const chips = () => [...d.querySelectorAll('.pending-image')].map(chip => chip.firstChild.textContent.split(' · ')[0]);
+  const refusals = () => [...d.querySelectorAll('.image-refusal')].map(item => item.firstChild.textContent);
+  return { d, readers, paste, submit, chips, refusals };
+}
+
+/** A cognition server that stores PNG bytes and refuses the files named in `refused`. */
+function imageServer(t, refused) {
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, init = {}) => {
+    calls.push({ url, body: init.body });
+    if (url.includes('/attachments?')) {
+      const name = decodeURIComponent(url.split('name=')[1]);
+      if (refused[name]) return new Response(JSON.stringify({ error: refused[name] }), { status: refused[name].startsWith('empty') ? 400 : 415 });
+      return new Response(JSON.stringify({ attachment_id: `A-${name}` }));
+    }
+    if (url.endsWith('/messages')) return new Response(JSON.stringify({ accepted: true }));
+    return new Response(JSON.stringify({ session_id: 'S' }));
+  });
+  return calls;
+}
+const UNSUPPORTED = 'unsupported image type (unrecognised file type): attach a PNG, JPEG, GIF, WebP or SVG file';
+
+test('a refused upload is named in a lasting refusal, posts no message and keeps the draft and the images', async t => {
+  const { dom, prompt, tick } = fullChat(t);
+  const { readers, paste, submit, chips, refusals } = imageComposer(dom);
+  const calls = imageServer(t, { 'notimage.png': UNSUPPORTED });
+  paste(['img1.png', 'notimage.png']); readers.forEach(reader => reader.load());
+  prompt.value = 'E2'; submit();
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(calls.filter(call => call.url.endsWith('/messages')).length, 0, 'no message names an image the server refused');
+  assert.deepEqual(refusals(), [`notimage.png was refused: ${UNSUPPORTED}`]);
+  assert.deepEqual(chips(), ['img1.png', 'notimage.png']);
+  assert.equal(prompt.value, 'E2');
+  prompt.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  assert.deepEqual(refusals(), [`notimage.png was refused: ${UNSUPPORTED}`], 'typing does not hide which file was refused');
+  // Removing the refused file and sending again reuses the stored valid image.
+  dom.window.document.querySelectorAll('.pending-image-remove')[1].click();
+  submit();
+  for (let i = 0; i < 5; i++) await tick();
+  const messages = calls.filter(call => call.url.endsWith('/messages'));
+  assert.equal(messages.length, 1);
+  assert.deepEqual(JSON.parse(messages[0].body).content, [{ type: 'text', text: 'E2' }, { type: 'image', attachment_id: 'A-img1.png' }]);
+  assert.equal(calls.filter(call => call.url.includes('name=img1.png')).length, 1, 'the stored image is not uploaded twice');
+  assert.deepEqual(chips(), []);
+});
+
+test('every refused upload of a batch is named, and none is sent', async t => {
+  const { dom, prompt, tick } = fullChat(t);
+  const { readers, paste, submit, refusals } = imageComposer(dom);
+  const calls = imageServer(t, { 'a.png': UNSUPPORTED, 'b.png': 'empty file' });
+  paste(['a.png', 'ok.png', 'b.png']); readers.forEach(reader => reader.load());
+  prompt.value = 'two bad'; submit();
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(refusals(), [`a.png was refused: ${UNSUPPORTED}`, 'b.png was refused: empty file']);
+  assert.equal(calls.filter(call => call.url.endsWith('/messages')).length, 0);
+  assert.equal(prompt.value, 'two bad');
+});
+
+test('the image chooser selects many images, reads only what fits and names what it skipped', async t => {
+  const { dom, tick } = fullChat(t);
+  const { d, chips, refusals } = imageComposer(dom);
+  const uri = name => ({ scheme: 'file', path: `/pics/${name}`, fsPath: `/pics/${name}` });
+  const sizes = { 'empty.png': 0, 'big.png': 5_000_000 };
+  const read = [];
+  vscode.workspace.fs = {
+    stat: async target => ({ type: 1, size: sizes[target.path.split('/').pop()] ?? 4 }),
+    readFile: async target => { read.push(target.path.split('/').pop()); return new Uint8Array([137, 80, 78, 71]); },
+  };
+  const names = ['a.png', 'empty.png', 'big.png', 'b.png', 'c.png', 'd.png', 'e.png', 'f.png', 'g.png', 'h.png', 'i.png'];
+  let options;
+  vscode.window.showOpenDialog = async value => { options = value; return names.map(uri); };
+  const chooser = d.querySelector('.image-btn');
+  chooser.click();
+  for (let i = 0; i < 10; i++) await tick();
+  assert.equal(options.canSelectMany, true);
+  assert.deepEqual(options.filters, { Images: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'] });
+  assert.deepEqual(read, ['a.png', 'b.png', 'c.png', 'd.png', 'e.png', 'f.png', 'g.png', 'h.png'], 'empty, too large and over-limit files are not read');
+  assert.deepEqual(chips(), ['a.png', 'b.png', 'c.png', 'd.png', 'e.png', 'f.png', 'g.png', 'h.png']);
+  assert.deepEqual(refusals(), ['A message carries at most 8 images; not attached: i.png.', 'empty.png is empty.', 'big.png is too large to attach.']);
+  // Cancelling the dialog attaches nothing and frees the control.
+  vscode.window.showOpenDialog = async () => undefined;
+  d.querySelectorAll('.pending-image-remove')[0].click();
+  chooser.click();
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(chooser.disabled, false);
+  assert.equal(chips().length, 7);
+});
+
+test('a server failure after a refused upload keeps the refused file named and reports the failure', async t => {
+  const { dom, prompt, tick } = fullChat(t);
+  const { readers, paste, submit, chips, refusals } = imageComposer(dom);
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, init = {}) => {
+    calls.push(url);
+    if (url.includes('name=bad.png')) return new Response(JSON.stringify({ error: UNSUPPORTED }), { status: 415 });
+    if (url.includes('name=ok.png')) return new Response(JSON.stringify({ error: 'temporarily unavailable' }), { status: 503 });
+    if (url.includes('/attachments?')) return new Response(JSON.stringify({ attachment_id: 'A' }));
+    if (url.endsWith('/messages')) return new Response(JSON.stringify({ accepted: true }));
+    return new Response(JSON.stringify({ session_id: 'S' }));
+  });
+  paste(['bad.png', 'ok.png', 'later.png']); readers.forEach(reader => reader.load());
+  prompt.value = 'mixed'; submit();
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(refusals(), [`bad.png was refused: ${UNSUPPORTED}`], 'only the file the server judged is named as refused');
+  assert.match(dom.window.document.querySelector('.command-error').textContent, /temporarily unavailable/);
+  assert.equal(calls.some(url => url.includes('name=later.png')), false, 'the send stops at the server failure');
+  assert.equal(calls.some(url => url.endsWith('/messages')), false);
+  assert.deepEqual(chips(), ['bad.png', 'ok.png', 'later.png']);
+  assert.equal(prompt.value, 'mixed');
+});
+
+test('the host refuses a chooser request whose capacity is not a whole number of images', async t => {
+  const { b, dom, tick } = fullChat(t);
+  let opened = 0;
+  vscode.window.showOpenDialog = async () => { opened++; return []; };
+  const d = dom.window.document;
+  // The shipped page always asks with a valid room; a forged one must not open an unbounded read.
+  const receiveHost = d.defaultView.acquireVsCodeApi().postMessage;
+  for (const room of [NaN, Infinity, -1, 9, 2.5]) receiveHost({ type: 'pickImages', request: 99, room, tab: 'main', generation: b.currentGeneration() });
+  await tick();
+  assert.equal(opened, 0);
+  receiveHost({ type: 'pickImages', request: 100, room: 8, tab: 'main', generation: b.currentGeneration() });
+  await tick();
+  assert.equal(opened, 1);
 });

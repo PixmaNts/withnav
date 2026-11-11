@@ -75,6 +75,10 @@ pub enum ServerError {
     SubagentCapacity { capacity: usize },
     #[error("subagent settings unavailable: {0}")]
     SubagentSettings(String),
+    #[error(
+        "session {session} has more than {max} ancestors: its conversation tree is corrupt, so its secrets owner is unknown"
+    )]
+    SessionTreeTooDeep { session: String, max: usize },
     #[error("server bind error: {0}")]
     Bind(#[from] std::io::Error),
     #[error("session not found: {0}")]
@@ -89,6 +93,12 @@ pub enum ServerError {
     PermissionStale,
     #[error("no such secret request is waiting: it was answered, cancelled or never existed")]
     SecretStale,
+    /// The secrets file could not be written; the detail goes to the server log only.
+    #[error("the secret could not be saved; see the server log")]
+    SecretNotSaved,
+    /// The image attachment store failed; the detail goes to the server log only.
+    #[error("the attachment store failed; see the server log")]
+    AttachmentStore,
     #[error("message content must be text")]
     NonTextContent,
     #[error("non-loopback bind refused: {0} (pass --allow-non-loopback to override)")]
@@ -99,6 +109,8 @@ pub enum ServerError {
     Model(#[from] crate::error::ProviderError),
     #[error("malformed request body: {0}")]
     MalformedBody(String),
+    #[error(transparent)]
+    Mcp(#[from] crate::mcp::McpUiError),
     #[error(
         "Chat alias '{alias}' (provider '{provider}', model '{model}') has no known context window: the provider's model list did not report one. Set \"context_window\" for it in {models_path}, or make the provider reachable and try again."
     )]

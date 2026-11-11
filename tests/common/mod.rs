@@ -10,6 +10,8 @@ pub use python::python;
 
 pub mod deadline;
 
+pub mod lsp;
+
 pub mod navigator;
 pub mod server;
 pub mod sse;
@@ -19,9 +21,12 @@ pub mod watchdog;
 pub fn isolate(command: &mut std::process::Command, root: &std::path::Path) {
     let config = root.join("config/withnav");
     let data = root.join("data/withnav");
+    // Without a private runtime directory `nav lsp` publishes no discovery file and `nav tui`
+    // joins no editor's server: a test never touches the developer's own runtime directory.
     command
         .env_remove("WITHNAV_CONFIG_DIR")
-        .env_remove("WITHNAV_DATA_DIR");
+        .env_remove("WITHNAV_DATA_DIR")
+        .env_remove("XDG_RUNTIME_DIR");
     command
         .env("WITHNAV_CONFIG_DIR", &config)
         .env("WITHNAV_DATA_DIR", &data);

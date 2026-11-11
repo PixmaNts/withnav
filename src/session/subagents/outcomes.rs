@@ -51,7 +51,13 @@ impl Service {
         };
         if let Err(error) = self
             .history()
-            .enqueue_watchdog(parent, payload, notice, checked.verdict == Verdict::Doubt)
+            .enqueue_watchdog(
+                parent,
+                ulid::Ulid::generate(),
+                payload,
+                notice,
+                checked.verdict == Verdict::Doubt,
+            )
             .await
             .map_err(ServerError::History)
         {
@@ -162,7 +168,9 @@ impl Service {
                     CompletionOutcome::Done => "done",
                     CompletionOutcome::Failed => "failed",
                     CompletionOutcome::Stopped => "stopped",
-                    CompletionOutcome::Parked => unreachable!("parked outcomes are not terminal"),
+                    CompletionOutcome::Parked | CompletionOutcome::Budget { .. } => {
+                        unreachable!("parked outcomes are not terminal")
+                    }
                 };
                 handle.status.watchdog.supervisor_cancel.cancel();
                 let text = crate::tools::bound_output(&message.text, 16 * 1024).0;

@@ -1,31 +1,69 @@
 import { Crew } from "./Crew";
 import { Fragment } from "react";
 import { useIntent, useMcp, useSkills } from "../api/queries";
-import type { AgentEntry } from "../api/types";
+import type { AgentEntry, McpAppDescriptor } from "../api/types";
 import type { Child } from "../session/reducer";
 import type { Chat } from "../session/useChat";
+import { McpAppHost } from "./McpAppHost";
+import { ImageView, type ShownImage } from "./Images";
 
-export type PanelTab = "intent" | "agents" | "extensions";
-const TABS: [PanelTab, string][] = [
+export type PanelTab = "intent" | "agents" | "extensions" | "image" | "app";
+const BASE_TABS: [PanelTab, string][] = [
   ["intent", "Intent"],
   ["agents", "Crew"],
   ["extensions", "Extensions"],
+  ["image", "Image"],
 ];
 
-export function RightPanel({ tab, setTab, workspace, chat, onOpenChild }: { tab: PanelTab; setTab: (t: PanelTab) => void; workspace: string | null; chat: Chat; onOpenChild: (id: string) => void }) {
+export function RightPanel({
+  tab,
+  setTab,
+  workspace,
+  chat,
+  onOpenChild,
+  mcpApp,
+  appExpanded = false,
+  onToggleAppExpand,
+  onCloseApp,
+  shown = null,
+}: {
+  tab: PanelTab;
+  setTab: (t: PanelTab) => void;
+  workspace: string | null;
+  chat: Chat;
+  onOpenChild: (id: string) => void;
+  mcpApp?: McpAppDescriptor | null;
+  appExpanded?: boolean;
+  onToggleAppExpand?: () => void;
+  onCloseApp?: () => void;
+  shown?: ShownImage | null;
+}) {
+  const tabs: [PanelTab, string][] = mcpApp ? [...BASE_TABS, ["app", `App · ${mcpApp.server}`]] : BASE_TABS;
   return (
     <aside className="panel" aria-label="Session details">
       <div className="panel-tabs" role="tablist">
-        {TABS.map(([id, label]) => (
+        {tabs.map(([id, label]) => (
           <button key={id} type="button" role="tab" aria-selected={tab === id} className="panel-tab" onClick={() => setTab(id)}>
             {label}
           </button>
         ))}
       </div>
-      <div className="panel-body" role="tabpanel">
+      <div className={`panel-body${tab === "app" && mcpApp ? " app-body" : ""}`} role="tabpanel">
         {tab === "intent" && <IntentTab workspace={workspace} />}
         {tab === "agents" && <AgentsTab chat={chat} onOpenChild={onOpenChild} />}
         {tab === "extensions" && <ExtensionsTab chat={chat} />}
+        {tab === "app" && mcpApp && (
+          <McpAppHost
+            app={mcpApp}
+            expanded={appExpanded}
+            onToggleExpand={() => onToggleAppExpand?.()}
+            onClose={() => {
+              onCloseApp?.();
+              setTab("intent");
+            }}
+          />
+        )}
+        {tab === "image" && <ImageView shown={shown} />}
       </div>
     </aside>
   );

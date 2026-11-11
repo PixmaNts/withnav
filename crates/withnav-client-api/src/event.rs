@@ -287,11 +287,18 @@ pub struct MessageReceived {
     pub answer: Option<crate::tools::AskAnswer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_skill: Option<SelectedSkill>,
+    /// Set when the message is the host's answer to a secret request: metadata only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<crate::secrets::SecretNote>,
     pub command_id: Ulid,
     pub source: String,
     pub target: String,
     pub mode: String,
     pub content: String,
+    /// The images the Captain attached, as references (metadata only, never bytes). Omitted
+    /// when there are none, so every event without images is unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<crate::attachment::ImageRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1029,11 +1036,13 @@ mod tests {
                 serde_json::to_value(&MessageReceived {
                     answer: None,
                     selected_skill: None,
+                    secret: None,
                     command_id: Ulid::generate(),
                     source: "user:http".into(),
                     target: ROOT_ACTOR_ID.into(),
                     mode: "next-turn".into(),
                     content: "héllo".into(),
+                    images: vec![],
                 })
                 .unwrap(),
             ),

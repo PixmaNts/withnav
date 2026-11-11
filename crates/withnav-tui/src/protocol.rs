@@ -112,6 +112,26 @@ pub enum ClientEvent {
         revision: u64,
         result: Result<SubmitResponse, String>,
     },
+    /// A file named by `/attach` was looked at on disk: its chip, or why it is refused.
+    AttachmentChecked {
+        generation: Generation,
+        /// The tab's `attachments_revision` when the check was asked for.
+        revision: u64,
+        result: Result<crate::state::PendingAttachment, String>,
+    },
+    /// Images of a failed `SendWithAttachments` that reached the server's attachment store,
+    /// reported before its failed `Submitted` or `DeliveryUncertain`, so a retry reuses them.
+    AttachmentsUploaded {
+        generation: Generation,
+        /// The `send` of the `SendWithAttachments`.
+        send: u64,
+        uploads: Vec<(crate::state::PendingAttachment, crate::state::Uploaded)>,
+    },
+    /// An image of the transcript was handed to the system viewer, or why it could not be.
+    ImageOpened {
+        generation: Generation,
+        result: Result<String, String>,
+    },
     /// A permission answer came back.
     PermissionAnswered {
         generation: Generation,
@@ -122,6 +142,24 @@ pub enum ClientEvent {
         generation: Generation,
         call_id: String,
         result: Result<SubmitResponse, String>,
+    },
+    /// The answer to a secret request (or a secret given later) came back.
+    SecretAnswered {
+        generation: Generation,
+        call_id: String,
+        name: String,
+        result: Result<withnav_client_api::secrets::SecretAccepted, String>,
+    },
+    /// `/secrets`: what the conversation sees.
+    SecretsListed {
+        generation: Generation,
+        result: Result<withnav_client_api::secrets::SecretsBody, String>,
+    },
+    /// `/secrets revoke NAME` came back: whether there was one.
+    SecretRevoked {
+        generation: Generation,
+        name: String,
+        result: Result<bool, String>,
     },
     /// The server's command list.
     Commands {
@@ -236,6 +274,25 @@ pub enum Action {
     QuestionDismiss,
     QuestionCustom,
     AnswerQuestion(withnav_client_api::tools::AskAnswer),
+    /// Opens the secret prompt on the newest secret request of the conversation.
+    OpenSecret,
+    /// Sends the value typed in the secret prompt (the reducer takes it from the prompt).
+    SubmitSecret,
+    /// Declines the secret request of the prompt.
+    DeclineSecret,
+    /// `/secrets`: lists the conversation's secrets.
+    ListSecrets,
+    /// `/secrets revoke NAME`.
+    RevokeSecret(String),
+    /// `/attach <path>`: checks the file and, if it can be sent, adds a chip to the message box.
+    Attach(String),
+    /// `/attach clear`: drops the chips of the message box.
+    ClearAttachments,
+    /// `/paste-image`: attaches the image on the local clipboard, like `/attach`.
+    PasteImage,
+    /// `/image [n]`: opens the nth image of the transcript (the last by default) in the system
+    /// viewer.
+    OpenImage(String),
     /// Shows a notice in the active conversation; nothing else happens.
     ShowNotice(String),
     /// Switches the active conversation between the build and plan agents.
@@ -273,6 +330,20 @@ pub enum Effect {
     AnswerQuestion {
         session_id: String,
         answer: withnav_client_api::tools::AskAnswer,
+    },
+    /// Carries the value to the secrets endpoint; its `Debug` never prints it.
+    SubmitSecret {
+        session_id: String,
+        call_id: String,
+        /// The requested secret's name, for the failure notice: the submission carries one only
+        /// when the value is given later.
+        name: String,
+        submission: withnav_client_api::secrets::SecretSubmission,
+    },
+    ListSecrets(String),
+    RevokeSecret {
+        session_id: String,
+        name: String,
     },
     SetBypass {
         session_id: String,
@@ -355,6 +426,38 @@ pub enum Effect {
     SendAt {
         request: SubmitRequest,
         revision: u64,
+    },
+    /// Like `SendAt`, for a message with images: the runtime uploads each file to the session
+    /// first (which only exists by now), appends the returned references to `request.content`
+    /// after the text, and sends. An attachment already `uploaded` to this session is named, not
+    /// uploaded again. A failure comes back as a failed `Submitted` (or `DeliveryUncertain`),
+    /// preceded by `ClientEvent::AttachmentsUploaded` when images were stored meanwhile.
+    SendWithAttachments {
+        request: SubmitRequest,
+        revision: u64,
+        attachments: Vec<crate::state::PendingAttachment>,
+        /// The tab's `attachments_send` for this message, echoed in `AttachmentsUploaded`.
+        send: u64,
+    },
+    /// Looks at the file named by `/attach` (`path` as typed: `~` and relative paths are
+    /// resolved by the runtime) and reports `ClientEvent::AttachmentChecked`.
+    CheckAttachment {
+        path: String,
+        /// Echoed in `ClientEvent::AttachmentChecked`.
+        revision: u64,
+    },
+    /// Saves the image on the local clipboard to a private file and reports
+    /// `ClientEvent::AttachmentChecked`.
+    PasteImage {
+        /// Echoed in `ClientEvent::AttachmentChecked`.
+        revision: u64,
+    },
+    /// Downloads one stored image and opens it in the system viewer; reports
+    /// `ClientEvent::ImageOpened`.
+    OpenImage {
+        session_id: String,
+        number: usize,
+        image: withnav_client_api::attachment::ImageRef,
     },
     /// Opens the variant list of the active conversation, from the offer the server just gave.
     ShowVariants {

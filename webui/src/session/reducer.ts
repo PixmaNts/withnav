@@ -6,7 +6,7 @@
 // carries no `llm.delta` (it is live-only), so `llm.response` is authoritative
 // for a step's text and reasoning; deltas only fill it in while it streams.
 
-import type { ContextSnapshot, Envelope } from "../api/types";
+import type { ContextSnapshot, Envelope, ImageRef } from "../api/types";
 import { outcomeText } from "./outcome";
 import { parseWake, type WakeNote } from "./wake";
 
@@ -20,7 +20,35 @@ export interface AskChoices {
   recommended?: number;
 }
 export interface AskAnswer { question_call_id: string; selected: number[]; custom?: string }
-export type Question = { type: "question"; text: string; questionCallId?: string; choices?: AskChoices; answer?: AskAnswer };
+export type SecretTtl = "1h" | "24h" | "session";
+export type SecretScope = "session" | "workspace";
+/** What `request_secret` asks for: metadata only, never a value. */
+export interface SecretRequest { name: string; label: string; reason: string; defaultTtl: SecretTtl; defaultScope: SecretScope }
+/** How the server settled a secret request (`message.received.secret`). */
+export interface SecretNote { requestId?: string; name: string; outcome: "stored" | "declined"; scope?: SecretScope; ttl?: SecretTtl; expiresAt?: string }
+export type Question = {
+  type: "question"; text: string; questionCallId?: string; choices?: AskChoices; answer?: AskAnswer;
+  /** Set for a `request_secret`: the card asks for a value instead of an answer. */
+  secret?: SecretRequest; secretNote?: SecretNote; agent?: string | null;
+};
+
+const TTLS: SecretTtl[] = ["1h", "24h", "session"];
+const SCOPES: SecretScope[] = ["session", "workspace"];
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const asTtl = (v: any): SecretTtl | undefined => (TTLS.includes(v) ? v : undefined);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const asScope = (v: any): SecretScope | undefined => (SCOPES.includes(v) ? v : undefined);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function secretRequest(d: any): SecretRequest | undefined {
+  if (typeof d?.name !== "string" || typeof d.label !== "string" || typeof d.reason !== "string") return undefined;
+  return { name: d.name, label: d.label, reason: d.reason, defaultTtl: asTtl(d.default_ttl) ?? "24h", defaultScope: asScope(d.default_scope) ?? "session" };
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function secretNote(v: any): SecretNote | undefined {
+  if (typeof v?.name !== "string" || (v.outcome !== "stored" && v.outcome !== "declined")) return undefined;
+  return { name: v.name, outcome: v.outcome, requestId: typeof v.request_id === "string" ? v.request_id : undefined,
+    scope: asScope(v.scope), ttl: asTtl(v.ttl), expiresAt: typeof v.expires_at === "string" ? v.expires_at : undefined };
+}
 
 export interface ToolCall {
   id: string;
@@ -75,7 +103,7 @@ export interface Permission {
 }
 
 export type Item =
-  | { kind: "captain"; key: string; text: string; skill?: string }
+  | { kind: "captain"; key: string; text: string; skill?: string; images?: ImageRef[] }
   | { kind: "wake"; key: string; text: string; note: WakeNote }
   | { kind: "beacon"; key: string; text: string }
   | { kind: "subagent-result"; key: string; text: string; source: string; agent?: string; outcome?: string; childId?: string }
@@ -182,13 +210,32 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       if (source === "metacognition" || source === "metacognition:remark") {
         next.items = [...next.items, { kind: "beacon", key, text }];
       } else if (author === "captain") {
+        const note = secretNote(p.secret);
+        if (note) {
+          // The host's answer to a secret request settles its card: no Captain bubble.
+          let settled = false;
+          next.items = next.items.map((item) => item.kind === "turn" ? {
+            ...item, parts: item.parts.map((part) => {
+              if (part.type !== "question" || !part.secret || part.questionCallId !== note.requestId) return part;
+              settled = true;
+              return { ...part, secretNote: note };
+            }),
+          } : item);
+          if (!settled) return notice(next, envelope.seq, note.outcome === "stored" ? `Secret $${note.name} provided for ${note.scope === "workspace" ? "this workspace" : "this session"}.` : `Secret $${note.name} declined.`, "info");
+          return next;
+        }
+        // A written answer settles a waiting secret request: the agent reads the text instead.
+        next.items = next.items.map((item) => item.kind === "turn" && item.parts.some((part) => part.type === "question" && part.secret && !part.secretNote) ? {
+          ...item, parts: item.parts.map((part) => part.type === "question" && part.secret && !part.secretNote ? { ...part, secretNote: { name: part.secret.name, outcome: "declined" as const, requestId: part.questionCallId } } : part),
+        } : item);
         if (p.answer?.question_call_id) {
           next.items = next.items.map((item) => item.kind === "turn" ? {
             ...item, parts: item.parts.map((part) => part.type === "question" && part.questionCallId === p.answer.question_call_id ? { ...part, answer: p.answer as AskAnswer } : part),
           } : item);
         }
         const skill = ["captain", "driver"].includes(p.selected_skill?.origin) ? str(p.selected_skill?.name) || undefined : undefined;
-        next.items = [...next.items, { kind: "captain", key, text, skill }];
+        const images = Array.isArray(p.images) ? (p.images as ImageRef[]).filter((i) => typeof i?.attachment_id === "string") : [];
+        next.items = [...next.items, { kind: "captain", key, text, skill, ...(images.length ? { images } : {}) }];
       } else if (author === "navigator") next.items = [...next.items, { kind: "wake", key, text, note: parseWake(text) }];
       else next.items = [...next.items, { kind: "subagent-result", key, source, ...subagentResult(text, p) }];
       return next;
@@ -284,9 +331,10 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
           "info",
         );
       }
+      const secret = p.kind === "secret" && p.question_call_id ? secretRequest(p.details) : undefined;
       return updateTurn(next, str(p.turn_id, next.currentTurn ?? ""), (turn) => ({
         ...turn,
-        parts: [...turn.parts, { type: "question", text: str(p.question), questionCallId: p.question_call_id, choices: p.choices }],
+        parts: [...turn.parts, { type: "question", text: str(p.question), questionCallId: p.question_call_id, choices: p.choices, ...(secret ? { secret, agent: turn.agent ?? next.agent } : {}) }],
       }));
     }
     case "permission.requested": {
@@ -525,4 +573,13 @@ export function tokens(n: unknown): string {
 /** The permissions still waiting for an answer. */
 export function openPermissions(view: SessionView): Permission[] {
   return Object.values(view.permissions).filter((perm) => !perm.resolution);
+}
+
+/** The secret request still waiting for the Captain's value, if any. */
+export function waitingSecret(view: SessionView): Question | undefined {
+  for (const item of view.items) {
+    if (item.kind !== "turn") continue;
+    for (const part of item.parts) if (part.type === "question" && part.secret && !part.secretNote) return part;
+  }
+  return undefined;
 }

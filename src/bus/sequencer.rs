@@ -31,12 +31,16 @@ use crate::error::BusError;
 #[derive(Debug, Clone)]
 pub struct PendingCommand {
     pub answer: Option<crate::tools::control::AskAnswer>,
+    /// The host's note when the command answers a secret request.
+    pub secret: Option<withnav_client_api::secrets::SecretNote>,
     pub selected_skill: Option<String>,
     pub command_id: Ulid,
     pub content: String,
     pub source: String,
     pub target: String,
     pub mode: String,
+    /// The Captain's images, by reference, as admission resolved them from the attachment store.
+    pub images: Vec<withnav_client_api::attachment::ImageRef>,
 }
 
 /// Committer invoked by the sequencer AFTER `message.received` is seq-assigned
@@ -85,7 +89,7 @@ pub enum Ingress {
     /// FIRST, then invoke `commit`, then ack with the assigned seq.
     AcceptCommand {
         commit: CommandCommit,
-        command: PendingCommand,
+        command: Box<PendingCommand>,
         reply: oneshot::Sender<Result<AcceptReceipt, BusError>>,
     },
     /// Sequence + emit `candidate`, then ack with its seq. A candidate queued
@@ -288,7 +292,7 @@ impl Sequencer {
             &self.ingress_tx,
             Ingress::AcceptCommand {
                 commit,
-                command,
+                command: Box::new(command),
                 reply: reply_tx,
             },
         )?;
@@ -483,7 +487,7 @@ async fn run(
                 // sequenced envelope, THEN commit the command, THEN ack —
                 // so the ack is observable proof that commit followed emit.
                 let command_id = command.command_id;
-                let mut candidate = message_received_candidate(command);
+                let mut candidate = message_received_candidate(*command);
                 candidate.causation_id = Some(command_id);
                 emitter.emit(stamp(session_id, seq, candidate));
                 commit();
@@ -549,11 +553,13 @@ fn message_received_candidate(command: PendingCommand) -> Candidate {
         EventKind::MessageReceived,
         serde_json::to_value(crate::bus::event::MessageReceived {
             answer: command.answer,
+            secret: command.secret,
             command_id: command.command_id,
             source: command.source,
             target: command.target,
             mode: command.mode,
             content: command.content,
+            images: command.images,
             selected_skill: command
                 .selected_skill
                 .map(|name| crate::bus::event::SelectedSkill {
@@ -796,12 +802,14 @@ mod tests {
                         selected: vec![1],
                         custom: Some("custom answer".into()),
                     }),
+                    secret: None,
                     selected_skill: Some("rust".into()),
                     command_id,
                     content: "hello there".into(),
                     source: "user:cli".into(),
                     target: "agent:main".into(),
                     mode: "next-turn".into(),
+                    images: Vec::new(),
                 },
                 commit,
             )

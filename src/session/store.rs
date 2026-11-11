@@ -981,20 +981,53 @@ impl HistoryStore {
     }
 
     /// Uses the same durable outbox and sequencer commit as child completion.
+    /// `notice` keys the outbox row: enqueueing the same notice again (a retry
+    /// after a write whose outcome was unknown) leaves the first row untouched.
     pub async fn enqueue_watchdog(
         &self,
         parent: Ulid,
+        notice: Ulid,
         payload: serde_json::Value,
         result: String,
         consume: bool,
     ) -> Result<(), String> {
+        self.enqueue_watchdog_if(parent, notice, payload, result, consume, |commit| {
+            Some(commit())
+        })
+        .await
+        .map(|_| ())
+    }
+
+    /// Like [`HistoryStore::enqueue_watchdog`], but the insert and its commit
+    /// run inside `gate`, which may refuse (`None`): nothing is written and
+    /// `Ok(false)` is returned. The SQLite write lock is taken before `gate`
+    /// runs, so the gate is held for one insert and commit, never for a busy wait.
+    pub(crate) async fn enqueue_watchdog_if(
+        &self,
+        parent: Ulid,
+        notice: Ulid,
+        payload: serde_json::Value,
+        result: String,
+        consume: bool,
+        gate: impl FnOnce(&mut dyn FnMut() -> Result<(), String>) -> Option<Result<(), String>>
+        + Send
+        + 'static,
+    ) -> Result<bool, String> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
+            let mut conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             conn.busy_timeout(WRITER_BUSY_TIMEOUT).map_err(|e| e.to_string())?;
-            conn.execute("INSERT INTO completion_outbox (child_id,parent_id,outcome,result_ref,payload,result_text,consumed) VALUES (?1,?2,'watchdog',?1,?3,?4,?5)",
-                params![Ulid::generate().to_string(), parent.to_string(), payload.to_string(), result, !consume]).map_err(|e| e.to_string())?;
-            Ok(())
+            let mut tx = Some(immediate_tx(&mut conn)?);
+            let mut commit = || {
+                let tx = tx.take().ok_or("watchdog notice committed twice")?;
+                tx.execute("INSERT INTO completion_outbox (child_id,parent_id,outcome,result_ref,payload,result_text,consumed) VALUES (?1,?2,'watchdog',?1,?3,?4,?5) ON CONFLICT(child_id) DO NOTHING",
+                    params![notice.to_string(), parent.to_string(), payload.to_string(), result, !consume]).map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())
+            };
+            match gate(&mut commit) {
+                Some(outcome) => outcome.map(|()| true),
+                None => Ok(false),
+            }
         }).await.map_err(|e| e.to_string())?
     }
 
@@ -1475,7 +1508,7 @@ fn insert_committed_event(
     Ok(())
 }
 
-fn add_column_if_missing(
+pub(crate) fn add_column_if_missing(
     conn: &Connection,
     table: &str,
     column: &str,
@@ -1842,6 +1875,10 @@ fn apply(conn: &mut Connection, write: Write) -> Result<(), WriteError> {
                 params![id.to_string()],
             )?;
             tx.execute(
+                "DELETE FROM attachments WHERE session_id = ?1",
+                params![id.to_string()],
+            )?;
+            tx.execute(
                 "DELETE FROM sessions WHERE id = ?1",
                 params![id.to_string()],
             )?;
@@ -1934,13 +1971,20 @@ fn migrate(path: &Path) -> Result<(), String> {
             result_ref TEXT NOT NULL,
             payload TEXT NOT NULL,
             delivered INTEGER NOT NULL DEFAULT 0
-        );",
+        );
+        CREATE TABLE IF NOT EXISTS attachments (
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL, media_type TEXT NOT NULL,
+            name TEXT NOT NULL, size INTEGER NOT NULL, width INTEGER NOT NULL,
+            height INTEGER NOT NULL, bytes BLOB NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS attachments_session ON attachments(session_id);",
     )
     .map_err(|e| format!("migrate: {e}"))?;
     // Editor context is explicit since October 2026. Legacy profile values are
     // left untouched for manual migration, never interpreted on normal startup.
     add_column_if_missing(&conn, "sessions", "editor", "INTEGER NOT NULL DEFAULT 0")
         .map_err(|e| format!("migrate: {e}"))?;
+    crate::session::attachments::upgrade_schema(&conn).map_err(|e| format!("migrate: {e}"))?;
     add_column_if_missing(&conn, "child_links", "owner_instance", "TEXT")
         .map_err(|e| e.to_string())?;
     add_column_if_missing(
@@ -2376,7 +2420,9 @@ mod tests {
                     context_window: "models.json".into(),
                     max_input_tokens: "none".into(),
                     reported_output: "none".into(),
+                    images: String::new(),
                 },
+                images: None,
             },
         };
         let value = AgentOverride {
@@ -2780,6 +2826,7 @@ mod tests {
             vec![ChatMessage::User {
                 provenance: Default::default(),
                 content: "hi".into(),
+                images: Vec::new(),
             }],
         );
         // id2 updated later: it must list first even though id was created
@@ -2863,6 +2910,40 @@ mod tests {
         }
         assert!(store.load(id).await.expect("load").is_none());
         assert!(store.list("/w").await.expect("list").is_empty());
+    }
+
+    // Given a session with stored images and another session with one
+    // When the session is deleted
+    // Then its attachments go with it and the other session keeps its own
+    #[tokio::test]
+    async fn delete_removes_the_sessions_attachments() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.db");
+        let store = HistoryStore::open(&path).expect("open");
+        let (gone, kept) = (Ulid::generate(), Ulid::generate());
+        for id in [gone, kept] {
+            store
+                .record_session(id, "/w", "m", false)
+                .await
+                .expect("record");
+        }
+        let attachments = crate::session::attachments::AttachmentStore::open(&path).expect("open");
+        let image = crate::session::attachments::fixtures::png(2, 2);
+        let removed = attachments
+            .insert(&gone.to_string(), None, &image)
+            .expect("insert");
+        let survivor = attachments
+            .insert(&kept.to_string(), None, &image)
+            .expect("insert");
+        store.delete(gone).await.expect("delete");
+        assert!(
+            attachments
+                .load(&gone.to_string(), &removed.attachment_id)
+                .is_err()
+        );
+        attachments
+            .load(&kept.to_string(), &survivor.attachment_id)
+            .expect("the other session keeps its image");
     }
 
     // Given a store file
@@ -2957,6 +3038,7 @@ mod tests {
             vec![ChatMessage::User {
                 provenance: Default::default(),
                 content: "hi".into(),
+                images: Vec::new(),
             }],
         );
         store.flush().await.expect("flush");
@@ -3062,6 +3144,37 @@ mod tests {
                 .as_deref(),
             Some("answer")
         );
+    }
+
+    #[tokio::test]
+    async fn requeued_watchdog_notice_keeps_one_row_and_its_delivery() {
+        let (_dir, store) = temp_store();
+        let parent = Ulid::generate();
+        store
+            .record_session(parent, "/w", "m", false)
+            .await
+            .unwrap();
+        let notice = Ulid::generate();
+        let payload = serde_json::json!({"notice_kind": "budget"});
+        for _ in 0..2 {
+            store
+                .enqueue_watchdog(parent, notice, payload.clone(), "first".into(), true)
+                .await
+                .unwrap();
+        }
+        let pending = store.pending_completions(parent).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        let event =
+            EventEnvelope::new(parent, 0, EventKind::SubagentWatchdog, pending[0].1.clone());
+        store.deliver_completion(notice, event).await.unwrap();
+        store
+            .enqueue_watchdog(parent, notice, payload, "second".into(), true)
+            .await
+            .unwrap();
+        assert!(store.pending_completions(parent).await.unwrap().is_empty());
+        let unconsumed = store.unconsumed_completions(parent).await.unwrap();
+        assert_eq!(unconsumed.len(), 1);
+        assert_eq!(unconsumed[0].2, "first");
     }
 
     #[tokio::test]
@@ -3377,7 +3490,9 @@ mod tests {
                 context_window: "models.json".into(),
                 max_input_tokens: "none".into(),
                 reported_output: "none".into(),
+                images: String::new(),
             },
+            images: None,
         };
         let (_dir, store) = temp_store();
         let id = Ulid::generate();
@@ -3414,6 +3529,7 @@ mod tests {
             ChatMessage::User {
                 provenance: Default::default(),
                 content: format!("request {n}"),
+                images: Vec::new(),
             },
             ChatMessage::Assistant {
                 content: None,
@@ -3432,6 +3548,7 @@ mod tests {
                 tool_call_id: format!("c{n}"),
                 content: "output".repeat(50),
                 answered_by: None,
+                images: Vec::new(),
             },
             ChatMessage::Assistant {
                 content: Some("done".into()),

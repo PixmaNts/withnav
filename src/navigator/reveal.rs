@@ -81,6 +81,7 @@ impl Tool for RevealTool {
             let path = args["path"].as_str().unwrap_or_default().to_string();
             let placement = params.placement;
             let symbol = params.symbol.clone();
+            let line = params.line;
             let answer = tokio::select! {
                 _ = cancel.cancelled() => return Ok(ToolResult::interrupted()),
                 answer = tokio::time::timeout(EDITOR_TIMEOUT, editor(params)) => answer,
@@ -103,8 +104,12 @@ impl Tool for RevealTool {
                 text.push_str(&format!(" (editor group {group})"));
             }
             if let (Some(symbol), Some(false)) = (&symbol, result.symbol_found) {
+                // The extension puts the cursor on the requested line, else on
+                // line 1, when the symbol is missing; it refuses a line past
+                // the end before opening anything.
+                let at = line.unwrap_or(1);
                 text.push_str(&format!(
-                    "; symbol `{symbol}` not found, cursor left at the top or the line"
+                    "; symbol `{symbol}` not found, cursor on line {at}"
                 ));
             }
             Ok(ToolResult::ok(text).with_metadata(json!({
@@ -151,8 +156,16 @@ fn parse(args: &Value, cx: &ToolContext) -> Result<RevealParams, ToolResult> {
             format!("no such file: {path}"),
         ));
     }
+    // A lossy conversion would name a different file, which the editor
+    // could open if it exists: refuse a path that is not valid UTF-8.
+    let Some(resolved) = resolved.to_str() else {
+        return Err(ToolResult::error(
+            "unsupported_path",
+            format!("the file's real path is not valid UTF-8, the editor cannot open it: {path}"),
+        ));
+    };
     Ok(RevealParams {
-        path: resolved.to_string_lossy().into_owned(),
+        path: resolved.to_string(),
         line,
         symbol,
         placement,
@@ -169,6 +182,7 @@ mod tests {
 
     fn cx(root: &Path) -> ToolContext {
         ToolContext {
+            secrets: None,
             binding: None,
             workspace: root.to_path_buf(),
             writable_roots: vec![root.to_path_buf()],
@@ -268,5 +282,52 @@ mod tests {
             code(call(&unwired, &cx, json!({"path": "a.c"})).await),
             "editor_unavailable"
         );
+    }
+
+    #[tokio::test]
+    async fn reveal_names_the_line_the_cursor_lands_on_when_the_symbol_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.c"), "int x;\n").unwrap();
+        let cx = cx(tmp.path());
+        let (feed, _) = editor(RevealResult {
+            group: Some(1),
+            symbol_found: Some(false),
+            error: None,
+        });
+        let tool = RevealTool::new(Some(feed));
+        let top = call(&tool, &cx, json!({"path": "a.c", "symbol": "missing"})).await;
+        assert!(
+            top.output
+                .contains("symbol `missing` not found, cursor on line 1"),
+            "{top:?}"
+        );
+        let at = call(
+            &tool,
+            &cx,
+            json!({"path": "a.c", "symbol": "missing", "line": 2}),
+        )
+        .await;
+        assert!(at.output.contains("cursor on line 2"), "{at:?}");
+    }
+
+    /// A lossy conversion of a non-UTF-8 real path names another file (the
+    /// replacement character spelling), which the editor would open.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reveal_refuses_a_real_path_that_is_not_utf8() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let bad = tmp.path().join(OsStr::from_bytes(b"bad\xff.c"));
+        std::fs::write(&bad, "real\n").unwrap();
+        std::fs::write(tmp.path().join("bad\u{FFFD}.c"), "decoy\n").unwrap();
+        std::os::unix::fs::symlink(&bad, tmp.path().join("a.c")).unwrap();
+        let cx = cx(tmp.path());
+        let (feed, seen) = editor(RevealResult::default());
+        let tool = RevealTool::new(Some(feed));
+        let refused = call(&tool, &cx, json!({"path": "a.c"})).await;
+        assert_eq!(refused.error.unwrap().code, "unsupported_path");
+        assert!(seen.lock().unwrap().is_empty());
     }
 }

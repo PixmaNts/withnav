@@ -6,6 +6,7 @@ mod markdown;
 pub mod panel;
 mod permission;
 mod pickers;
+mod secret;
 pub(crate) mod selection;
 pub mod sidebar;
 pub(crate) mod status;
@@ -243,7 +244,17 @@ pub fn draw(
         area
     };
     let editor_height = editor_height(editor, area.height);
-    let [header, rule, transcript, separator, status, input, hints] = Layout::default()
+    let chips_height = u16::from(!state.pending_attachments.is_empty());
+    let [
+        header,
+        rule,
+        transcript,
+        separator,
+        status,
+        chips,
+        input,
+        hints,
+    ] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
@@ -251,6 +262,7 @@ pub fn draw(
             Constraint::Min(1),
             Constraint::Length(1),
             Constraint::Length(1),
+            Constraint::Length(chips_height),
             Constraint::Length(editor_height),
             Constraint::Length(1),
         ])
@@ -287,6 +299,23 @@ pub fn draw(
     );
     frame.buffer_mut().set_style(status, theme.panel());
     status::draw(frame, status, state, ui, &theme);
+    if chips_height > 0 {
+        // Images waiting for the next message, one chip each, cut at the row's end.
+        let line = state
+            .pending_attachments
+            .iter()
+            .map(|a| a.chip())
+            .collect::<Vec<_>>()
+            .join(" ");
+        frame.render_widget(
+            Paragraph::new(format!(
+                " {}",
+                text::fit_end(&line, usize::from(chips.width).saturating_sub(2))
+            ))
+            .style(theme.accent()),
+            chips,
+        );
+    }
     let focused = ui.focus == crate::state::Focus::Editor;
     let border = Block::default()
         .title(Span::styled(
@@ -334,6 +363,9 @@ pub fn draw(
         frame.render_widget(Paragraph::new(Line::from(bar)), hints);
     }
     pickers::draw(frame, full, state, ui, &theme);
+    if ui.overlay.is_none() {
+        secret::draw(frame, full, state, ui, &theme);
+    }
     if let Some((_, _, control)) = &ui.child_confirm {
         pickers::confirm_child(frame, full, state.agent_name(), *control, &theme);
     }

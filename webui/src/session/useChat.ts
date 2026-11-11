@@ -4,11 +4,13 @@
 // with `POST /v1/sessions` when the first message goes out.
 
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { HttpError } from "../api/http";
 import { keepMcpStatus, keys, useAgents, useContextSnapshot, useModels, useSessionSummary } from "../api/queries";
-import type { AgentEntry, ContentBlock, Envelope, McpStatus, ModelEntry } from "../api/types";
+import type { AgentEntry, ContentBlock, Envelope, McpStatus, ModelEntry, SecretView } from "../api/types";
+import type { SecretScope, SecretTtl } from "./reducer";
+import { uploadImages } from "./uploads";
 import { useSessionStream } from "./useSessionStream";
 
 export interface Draft {
@@ -33,6 +35,8 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
       // The servers are the service's: the event updates the one shared query.
       if (envelope.kind === "mcp.status" && envelope.payload && Array.isArray(envelope.payload.servers)) {
         keepMcpStatus(qc, envelope.payload as McpStatus);
+        // A server that became ready brings its prompts as `/<server>:<prompt>` commands.
+        void qc.invalidateQueries({ queryKey: keys.commands });
         return;
       }
       if ((envelope.kind === "session.bypass" || envelope.kind === "session.end") && sessionId) {
@@ -58,7 +62,10 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
   const stream = useSessionStream(sessionId, { ready: !!summary.data, once: stopped, bypass: summary.data?.bypass, bypassSeq: summary.data?.bypass_seq, onEnvelope });
   // `mcp.status` is live-only: what changed before this subscription is read back once it is live.
   useEffect(() => {
-    if (stream.status === "live") void qc.invalidateQueries({ queryKey: keys.mcp });
+    if (stream.status === "live") {
+      void qc.invalidateQueries({ queryKey: keys.mcp });
+      void qc.invalidateQueries({ queryKey: keys.commands });
+    }
   }, [stream.status, qc]);
   const [bypassPending, setBypassPending] = useState(false);
   const bypassGuard = useRef(false);
@@ -146,7 +153,7 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
   }, [sessionId, workspace, refreshSummary]);
 
   const send = useCallback(
-    async (content: ContentBlock[]): Promise<boolean> => {
+    async (content: ContentBlock[], files: File[] = []): Promise<boolean> => {
       if (!workspace) return false;
       setBusy(true);
       const ok = await withErrors(async () => {
@@ -162,7 +169,9 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
           setDraft({ agent: null, model: null, variant: undefined });
           onCreated(id);
         } else await ensureLive();
-        await api.send(id, content);
+        // A retry after a failed send reuses the uploads that succeeded instead of filling the quota.
+        const images: ContentBlock[] = (await uploadImages(id, files)).map((attachmentId) => ({ type: "image", attachment_id: attachmentId }));
+        await api.send(id, [...content, ...images]);
         void qc.invalidateQueries({ queryKey: keys.sessions(workspace) });
         return true;
       });
@@ -261,7 +270,63 @@ export function useChat(workspace: string | null, sessionId: string | null, onCr
     [sessionId],
   );
 
+  // The conversation's secrets, metadata only. A value passes through `submitSecret` and is
+  // never kept: not in this state, not in a query cache, not in storage.
+  // The list is tagged with the session it was fetched for and shown only under that session, so the
+  // previous conversation's secrets never render under the next one.
+  const [secretState, setSecretState] = useState<{ session: string | null; list: SecretView[] | null; error: string | null }>({ session: null, list: null, error: null });
+  const secretList = secretState.session === sessionId ? secretState.list : null;
+  const secretError = secretState.session === sessionId ? secretState.error : null;
+  // Every refresh takes the next ticket and lands only if no later refresh, session change or
+  // mutation took one since: an answer that left before them describes an older list.
+  const secretTicket = useRef({ session: sessionId, seq: 0 });
+  useLayoutEffect(() => {
+    secretTicket.current = { session: sessionId, seq: secretTicket.current.seq + 1 };
+  }, [sessionId]);
+  const refreshSecrets = useCallback(async () => {
+    if (!sessionId || readOnly || secretTicket.current.session !== sessionId) return;
+    const ticket = ++secretTicket.current.seq;
+    const current = () => secretTicket.current.seq === ticket;
+    try {
+      const list = await api.secrets(sessionId);
+      if (current()) setSecretState({ session: sessionId, list, error: null });
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      if (current()) setSecretState((s) => ({ session: sessionId, list: s.session === sessionId ? s.list : null, error }));
+    }
+  }, [sessionId, readOnly]);
+  // A mutation patches the loaded list at once, then a refresh lists the server's truth: a list
+  // still loading must not become one holding only the new secret.
+  const afterSecretChange = useCallback((patch: (list: SecretView[]) => SecretView[]) => {
+    if (!sessionId || secretTicket.current.session !== sessionId) return;
+    setSecretState((s) => (s.session === sessionId && s.list ? { ...s, list: patch(s.list) } : s));
+    void refreshSecrets();
+  }, [sessionId, refreshSecrets]);
+  const secretActions = useMemo(() => sessionId && !readOnly ? {
+    list: secretList,
+    submit: async (requestId: string, body: { name?: string; value: string; ttl: SecretTtl; scope: SecretScope }) => {
+      try {
+        const answer = await api.submitSecret(sessionId, requestId, body);
+        const stored = answer.secret;
+        if (stored) afterSecretChange((list) => [...list.filter((s) => s.name !== stored.name), stored]);
+        return stored;
+      } catch (e) {
+        if (e instanceof HttpError && e.reason === "secret_stale") throw new Error("This request is no longer waiting.");
+        throw e;
+      }
+    },
+    decline: async (requestId: string) => { await api.declineSecret(sessionId, requestId); },
+    revoke: async (name: string) => {
+      try { await api.revokeSecret(sessionId, name); }
+      catch (e) { if (!(e instanceof HttpError && e.status === 404)) throw e; }
+      afterSecretChange((list) => list.filter((s) => s.name !== name));
+    },
+  } : undefined, [sessionId, readOnly, secretList, afterSecretChange]);
+
   return {
+    secrets: secretActions,
+    secretError,
+    refreshSecrets,
     answerQuestion: async (answer: import("./reducer").AskAnswer) => {
       if (!sessionId || readOnly) throw new Error("This conversation is read-only.");
       await api.answerQuestion(sessionId, answer);

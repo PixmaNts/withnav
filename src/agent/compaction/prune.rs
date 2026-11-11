@@ -162,6 +162,7 @@ fn latest_captain(transcript: &[ChatMessage]) -> &str {
             ChatMessage::User {
                 content,
                 provenance: UserProvenance::Captain,
+                ..
             } => Some(content.as_str()),
             _ => None,
         })
@@ -191,6 +192,7 @@ pub fn pinned(transcript: &[ChatMessage]) -> HashSet<usize> {
         .filter(|pair| {
             pair.mutation
                 || pair.name == "ask"
+                || pair.name == "request_secret"
                 || errors.values().any(|index| *index == pair.result_index)
                 || last_skill == Some(pair.result_index)
                 || (!pair.id.is_empty() && latest.split_whitespace().any(|word| word == pair.id))
@@ -209,6 +211,7 @@ fn state(transcript: &[ChatMessage], earlier: Option<&str>) -> Option<String> {
             ChatMessage::User {
                 content,
                 provenance: UserProvenance::Captain,
+                ..
             } => pairs.push((head(content, 2500), String::new())),
             ChatMessage::Assistant {
                 content: Some(text),

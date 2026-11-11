@@ -105,6 +105,28 @@ pub fn outcome_text(name: &str, ok: bool, data: Option<&Value>, error: Option<&s
             }
         }
         "stop" => "stopped".into(),
+        "mcp_tools" => {
+            let names = |key: &str| -> String {
+                let listed: Vec<&str> = data[key]
+                    .as_array()
+                    .map(|l| l.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                let more = data[format!("{key}_more")].as_u64().unwrap_or(0);
+                match (listed.is_empty(), more) {
+                    (true, _) => String::new(),
+                    (false, 0) => listed.join(", "),
+                    (false, n) => format!("{}, and {n} more", listed.join(", ")),
+                }
+            };
+            ["added", "removed", "warnings"]
+                .iter()
+                .filter_map(|key| {
+                    let listed = names(key);
+                    (!listed.is_empty()).then(|| format!("MCP tools {key}: {listed}"))
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
         "new" => format!("new conversation {}", text("session_id")),
         _ => data.to_string(),
     }
@@ -129,7 +151,20 @@ pub fn tokens(n: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::tokens;
+    use super::{outcome_text, tokens};
+
+    #[test]
+    fn an_mcp_tools_note_lists_what_changed_and_counts_the_rest() {
+        let data = serde_json::json!({
+            "added": ["mcp__a__x"], "removed": ["mcp__a__y", "mcp__a__z"], "removed_more": 3,
+            "warnings": ["mcp__b__x from b is not installed: a already holds the name"],
+        });
+        assert_eq!(
+            outcome_text("mcp_tools", true, Some(&data), None),
+            "MCP tools added: mcp__a__x\nMCP tools removed: mcp__a__y, mcp__a__z, and 3 more\n\
+             MCP tools warnings: mcp__b__x from b is not installed: a already holds the name"
+        );
+    }
 
     #[test]
     fn a_million_is_never_shown_as_a_thousand_k() {

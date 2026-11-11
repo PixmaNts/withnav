@@ -13,6 +13,7 @@ use withnav::tools::{Tool, ToolContext, ToolResult, ToolStatus};
 
 fn cx() -> ToolContext {
     ToolContext {
+        secrets: None,
         binding: None,
         workspace: PathBuf::from("."),
         writable_roots: Vec::new(),

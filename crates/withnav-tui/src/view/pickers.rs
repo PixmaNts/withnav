@@ -508,7 +508,7 @@ fn model_detail(state: &State, ui: &UiState, selected: usize, width: usize) -> S
 }
 
 /// Darkens what is behind a popup: the text goes muted, the background stays.
-fn dim(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+pub(super) fn dim(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let faded = crate::theme::blend(theme.muted, theme.bg, 0.6);
     let buffer = frame.buffer_mut();
     for y in area.top()..area.bottom() {

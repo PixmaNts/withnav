@@ -42,6 +42,8 @@ pub enum BlockKind {
     },
     YieldQuestion(String),
     Question(QuestionPrompt),
+    /// A `request_secret`: the Captain types the value in the client's secret prompt.
+    Secret(SecretPrompt),
     Error(String),
     Notice(String),
     /// A gated tool call waiting for the Captain's decision, then how it ended.
@@ -66,6 +68,43 @@ pub struct QuestionPrompt {
     pub custom: bool,
     pub error: Option<String>,
 }
+/// What became of a secret request, as the client knows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretState {
+    /// Waiting for the Captain's value.
+    Pending,
+    /// Stored: its scope and expiry (absent while the conversation runs).
+    Stored {
+        scope: withnav_client_api::secrets::SecretScope,
+        expires_at: Option<String>,
+    },
+    /// Declined, or answered in the chat instead.
+    Declined,
+    /// Revoked by the Captain.
+    Revoked,
+}
+
+/// A secret the agent asked for. Metadata only: the value is never part of the state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SecretPrompt {
+    pub call_id: String,
+    pub request: withnav_client_api::secrets::SecretRequestDetails,
+    /// The agent that asked, when the stream said so.
+    pub agent: Option<String>,
+    pub state: SecretState,
+    /// The last characters the server reported, once stored.
+    pub last4: Option<String>,
+    pub sending: bool,
+    pub error: Option<String>,
+}
+
+impl SecretPrompt {
+    /// Whether the request still waits for the Captain.
+    pub fn is_open(&self) -> bool {
+        self.state == SecretState::Pending
+    }
+}
+
 /// What a permission request asks and, once it ended, how.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PermissionPrompt {
@@ -109,6 +148,9 @@ pub struct Block {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Conversation {
     pub blocks: Vec<Block>,
+    /// The images shown in the transcript, in order: the Captain's and the tools'. A notice
+    /// numbers each one from 1 so the Captain can name it.
+    pub images: Vec<withnav_client_api::attachment::ImageRef>,
     pub steps: HashMap<(String, String, String), String>,
     pub tools_by_turn: HashMap<(String, String), Vec<String>>,
     pub usage_by_step: HashMap<(String, String, String), Usage>,

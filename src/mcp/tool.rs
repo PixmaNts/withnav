@@ -9,12 +9,81 @@ use sha2::{Digest, Sha256};
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
+const MAX_MEDIA_ITEMS: usize = 4;
+const MAX_MEDIA_BASE64_BYTES: usize = 4 * 1024 * 1024;
+const MAX_UI_HTML_BYTES: usize = 512 * 1024;
+
 #[derive(Clone)]
 pub struct McpTool {
     pub(super) wire: String,
     pub(super) original: String,
     server: Arc<Server>,
     schema: Value,
+    pub(super) ui_resource_uri: Option<String>,
+    pub(super) ui_url: Option<String>,
+    pub(super) kind: Kind,
+}
+
+/// What a registry tool of a server does: call one of the server's own tools, or reach its
+/// resources through the two tools WithNav adds for a server that offers resources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Kind {
+    Call,
+    ListResources,
+    ReadResource,
+}
+
+/// Why a request to the server produced no response the caller can use.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum RequestError {
+    Interrupted,
+    Disconnected,
+    Timeout,
+    /// The server answered with a JSON-RPC error; its code, never its message (which is
+    /// server text that may carry anything).
+    Rejected(i32),
+}
+
+/// Sends one request under the call's cancellation, the connection's lifetime and an
+/// absolute deadline. When the caller gives up first, the server is told to drop the
+/// request: rmcp's `RequestHandle` does not cancel on drop.
+pub(super) async fn request(
+    peer: &rmcp::Peer<rmcp::RoleClient>,
+    disconnected: &CancellationToken,
+    request: rmcp::model::ClientRequest,
+    cancel: &CancellationToken,
+    deadline: tokio::time::Instant,
+) -> Result<rmcp::model::ServerResult, RequestError> {
+    let expired = tokio::time::sleep_until(deadline);
+    tokio::pin!(expired);
+    let mut handle = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(RequestError::Interrupted),
+        _ = disconnected.cancelled() => return Err(RequestError::Disconnected),
+        _ = &mut expired => return Err(RequestError::Timeout),
+        result = peer.send_cancellable_request(request, rmcp::service::PeerRequestOptions::no_options()) => {
+            result.map_err(|_| RequestError::Disconnected)?
+        }
+    };
+    let error = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => RequestError::Interrupted,
+        _ = disconnected.cancelled() => RequestError::Disconnected,
+        _ = &mut expired => RequestError::Timeout,
+        response = &mut handle.rx => {
+            return match response {
+                Ok(Ok(response)) => Ok(response),
+                Ok(Err(rmcp::ServiceError::McpError(error))) => Err(RequestError::Rejected(error.code.0)),
+                _ => Err(RequestError::Disconnected),
+            };
+        }
+    };
+    let _ = tokio::time::timeout(
+        Duration::from_millis(100),
+        handle.cancel(Some("WithNav call cancelled".into())),
+    )
+    .await;
+    Err(error)
 }
 
 pub(super) fn wire_name(server: &str, original: &str) -> String {
@@ -274,6 +343,236 @@ pub(super) fn normalize(schema: Value) -> Result<Value, String> {
     Ok(output)
 }
 
+/// Largest redacted `structuredContent` kept, serialised. It is copied into the result metadata
+/// that every client receives and every event log stores.
+const MAX_STRUCTURED_BYTES: usize = 4 * 1024 * 1024;
+
+/// Bytes one result may carry beyond its text, all kinds together: serialised structured
+/// content, preview media (base64 or SVG text) and decoded model images. The per-item and
+/// per-kind caps alone allow four 4 MiB previews plus four 9 MiB images plus unbounded
+/// structured content. Structured content is charged first (an MCP App reads it), then each
+/// block in order, its model image before its preview. `mcp_ui.html` and the text output have
+/// their own caps and are not counted.
+const MAX_RESULT_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+
+/// Most omission notes written into one output, the rest counted in one line. They go last,
+/// into the tail that output truncation keeps (about 32 KiB): a server sending thousands of bad
+/// blocks must not push the first notes, structured content's included, out of it.
+const MAX_OMISSION_NOTES: usize = 8;
+
+/// Why a value was not serialised within a limit.
+#[derive(Debug, PartialEq)]
+pub(super) enum JsonLimit {
+    TooLarge,
+    Invalid,
+}
+
+/// Serialises `value` as JSON, stopping as soon as it passes `limit` bytes so an oversized value
+/// is never copied whole. With `keep` false nothing is buffered: only the length is returned.
+pub(super) fn json_within(
+    value: &impl serde::Serialize,
+    limit: usize,
+    keep: bool,
+) -> Result<(usize, Vec<u8>), JsonLimit> {
+    struct Capped {
+        len: usize,
+        limit: usize,
+        keep: bool,
+        bytes: Vec<u8>,
+    }
+    impl std::io::Write for Capped {
+        fn write(&mut self, chunk: &[u8]) -> std::io::Result<usize> {
+            self.len = self.len.saturating_add(chunk.len());
+            if self.len > self.limit {
+                return Err(std::io::Error::other("over the limit"));
+            }
+            if self.keep {
+                self.bytes.extend_from_slice(chunk);
+            }
+            Ok(chunk.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut out = Capped {
+        len: 0,
+        limit,
+        keep,
+        bytes: vec![],
+    };
+    match serde_json::to_writer(&mut out, value) {
+        Ok(()) => Ok((out.len, out.bytes)),
+        Err(_) if out.len > limit => Err(JsonLimit::TooLarge),
+        Err(_) => Err(JsonLimit::Invalid),
+    }
+}
+
+fn mib(bytes: usize) -> usize {
+    bytes / (1024 * 1024)
+}
+
+/// The type a client should render these bytes as, decided from the bytes alone: a server's
+/// declared `mimeType` is a claim, and a preview typed from it fails or misrenders when it is
+/// wrong. `None` for anything that is not one of the image types clients draw.
+fn sniff_media_type(bytes: &[u8]) -> Option<&'static str> {
+    use imagesize::ImageType;
+    match imagesize::image_type(bytes) {
+        Ok(ImageType::Png) => Some("image/png"),
+        Ok(ImageType::Jpeg) => Some("image/jpeg"),
+        Ok(ImageType::Gif) => Some("image/gif"),
+        Ok(ImageType::Webp) => Some("image/webp"),
+        Ok(_) => None,
+        Err(_) => {
+            crate::session::attachments::svg::is_svg_document(bytes).then_some("image/svg+xml")
+        }
+    }
+}
+
+/// The previews, model images and omission notes of one result, under one byte budget.
+struct Payload {
+    media: Vec<Value>,
+    images: Vec<Vec<u8>>,
+    omitted: Vec<String>,
+    left: usize,
+}
+
+impl Payload {
+    fn charge(&mut self, bytes: usize) -> bool {
+        let fits = bytes <= self.left;
+        if fits {
+            self.left -= bytes;
+        }
+        fits
+    }
+
+    fn over_budget(&mut self, what: &str) {
+        self.omitted.push(format!(
+            "[{what} omitted: over the {} MiB budget for one result]",
+            mib(MAX_RESULT_PAYLOAD_BYTES)
+        ));
+    }
+
+    fn add_svg(&mut self, svg: String) {
+        if self.media.len() >= MAX_MEDIA_ITEMS {
+            return;
+        }
+        if self.charge(svg.len()) {
+            self.media
+                .push(json!({"mime_type": "image/svg+xml", "svg": svg}));
+        } else {
+            self.over_budget("SVG preview");
+        }
+    }
+
+    /// Decodes one base64 image once, in the standard alphabet (RFC 4648 §4, the one MCP
+    /// specifies and the only one a `data:` URL decodes), for the model and for a preview typed
+    /// from its bytes. The model image is typed later from its bytes too, never from the
+    /// declared `mimeType`. The image count and the byte budgets are checked on the decoded
+    /// size computed from the base64 length, so a block past them is never decoded for the
+    /// model. The error says why the model did not get it.
+    fn add_image(
+        &mut self,
+        data: Option<&str>,
+        model: bool,
+        preview: bool,
+        redact: &dyn Fn(&str) -> String,
+    ) -> Result<(), String> {
+        use base64::Engine as _;
+        let data = data.ok_or("no data")?.trim();
+        if data.len() > MAX_IMAGE_BLOCK_BASE64 {
+            return Err(format!("{} bytes, too large to keep", data.len() / 4 * 3));
+        }
+        // Padded base64 comes in groups of four with at most two `=`: anything else is refused
+        // before the size is estimated, so a block of padding cannot pass the budget as zero
+        // bytes and still make the decoder allocate its full output buffer.
+        if data.len() % 4 != 0 {
+            return Err("not valid base64".into());
+        }
+        let padding = data.bytes().rev().take_while(|b| *b == b'=').count().min(2);
+        let decoded_len = (data.len() / 4 * 3).saturating_sub(padding);
+        let kept_bytes = self.images.iter().map(Vec::len).sum();
+        let mut refused = None;
+        if model {
+            refused = crate::tools::tool_image_refusal(self.images.len(), kept_bytes, decoded_len)
+                .map(|reason| format!("not kept, {reason}"))
+                .or_else(|| {
+                    (decoded_len > self.left).then(|| {
+                        format!(
+                            "not kept, over the {} MiB budget for one result",
+                            mib(MAX_RESULT_PAYLOAD_BYTES)
+                        )
+                    })
+                });
+        }
+        let to_model = model && refused.is_none();
+        let to_preview = preview
+            && self.media.len() < MAX_MEDIA_ITEMS
+            && !data.is_empty()
+            && data.len() <= MAX_MEDIA_BASE64_BYTES
+            && redact(data) == data;
+        if !to_model && !to_preview {
+            return refused.map_or(Ok(()), Err);
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|_| "not valid base64".to_string())?;
+        let media_type = to_preview.then(|| sniff_media_type(&bytes)).flatten();
+        if to_model {
+            // Canonical padding makes the decoded length the estimate checked above.
+            let charged = self.charge(bytes.len());
+            debug_assert!(charged, "the budget was checked on the decoded length");
+            self.images.push(bytes);
+        }
+        if let Some(media_type) = media_type {
+            if self.charge(data.len()) {
+                self.media
+                    .push(json!({"mime_type": media_type, "data": data}));
+            } else {
+                self.over_budget("image preview");
+            }
+        }
+        refused.map_or(Ok(()), Err)
+    }
+}
+
+/// Redacts `structuredContent` and measures it, before and after redaction (a replacement can
+/// be longer than the secret it hides). `Err` is the note naming why it was dropped.
+fn bounded_structured(structured: &Value, secrets: &[String]) -> Result<(Value, usize), String> {
+    let too_large = || {
+        format!(
+            "[structured content omitted: larger than {} MiB]",
+            mib(MAX_STRUCTURED_BYTES)
+        )
+    };
+    let invalid = |error| match error {
+        JsonLimit::TooLarge => too_large(),
+        JsonLimit::Invalid => "[structured content omitted: not serialisable]".to_string(),
+    };
+    json_within(structured, MAX_STRUCTURED_BYTES, false).map_err(invalid)?;
+    let redacted = super::redaction::redact_value(structured, secrets);
+    let (len, _) = json_within(&redacted, MAX_STRUCTURED_BYTES, false).map_err(invalid)?;
+    Ok((redacted, len))
+}
+
+pub(super) fn extract_ui_resource_uri(meta: &Value) -> Option<String> {
+    meta["ui"]["resourceUri"]
+        .as_str()
+        .or_else(|| meta["ui/resourceUri"].as_str())
+        .filter(|uri| uri.starts_with("ui://") && uri.len() <= 512)
+        .map(ToOwned::to_owned)
+}
+
+pub(super) fn extract_ui_url(meta: &Value) -> Option<String> {
+    meta["ui"]["url"]
+        .as_str()
+        .or_else(|| meta["ui/url"].as_str())
+        .filter(|url| {
+            (url.starts_with("http://") || url.starts_with("https://")) && url.len() <= 512
+        })
+        .map(ToOwned::to_owned)
+}
+
 /// Converts a `tools/call` result to a bounded tool result. Structured content is redacted
 /// as a value before it is serialised: serialisation escapes newlines, quotes and
 /// backslashes, so a raw-value text replacement afterwards would miss such a secret.
@@ -287,34 +586,141 @@ pub(super) fn convert(
     let content = value["content"].as_array();
     let has_text = content.is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "text"));
     let mut parts = vec![];
+    let mut payload = Payload {
+        media: vec![],
+        images: vec![],
+        omitted: vec![],
+        left: MAX_RESULT_PAYLOAD_BYTES,
+    };
+    // Charged before any block: an MCP App reads its state from it.
+    let redacted_structured = match value.get("structuredContent").filter(|v| !v.is_null()) {
+        None => None,
+        Some(structured) => match bounded_structured(structured, secrets) {
+            Ok((redacted, len)) if payload.charge(len) => Some(redacted),
+            Ok(_) => {
+                payload.over_budget("structured content");
+                None
+            }
+            Err(note) => {
+                payload.omitted.push(note);
+                None
+            }
+        },
+    };
+    let mut resource_uri =
+        extract_ui_resource_uri(&value["_meta"]).filter(|uri| redact(uri) == *uri);
+    let mut ui_url = extract_ui_url(&value["_meta"]).filter(|url| redact(url) == *url);
+    let mut ui_html: Option<String> = None;
     if let Some(blocks) = content {
         for block in blocks {
             match block["type"].as_str().unwrap_or("") {
-                "text" => parts.push(block["text"].as_str().unwrap_or("").to_string()),
+                "text" => {
+                    let text = block["text"].as_str().unwrap_or("");
+                    parts.push(text.to_string());
+                    let trimmed = text.trim();
+                    if payload.media.len() < MAX_MEDIA_ITEMS
+                        && trimmed.len() <= MAX_UI_HTML_BYTES
+                        && crate::session::attachments::svg::is_svg_document(trimmed.as_bytes())
+                    {
+                        payload.add_svg(redact(trimmed));
+                    }
+                }
                 "resource_link" => parts.push(format!(
                     "{} ({})",
                     block["uri"].as_str().unwrap_or(""),
                     block["name"].as_str().unwrap_or("")
                 )),
-                kind @ ("image" | "audio") => {
+                "image" => {
+                    let mime = block["mimeType"].as_str().unwrap_or("unknown");
+                    // Decoded for the model; the note stays only when it could not be.
+                    if let Err(note) =
+                        payload.add_image(block["data"].as_str(), true, true, &redact)
+                    {
+                        payload.omitted.push(format!("[image: {mime}, {note}]"));
+                    }
+                }
+                "audio" => {
                     let bytes = block["data"].as_str().map_or(0, |data| {
                         (data.len().saturating_mul(3) / 4)
                             .saturating_sub(data.chars().rev().take_while(|c| *c == '=').count())
                     });
                     parts.push(format!(
-                        "[{kind}: {}, {bytes} bytes]",
+                        "[audio: {}, {bytes} bytes]",
                         block["mimeType"].as_str().unwrap_or("unknown")
                     ));
                 }
-                "resource" => parts.push("[embedded resource omitted]".into()),
+                "resource" => {
+                    let res = &block["resource"];
+                    let uri = res["uri"].as_str().unwrap_or("");
+                    let mime = res["mimeType"].as_str().unwrap_or("");
+                    // A screenshot can also come as an embedded resource with an image type.
+                    if mime.starts_with("image/") && res["blob"].is_string() {
+                        let preview = !uri.starts_with("ui://");
+                        if let Err(note) =
+                            payload.add_image(res["blob"].as_str(), true, preview, &redact)
+                        {
+                            payload
+                                .omitted
+                                .push(format!("[embedded image omitted: {note}]"));
+                        }
+                    } else {
+                        parts.push("[embedded resource omitted]".into());
+                    }
+                    if uri.starts_with("ui://") || mime.starts_with("text/html") {
+                        if resource_uri.is_none()
+                            && uri.starts_with("ui://")
+                            && uri.len() <= 512
+                            && redact(uri) == uri
+                        {
+                            resource_uri = Some(uri.to_owned());
+                        }
+                        if ui_html.is_none()
+                            && let Some(html) = res["text"].as_str()
+                            && html.len() <= MAX_UI_HTML_BYTES
+                        {
+                            ui_html = Some(redact(html));
+                        }
+                    } else if mime == "image/svg+xml"
+                        && !res["blob"].is_string()
+                        && payload.media.len() < MAX_MEDIA_ITEMS
+                        && let Some(svg) = res["text"].as_str()
+                        && svg.len() <= MAX_UI_HTML_BYTES
+                        && crate::session::attachments::svg::is_svg_document(svg.as_bytes())
+                    {
+                        payload.add_svg(redact(svg));
+                    }
+                }
                 _ => parts.push("[unsupported MCP content]".into()),
             }
         }
     }
-    if !has_text && let Some(structured) = value.get("structuredContent") {
-        let structured = super::redaction::redact_value(structured, secrets);
-        parts.push(serde_json::to_string_pretty(&structured).unwrap_or_default());
+    if !has_text && let Some(structured) = &redacted_structured {
+        parts.push(serde_json::to_string_pretty(structured).unwrap_or_default());
     }
+    if let Some(structured) = &redacted_structured {
+        let board = &structured["excalidashBoard"];
+        if let Some(data_url) = board["png"].as_str().or_else(|| structured["png"].as_str())
+            && let Some(b64) = data_url.strip_prefix("data:image/png;base64,")
+        {
+            // A preview only: the board image is not a model image, a bad one is just skipped.
+            let _ = payload.add_image(Some(b64), false, true, &redact);
+        }
+        if ui_url.is_none()
+            && let Some(url) = board["url"].as_str().or_else(|| structured["url"].as_str())
+            && (url.starts_with("http://") || url.starts_with("https://"))
+            && url.len() <= 512
+        {
+            ui_url = Some(url.to_owned());
+        }
+    }
+    // Last and few, so the bounded output's kept tail always names what was dropped.
+    if payload.omitted.len() > MAX_OMISSION_NOTES {
+        let more = payload.omitted.len() - MAX_OMISSION_NOTES;
+        payload.omitted.truncate(MAX_OMISSION_NOTES);
+        payload.omitted.push(format!("[{more} more items omitted]"));
+    }
+    parts.append(&mut payload.omitted);
+    let Payload { media, images, .. } = payload;
     let mut result = ToolResult::bounded_ok(&redact(&parts.join("\n")), DEFAULT_MAX_OUTPUT_BYTES);
     if value["isError"] == true {
         result.status = ToolStatus::Error;
@@ -328,9 +734,40 @@ pub(super) fn convert(
             },
         });
     }
-    result.metadata = json!({"mcp_server": server, "mcp_tool": redact(original)});
+    let redacted_tool = redact(original);
+    let mut metadata = json!({"mcp_server": server, "mcp_tool": redacted_tool});
+    if let Some(structured) = redacted_structured {
+        metadata["mcp_structured"] = structured;
+    }
+    if !media.is_empty() {
+        metadata["mcp_media"] = Value::Array(media);
+    }
+    if resource_uri.is_some() || ui_html.is_some() || ui_url.is_some() {
+        let mut ui = json!({"server": server, "tool": redacted_tool});
+        if let Some(uri) = resource_uri.take() {
+            ui["resource_uri"] = Value::String(uri);
+        }
+        if let Some(html) = ui_html.take() {
+            ui["html"] = Value::String(html);
+        }
+        if let Some(url) = ui_url.take() {
+            ui["url"] = Value::String(url);
+        }
+        metadata["mcp_ui"] = ui;
+    }
+    result.metadata = metadata;
+    for (at, bytes) in images.into_iter().enumerate() {
+        result.images.push(crate::tools::ToolImage {
+            name: format!("{}-{}.img", redacted_tool, at + 1),
+            bytes,
+        });
+    }
     result
 }
+
+/// Largest base64 image block decoded, in characters: 12 MiB, about 9 MiB of image. Bigger
+/// blocks are not decoded at all, so a server cannot make the agent allocate unbounded memory.
+const MAX_IMAGE_BLOCK_BASE64: usize = 12 * 1024 * 1024;
 
 impl McpTool {
     pub(super) fn server_id(&self) -> &str {
@@ -348,6 +785,31 @@ impl McpTool {
                 server.redact(&original)
             ));
         }
+        let raw_def = serde_json::to_value(&definition).unwrap_or_default();
+        let ui_resource_uri =
+            extract_ui_resource_uri(&raw_def["_meta"]).filter(|uri| server.redact(uri) == *uri);
+        let ui_url = extract_ui_url(&raw_def["_meta"])
+            .or_else(|| {
+                let is_excalidraw = server.id == "excalidraw"
+                    || server
+                        .config
+                        .command
+                        .iter()
+                        .any(|c| c.contains("excalidraw"));
+                is_excalidraw.then(|| {
+                    server
+                        .config
+                        .env
+                        .get("EXPRESS_SERVER_URL")
+                        .cloned()
+                        .unwrap_or_else(|| "http://127.0.0.1:3000".to_string())
+                })
+            })
+            .filter(|url| {
+                (url.starts_with("http://") || url.starts_with("https://"))
+                    && url.len() <= 512
+                    && server.redact(url) == *url
+            });
         let parameters = normalize(Value::Object((*definition.input_schema).clone()))
             .map_err(|e| format!("{original}: {e}"))?;
         let parameters = super::redaction::redact_value(&parameters, &secrets);
@@ -360,10 +822,62 @@ impl McpTool {
             original,
             server,
             schema,
+            ui_resource_uri,
+            ui_url,
+            kind: Kind::Call,
         })
     }
 
-    fn error(&self, code: &str, message: &str) -> ToolResult {
+    /// A tool WithNav adds to a server (`original` is its local name, such as
+    /// `read_resource`), described for the model and bound to the server's connection.
+    pub(super) fn added(
+        server: Arc<Server>,
+        original: &str,
+        kind: Kind,
+        description: &str,
+        parameters: Value,
+    ) -> Self {
+        let schema = json!({"description": format!("[mcp:{}] {description}", server.id), "parameters": parameters});
+        Self {
+            wire: wire_name(&server.id, original),
+            original: original.to_owned(),
+            server,
+            schema,
+            ui_resource_uri: None,
+            ui_url: None,
+            kind,
+        }
+    }
+
+    pub(super) fn server(&self) -> &Arc<Server> {
+        &self.server
+    }
+
+    /// The live connection, or `None` when the server is not ready.
+    pub(super) fn connection(&self) -> Option<(rmcp::Peer<rmcp::RoleClient>, CancellationToken)> {
+        self.server
+            .ready
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|r| (r.peer.clone(), r.disconnected.clone()))
+    }
+
+    /// The tool result for a request that produced no usable response.
+    pub(super) fn failure(&self, error: RequestError) -> ToolResult {
+        match error {
+            RequestError::Interrupted => ToolResult::interrupted().with_metadata(self.metadata()),
+            RequestError::Disconnected => {
+                self.error("mcp_disconnected", "MCP server is disconnected")
+            }
+            RequestError::Timeout => self.error("mcp_timeout", "MCP tool call timed out"),
+            RequestError::Rejected(_) => {
+                self.error("mcp_tool_error", "MCP server rejected the call")
+            }
+        }
+    }
+
+    pub(super) fn error(&self, code: &str, message: &str) -> ToolResult {
         let mut result =
             ToolResult::bounded_ok(&self.server.redact(message), DEFAULT_MAX_OUTPUT_BYTES);
         result.status = ToolStatus::Error;
@@ -376,8 +890,35 @@ impl McpTool {
     }
 
     /// Published with every result; the name is redacted like any other server text.
-    fn metadata(&self) -> Value {
+    pub(super) fn metadata(&self) -> Value {
         json!({"mcp_server": self.server.id, "mcp_tool": self.server.redact(&self.original)})
+    }
+
+    fn attach_ui(&self, mut result: ToolResult) -> ToolResult {
+        if self.ui_resource_uri.is_none() && self.ui_url.is_none() {
+            return result;
+        }
+        let ui = result.metadata["mcp_ui"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let mut merged = serde_json::Map::from_iter([
+            ("server".into(), json!(self.server.id)),
+            ("tool".into(), json!(self.server.redact(&self.original))),
+        ]);
+        merged.extend(ui);
+        if !merged.contains_key("resource_uri")
+            && let Some(uri) = &self.ui_resource_uri
+        {
+            merged.insert("resource_uri".into(), json!(uri));
+        }
+        if !merged.contains_key("url")
+            && let Some(url) = &self.ui_url
+        {
+            merged.insert("url".into(), json!(url));
+        }
+        result.metadata["mcp_ui"] = Value::Object(merged);
+        result
     }
 }
 
@@ -395,62 +936,36 @@ impl Tool for McpTool {
         _cx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>> {
         Box::pin(async move {
+            if self.kind != Kind::Call {
+                return Ok(super::resource::run(self, &args, &cancel).await);
+            }
             let Some(arguments) = args.as_object() else {
                 return Ok(self.error("invalid_args", "MCP arguments must be an object"));
             };
-            let ready = self
-                .server
-                .ready
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                .map(|r| (r.peer.clone(), r.disconnected.clone()));
-            let Some((peer, disconnected)) = ready else {
+            let Some((peer, disconnected)) = self.connection() else {
                 return Ok(self.error("mcp_disconnected", "MCP server is disconnected"));
             };
             let params = rmcp::model::CallToolRequestParams::new(self.original.clone())
                 .with_arguments(arguments.clone());
-            let request = rmcp::model::ClientRequest::CallToolRequest(
+            let call = rmcp::model::ClientRequest::CallToolRequest(
                 rmcp::model::CallToolRequest::new(params),
             );
-            let deadline =
-                tokio::time::sleep(Duration::from_millis(self.server.config.call_timeout_ms));
-            tokio::pin!(deadline);
-            let mut handle = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return Ok(ToolResult::interrupted()),
-                _ = disconnected.cancelled() => return Ok(self.error("mcp_disconnected", "MCP server is disconnected")),
-                _ = &mut deadline => return Ok(self.error("mcp_timeout", "MCP tool call timed out")),
-                result = peer.send_cancellable_request(request, rmcp::service::PeerRequestOptions::no_options()) => match result {
-                    Ok(handle) => handle,
-                    Err(_) => return Ok(self.error("mcp_disconnected", "MCP server is disconnected")),
-                }
-            };
-            let result = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => ToolResult::interrupted(),
-                _ = disconnected.cancelled() => self.error("mcp_disconnected", "MCP server is disconnected"),
-                _ = &mut deadline => self.error("mcp_timeout", "MCP tool call timed out"),
-                response = &mut handle.rx => {
-                    return Ok(match response {
-                        Ok(Ok(response)) => match serde_json::to_value(response) {
-                            Ok(value) => {
-                                convert(&value, &self.server.id, &self.original, &self.server.secrets())
-                            },
-                            Err(_) => self.error("mcp_tool_error", "invalid MCP tool result"),
-                        },
-                        Ok(Err(rmcp::ServiceError::McpError(_))) => self.error("mcp_tool_error", "MCP server rejected the call"),
-                        _ => self.error("mcp_disconnected", "MCP server is disconnected"),
-                    });
-                }
-            };
-            // rmcp 3.5 RequestHandle has no cancel-on-drop: send the notification explicitly.
-            let _ = tokio::time::timeout(
-                Duration::from_millis(100),
-                handle.cancel(Some("WithNav call cancelled".into())),
+            let deadline = tokio::time::Instant::now()
+                + Duration::from_millis(self.server.config.call_timeout_ms);
+            Ok(
+                match request(&peer, &disconnected, call, &cancel, deadline).await {
+                    Ok(response) => match serde_json::to_value(response) {
+                        Ok(value) => self.attach_ui(convert(
+                            &value,
+                            &self.server.id,
+                            &self.original,
+                            &self.server.secrets(),
+                        )),
+                        Err(_) => self.error("mcp_tool_error", "invalid MCP tool result"),
+                    },
+                    Err(error) => self.failure(error),
+                },
             )
-            .await;
-            Ok(result.with_metadata(self.metadata()))
         })
     }
 }
@@ -458,6 +973,219 @@ impl Tool for McpTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::attachments::fixtures;
+
+    fn b64(bytes: &[u8]) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    const MIB: usize = 1024 * 1024;
+
+    #[test]
+    fn a_self_closing_svg_is_a_preview_and_text_merely_mentioning_svg_is_not() {
+        for svg in [
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"/>",
+            "<svg aria-label=\"a>b\"/>",
+            "<?xml version=\"1.0\"?><svg viewBox=\"0 0 1 1\"><rect/></svg>",
+        ] {
+            let result = convert(
+                &json!({"content":[{"type":"text","text":format!("  {svg}\n")}]}),
+                "s",
+                "t",
+                &[],
+            );
+            assert_eq!(
+                result.metadata["mcp_media"],
+                json!([{"mime_type": "image/svg+xml", "svg": svg}]),
+                "{svg}"
+            );
+        }
+        for text in [
+            "<svgfoo/>",
+            "<svg width=\"1\">",
+            "<html><svg/></html>",
+            "see <svg/> here",
+        ] {
+            let result = convert(
+                &json!({"content":[{"type":"text","text":text}]}),
+                "s",
+                "t",
+                &[],
+            );
+            assert!(result.metadata.get("mcp_media").is_none(), "{text}");
+        }
+    }
+
+    // Given image payloads whose declared type disagrees with their bytes
+    // Then every preview is typed from the bytes, and bytes of no image type are not previewed
+    #[test]
+    fn a_preview_is_typed_from_its_bytes_not_its_declared_type() {
+        let png = b64(&fixtures::png(2, 2));
+        let gif = b64(&fixtures::gif(2, 2));
+        let jpeg = b64(&fixtures::jpeg(2, 2));
+        let svg = b64(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+        let value = json!({
+            "content": [
+                {"type": "image", "mimeType": "image/jpeg", "data": png},
+                {"type": "resource", "resource": {"uri": "x://a", "mimeType": "image/png", "blob": gif}},
+                {"type": "image", "mimeType": "image/png", "data": svg},
+                {"type": "image", "mimeType": "image/png", "data": "AAAA"},
+            ],
+            "structuredContent": {"png": format!("data:image/png;base64,{jpeg}")},
+        });
+        let result = convert(&value, "s", "t", &[]);
+        let types: Vec<_> = result.metadata["mcp_media"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["mime_type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            types,
+            ["image/png", "image/gif", "image/svg+xml", "image/jpeg"]
+        );
+        // The model still gets every decodable block; its type is decided from the bytes later.
+        assert_eq!(result.images.len(), 4);
+        // A byte-order mark before the root element is still an SVG document.
+        assert_eq!(
+            sniff_media_type("\u{feff}<svg xmlns=\"http://www.w3.org/2000/svg\"/>".as_bytes()),
+            Some("image/svg+xml")
+        );
+    }
+
+    // Given the same image in the URL-safe and in the standard base64 alphabet
+    // Then the URL-safe one is neither previewed nor given to the model, and says why
+    #[test]
+    fn only_the_standard_base64_alphabet_is_accepted_for_previews_and_the_model() {
+        use base64::Engine as _;
+        let mut bytes = fixtures::png(1, 1);
+        bytes.extend([0xfb, 0xff, 0xbf, 0xfe]);
+        let url_safe = base64::engine::general_purpose::URL_SAFE.encode(&bytes);
+        assert!(url_safe.contains(['-', '_']));
+        let rejected = convert(
+            &json!({"content":[{"type":"image","mimeType":"image/png","data":url_safe}]}),
+            "s",
+            "t",
+            &[],
+        );
+        assert!(rejected.metadata.get("mcp_media").is_none());
+        assert!(rejected.images.is_empty());
+        assert!(rejected.output.contains("not valid base64"));
+        let accepted = convert(
+            &json!({"content":[{"type":"image","mimeType":"image/png","data":b64(&bytes)}]}),
+            "s",
+            "t",
+            &[],
+        );
+        assert_eq!(accepted.metadata["mcp_media"][0]["mime_type"], "image/png");
+        assert_eq!(accepted.images.len(), 1);
+    }
+
+    // Given structured content over its cap, after a text block long enough to be truncated
+    // Then it is not copied into the metadata and the kept tail of the output says so
+    #[test]
+    fn oversized_structured_content_is_dropped_with_a_note() {
+        let big = json!({"blob": "x".repeat(MAX_STRUCTURED_BYTES)});
+        let result = convert(
+            &json!({"content":[{"type":"text","text":"y".repeat(200_000)}], "structuredContent": big}),
+            "s",
+            "t",
+            &[],
+        );
+        assert!(result.metadata.get("mcp_structured").is_none());
+        assert!(
+            result
+                .output
+                .ends_with("[structured content omitted: larger than 4 MiB]"),
+            "{}",
+            &result.output[result.output.len() - 100..]
+        );
+        // Under the cap before redaction, over it after: a replacement is longer than a
+        // one-character secret.
+        let grows = json!({"blob": "s".repeat(MAX_STRUCTURED_BYTES / 2)});
+        let result = convert(
+            &json!({"content":[], "structuredContent": grows}),
+            "s",
+            "t",
+            &["s".to_string()],
+        );
+        assert!(result.metadata.get("mcp_structured").is_none());
+        assert!(result.output.contains("larger than 4 MiB"));
+    }
+
+    // Given oversized structured content and twenty broken images between long texts
+    // Then the notes survive truncation: the first ones in full, the rest counted
+    #[test]
+    fn omission_notes_are_few_and_kept_in_the_output_tail() {
+        let long = json!({"type": "text", "text": "y".repeat(100_000)});
+        let broken = json!({"type": "image", "mimeType": "image/png", "data": "!!"});
+        let mut content = vec![long.clone()];
+        for _ in 0..20 {
+            content.push(broken.clone());
+            content.push(long.clone());
+        }
+        let result = convert(
+            &json!({"content": content, "structuredContent": {"blob": "x".repeat(MAX_STRUCTURED_BYTES)}}),
+            "s",
+            "t",
+            &[],
+        );
+        assert!(result.truncated.is_some());
+        let tail = &result.output[result.output.len() - 2000..];
+        assert!(tail.contains("[structured content omitted: larger than 4 MiB]"));
+        assert_eq!(
+            tail.matches("[image: image/png, not valid base64]").count(),
+            7
+        );
+        assert!(tail.ends_with("[13 more items omitted]"), "{tail}");
+    }
+
+    // Given just under 3 MiB of structured content and three images of 1.5 MiB (2 MiB of base64 each)
+    // Then the 8 MiB result budget keeps the first image and its preview, the second image
+    //      without its preview, and refuses the third, naming each drop
+    #[test]
+    fn previews_images_and_structured_content_share_one_budget() {
+        let mut bytes = fixtures::png(4, 4);
+        bytes.resize(3 * MIB / 2, 0);
+        let data = b64(&bytes);
+        let block = json!({"type": "image", "mimeType": "image/png", "data": data});
+        let structured = json!({"state": "z".repeat(3 * MIB - 64)});
+        let result = convert(
+            &json!({"content": [block, block, block], "structuredContent": structured}),
+            "s",
+            "t",
+            &[],
+        );
+        assert!(result.metadata["mcp_structured"]["state"].is_string());
+        assert_eq!(result.images.len(), 2);
+        assert_eq!(result.metadata["mcp_media"].as_array().unwrap().len(), 1);
+        let note = "over the 8 MiB budget for one result";
+        assert!(
+            result
+                .output
+                .contains(&format!("[image: image/png, not kept, {note}]"))
+        );
+        assert!(
+            result
+                .output
+                .contains(&format!("[image preview omitted: {note}]"))
+        );
+    }
+
+    #[test]
+    fn json_is_measured_up_to_its_limit_and_no_further() {
+        let value = json!("abc");
+        assert_eq!(json_within(&value, 5, true), Ok((5, b"\"abc\"".to_vec())));
+        assert_eq!(json_within(&value, 5, false), Ok((5, vec![])));
+        assert_eq!(json_within(&value, 4, true), Err(JsonLimit::TooLarge));
+        // Escapes count as written: a newline is two bytes, a multibyte character its UTF-8 length.
+        assert_eq!(json_within(&json!("\né"), 6, false).map(|(n, _)| n), Ok(6));
+        assert_eq!(
+            json_within(&json!("\né"), 5, false),
+            Err(JsonLimit::TooLarge)
+        );
+    }
     #[test]
     fn provider_safe_names_and_hashes() {
         assert_eq!(wire_name("github", "a.b 🦀"), "mcp__github__a_b__");
@@ -486,6 +1214,80 @@ mod tests {
         );
         assert!(normalize(json!({"oneOf":[]})).is_err());
     }
+    // Given an MCP result with a screenshot, an embedded image resource, broken and oversized blocks
+    // Then the decodable images become tool images, the rest are named in the output, and the
+    //      output never carries base64
+    #[test]
+    fn image_blocks_become_tool_images_and_bad_ones_are_named() {
+        use base64::Engine as _;
+        let png = crate::session::attachments::fixtures::png(3, 3);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        let huge = "A".repeat(MAX_IMAGE_BLOCK_BASE64 + 4);
+        let value = json!({"content": [
+            {"type": "text", "text": "canvas"},
+            {"type": "image", "mimeType": "image/png", "data": b64},
+            {"type": "resource", "resource": {"uri": "x://shot", "mimeType": "image/png", "blob": b64}},
+            {"type": "image", "mimeType": "image/png", "data": "!!not base64!!"},
+            {"type": "image", "mimeType": "image/png", "data": huge},
+        ]});
+        let result = convert(&value, "excalidraw", "get_canvas_screenshot", &[]);
+        assert_eq!(result.images.len(), 2);
+        assert_eq!(result.images[0].bytes, png);
+        assert!(result.output.contains("not valid base64"));
+        assert!(result.output.contains("too large to keep"));
+        assert!(!result.output.contains(&b64[..16]));
+        assert_eq!(result.images[0].name, "get_canvas_screenshot-1.img");
+    }
+
+    #[test]
+    fn at_most_four_image_blocks_are_decoded() {
+        let png = crate::session::attachments::fixtures::png(1, 1);
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        let blocks: Vec<Value> = (0..6)
+            .map(|_| json!({"type": "image", "mimeType": "image/png", "data": b64}))
+            .collect();
+        let result = convert(&json!({"content": blocks}), "s", "t", &[]);
+        assert_eq!(result.images.len(), 4);
+        assert_eq!(result.output.matches("at most 4 images").count(), 2);
+    }
+
+    // Given image blocks (inline and embedded resource) whose decoded sizes reach the result
+    //       budget exactly, then one more byte
+    // When the result is converted
+    // Then the blocks up to the budget are kept, the next one is refused before decoding and
+    //      named in the output
+    #[test]
+    fn image_blocks_past_the_result_budget_are_refused_before_decoding() {
+        use base64::Engine as _;
+        // Base64 longer than a preview takes: only the model images are charged.
+        let half =
+            base64::engine::general_purpose::STANDARD
+                .encode(vec![0u8; MAX_RESULT_PAYLOAD_BYTES / 2]);
+        let one = base64::engine::general_purpose::STANDARD.encode([0u8]);
+        let note = "over the 8 MiB budget for one result";
+        let value = json!({"content": [
+            {"type": "image", "mimeType": "image/png", "data": half},
+            {"type": "resource", "resource": {"uri": "x://shot", "mimeType": "image/png", "blob": half}},
+            {"type": "image", "mimeType": "image/png", "data": one},
+        ]});
+        let result = convert(&value, "s", "t", &[]);
+        assert_eq!(result.images.len(), 2);
+        let kept: usize = result.images.iter().map(|i| i.bytes.len()).sum();
+        assert_eq!(kept, MAX_RESULT_PAYLOAD_BYTES);
+        assert_eq!(result.output.matches(note).count(), 1);
+
+        // A block made of padding counts at its full size, not as zero bytes.
+        let padding = "=".repeat(MAX_IMAGE_BLOCK_BASE64);
+        let value = json!({"content": [
+            {"type": "image", "mimeType": "image/png", "data": half},
+            {"type": "image", "mimeType": "image/png", "data": padding},
+        ]});
+        let result = convert(&value, "s", "t", &[]);
+        assert_eq!(result.images.len(), 1);
+        assert!(result.output.contains(note), "{}", result.output);
+    }
+
     #[test]
     fn reference_siblings_that_would_replace_constraints_skip_the_tool() {
         let schema = json!({
@@ -563,6 +1365,7 @@ mod tests {
 
     #[test]
     fn results_are_bounded_including_error_messages() {
+        let png = b64(&crate::session::attachments::fixtures::png(1, 1));
         let result = convert(
             &json!({"isError":true, "content":[{"type":"text", "text":"a".repeat(100000)}]}),
             "test",
@@ -580,12 +1383,70 @@ mod tests {
         );
         assert_eq!(structured.output, "{\n  \"a\": 1\n}");
         let mixed = convert(
-            &json!({"content":[{"type":"resource_link","uri":"file:///x","name":"x"},{"type":"image","mimeType":"image/png","data":"AAAA"}]}),
+            &json!({"content":[{"type":"resource_link","uri":"file:///x","name":"x"},{"type":"image","mimeType":"image/png","data":png}]}),
             "test",
             "echo",
             &[],
         );
-        assert_eq!(mixed.output, "file:///x (x)\n[image: image/png, 3 bytes]");
+        assert_eq!(mixed.output, "file:///x (x)");
+        assert_eq!(mixed.images.len(), 1);
+        assert_eq!(
+            mixed.metadata["mcp_media"],
+            json!([{"mime_type": "image/png", "data": png}])
+        );
+        let ui = convert(
+            &json!({
+                "_meta": {"ui": {"resourceUri": "ui://excalidraw/app.html"}},
+                "content": [
+                    {"type": "text", "text": "<svg viewBox=\"0 0 10 10\"></svg>"},
+                    {"type": "resource", "resource": {"uri": "ui://excalidraw/app.html", "mimeType": "text/html;profile=mcp-app", "text": "<html>ok</html>"}}
+                ]
+            }),
+            "excalidraw",
+            "draw",
+            &[],
+        );
+        assert_eq!(
+            ui.metadata["mcp_ui"],
+            json!({
+                "server": "excalidraw",
+                "tool": "draw",
+                "resource_uri": "ui://excalidraw/app.html",
+                "html": "<html>ok</html>"
+            })
+        );
+        assert_eq!(
+            ui.metadata["mcp_media"],
+            json!([{"mime_type": "image/svg+xml", "svg": "<svg viewBox=\"0 0 10 10\"></svg>"}])
+        );
+        let dash = convert(
+            &json!({
+                "content": [{"type": "text", "text": "\"Board\" is shown to the user"}],
+                "structuredContent": {
+                    "excalidashBoard": {
+                        "id": "b1",
+                        "name": "Board",
+                        "url": "https://excalidash.example/b/b1",
+                        "png": format!("data:image/png;base64,{png}")
+                    }
+                }
+            }),
+            "excalidash",
+            "display_board",
+            &[],
+        );
+        assert_eq!(
+            dash.metadata["mcp_structured"]["excalidashBoard"]["name"],
+            "Board"
+        );
+        assert_eq!(
+            dash.metadata["mcp_media"],
+            json!([{"mime_type": "image/png", "data": png}])
+        );
+        assert_eq!(
+            dash.metadata["mcp_ui"]["url"],
+            "https://excalidash.example/b/b1"
+        );
     }
 
     #[test]

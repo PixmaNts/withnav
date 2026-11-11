@@ -116,6 +116,7 @@ fn history(turns: usize, reasoning: bool) -> Vec<ChatMessage> {
                 ChatMessage::User {
                     provenance: Default::default(),
                     content: format!("request {n}"),
+                    images: Vec::new(),
                 },
                 ChatMessage::Assistant {
                     content: Some(format!("answer {n} {}", "word ".repeat(1200))),
@@ -483,6 +484,7 @@ fn rich_history() -> Vec<ChatMessage> {
         ChatMessage::User {
             provenance: Default::default(),
             content: "request 0".into(),
+            images: Vec::new(),
         },
         ChatMessage::Assistant {
             content: None,
@@ -501,6 +503,7 @@ fn rich_history() -> Vec<ChatMessage> {
             tool_call_id: "call_1".into(),
             content: "file contents".into(),
             answered_by: None,
+            images: Vec::new(),
         },
         ChatMessage::Assistant {
             content: Some("read it".into()),
@@ -517,6 +520,7 @@ fn rich_history() -> Vec<ChatMessage> {
         ChatMessage::User {
             provenance: Default::default(),
             content: "request 1".into(),
+            images: Vec::new(),
         },
     ]
 }
@@ -758,6 +762,7 @@ async fn the_fit_check_measures_the_projection_the_target_will_receive() {
                 ChatMessage::User {
                     provenance: Default::default(),
                     content: format!("request {n}"),
+                    images: Vec::new(),
                 },
                 ChatMessage::Assistant {
                     content: Some(format!("answer {n}")),

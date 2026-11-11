@@ -2,7 +2,7 @@
   "name": "withnav",
   "displayName": "WithNav",
   "description": "WithNav pair-programming companion: a language server watches your edits and offers short end-of-line remarks.",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "publisher": "pixmants",
   "repository": {
     "type": "git",
@@ -14,7 +14,7 @@
   },
   "private": true,
   "engines": {
-    "vscode": "^1.91.0"
+    "vscode": "^1.106.0"
   },
   "categories": [
     "Other"
@@ -26,7 +26,7 @@
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "withnav",
           "title": "WithNav",
@@ -45,7 +45,24 @@
     },
     "commands": [
       {
+        "command": "withnav.showSessions",
+        "title": "Show Sessions",
+        "category": "WithNav",
+        "icon": "$(list-unordered)"
+      },
+      {
+        "command": "withnav.newConversation",
+        "title": "New Conversation",
+        "category": "WithNav",
+        "icon": "$(add)"
+      },
+      {
         "command": "withnav.deleteConversation",
+        "title": "Delete Conversation…",
+        "category": "WithNav"
+      },
+      {
+        "command": "withnav.deleteSession",
         "title": "Delete Conversation…",
         "category": "WithNav"
       },
@@ -86,11 +103,34 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "withnav.deleteSession",
+          "when": "false"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "withnav.deleteSession",
+          "when": "webviewId == 'withnav.chat' && webviewSection == 'session'",
+          "group": "navigation"
+        }
+      ],
       "view/title": [
+        {
+          "command": "withnav.showSessions",
+          "when": "view == withnav.chat",
+          "group": "navigation@0"
+        },
+        {
+          "command": "withnav.newConversation",
+          "when": "view == withnav.chat",
+          "group": "navigation@1"
+        },
         {
           "command": "withnav.openSettings",
           "when": "view == withnav.chat",
-          "group": "navigation"
+          "group": "navigation@2"
         }
       ]
     },
@@ -114,6 +154,13 @@
     "configuration": {
       "title": "WithNav",
       "properties": {
+        "withnav.chat.fontSize": {
+          "type": "number",
+          "default": 14,
+          "minimum": 11,
+          "maximum": 22,
+          "description": "Base text size of the chat, in pixels. Smaller text scales with it."
+        },
         "withnav.enabled": {
           "type": "boolean",
           "default": true,
@@ -164,14 +211,14 @@
     "mdast-util-from-markdown": "^2.1.0",
     "mdast-util-gfm": "^3.1.0",
     "micromark-extension-gfm": "^3.0.0",
-    "vscode-languageclient": "^10.1.2"
+    "vscode-languageclient": "^11.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
     "@types/vscode": "^1.91.0",
     "@vscode/vsce": "^4.1.0",
     "esbuild": "^0.28.2",
-    "jsdom": "^30.1.3",
+    "jsdom": "^31.0.0",
     "typescript": "^7.0.2"
   }
 }

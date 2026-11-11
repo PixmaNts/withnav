@@ -37,7 +37,9 @@ fn identity_of(resolved: &ResolvedModel) -> ModelResolution {
             context_window: String::new(),
             max_input_tokens: String::new(),
             reported_output: String::new(),
+            images: String::new(),
         },
+        images: None,
     }
 }
 
@@ -384,6 +386,37 @@ impl Service {
         let mut resolved = resolved;
         resolved.model.context_window = Some(snapshot.bounds.context_window);
         resolved.model.max_input_tokens = snapshot.bounds.max_input_tokens;
+        let recorded = (!snapshot.provenance.images.is_empty())
+            .then_some(snapshot.images)
+            .flatten();
+        // Image support is not a bound: a conversation saved before it was known, or saved
+        // while discovery could not tell, asks the catalog now (its cache within the TTL, else
+        // one bounded request) instead of staying unknown for good.
+        // Only a provider whose list reports image support (`catalog_format`) is asked, as for
+        // a fresh session.
+        let discovered = if resolved.model.images.is_none()
+            && recorded.is_none()
+            && resolved.provider.catalog_format.is_some()
+        {
+            let data = self
+                .catalog
+                .lookup(
+                    &resolved,
+                    &api_key,
+                    &crate::provider::openai::ClientCache::new(),
+                )
+                .await;
+            let vision = data.limits.and_then(|l| l.vision);
+            // A failed lookup leaves the support unknown for a different reason than a list
+            // that does not report it: say so, the session itself carries no refresh error.
+            if let (None, Some(error)) = (vision, &data.error) {
+                tracing::warn!(alias = %alias, %error, "image support discovery failed; images stay unsent");
+            }
+            vision
+        } else {
+            None
+        };
+        resolved.model.images = image_support(resolved.model.images, recorded, discovered);
         Ok((resolved, api_key, snapshot, save_late, models_file))
     }
 
@@ -818,6 +851,7 @@ impl Service {
                         resolved.provider = target.provider.clone();
                         resolved.model.model = target.model.clone();
                         resolved.model.reasoning_history = target.reasoning_history;
+                        resolved.model.images = target.images;
                         resolved.model.max_output_tokens = target.max_tokens;
                         resolved.model.context_window =
                             Some(target.resolution.bounds.context_window);
@@ -918,6 +952,7 @@ impl Service {
             api_key,
             model: resolved.model.model.clone(),
             reasoning_history: resolved.model.reasoning_history,
+            images: snapshot.images,
             max_tokens: resolved.model.max_output_tokens,
             variant,
             new: ModelIdentity::from_upstream(&snapshot.provider, &snapshot.model),
@@ -928,5 +963,33 @@ impl Service {
             offer: offered.variants,
             offer_known: offered.known,
         })
+    }
+}
+
+/// Whether a resumed conversation's model takes images: an explicit models.json value always
+/// wins (so setting `"images"` repairs any conversation), then the value recorded with the
+/// conversation, then what the catalog reports today. `None`: still unknown.
+fn image_support(
+    configured: Option<bool>,
+    recorded: Option<bool>,
+    discovered: Option<bool>,
+) -> Option<bool> {
+    configured.or(recorded).or(discovered)
+}
+
+#[cfg(test)]
+mod image_support_tests {
+    use super::image_support;
+
+    #[test]
+    fn configured_then_recorded_then_discovered() {
+        assert_eq!(
+            image_support(Some(false), Some(true), Some(true)),
+            Some(false)
+        );
+        assert_eq!(image_support(None, Some(false), Some(true)), Some(false));
+        // Saved before image support was recorded, or saved as unknown: the catalog decides.
+        assert_eq!(image_support(None, None, Some(true)), Some(true));
+        assert_eq!(image_support(None, None, None), None);
     }
 }

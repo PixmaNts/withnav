@@ -4,7 +4,7 @@ use super::protocol::{Generation, ModelEntry, SessionListEntry};
 use std::collections::HashMap;
 pub use withnav_client_state::{
     Activity, Block, BlockKind, ChildAgent, ChildStatus, Conversation, DEFAULT_AGENT, ModelSwitch,
-    PermissionPrompt, QuestionPrompt, SessionState, SkillScript,
+    PermissionPrompt, QuestionPrompt, SecretPrompt, SecretState, SessionState, SkillScript,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -56,6 +56,20 @@ pub struct Tab {
     pub pending_submit: Option<u64>,
     pub delivery_uncertain: bool,
     pub pending_submit_text: Option<String>,
+    /// Images attached with `/attach`, sent with the next message and shown as chips under the
+    /// message box. They leave only when the server acknowledged the message that carried them.
+    pub pending_attachments: Vec<PendingAttachment>,
+    /// How many of the first `pending_attachments` ride in a message the server has not
+    /// acknowledged yet. Another send is refused meanwhile (it would carry the same images
+    /// twice); an `/attach` made meanwhile lands after them and stays for the next message.
+    pub attachments_sending: usize,
+    /// Bumped by `/attach clear`. A file check started before the clear reports an older value
+    /// and is dropped: an image the Captain cleared must not come back into the next message.
+    pub attachments_revision: u64,
+    /// Numbers each message sent with images. Stored ids reported for an earlier one are
+    /// dropped: its images may have left the tab, and a same-named file attached since must not
+    /// take an id that holds other bytes.
+    pub attachments_send: u64,
     pub pending_model_pick: bool,
     pub editor_revision: u64,
     /// The variant chosen in the model picker for a conversation not created yet: `None` leaves
@@ -80,6 +94,48 @@ pub struct Tab {
     /// A read of the git state is running; `git_again` asks for one more when it returns.
     pub git_reading: bool,
     pub git_again: bool,
+}
+
+/// The most an image sent in one message may weigh: 3.75 MiB, so that once base64-encoded it stays
+/// under 5 MB, the lowest per-image limit among the providers a gateway can route to. The server
+/// refuses more; checking here spares the upload and tells the Captain at `/attach` time.
+pub const MAX_ATTACHMENT_BYTES: u64 = 3_932_160;
+/// The most images one message may carry; the server refuses more. A test in the root crate keeps
+/// this equal to the server's `MAX_IMAGES_PER_MESSAGE`.
+pub const MAX_ATTACHMENTS: usize = 8;
+
+/// An image the Captain attached with `/attach`, still on disk: it is uploaded to the session
+/// only when the message is sent, because a conversation is created on the first message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingAttachment {
+    /// Absolute path read at send time.
+    pub path: std::path::PathBuf,
+    /// The file's base name, as shown in the chip and sent to the server.
+    pub name: String,
+    /// Size on disk when it was attached.
+    pub size: u64,
+    /// Where an earlier, failed send already stored this image. The retry names it instead of
+    /// uploading the file again, so a failed send does not fill the session's attachment quota
+    /// with copies (the server has no route to delete an attachment).
+    pub uploaded: Option<Uploaded>,
+}
+
+/// One image stored in a conversation's attachment store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Uploaded {
+    pub session_id: String,
+    pub attachment_id: String,
+}
+
+impl PendingAttachment {
+    /// `[image shot.png, 120 KB]`
+    pub fn chip(&self) -> String {
+        format!(
+            "[image {}, {}]",
+            self.name,
+            withnav_client_api::attachment::human_size(self.size)
+        )
+    }
 }
 
 /// The other primary agent the build/plan switch goes to.
@@ -336,4 +392,8 @@ pub struct UiState {
     /// (scrolled away, or not drawn yet), the first `y`, `a` or `n` brings it into view instead
     /// of answering it.
     pub prompt_shown: Option<String>,
+    /// The secret prompt, while open: it holds the value being typed, and nothing else does.
+    pub secret_entry: Option<crate::secret::SecretEntry>,
+    /// The secret request the Captain put aside (ctrl+e) to answer in the chat instead.
+    pub secret_put_aside: Option<String>,
 }

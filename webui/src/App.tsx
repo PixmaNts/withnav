@@ -5,17 +5,21 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { api } from "./api/client";
 import { onUnauthorized } from "./api/http";
 import { keys, useCommands, useSessions, useSettings, useWorkspaces } from "./api/queries";
+import type { McpAppDescriptor } from "./api/types";
 import { useWorkspaceExpansion } from "./lib/workspaceExpansion";
 import { Drawer, DrawerButton, MOBILE, TABLET, useDrawer } from "./lib/drawer";
 import { CommandPalette, type PaletteCommand, type PalettePage } from "./components/CommandPalette";
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { ModelPicker } from "./components/ModelPicker";
 import { RightPanel, type PanelTab } from "./components/RightPanel";
+import { ImageProvider, type ShownImage } from "./components/Images";
 import { Sidebar, sidebarWorkspaces } from "./components/Sidebar";
 import { launchedReason, RemoveWorkspaceDialog, type RemoveRequest } from "./components/WorkspaceActions";
 import { DeleteSessionDialog, type DeleteSessionRequest } from "./components/SessionActions";
 import { SubagentView } from "./components/SubagentView";
 import { EmptySession, Transcript } from "./components/Transcript";
+import { SecretsMenu } from "./components/SecretCard";
+import { waitingSecret } from "./session/reducer";
 import { sessionTitle, type ClientCommand } from "./lib/compose";
 import { baseName, modKey, shortPath } from "./lib/format";
 import { useRoute, type Route } from "./router";
@@ -91,6 +95,9 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const qc = useQueryClient();
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [tab, setTab] = useState<PanelTab>("intent");
+  const [mcpApp, setMcpApp] = useState<McpAppDescriptor | null>(null);
+  const [appExpanded, setAppExpanded] = useState(false);
+  const [shown, setShown] = useState<ShownImage | null>(null);
   const [removing, setRemoving] = useState<RemoveRequest | null>(null);
   const [deleting, setDeleting] = useState<DeleteSessionRequest | null>(null);
   const composer = useRef<ComposerHandle>(null);
@@ -118,6 +125,14 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const details = useDrawer(TABLET);
   const { setOpen: closeSide } = side;
   const { setOpen: closeDetails } = details;
+  const openImage = useCallback(
+    (image: ShownImage) => {
+      setShown(image);
+      setTab("image");
+      details.setOpen(true);
+    },
+    [details.setOpen],
+  );
   // Picking a session or a subagent in a drawer shows it: the drawer gets out of the way.
   useEffect(() => {
     closeSide(false);
@@ -148,6 +163,14 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const otherAgent = chat.agentId === "plan" ? "build" : "plan";
   const toggleAgent = useCallback(() => void chat.switchAgent(chat.agentId === "plan" ? "build" : "plan"), [chat]);
   const openChild = useCallback((id: string) => navigate({ subagent: id }), [navigate]);
+  const openMcpApp = useCallback(
+    (app: McpAppDescriptor) => {
+      setMcpApp(app);
+      setTab("app");
+      closeDetails(true);
+    },
+    [closeDetails],
+  );
   const newSession = useCallback(() => navigate({ session: null, subagent: null }), [navigate]);
   const openSettings = useCallback(() => navigate({ page: "settings", section: null }), [navigate]);
   const openStudio = useCallback(() => navigate({ page: "studio", flow: null, loc: null }), [navigate]);
@@ -323,13 +346,18 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const variantLabel = chat.selection.variant ?? (offered.length ? "off" : "");
   const modelLabel = chat.selection.model ? `${chat.selection.model}${variantLabel ? ` · ${variantLabel}` : ""}` : "no model";
   const connection = chat.stream.status === "reconnecting" ? "Reconnecting…" : chat.stream.status === "error" ? chat.stream.error ?? "Disconnected" : null;
+  // A settled secret in the history needs the server's list for its last characters and state.
+  const storedSecrets = useMemo(() => chat.view.items.reduce((n, item) => n + (item.kind === "turn" ? item.parts.filter((p) => p.type === "question" && p.secretNote?.outcome === "stored").length : 0), 0), [chat.view.items]);
+  const { refreshSecrets } = chat;
+  useEffect(() => { if (storedSecrets) void refreshSecrets(); }, [storedSecrets, refreshSecrets]);
   const composerDisabled = !workspace ? "Choose a workspace on the left to start." : chat.readOnly ? chat.summary?.resume_disabled_reason ?? "This session is read-only." : undefined;
 
   const crumbWs = workspace ? baseName(workspace) : "WithNav";
   const crumb = route.subagent ? `${title} / ${childAgent ?? "subagent"}` : workspace ? title : "Choose a workspace";
+  const shellClass = `shell${tab === "app" && mcpApp ? (appExpanded ? " app-expanded" : " app-open") : ""}`;
 
   return (
-    <div className="shell">
+    <div className={shellClass}>
       <header className="topbar">
         <DrawerButton target="chat-side" state={side} label="Workspaces and sessions" className="side-toggle">
           <List size={18} aria-hidden />
@@ -369,6 +397,10 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
           <button type="button" className="bypass-toggle" aria-pressed={bypass} aria-label={bypass ? "Bypass active" : "Safe mode"} disabled={!!bypassReason} title={bypassReason ?? (bypass ? "Ordinary permission prompts are answered for you; protected configuration, credentials and keys still ask." : "Every gated call is reviewed and may ask you.")} onClick={() => void chat.setBypass(!bypass)}>
             <span aria-hidden="true">{chat.bypassPending ? "◌" : bypass ? "⚠" : "🛡"}</span> {bypass ? "Bypass active" : "Safe mode"}
           </button>
+          {chat.secrets && (
+            <SecretsMenu list={chat.secrets.list} error={chat.secretError} onOpen={refreshSecrets}
+              onRevoke={(name) => void chat.secrets?.revoke(name).catch((e) => chat.setError(e instanceof Error ? e.message : String(e)))} />
+          )}
           <button type="button" className="icon-btn st-gear" onClick={openStudio} disabled={!workspace} aria-label="InstinctFlow Studio" title={workspace ? "InstinctFlow Studio: flows" : "Choose a workspace first"}>
             <FlowArrow size={16} />
           </button>
@@ -390,6 +422,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         <Sidebar route={route} navigate={navigate} expansion={expansion} onRemove={setRemoving} onDelete={setDeleting} />
       </Drawer>
 
+      <ImageProvider sessionId={route.session} open={openImage}>
       {route.subagent && route.session ? (
         <main className="main">
           <SubagentView childId={route.subagent} parentId={route.session} parent={chat.view} parentTitle={title} onBack={() => navigate({ subagent: null })} />
@@ -402,7 +435,9 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             onAnswer={chat.answerPermission}
             onAnswerQuestion={chat.answerQuestion}
             onOpenChild={openChild}
+            onOpenApp={openMcpApp}
             readOnly={chat.readOnly}
+            secrets={chat.secrets}
             empty={<EmptyState workspace={workspace} sessionId={route.session} loading={chat.stream.status === "connecting"} agent={chat.agentId} />}
           />
           <Composer
@@ -412,6 +447,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             pickerOpen={overlay === "models"}
             running={chat.running}
             disabled={composerDisabled}
+            hint={waitingSecret(chat.view) ? "Nav is waiting for the key above… (or write to answer otherwise)" : undefined}
             context={chat.view.context}
             serverCommands={commands.data ?? []}
             error={chat.error}
@@ -426,9 +462,24 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
           {overlay === "models" && <ModelPicker chat={chat} onClose={close} onSwitchAgent={(id) => void chat.switchAgent(id)} />}
         </main>
       )}
+      </ImageProvider>
 
       <Drawer id="chat-details" side="right" state={details} label="Session details">
-        <RightPanel tab={tab} setTab={setTab} workspace={workspace} chat={chat} onOpenChild={openChild} />
+        <RightPanel
+          tab={tab}
+          setTab={setTab}
+          workspace={workspace}
+          chat={chat}
+          onOpenChild={openChild}
+          mcpApp={mcpApp}
+          appExpanded={appExpanded}
+          onToggleAppExpand={() => setAppExpanded((v) => !v)}
+          onCloseApp={() => {
+            setMcpApp(null);
+            setAppExpanded(false);
+          }}
+          shown={shown}
+        />
       </Drawer>
 
       {overlay && typeof overlay === "object" && <CommandPalette root={overlay.palette} onClose={close} />}

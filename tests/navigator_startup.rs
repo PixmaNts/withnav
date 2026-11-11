@@ -5,8 +5,9 @@ use std::io::Write;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use common::lsp::read_message;
 use serde_json::json;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::BufReader;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -15,25 +16,6 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// 45 ms alone and 0.1 to 1.4 s on a CPU-limited, oversubscribed container; on the
 /// 2026-10-12 GitHub runner a 5 s guard in the sibling startup test fired in 2 of 3 runs.
 const HANG_GUARD: Duration = Duration::from_secs(30);
-
-/// Reads one `Content-Length`-framed JSON-RPC message.
-async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(r: &mut R) -> serde_json::Value {
-    let mut len = 0usize;
-    loop {
-        let mut line = String::new();
-        assert!(r.read_line(&mut line).await.expect("header") > 0, "EOF");
-        let line = line.trim();
-        if line.is_empty() {
-            break;
-        }
-        if let Some(n) = line.strip_prefix("Content-Length:") {
-            len = n.trim().parse().expect("length");
-        }
-    }
-    let mut body = vec![0; len];
-    r.read_exact(&mut body).await.expect("body");
-    serde_json::from_slice(&body).expect("json")
-}
 
 // Given a metacognition alias with no window, on a provider whose model list
 //       takes far longer than the discovery deadline

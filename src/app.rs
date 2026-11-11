@@ -343,11 +343,12 @@ pub struct TuiArgs {
     /// Id of a past conversation to resume.
     #[arg(long, conflicts_with = "model")]
     pub session: Option<String>,
-    /// Path of the models file for the embedded server.
+    /// Path of the models file for a private embedded server: the client then never joins the
+    /// server an editor runs for this workspace.
     #[arg(long, conflicts_with = "url")]
     pub models: Option<PathBuf>,
-    /// Connect to a running server instead of starting one. If it needs a bearer token, set
-    /// WITHNAV_SERVER_TOKEN.
+    /// Connect to a running server instead of joining the editor's or starting one. If it needs a
+    /// bearer token, set WITHNAV_SERVER_TOKEN.
     #[arg(long, conflicts_with = "models")]
     pub url: Option<String>,
 }

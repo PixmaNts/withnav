@@ -280,7 +280,7 @@ async fn lists_the_source_limits_and_discrepancy() {
             "provider_group": PROVIDER, "upstream_id": "m-found", "api": "chat",
             "supports_tools": true, "supports_parallel_tool_calls": null, "context_window": 1_000_000,
             "enabled": true, "window_source": "discovered.context_length", "stale": false,
-            "reported_output": 128_000, "max_input_tokens": 900_000
+            "reported_output": 128_000, "max_input_tokens": 900_000, "images_source": "none"
         })
     );
     assert_eq!(
@@ -290,7 +290,7 @@ async fn lists_the_source_limits_and_discrepancy() {
             "provider_group": PROVIDER, "upstream_id": "m-pinned", "api": "chat",
             "supports_tools": true, "supports_parallel_tool_calls": null, "context_window": 200_000,
             "enabled": true, "window_source": "models.json", "stale": false,
-            "reported_output": 128_000, "max_input_tokens": 900_000,
+            "reported_output": 128_000, "max_input_tokens": 900_000, "images_source": "none",
             "discrepancy": { "configured": 200_000, "discovered": 1_000_000 }
         })
     );

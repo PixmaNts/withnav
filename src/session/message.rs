@@ -68,6 +68,35 @@ pub(super) async fn accept(
     route(handle, command).await
 }
 
+/// Answers the secret request `request_id` the actor waits on: under the same gate as any
+/// other answer, `settle` (which stores the value, or not) runs only while the request still
+/// waits, and the metadata command it returns is routed like a Captain message.
+pub(super) async fn accept_secret_answer<F>(
+    handle: &SessionHandle,
+    request_id: &str,
+    settle: F,
+) -> Result<MessageAccepted, ServerError>
+where
+    F: FnOnce(crate::secrets::SecretRequestDetails) -> Result<Command, ServerError>,
+{
+    let _question_guard = handle.status.question_gate.lock().await;
+    let details = handle
+        .status
+        .pending_secret(request_id)
+        .ok_or(ServerError::SecretStale)?;
+    let command = settle(details)?;
+    route(handle, command).await
+}
+
+/// Routes a host-written Captain command (a secret provided after its request was settled).
+pub(super) async fn accept_host_note(
+    handle: &SessionHandle,
+    command: Command,
+) -> Result<MessageAccepted, ServerError> {
+    let _question_guard = handle.status.question_gate.lock().await;
+    route(handle, command).await
+}
+
 /// The event-before-action route for ONE validated command: reserve an inbox
 /// permit up front (a full inbox is a 503 BEFORE the event is sequenced, so
 /// there is nothing to un-publish — the rejected permit releases its slot),
@@ -89,6 +118,10 @@ async fn route(handle: &SessionHandle, command: Command) -> Result<MessageAccept
     let notice = command.downgrade_notice().map(|n| n.to_string());
     let pending = PendingCommand {
         answer: command.ask_answer().cloned(),
+        secret: command.content.iter().find_map(|block| match block {
+            crate::bus::command::ContentBlock::SecretAnswer { note } => Some(note.clone()),
+            _ => None,
+        }),
         selected_skill: command.content.iter().find_map(|block| match block {
             crate::bus::command::ContentBlock::LoadedSkill { name, .. } => Some(name.clone()),
             _ => None,
@@ -98,6 +131,7 @@ async fn route(handle: &SessionHandle, command: Command) -> Result<MessageAccept
         source: command.source_actor_id.clone(),
         target: command.target_actor_id.clone(),
         mode: command.mode.as_str().to_string(),
+        images: command.images(),
     };
     let committed = command.clone();
     let status = handle.status.clone();

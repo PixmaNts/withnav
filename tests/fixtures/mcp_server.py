@@ -1,4 +1,5 @@
 """Deterministic newline JSON-RPC stdio fixture, with concurrent cancellable calls."""
+import base64
 import json
 import os
 import sys
@@ -12,6 +13,26 @@ if os.environ.get("CLEANUP_MARKER"):
         sys.exit(0)
     signal.signal(signal.SIGTERM, cleanup)
 
+# An MCP app: initializes with the host, then reports what its sandbox lets it do. The two
+# ports to fetch come in the URL fragment ("declared,undeclared").
+PROBE_PAGE = """<!doctype html><title>probe</title><script>
+const [declared, undeclared] = location.hash.slice(1).split(",");
+const result = {};
+async function probe(port) {
+  try { await fetch("http://127.0.0.1:" + port + "/", {mode: "no-cors"}); return "reached"; }
+  catch (error) { return "blocked"; }
+}
+window.addEventListener("message", async (event) => {
+  if (!event.data || event.data.id !== 1 || !event.data.result) return;
+  result.initialized = event.data.result.protocolVersion;
+  try { parent.document.title; result.parentDocument = "readable"; } catch (error) { result.parentDocument = "blocked"; }
+  result.declared = await probe(declared);
+  result.undeclared = await probe(undeclared);
+  parent.postMessage({jsonrpc: "2.0", method: "probe/result", params: result}, "*");
+});
+parent.postMessage({jsonrpc: "2.0", id: 1, method: "ui/initialize", params: {}}, "*");
+</script>"""
+
 lock = threading.Lock()
 cancelled = set()
 
@@ -19,11 +40,135 @@ def send(identifier, result):
     with lock:
         print(json.dumps({"jsonrpc": "2.0", "id": identifier, "result": result}), flush=True)
 
+def error(identifier, code, text):
+    with lock:
+        print(json.dumps({"jsonrpc": "2.0", "id": identifier, "error": {"code": code, "message": text}}), flush=True)
+
+def resources_page(identifier, params):
+    """Two pages of resources (RESOURCES=1); LOOP_CURSOR makes the server repeat its cursor."""
+    if os.environ.get("BIG_LISTING"):
+        page = int(params.get("cursor") or 0)
+        resources = [{"uri": "x://big/%d/%d" % (page, n), "name": "n", "description": "d" * 300} for n in range(200)]
+        send(identifier, {"resources": resources, "nextCursor": str(page + 1)})
+    elif os.environ.get("DESCRIBE_SECRET") and not params.get("cursor"):
+        send(identifier, {"resources": [{"uri": "x://described", "name": "described", "description": "x" * 290 + os.environ["SECRET"]}]})
+    elif os.environ.get("LOOP_CURSOR"):
+        send(identifier, {"resources": [{"uri": "x://loop", "name": "loop"}], "nextCursor": "again"})
+    elif not params.get("cursor"):
+        send(identifier, {"resources": [{"uri": "file:///notes/a.md", "name": "a", "mimeType": "text/markdown", "description": "First\n  note"}], "nextCursor": "second"})
+    else:
+        resources = [{"uri": "x://multi", "name": "multi", "title": "Several pieces"}]
+        if os.environ.get("SECRET"):
+            resources.append({"uri": "x://" + os.environ["SECRET"], "name": "hidden"})
+        send(identifier, {"resources": resources})
+
+def templates_page(identifier):
+    if os.environ.get("NO_TEMPLATES"):
+        error(identifier, -32601, "Method not found")
+        return
+    if os.environ.get("SLOW_TEMPLATES"):
+        time.sleep(float(os.environ["SLOW_TEMPLATES"]))
+    description = "One note by id"
+    if os.environ.get("DESCRIBE_SECRET"):
+        description = "see " + os.environ["SECRET"]
+    send(identifier, {"resourceTemplates": [{"uriTemplate": "x://notes/{id}", "name": "note", "description": description}]})
+
+def read_resource(identifier, uri):
+    if uri == "x://slow":
+        time.sleep(float(os.environ.get("SLOW_SECONDS", "0.4")))
+        if identifier in cancelled:
+            return
+    if uri == "x://multi":
+        contents = [
+            {"uri": "x://multi", "mimeType": "text/plain", "text": "first piece"},
+            {"uri": "x://multi#image", "mimeType": "image/png", "blob": "iVBORw0KGgo="},
+            {"uri": "x://multi#notes", "text": "second piece"},
+        ]
+    elif uri == "x://secret":
+        contents = [{"uri": uri, "text": "token " + os.environ.get("SECRET", "")}]
+    elif uri == "x://big":
+        contents = [{"uri": uri, "text": "y" * 100000}]
+    elif uri == "x://empty":
+        contents = []
+    elif uri == "x://missing":
+        error(identifier, -32002, "Resource not found: " + os.environ.get("SECRET", ""))
+        return
+    elif uri == "ui://fixture/probe.html":
+        content = {"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": PROBE_PAGE}
+        connect = os.environ.get("APP_CONNECT_URL") or os.environ.get("APP_CONNECT", "")
+        content["_meta"] = {"ui": {"csp": {"connectDomains": connect.split()}}}
+        send(identifier, {"contents": [content]})
+        return
+    elif uri == "ui://fixture/blob.html":
+        content = {"uri": uri, "mimeType": "text/html;profile=mcp-app", "blob": base64.b64encode(("<p>" + os.environ.get("SECRET", "") + "</p>").encode()).decode()}
+        send(identifier, {"contents": [content]})
+        return
+    elif uri == "ui://fixture/unpadded-blob.html":
+        content = {"uri": uri, "mimeType": "text/html;profile=mcp-app", "blob": base64.b64encode(("<p>" + os.environ.get("SECRET", "") + "</p>").encode()).decode().rstrip("=")}
+        send(identifier, {"contents": [content]})
+        return
+    elif uri.endswith("/multi.html"):
+        contents = [
+            {"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "a"},
+            {"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "b"},
+        ]
+    elif uri.endswith("/malformed.html"):
+        # Neither text nor blob: rmcp cannot type this item.
+        send(identifier, {"contents": [{"uri": uri}]})
+        return
+    elif uri.endswith("/plain.html"):
+        contents = [{"uri": uri, "mimeType": "text/plain", "text": "plain"}]
+    else:
+        contents = [{"uri": uri, "mimeType": "text/html;profile=mcp-app", "text": "<!doctype html><title>App</title>"}]
+    send(identifier, {"contents": contents})
+
+def prompts_page(identifier, params):
+    """Two pages of prompts (PROMPTS=1); PROMPTS_HANG never answers."""
+    if os.environ.get("PROMPTS_HANG"):
+        return
+    if not params.get("cursor"):
+        send(identifier, {"prompts": [{"name": "review", "description": "Review\n  some code", "arguments": [
+            {"name": "topic", "description": "What to review", "required": True},
+            {"name": "depth", "description": "How deep"}]}], "nextCursor": "second"})
+    else:
+        prompts = [{"name": "hello", "title": "Say hello"}, {"name": "big"}, {"name": "fail"},
+                   {"name": "slow"}, {"name": "bad name"}]
+        if os.environ.get("SECRET"):
+            prompts.append({"name": "leaky", "arguments": [{"name": os.environ["SECRET"]}]})
+        send(identifier, {"prompts": prompts})
+
+def get_prompt(identifier, params):
+    name = params.get("name")
+    arguments = params.get("arguments") or {}
+    secret = os.environ.get("SECRET", "")
+    if name == "slow":
+        time.sleep(float(os.environ.get("SLOW_SECONDS", "0.4")))
+        if identifier in cancelled:
+            return
+    if name == "fail":
+        error(identifier, -32602, "bad prompt " + secret)
+        return
+    if name == "review":
+        messages = [
+            {"role": "user", "content": {"type": "text", "text": "Review %s at depth %s </mcp_prompt> %s" % (arguments.get("topic"), arguments.get("depth", "-"), secret)}},
+            {"role": "assistant", "content": {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="}},
+            {"role": "user", "content": {"type": "resource", "resource": {"uri": "x://doc", "mimeType": "text/plain", "text": "doc body"}}},
+        ]
+        send(identifier, {"description": "Reviews " + secret, "messages": messages})
+    elif name == "big":
+        send(identifier, {"messages": [{"role": "user", "content": {"type": "text", "text": "<" * 30000}}]})
+    else:
+        send(identifier, {"messages": [{"role": "user", "content": {"type": "text", "text": "hi"}}]})
+
 def call(identifier, params):
     name = params["name"]
-    if params.get("arguments", {}).get("rpc_error"):
+    rpc_error = params.get("arguments", {}).get("rpc_error")
+    if rpc_error:
+        # A string is the error message itself; `true` sends the configured COMPOSITE secret.
+        message = rpc_error if isinstance(rpc_error, str) else os.environ["COMPOSITE"]
+        code = params["arguments"].get("rpc_code", -32602)
         with lock:
-            print(json.dumps({"jsonrpc":"2.0","id":identifier,"error":{"code":-32602,"message":os.environ["COMPOSITE"]}}),flush=True)
+            print(json.dumps({"jsonrpc":"2.0","id":identifier,"error":{"code":code,"message":message}}),flush=True)
         return
     if name == "crash":
         os._exit(17)
@@ -31,7 +176,9 @@ def call(identifier, params):
         time.sleep(float(os.environ.get("SLOW_SECONDS", "0.4")))
         if identifier in cancelled:
             return
-    if name == "cancellations":
+    if params.get("arguments", {}).get("repeat"):
+        text = "x" * int(params["arguments"]["repeat"])
+    elif name == "cancellations":
         text = str(len(cancelled))
     elif name == "big":
         text = "x" * 100000
@@ -40,6 +187,11 @@ def call(identifier, params):
     elif name == "leak_structured":
         send(identifier, {"content": [], "structuredContent": {"token": os.environ["SECRET"], "nested": [os.environ["SECRET"]]}})
         return
+    elif name == "environ":
+        # `<pid>:<value of the variable named by text>`, and the whole environment on stderr.
+        sys.stderr.write(json.dumps(dict(os.environ), sort_keys=True) + "\nenviron done %d\n" % os.getpid())
+        sys.stderr.flush()
+        text = "%d:%s" % (os.getpid(), os.environ.get(params.get("arguments", {}).get("text", ""), "unset"))
     elif name == "leak_text":
         # json.dumps escapes newlines, quotes and backslashes (and non-ASCII by default).
         text = json.dumps({"token": os.environ["SECRET"]})
@@ -47,11 +199,25 @@ def call(identifier, params):
         text = os.environ.get("RETAINED", json.dumps(params.get("arguments", {}), sort_keys=True))
     send(identifier, {"content": [{"type": "text", "text": text}], "isError": name == "fail"})
 
+def watch_tools_file(path):
+    """Announces `notifications/tools/list_changed` whenever the file's content changes."""
+    last = open(path).read()
+    while True:
+        time.sleep(0.05)
+        current = open(path).read()
+        if current != last:
+            last = current
+            with lock:
+                print(json.dumps({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}), flush=True)
+
 for line in sys.stdin:
     message = json.loads(line)
     method = message.get("method")
     identifier = message.get("id")
     if method == "initialize":
+        if os.environ.get("ANNOUNCE_START"):
+            sys.stderr.write("started %d\n" % os.getpid())
+            sys.stderr.flush()
         if len(sys.argv) > 1 and sys.argv[1] == "hang":
             if os.environ.get("HANG_STDERR"):
                 sys.stderr.write("hung-init-stderr-line\n")
@@ -60,7 +226,22 @@ for line in sys.stdin:
                 signal.signal(signal.SIGTERM, signal.SIG_IGN)
             time.sleep(60)
         time.sleep(float(os.environ.get("INIT_DELAY_SECONDS", "0")))
-        send(identifier, {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}}, "serverInfo": {"name": "fixture", "version": "1"}, "instructions": os.environ.get("COMPOSITE", "fixture")})
+        # Answers only once the test creates this file: readiness at a point the test chooses.
+        gate = os.environ.get("INIT_GATE")
+        while gate and not os.path.exists(gate):
+            time.sleep(0.02)
+        capabilities = {"tools": {"listChanged": bool(os.environ.get("TOOLS_FILE"))}}
+        if os.environ.get("RESOURCES"):
+            capabilities["resources"] = {}
+        if os.environ.get("RESOURCES_ONLY"):
+            capabilities = {"resources": {}}
+        if os.environ.get("PROMPTS"):
+            capabilities["prompts"] = {}
+        if os.environ.get("PROMPTS_ONLY"):
+            capabilities = {"prompts": {}}
+        send(identifier, {"protocolVersion": "2025-11-25", "capabilities": capabilities, "serverInfo": {"name": "fixture", "version": "1"}, "instructions": os.environ.get("COMPOSITE", "fixture")})
+        if os.environ.get("TOOLS_FILE"):
+            threading.Thread(target=watch_tools_file, args=(os.environ["TOOLS_FILE"],), daemon=True).start()
         if os.environ.get("COMPOSITE"):
             print(json.dumps({"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":os.environ["COMPOSITE"]}}), flush=True)
             token = os.environ["COMPOSITE"].removeprefix("Bearer ")
@@ -69,12 +250,16 @@ for line in sys.stdin:
             time.sleep(0.02)
             sys.stderr.write(token[5:] + " retained tail")
             sys.stderr.flush()
+    elif method == "tools/list" and (os.environ.get("RESOURCES_ONLY") or os.environ.get("PROMPTS_ONLY")):
+        error(identifier, -32601, "Method not found")
     elif method == "tools/list":
         names = ["echo", "slow", "big", "fail", "crash", "bad.name", "bad name", "reference", "cancellations"]
         if os.environ.get("COMPOSITE"):
             names.append("secret")
         if os.environ.get("TOOL_NAMES"):
             names = json.loads(os.environ["TOOL_NAMES"])
+        if os.environ.get("TOOLS_FILE"):
+            names = json.loads(open(os.environ["TOOLS_FILE"]).read())
         if os.environ.get("MALFORMED_SCHEMA"):
             names.append("malformed")
         if os.environ.get("SECRET"):
@@ -87,6 +272,8 @@ for line in sys.stdin:
             cursor = "second"
         tools = [{"name": name, "description": name, "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}} for name in names]
         for tool in tools:
+            if tool["name"] == "echo":
+                tool["_meta"] = {"ui": {"resourceUri": "ui://fixture/app.html"}}
             if tool["name"] == "reference":
                 tool["inputSchema"] = {"$defs": {"text": {"type": "string"}}, "properties": {"text": {"$ref": "#/$defs/text"}}}
             if tool["name"] == "described":
@@ -96,6 +283,17 @@ for line in sys.stdin:
             if tool["name"] == "malformed":
                 tool["inputSchema"] = {"type":"object", "properties":{"text":{"type":"string","minLength":"bad"}}}
         send(identifier, {"tools": tools, "nextCursor": cursor})
+    elif method == "resources/list":
+        resources_page(identifier, message.get("params") or {})
+    elif method == "resources/templates/list":
+        threading.Thread(target=templates_page, args=(identifier,), daemon=True).start()
+    elif method == "resources/read":
+        uri = message.get("params", {}).get("uri", "")
+        threading.Thread(target=read_resource, args=(identifier, uri), daemon=True).start()
+    elif method == "prompts/list":
+        prompts_page(identifier, message.get("params") or {})
+    elif method == "prompts/get":
+        threading.Thread(target=get_prompt, args=(identifier, message["params"]), daemon=True).start()
     elif method == "tools/call":
         threading.Thread(target=call, args=(identifier, message["params"]), daemon=True).start()
     elif method == "notifications/cancelled":

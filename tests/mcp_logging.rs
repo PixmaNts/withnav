@@ -64,6 +64,7 @@ async fn verbose_logging_cannot_expose_init_notification_or_response_secrets() {
         registry.register(Box::new(tool));
     }
     let cx = ToolContext {
+        secrets: None,
         binding: None,
         workspace: std::env::temp_dir(),
         readable_roots: vec![],
@@ -84,6 +85,16 @@ async fn verbose_logging_cannot_expose_init_notification_or_response_secrets() {
         .await
         .unwrap();
     assert_eq!(result.error.unwrap().code, "mcp_tool_error");
+    // The app bridge logs the server's error text: the log must carry it redacted.
+    let error = manager
+        .call_ui_tool(
+            "fake",
+            "secret",
+            serde_json::from_value(json!({"rpc_error": true})).unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert!(!error.to_string().contains(sentinel), "{error}");
     let boundary = format!("{}{} retained tail", "x".repeat(65534), sentinel);
     let result = registry
         .dispatch(
@@ -108,4 +119,5 @@ async fn verbose_logging_cannot_expose_init_notification_or_response_secrets() {
         "logs exposed the environment secret"
     );
     assert!(!logs.contains("peer_info"));
+    assert!(logs.contains("MCP server returned an error to an app request"));
 }

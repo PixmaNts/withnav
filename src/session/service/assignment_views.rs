@@ -1049,7 +1049,9 @@ mod tests {
                 context_window: "models.json".into(),
                 max_input_tokens: String::new(),
                 reported_output: String::new(),
+                images: String::new(),
             },
+            images: None,
         };
         state
             .history()

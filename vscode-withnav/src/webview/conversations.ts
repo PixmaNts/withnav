@@ -1,34 +1,15 @@
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
-import type { ConversationSummary, HostToWebview, WebviewToHost } from "../chatProtocol";
-import { ranked, PICKER_LIMIT } from "./pickerSearch";
+import { displayTitle } from "../sessionTitle";
+import type { ConversationSummary } from "../chatProtocol";
+import { ranked, narrowHint, PICKER_LIMIT } from "./pickerSearch";
+import { STATUS_LABEL, statusIcon, type SessionStatus } from "./statusIcon";
 
-// Header (current title, conversation switcher, "New conversation") and the saved
-// conversation list. The chat view's static markup belongs to the host, so these
-// controls are built here and mounted into the existing top bar.
+// The session list: every saved conversation of the workspace, with what is known of its state.
+// The server's list gives the agent, the message count, whether a runtime is live and the status
+// of subagent sessions. A conversation open in a tab also reports its own status and model.
 
 const SVG = "http://www.w3.org/2000/svg";
-const NEW_TITLE = "New conversation";
-const DISARM_MS = 4000;
-
-function icon(d: string): SVGSVGElement {
-  const svg = document.createElementNS(SVG, "svg");
-  svg.setAttribute("viewBox", "0 0 16 16");
-  svg.setAttribute("aria-hidden", "true");
-  svg.classList.add("icon");
-  const path = document.createElementNS(SVG, "path");
-  path.setAttribute("d", d);
-  svg.append(path);
-  return svg;
-}
-
-function node<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
-  const element = document.createElement(tag);
-  if (className) element.className = className;
-  if (text !== undefined) element.textContent = text;
-  return element;
-}
-
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const full = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
@@ -46,281 +27,216 @@ export function relativeTime(iso: string, now = new Date()): string {
   return then.getFullYear() === now.getFullYear() ? day : `${day} ${then.getFullYear()}`;
 }
 
-export function mountConversations(post: (message: WebviewToHost) => void, focusComposer: () => void): (event: HostToWebview) => boolean {
-  const shell = document.querySelector<HTMLElement>(".shell")!;
-  const topbar = document.querySelector<HTMLElement>(".topbar")!;
-  const status = document.querySelector<HTMLElement>("#status")!;
+/** What the page knows of a conversation that is open in a tab. */
+export interface OpenTab { tab: string; status: Exclude<SessionStatus, "active">; agent?: string; model?: string }
 
+export type SessionFilter = "all" | "active" | "waiting" | "errors";
+
+/** The icon of a row: an open tab knows best; otherwise only the server's `live` flag tells. */
+export function sessionStatus(item: ConversationSummary, open?: OpenTab): SessionStatus {
+  if (open) return open.status === "idle" ? "done" : open.status;
+  return item.live ? "active" : "done";
+}
+
+/** Whether a row belongs to a filter chip. Failed subagent sessions (from the server's `child_status`) count as errors. */
+export function matchesFilter(item: ConversationSummary, open: OpenTab | undefined, filter: SessionFilter): boolean {
+  const status = sessionStatus(item, open);
+  switch (filter) {
+    case "all": return true;
+    case "active": return status === "running" || status === "active";
+    case "waiting": return status === "waiting";
+    case "errors": return status === "error" || (item.subagentsFailed ?? 0) > 0;
+  }
+}
+
+export function filterCounts(items: ConversationSummary[], tabs: Map<string, OpenTab>): Record<SessionFilter, number> {
+  const count = (filter: SessionFilter): number => items.filter(item => matchesFilter(item, tabs.get(item.id), filter)).length;
+  return { all: items.length, active: count("active"), waiting: count("waiting"), errors: count("errors") };
+}
+
+/** Rows matching the chip and the search text (title or id), newest first; waiting ones are returned apart. */
+export function visibleSessions(items: ConversationSummary[], tabs: Map<string, OpenTab>, filter: SessionFilter, query: string): { waiting: ConversationSummary[]; rest: ConversationSummary[]; matches: number } {
+  const sorted = [...items].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const byFilter = sorted.filter(item => matchesFilter(item, tabs.get(item.id), filter));
+  const matches = ranked(byFilter, query, item => item.title, item => item.id);
+  const waiting = matches.filter(item => sessionStatus(item, tabs.get(item.id)) === "waiting");
+  const rest = matches.filter(item => !waiting.includes(item));
+  return { waiting, rest, matches: matches.length };
+}
+
+const node = <K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] => {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  if (text !== undefined) element.textContent = text;
+  return element;
+};
+
+function icon(d: string): SVGSVGElement {
+  const svg = document.createElementNS(SVG, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  svg.classList.add("icon");
+  const path = document.createElementNS(SVG, "path");
+  path.setAttribute("d", d);
+  svg.append(path);
+  return svg;
+}
+
+export interface SessionListApi {
+  open(sessionId: string): void;
+  create(): void;
+  remove(sessionId: string): void;
+  refresh(): void;
+}
+export interface SessionList {
+  /** Redraws from the latest list and the tabs that hold sessions. */
+  update(items: ConversationSummary[], tabs: Map<string, OpenTab>, options?: { workspace?: string; activeTab?: string }): void;
+  /** The list became visible: fetch a fresh one and focus the search. */
+  shown(): void;
+}
+
+export function mountSessionList(host: HTMLElement, api: SessionListApi): SessionList {
   let items: ConversationSummary[] = [];
+  let tabs = new Map<string, OpenTab>();
   let loaded = false;
-  let currentId: string | undefined;
-  let currentTitle = NEW_TITLE;
-  let armed: string | undefined;
-  let disarmTimer: ReturnType<typeof setTimeout> | undefined;
-
-  // Header: [chevron + title] ......... [status] [+]
-  const trigger = node("button", "conv-trigger");
-  trigger.type = "button";
-  trigger.setAttribute("aria-haspopup", "true");
-  trigger.setAttribute("aria-expanded", "false");
-  trigger.setAttribute("aria-controls", "conv-panel");
-  const titleText = node("span", "conv-title", `Nav · ${NEW_TITLE}`);
-  trigger.append(titleText, icon("M4.5 6.5 8 10l3.5-3.5"));
-
-  const create = node("button", "icon-button conv-new");
-  create.type = "button";
-  create.title = NEW_TITLE;
-  create.setAttribute("aria-label", NEW_TITLE);
-  create.append(icon("M8 3.5v9M3.5 8h9"));
-
-  const tail = node("div", "topbar-tail");
-  topbar.querySelector(".identity")?.remove();
-  topbar.prepend(trigger);
-  status.replaceWith(tail);
-  tail.append(status, create);
-
-  // Panel, anchored under the top bar, with a scrim over the transcript and composer.
-  const panel = node("section", "conv-panel");
-  panel.id = "conv-panel";
-  panel.tabIndex = -1;
-  panel.hidden = true;
-  panel.setAttribute("aria-label", "Conversations");
-  const heading = node("div", "conv-heading");
-  heading.append(node("span", "", "Conversations"), node("span", "conv-keys", "↑↓ Enter · Del · Esc"));
-  const list = node("ul", "conv-list");
-  list.id = "conversation-options"; list.setAttribute("role", "listbox"); list.setAttribute("aria-label", "Conversations");
-  const search = node("input", "picker-search"); search.type = "search"; search.placeholder = "Search conversations…";
-  search.setAttribute("aria-label", "Search conversations"); search.setAttribute("role", "combobox"); search.setAttribute("aria-autocomplete", "list"); search.setAttribute("aria-controls", list.id);
-  const count = node("div", "picker-count"); count.setAttribute("role", "status"); count.setAttribute("aria-live", "polite");
+  let filter: SessionFilter = "all";
   let selected = 0;
-  const note = node("p", "conv-note");
-  panel.append(heading, search, count, list, note);
-  topbar.append(panel);
+  let workspace = "";
+  let activeTab: string | undefined;
+  let collapsed = false;
 
-  const scrim = node("div", "conv-scrim");
-  scrim.hidden = true;
-  shell.append(scrim);
+  host.replaceChildren();
+  const head = node("div", "sl-head");
+  const search = node("input", "picker-search sl-search"); search.type = "search"; search.placeholder = "Search sessions…";
+  search.setAttribute("aria-label", "Search sessions"); search.setAttribute("role", "combobox"); search.setAttribute("aria-autocomplete", "list"); search.setAttribute("aria-controls", "session-waiting-options session-options"); search.setAttribute("aria-expanded", "true");
+  const create = node("button", "icon-button sl-new"); create.type = "button"; create.title = "New conversation"; create.setAttribute("aria-label", "New conversation");
+  create.append(icon("M8 3.5v9M3.5 8h9"));
+  head.append(search);
+  const group = node("div", "sl-group");
+  const groupToggle = node("button", "sl-group-toggle"); groupToggle.type = "button"; groupToggle.setAttribute("aria-expanded", "true");
+  const groupName = node("span", "sl-group-name", "Sessions");
+  groupToggle.append(icon("M4 6l4 4 4-4"), groupName);
+  create.classList.add("sl-group-new");
+  group.append(groupToggle, create);
+  const chipRow = node("div", "sl-chips"); chipRow.setAttribute("role", "group"); chipRow.setAttribute("aria-label", "Filter sessions");
+  const scroll = node("div", "sl-scroll");
+  const waitingSection = node("section", "sl-section sl-waiting");
+  const waitingHeading = node("h3", "sl-heading", "Waiting for you");
+  const waitingList = node("ul", "sl-list"); waitingList.id = "session-waiting-options"; waitingList.setAttribute("role", "listbox"); waitingList.setAttribute("aria-label", "Sessions waiting for you");
+  waitingSection.append(waitingHeading, waitingList);
+  const restSection = node("section", "sl-section");
+  const restHeading = node("h3", "sl-heading", "Sessions");
+  const restList = node("ul", "sl-list"); restList.id = "session-options"; restList.setAttribute("role", "listbox"); restList.setAttribute("aria-label", "Sessions");
+  restSection.append(restHeading, restList);
+  const count = node("div", "picker-count"); count.setAttribute("role", "status"); count.setAttribute("aria-live", "polite");
+  const note = node("p", "sl-note");
+  scroll.append(waitingSection, group, restSection, count, note);
+  host.append(head, chipRow, scroll);
 
-  function setTitle(title: string): void {
-    currentTitle = title.trim() || (currentId ? "Untitled" : NEW_TITLE);
-    titleText.textContent = `Nav · ${currentTitle}`;
-    trigger.title = `${currentTitle} · Show conversations`;
-    trigger.setAttribute("aria-label", `${currentTitle}. Show conversations`);
-  }
-  setTitle(NEW_TITLE);
+  /** The rows on screen: a collapsed section renders none, so arrows and Enter never reach a hidden one. */
+  const rows = (): HTMLLIElement[] => [...host.querySelectorAll<HTMLLIElement>(".sl-row")];
 
-  // While the list is open, the transcript and composer under the scrim leave the tab order.
-  function setInert(on: boolean): void {
-    for (const element of shell.querySelectorAll<HTMLElement>(":scope > :not(.topbar):not(.conv-scrim)")) element.inert = on;
-  }
-
-  const isOpen = (): boolean => !panel.hidden;
-  const rows = (): HTMLButtonElement[] => [...list.querySelectorAll<HTMLButtonElement>(".conv-open")];
-
-  function open(): void {
-    if (isOpen()) return;
-    panel.hidden = false;
-    scrim.hidden = false;
-    setInert(true);
-    trigger.setAttribute("aria-expanded", "true");
-    search.value = ""; search.setAttribute("aria-expanded", "true"); selected = 0;
-    render();
-    post({ type: "listConversations" });
-    focusInitial();
-  }
-
-  function close(returnFocus = true): void {
-    if (!isOpen()) return;
-    disarm();
-    panel.hidden = true;
-    scrim.hidden = true;
-    setInert(false);
-    trigger.setAttribute("aria-expanded", "false");
-    search.setAttribute("aria-expanded", "false");
-    if (returnFocus) focusComposer();
-  }
-
-  function focusInitial(): void {
-    search.focus();
-  }
-
-  function disarm(): void {
-    if (disarmTimer) clearTimeout(disarmTimer);
-    disarmTimer = undefined;
-    if (armed === undefined) return;
-    armed = undefined;
-    for (const button of list.querySelectorAll<HTMLButtonElement>(".conv-delete.armed")) paintDelete(button, false);
-  }
-
-  function paintDelete(button: HTMLButtonElement, on: boolean): void {
-    button.classList.toggle("armed", on);
-    button.closest(".conv-row")?.classList.toggle("arming", on);
-    const title = button.dataset.title ?? "";
-    button.replaceChildren(on ? node("span", "", "Delete") : icon("M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"));
-    button.setAttribute("aria-label", on ? `Confirm: delete ${title}` : `Delete ${title}`);
-    button.title = on ? "Click again to delete" : "Delete";
-  }
-
-  function remove(id: string): void {
-    const index = items.findIndex(item => item.id === id);
-    disarm();
-    post({ type: "deleteConversation", id });
-    if (index < 0) return;
-    items = items.filter(item => item.id !== id);
-    render();
-    const all = rows();
-    (all[Math.min(index, all.length - 1)] ?? panel).focus();
-  }
-
-  function armOrDelete(button: HTMLButtonElement, id: string): void {
-    if (armed === id) { remove(id); return; }
-    disarm();
-    armed = id;
-    paintDelete(button, true);
-    disarmTimer = setTimeout(disarm, DISARM_MS);
+  function row(item: ConversationSummary, index: number, now: Date): HTMLLIElement {
+    const open = tabs.get(item.id);
+    const status = sessionStatus(item, open);
+    const li = node("li", "sl-row");
+    li.id = `session-option-${index}`; li.setAttribute("role", "option"); li.setAttribute("aria-selected", String(index === selected));
+    li.dataset.id = item.id; li.dataset.status = status;
+    li.classList.toggle("is-open", !!open);
+    li.classList.toggle("is-active", !!open && open.tab === activeTab);
+    // The option holds no focusable control: the search field keeps focus (aria-activedescendant) and the
+    // keys act on the selected row. The delete button below is for the mouse only.
+    const button = node("div", "sl-open"); button.dataset.id = item.id;
+    const title = displayTitle(item.title, item.id);
+    const when = relativeTime(item.updatedAt, now);
+    const time = node("time", "sl-time", when); time.dateTime = item.updatedAt;
+    const stamp = new Date(item.updatedAt);
+    if (!Number.isNaN(stamp.getTime())) time.title = full.format(stamp);
+    const line1 = node("span", "sl-line1");
+    line1.append(node("span", "sl-title", title), time);
+    const parts: string[] = [];
+    const agent = open?.agent ?? item.agent;
+    if (agent) parts.push(agent);
+    if (open?.model) parts.push(open.model.split("/").at(-1) || open.model);
+    parts.push(`${item.messageCount} ${item.messageCount === 1 ? "msg" : "msgs"}`);
+    const subagents = item.subagentCount ?? 0;
+    if (subagents) parts.push(`${subagents} ${subagents === 1 ? "subagent" : "subagents"}`);
+    if (item.subagentsRunning) parts.push(`${item.subagentsRunning} running`);
+    const line2 = node("span", "sl-line2", parts.join(" · "));
+    if (item.subagentsFailed) line2.append(node("span", "sl-failed", ` · ${item.subagentsFailed} failed`));
+    const main = node("span", "sl-main");
+    main.append(line1, line2);
+    button.append(statusIcon(status), main);
+    if (open) {
+      const mark = node("span", "sl-openmark", "open");
+      mark.title = "Open in a tab";
+      button.append(mark);
+    }
+    li.setAttribute("aria-label", `${title}, ${STATUS_LABEL[status]}, ${when}, ${parts.join(", ")}${open ? ", open in a tab" : ""}`);
+    li.addEventListener("click", () => api.open(item.id));
+    // Read by the host's `webview/context` menu, which offers Delete on a right click.
+    li.dataset.vscodeContext = JSON.stringify({ webviewSection: "session", sessionId: item.id, preventDefaultContextMenuItems: true });
+    const remove = node("button", "icon-button sl-delete"); remove.type = "button";
+    remove.tabIndex = -1; remove.setAttribute("aria-hidden", "true");
+    remove.title = "Delete";
+    remove.append(icon("M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"));
+    // The host asks for confirmation before anything is deleted.
+    remove.addEventListener("click", event => { event.stopPropagation(); api.remove(item.id); });
+    li.append(button, remove);
+    return li;
   }
 
   function render(): void {
-    const focused = document.activeElement as HTMLElement | null;
-    const focusId = focused?.closest<HTMLElement>(".conv-row")?.dataset.id;
-    const focusDelete = focused?.classList.contains("conv-delete") ?? false;
-    if (armed && !items.some(item => item.id === armed)) armed = undefined;
-
     const now = new Date();
-    list.replaceChildren();
-    const matches = ranked(items, search.value, item => item.title, item => item.id);
-    const shown = matches.slice(0, PICKER_LIMIT);
-    selected = Math.max(0, Math.min(selected, shown.length - 1));
-    count.textContent = `${matches.length} of ${items.length}${matches.length > PICKER_LIMIT ? " · Type to narrow (first 50 shown)" : ""}`;
-    if (shown.length) search.setAttribute("aria-activedescendant", `conversation-option-${selected}`); else search.removeAttribute("aria-activedescendant");
-    for (const [index, item] of shown.entries()) {
-      const row = node("li", "conv-row");
-      row.id = `conversation-option-${index}`; row.setAttribute("role", "option"); row.setAttribute("aria-selected", String(index === selected));
-      row.dataset.id = item.id;
-      const current = item.id === currentId;
-      row.classList.toggle("current", current);
-
-      const openButton = node("button", "conv-open");
-      openButton.type = "button";
-      openButton.dataset.id = item.id;
-      if (current) openButton.setAttribute("aria-current", "true");
-      const title = item.title.trim() || "Untitled";
-      const when = relativeTime(item.updatedAt, now);
-      const count = `${item.messageCount} ${item.messageCount === 1 ? "message" : "messages"}`;
-      const meta = node("span", "conv-meta");
-      const time = node("time", "", when);
-      time.dateTime = item.updatedAt;
-      const stamp = new Date(item.updatedAt);
-      if (!Number.isNaN(stamp.getTime())) time.title = full.format(stamp);
-      meta.append(time, node("span", "conv-dot", "·"), node("span", "", count));
-      openButton.append(node("span", "conv-row-title", title), meta);
-      openButton.setAttribute("aria-label", `${title}, ${when}, ${count}${current ? ", current" : ""}`);
-      openButton.addEventListener("click", () => {
-        if (item.id !== currentId) post({ type: "openConversation", id: item.id });
-        close();
-      });
-
-      const deleteButton = node("button", "icon-button conv-delete");
-      deleteButton.type = "button";
-      deleteButton.dataset.title = title;
-      paintDelete(deleteButton, armed === item.id);
-      deleteButton.addEventListener("click", event => {
-        event.stopPropagation();
-        armOrDelete(deleteButton, item.id);
-      });
-      deleteButton.addEventListener("blur", event => {
-        // A re-render detaches the button without the user moving focus: keep the arm then.
-        if (armed === item.id && event.relatedTarget) disarm();
-      });
-
-      row.append(openButton, deleteButton);
-      list.append(row);
+    const counts = filterCounts(items, tabs);
+    chipRow.replaceChildren();
+    for (const [value, label] of [["all", "All"], ["active", "Active"], ["waiting", "Waiting for you"], ["errors", "Errors"]] as const) {
+      const chip = node("button", "pill", `${label} ${counts[value]}`); chip.type = "button";
+      chip.dataset.filter = value;
+      chip.setAttribute("aria-pressed", String(filter === value));
+      chip.addEventListener("click", () => { filter = value; selected = 0; render(); });
+      chipRow.append(chip);
     }
-    list.children[selected]?.scrollIntoView?.({ block: "nearest" });
-
-    list.hidden = !shown.length;
-    note.hidden = !!shown.length;
-    note.textContent = search.value ? "No matching conversations." : loaded ? "No saved conversations yet." : "Loading…";
-
-    if (!isOpen() || !focusId) return;
-    const target = list.querySelector<HTMLElement>(`.conv-row[data-id="${CSS.escape(focusId)}"] ${focusDelete ? ".conv-delete" : ".conv-open"}`);
-    target?.focus();
+    const view = visibleSessions(items, tabs, filter, search.value);
+    const shownWaiting = view.waiting.slice(0, PICKER_LIMIT);
+    const shownRest = collapsed ? [] : view.rest.slice(0, Math.max(0, PICKER_LIMIT - shownWaiting.length));
+    const total = shownWaiting.length + shownRest.length;
+    selected = Math.max(0, Math.min(selected, total - 1));
+    waitingList.replaceChildren(...shownWaiting.map((item, index) => row(item, index, now)));
+    restList.replaceChildren(...shownRest.map((item, index) => row(item, shownWaiting.length + index, now)));
+    waitingSection.hidden = shownWaiting.length === 0;
+    restSection.hidden = shownRest.length === 0;
+    restHeading.hidden = true;
+    groupName.textContent = workspace || "Sessions";
+    groupToggle.setAttribute("aria-expanded", String(!collapsed));
+    group.classList.toggle("collapsed", collapsed);
+    count.textContent = `${view.matches} of ${items.length}${narrowHint(view.matches)}`;
+    if (total) search.setAttribute("aria-activedescendant", `session-option-${selected}`); else search.removeAttribute("aria-activedescendant");
+    note.hidden = total > 0 || (collapsed && view.matches > 0);
+    note.textContent = search.value || filter !== "all" ? "No matching sessions." : loaded ? "No saved sessions yet." : "Loading…";
+    host.querySelector(`#session-option-${selected}`)?.scrollIntoView?.({ block: "nearest" });
   }
 
-  trigger.addEventListener("click", () => (isOpen() ? close() : open()));
   search.addEventListener("input", () => { selected = 0; render(); });
   search.addEventListener("keydown", event => {
     if (event.isComposing) { event.stopPropagation(); return; }
-    if (["ArrowUp", "ArrowDown"].includes(event.key)) { event.preventDefault(); event.stopPropagation(); const all = rows(); if (all.length) { selected = (selected + (event.key === "ArrowDown" ? 1 : -1) + all.length) % all.length; render(); } }
-    else if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); rows()[selected]?.click(); }
-    else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (search.value) { search.value = ""; selected = 0; render(); } else close(); }
+    if (["ArrowUp", "ArrowDown"].includes(event.key)) {
+      event.preventDefault(); event.stopPropagation();
+      const all = rows();
+      if (all.length) { selected = (selected + (event.key === "ArrowDown" ? 1 : -1) + all.length) % all.length; render(); }
+    } else if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); rows()[selected]?.click(); }
+    else if (event.key === "Delete" && search.selectionStart === search.value.length && search.selectionEnd === search.value.length && rows()[selected]) {
+      // Delete at the end of the text has nothing to edit, so it acts on the selected row; the host asks first.
+      event.preventDefault(); event.stopPropagation(); api.remove(rows()[selected].dataset.id!);
+    }
+    else if (event.key === "Escape") { if (search.value) { event.preventDefault(); event.stopPropagation(); search.value = ""; selected = 0; render(); } }
     else event.stopPropagation(); // Home/End and editing keys belong to the search field.
   });
-  create.addEventListener("click", () => {
-    close(false);
-    post({ type: "newConversation" });
-    focusComposer();
-  });
-  scrim.addEventListener("click", () => close());
-
-  panel.addEventListener("keydown", event => {
-    if (event.isComposing) return;
-    const all = rows();
-    const active = document.activeElement as HTMLElement | null;
-    const row = active?.closest<HTMLElement>(".conv-row");
-    const index = row ? all.findIndex(button => button.dataset.id === row.dataset.id) : -1;
-    const move = (to: number): void => { if (all.length) all[(to + all.length) % all.length].focus(); };
-    switch (event.key) {
-      case "ArrowDown": move(index + 1); break;
-      case "ArrowUp": move(index < 0 ? -1 : index - 1); break;
-      case "Home": move(0); break;
-      case "End": move(-1); break;
-      case "ArrowRight": row?.querySelector<HTMLElement>(".conv-delete")?.focus(); break;
-      case "ArrowLeft": row?.querySelector<HTMLElement>(".conv-open")?.focus(); break;
-      case "Delete":
-      case "Backspace": {
-        const button = row?.querySelector<HTMLButtonElement>(".conv-delete");
-        if (!button || !row?.dataset.id) return;
-        if (armed !== row.dataset.id) button.focus();
-        armOrDelete(button, row.dataset.id);
-        break;
-      }
-      case "Escape": close(); break;
-      default: return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-  });
-  // Tabbing out of the list closes it; the transcript under the scrim is not reachable while open.
-  panel.addEventListener("focusout", event => {
-    const next = event.relatedTarget as Node | null;
-    if (next && !panel.contains(next) && next !== trigger) close(false);
-  });
-  document.addEventListener("keydown", event => {
-    if (event.key === "Escape" && isOpen()) { event.preventDefault(); close(); }
-  });
-
-  return event => {
-    switch (event.type) {
-      case "conversationOpened":
-        currentId = event.id;
-        setTitle(event.id === undefined ? NEW_TITLE : event.title);
-        if (isOpen()) render();
-        return true;
-      case "conversations": {
-        const hadNone = !loaded || items.length === 0;
-        items = [...event.items].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-        loaded = true;
-        // The host's currentId is authoritative (undefined = a new, unsaved conversation).
-        currentId = event.currentId;
-        const current = items.find(item => item.id === currentId);
-        if (current) setTitle(current.title);
-        render();
-        if (isOpen() && hadNone && document.activeElement === panel) focusInitial();
-        return true;
-      }
-      default:
-        return false;
-    }
+  create.addEventListener("click", () => api.create());
+  groupToggle.addEventListener("click", () => { collapsed = !collapsed; render(); });
+  render();
+  return {
+    update(nextItems, nextTabs, options) { items = nextItems; tabs = nextTabs; workspace = options?.workspace ?? workspace; activeTab = options?.activeTab; loaded = true; render(); },
+    shown() { api.refresh(); render(); search.focus(); },
   };
 }

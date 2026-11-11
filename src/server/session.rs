@@ -18,6 +18,7 @@ pub struct AppState {
     pub http: Arc<HttpConfig>,
     pub(super) settings_write: Arc<tokio::sync::Mutex<()>>,
     pub(super) flows: Arc<crate::flows::host::Host>,
+    pub(super) mcp_apps: Arc<super::mcp_app::McpAppStore>,
 }
 
 impl AppState {
@@ -43,6 +44,7 @@ impl AppState {
             http: Arc::new(http),
             settings_write: Arc::default(),
             flows,
+            mcp_apps: Arc::default(),
         })
     }
 }

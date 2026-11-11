@@ -66,6 +66,10 @@ impl Service {
         self.wait_child_operation(id).await;
         let parent = self.handle(id).and_then(|h| h.parent_session_id);
         self.close_session_gated(id).await?;
+        if parent.is_none() {
+            // Secrets given for as long as this conversation runs end with it.
+            self.secrets.end_session(id);
+        }
         if let Some(parent) = parent {
             self.finish_child(
                 parent,
@@ -353,6 +357,7 @@ mod tests {
         AgentActor::new(
             Registry::new(),
             ToolContext {
+                secrets: None,
                 binding: None,
                 workspace: std::env::temp_dir(),
                 writable_roots: vec![std::env::temp_dir()],
@@ -394,7 +399,7 @@ mod tests {
                 #[allow(unreachable_code)]
                 idle_actor()
             })))),
-            mcp_tools: Arc::default(),
+            mcp_tools: Default::default(),
             actor_id: ROOT_ACTOR_ID.to_string(),
             lifecycle: Lifecycle::Active,
             actor_state: "idle".to_string(),

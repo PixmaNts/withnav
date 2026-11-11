@@ -1,9 +1,20 @@
 import { Crew } from "./Crew";
-import { ArrowUp, Stop } from "@phosphor-icons/react";
+import { ArrowUp, Image as ImageIcon, Stop, X } from "@phosphor-icons/react";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { CommandInfo, ContextSnapshot } from "../api/types";
 import { route, type ClientCommand } from "../lib/compose";
 import { tokens } from "../session/reducer";
+import { humanSize } from "./Images";
+
+/** Most images one message carries; the server refuses more. */
+const MAX_IMAGES = 8;
+/** Largest image the server stores (`MAX_IMAGE_BYTES` in `src/session/attachments.rs`): it refuses a bigger upload. */
+const MAX_IMAGE_BYTES = 3_932_160;
+
+/** Image files among `files`: the server decides the real type from the bytes. */
+function pictures(files: Iterable<File>): File[] {
+  return [...files].filter((f) => f.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(f.name));
+}
 
 export interface ComposerHandle {
   focus: () => void;
@@ -17,12 +28,14 @@ interface Props {
   pickerOpen: boolean;
   running: boolean;
   disabled?: string;
+  /** Placeholder while the conversation waits for something other than a message. */
+  hint?: string;
   context: ContextSnapshot | null;
   serverCommands: CommandInfo[];
   error: string | null;
   onOpenModels: () => void;
   onToggleAgent: () => void;
-  onSend: (content: import("../api/types").ContentBlock[]) => Promise<boolean>;
+  onSend: (content: import("../api/types").ContentBlock[], files?: File[]) => Promise<boolean>;
   onServerCommand: (name: string, args: string) => Promise<void>;
   onClientCommand: (name: ClientCommand, args: string) => void;
   onStop: () => void;
@@ -45,6 +58,21 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const addFiles = (incoming: File[]) => {
+    // Refused before the upload: the server would answer 413 only once the message is sent.
+    const tooLarge = incoming.filter((f) => f.size > MAX_IMAGE_BYTES);
+    const accepted = incoming.filter((f) => f.size <= MAX_IMAGE_BYTES);
+    // The updater stays pure (StrictMode runs it twice): the notice is raised here, once.
+    const notices: string[] = [];
+    if (tooLarge.length) notices.push(`${tooLarge.map((f) => f.name || "image").join(", ")}: larger than 3.75 MiB, not attached.`);
+    if (files.length + accepted.length > MAX_IMAGES) notices.push(`A message carries at most ${MAX_IMAGES} images.`);
+    if (notices.length) props.onError(notices.join(" "));
+    if (!accepted.length) return;
+    setFiles((current) => [...current, ...accepted].slice(0, MAX_IMAGES));
+  };
 
   useImperativeHandle(ref, () => ({
     focus: () => area.current?.focus(),
@@ -76,11 +104,15 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
   useEffect(() => setSlashIndex(0), [slash.length]);
 
   const submit = async (line = text) => {
-    if (!line.trim() || sending || disabled) return;
+    if ((!line.trim() && !files.length) || sending || disabled) return;
     props.onError(null);
     const routed = route(line, delegate);
     if (routed.type === "refused") {
       props.onError(routed.reason);
+      return;
+    }
+    if (files.length && routed.type !== "message") {
+      props.onError("Images go with a message, not with a command.");
       return;
     }
     if (routed.type === "client") {
@@ -89,14 +121,25 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
       return;
     }
     setSending(true);
-    if (routed.type === "server") {
-      await props.onServerCommand(routed.name, routed.arguments);
-      setText("");
-    } else if (await props.onSend(routed.content)) {
-      setText("");
-      setDelegate(false);
+    // A failure keeps the draft and unlocks the composer: nothing else would ever unlock it.
+    try {
+      if (routed.type === "server") {
+        await props.onServerCommand(routed.name, routed.arguments);
+        setText("");
+      } else {
+        // An empty text block is dropped, unless it carries the delegation line.
+        const content = line.trim() || delegate ? routed.content : routed.content.filter((b) => b.type !== "text");
+        if (await props.onSend(content, files)) {
+          setText("");
+          setFiles([]);
+          setDelegate(false);
+        }
+      }
+    } catch (e) {
+      props.onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
     }
-    setSending(false);
   };
 
   const chooseSlash = (row: CommandInfo) => {
@@ -166,7 +209,33 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
           ))}
         </div>
       )}
-      <div className="composer">
+      <div
+        className={`composer${dragging ? " dropping" : ""}`}
+        onDragOver={(e) => {
+          if (disabled || !e.dataTransfer.types.includes("Files")) return;
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => {
+          setDragging(false);
+          if (disabled || !e.dataTransfer.files.length) return;
+          e.preventDefault();
+          addFiles(pictures(e.dataTransfer.files));
+        }}
+      >
+        {files.length > 0 && (
+          <ul className="pending-images" aria-label="Images to send">
+            {files.map((file, i) => (
+              <li key={`${file.name}:${i}`} className="chip">
+                <ImageIcon size={13} aria-hidden /> {file.name || "image"} · {humanSize(file.size)}
+                <button type="button" className="chip-x" aria-label={`Remove ${file.name || "image"}`} onClick={() => setFiles((f) => f.filter((_, j) => j !== i))}>
+                  <X size={11} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <label className="sr-only" htmlFor="prompt">
           Message cognition
         </label>
@@ -176,14 +245,34 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
           rows={1}
           value={text}
           disabled={!!disabled}
-          placeholder={disabled ?? "What course would you like to set?  /skill  /command"}
+          placeholder={disabled ?? props.hint ?? "What course would you like to set?  /skill  /command"}
           onChange={(e) => {
             setText(e.target.value);
             setSlashDismissed(false);
           }}
           onKeyDown={onKey}
+          onPaste={(e) => {
+            const pasted = pictures(e.clipboardData.files);
+            if (!pasted.length) return;
+            e.preventDefault();
+            addFiles(pasted);
+          }}
+        />
+        <input
+          ref={picker}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
+          multiple
+          hidden
+          onChange={(e) => {
+            addFiles(pictures(e.target.files ?? []));
+            e.target.value = "";
+          }}
         />
         <div className="composer-row">
+          <button type="button" className="chip" onClick={() => picker.current?.click()} disabled={!!disabled} title="Attach images (or paste or drop them in the message)" aria-label="Attach images">
+            <ImageIcon size={14} />
+          </button>
           <button type="button" className="chip" onClick={props.onToggleAgent} disabled={!!disabled} title="Switch Nav between work and route planning (Tab on an empty message)">
             <Crew id={agent} /> ▾
           </button>
@@ -224,7 +313,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(prop
               className="send"
               style={running ? { marginLeft: 0 } : undefined}
               onClick={() => void submit()}
-              disabled={!text.trim() || sending || !!disabled}
+              disabled={(!text.trim() && !files.length) || sending || !!disabled}
               title={running ? "Queued: Nav reads it when this turn ends" : undefined}
             >
               <ArrowUp size={12} aria-hidden /> Send

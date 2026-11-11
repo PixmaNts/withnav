@@ -104,6 +104,21 @@ pub fn route_key(
             _ => None,
         };
     }
+    // The secret prompt takes every key while it is open, quitting aside: nothing typed there
+    // reaches the editor.
+    let quit_key = key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q'));
+    if ui.secret_entry.is_some() && ui.overlay.is_none() && !state.read_only() && !quit_key {
+        return crate::secret::key(key, state, ui);
+    }
+    if key.code == KeyCode::Char('k')
+        && key.modifiers.contains(KeyModifiers::ALT)
+        && ui.overlay.is_none()
+        && !state.read_only()
+        && crate::secret::latest(state).is_some()
+    {
+        return Some(Action::OpenSecret);
+    }
     if ui.overlay == Some(Overlay::Commands) && ui.palette_typed {
         return typed_palette_key(key, state, ui, editor);
     }
@@ -501,7 +516,8 @@ pub fn route_key(
     }
     if key.code == KeyCode::Enter && !alt && !key.modifiers.contains(KeyModifiers::SHIFT) {
         let text = editor.text();
-        if text.trim().is_empty() {
+        // A message may be images only.
+        if text.trim().is_empty() && state.pending_attachments.is_empty() {
             return None;
         }
         return Some(match commands::route(&text, ui.mode) {
@@ -881,6 +897,60 @@ pub(crate) fn overlay_names(overlay: Overlay, state: &State, ui: &UiState) -> Ve
     }
 }
 
+/// The image file named by a paste that is nothing but one absolute path: what a terminal types
+/// when a file is dropped on it, quoted, with escaped spaces or as a `file://` URI. Any other
+/// text, a relative path included, stays text.
+pub fn dropped_image(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.contains(['\n', '\r']) {
+        return None;
+    }
+    let path = if let Some(uri) = text.strip_prefix("file://") {
+        percent_decode(uri.strip_prefix("localhost").unwrap_or(uri))?
+    } else if let Some(quoted) = ['\'', '"']
+        .iter()
+        .find_map(|q| text.strip_prefix(*q).and_then(|rest| rest.strip_suffix(*q)))
+    {
+        quoted.to_string()
+    } else if text.replace("\\ ", "").contains(char::is_whitespace) {
+        // Several dropped files, or prose.
+        return None;
+    } else {
+        text.replace("\\ ", " ")
+    };
+    if !(path.starts_with('/') || path.starts_with("~/")) {
+        return None;
+    }
+    let extension = path.rsplit_once('.')?.1.to_ascii_lowercase();
+    matches!(
+        extension.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg"
+    )
+    .then_some(path)
+}
+
+/// `%20` and the like decoded; `None` when a `%` is not followed by two hex digits or the
+/// result is not UTF-8. Same escape grammar as the LSP's `uri::percent_decode`; unlike it,
+/// invalid UTF-8 is refused rather than replaced, because the result names a file to read and
+/// a replaced character would name another one (the paste then stays text).
+fn percent_decode(text: &str) -> Option<String> {
+    // Digits only: `u8::from_str_radix` also takes a sign, so `%+F` would decode to 0x0F.
+    let digit = |b: &u8| char::from(*b).to_digit(16);
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.as_bytes();
+    while let Some((&b, tail)) = rest.split_first() {
+        if b == b'%' {
+            let (hi, lo) = (digit(tail.first()?)?, digit(tail.get(1)?)?);
+            bytes.push((hi * 16 + lo) as u8);
+            rest = &tail[2..];
+        } else {
+            bytes.push(b);
+            rest = tail;
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
 /// Inserts pasted text into the editor (newlines kept), unless an overlay other than the typed
 /// slash palette has the focus.
 pub fn route_paste(
@@ -907,6 +977,14 @@ pub fn route_paste(
     if state.read_only() {
         return None;
     }
+    // A paste while the answer is being sent is dropped: it would linger as an unintended value
+    // if the request fails.
+    if ui.overlay.is_none() && crate::secret::sending(state, ui) {
+        return None;
+    }
+    if ui.overlay.is_none() && crate::secret::paste(&text, ui) {
+        return None;
+    }
     // While a reject message is typed, a paste goes into it (one line); a message left from a
     // request that is no longer the open one is dropped.
     let open = state.open_permission().map(|p| p.request_id.as_str());
@@ -929,6 +1007,9 @@ pub fn route_paste(
     let typed_palette = ui.overlay == Some(Overlay::Commands) && ui.palette_typed;
     if (ui.overlay.is_some() && !typed_palette) || ui.focus != Focus::Editor {
         return None;
+    }
+    if !typed_palette && let Some(path) = dropped_image(&text) {
+        return Some(Action::Attach(path));
     }
     if editor.area_mut().insert_str(text) {
         editor.bump();
@@ -1059,5 +1140,93 @@ mod tests {
             assert_eq!(editor.text(), text, "{code:?}");
             assert_eq!(editor.revision() > revision, !text.is_empty(), "{code:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod dropped_image_tests {
+    use super::{dropped_image, percent_decode};
+
+    #[test]
+    fn a_dropped_image_path_is_recognized_in_the_forms_terminals_type() {
+        assert_eq!(
+            dropped_image("/tmp/shot.png").as_deref(),
+            Some("/tmp/shot.png")
+        );
+        assert_eq!(
+            dropped_image(" '/tmp/my shot.PNG' ").as_deref(),
+            Some("/tmp/my shot.PNG")
+        );
+        assert_eq!(
+            dropped_image("\"/tmp/a b.jpg\"").as_deref(),
+            Some("/tmp/a b.jpg")
+        );
+        assert_eq!(
+            dropped_image("/tmp/my\\ shot.webp").as_deref(),
+            Some("/tmp/my shot.webp")
+        );
+        assert_eq!(
+            dropped_image("file:///tmp/a%20b.svg").as_deref(),
+            Some("/tmp/a b.svg")
+        );
+        assert_eq!(
+            dropped_image("~/Pictures/x.jpeg").as_deref(),
+            Some("~/Pictures/x.jpeg")
+        );
+    }
+
+    #[test]
+    fn other_text_stays_text() {
+        for text in [
+            "shot.png",
+            "see /tmp/shot.png",
+            "/tmp/a.png /tmp/b.png",
+            "/tmp/notes.txt",
+            "/tmp/shot.png\nmore",
+            "/usr/bin",
+            "file:///tmp/%zz.png",
+            "",
+        ] {
+            assert_eq!(dropped_image(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_file_uri_is_percent_decoded() {
+        for (uri, path) in [
+            ("file:///tmp/caf%C3%A9.png", "/tmp/caf\u{e9}.png"),
+            ("file:///tmp/a%2Fb.png", "/tmp/a/b.png"),
+            ("file:///tmp/100%25.png", "/tmp/100%.png"),
+            ("file:///tmp/100%2525.png", "/tmp/100%25.png"),
+            ("file://localhost/tmp/x%2epng", "/tmp/x.png"),
+        ] {
+            assert_eq!(dropped_image(uri).as_deref(), Some(path), "{uri:?}");
+        }
+    }
+
+    #[test]
+    fn a_malformed_file_uri_stays_text() {
+        for text in [
+            // An escape cut short by the next character.
+            "file:///tmp/a%2.png",
+            "file:///tmp/a%.png",
+            // Not two hex digits; a sign is not a digit either.
+            "file:///tmp/a%+F.png",
+            "file:///tmp/a%-1.png",
+            "file:///tmp/a%G0.png",
+            // Bytes that are not UTF-8: a lossy path would name another file.
+            "file:///tmp/%FF.png",
+            "file:///tmp/%C3.png",
+        ] {
+            assert_eq!(dropped_image(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn an_escape_cut_at_the_end_is_refused_by_the_decoder() {
+        // Through `dropped_image` these would fail on the extension anyway.
+        assert_eq!(percent_decode("/tmp/a%"), None);
+        assert_eq!(percent_decode("/tmp/a%2"), None);
+        assert_eq!(percent_decode("/tmp/a%20").as_deref(), Some("/tmp/a "));
     }
 }

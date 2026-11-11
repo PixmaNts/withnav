@@ -175,6 +175,7 @@ pub fn summary_message(summary: &str) -> ChatMessage {
              <conversation_summary>\n{}\n</conversation_summary>",
             neutralize(summary)
         ),
+        images: Vec::new(),
     }
 }
 
@@ -326,6 +327,7 @@ fn elided(message: &ChatMessage) -> ChatMessage {
             tool_call_id: tool_call_id.clone(),
             content: elision_marker(content.len()),
             answered_by: None,
+            images: Vec::new(),
         },
         other => other.clone(),
     }
@@ -421,7 +423,7 @@ pub fn validate(
 }
 
 fn same_user_text(a: &ChatMessage, b: &ChatMessage) -> bool {
-    matches!((a, b), (ChatMessage::User { content: x, provenance: p }, ChatMessage::User { content: y, provenance: q }) if x == y && p == q)
+    matches!((a, b), (ChatMessage::User { content: x, provenance: p, .. }, ChatMessage::User { content: y, provenance: q, .. }) if x == y && p == q)
 }
 
 /// The id of a tool call before `at` whose result is not also before `at`,
@@ -455,7 +457,7 @@ fn never_elided(transcript: &[ChatMessage]) -> HashSet<&str> {
             _ => None,
         })
         .flatten()
-        .filter(|c| matches!(c.function.name.as_str(), "skill" | "ask"))
+        .filter(|c| matches!(c.function.name.as_str(), "skill" | "ask" | "request_secret"))
         .map(|c| c.id.as_str())
         .collect()
 }

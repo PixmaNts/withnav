@@ -7,6 +7,7 @@ fn user(text: &str) -> ChatMessage {
     ChatMessage::User {
         provenance: Default::default(),
         content: text.into(),
+        images: Vec::new(),
     }
 }
 
@@ -70,6 +71,7 @@ fn a_tool_message_counts_its_id_and_output() {
         tool_call_id: "abcd".into(),
         content: "efgh".into(),
         answered_by: None,
+        images: Vec::new(),
     };
     assert_eq!(message_tokens(&m), 2 + MESSAGE_FRAMING_TOKENS);
 }

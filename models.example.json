@@ -23,6 +23,7 @@
       "context_window": 1000000,
       "supports_tools": true,
       "supports_parallel_tool_calls": true,
+      "images": true,
       "reasoning_history": "preserve",
       "api": "chat",
       "variants": {

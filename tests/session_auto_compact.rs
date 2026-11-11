@@ -67,6 +67,7 @@ fn history(turns: usize) -> Vec<ChatMessage> {
                 ChatMessage::User {
                     provenance: Default::default(),
                     content: format!("request {n}"),
+                    images: Vec::new(),
                 },
                 ChatMessage::Assistant {
                     content: Some(format!("answer {n} {}", "word ".repeat(1400))),
@@ -184,8 +185,20 @@ async fn a_tool_heavy_turn_that_crosses_the_budget_is_compacted_and_goes_on() {
         .prompt
         .len()
         .div_ceil(4) as u64;
-    // Expanded ask guidance and its choice schema increase the fixed prompt overhead.
-    assert!(after <= 11_000 / 10 * 7 + 1 + role_tokens + 250, "{after}");
+    // Expanded ask guidance and its choice schema increase the fixed prompt overhead, and so
+    // does the `request_secret` schema.
+    let secret_tool_tokens = {
+        use withnav::tools::Tool;
+        withnav::tools::secret::RequestSecretTool
+            .schema()
+            .to_string()
+            .len()
+            .div_ceil(4) as u64
+    };
+    assert!(
+        after <= 11_000 / 10 * 7 + 1 + role_tokens + 250 + secret_tool_tokens,
+        "{after}"
+    );
 
     // The provider saw: read, read, summary request, then the turn on.
     let bodies = provider.bodies();
@@ -663,6 +676,7 @@ fn read_turn(n: usize) -> Vec<ChatMessage> {
         ChatMessage::User {
             provenance: Default::default(),
             content: format!("request {n}"),
+            images: Vec::new(),
         },
         ChatMessage::Assistant {
             content: None,
@@ -681,6 +695,7 @@ fn read_turn(n: usize) -> Vec<ChatMessage> {
             tool_call_id: format!("call_{n}"),
             content: "lorem ".repeat(3_400),
             answered_by: None,
+            images: Vec::new(),
         },
         ChatMessage::Assistant {
             content: Some(format!("answer {n} {}", "word ".repeat(1_000))),
@@ -696,6 +711,7 @@ fn short_turn(n: usize) -> Vec<ChatMessage> {
         ChatMessage::User {
             provenance: Default::default(),
             content: format!("request {n}"),
+            images: Vec::new(),
         },
         ChatMessage::Assistant {
             content: Some(format!("answer {n}")),
@@ -890,6 +906,7 @@ async fn a_switched_session_with_large_old_reasoning_compacts_and_continues() {
                 ChatMessage::User {
                     provenance: Default::default(),
                     content: format!("request {n}"),
+                    images: Vec::new(),
                 },
                 ChatMessage::Assistant {
                     content: Some(format!("answer {n}")),

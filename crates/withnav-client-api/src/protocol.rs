@@ -42,6 +42,11 @@ pub struct ModelEntry {
     pub max_input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discrepancy: Option<Discrepancy>,
+    /// Whether the model takes images; absent when unknown or from an older server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images_source: Option<String>,
     /// The variant names the model_id offers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<String>,

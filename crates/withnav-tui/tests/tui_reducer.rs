@@ -1317,11 +1317,13 @@ impl Script {
             &MessageReceived {
                 answer: None,
                 selected_skill: None,
+                secret: None,
                 command_id: Ulid(7),
                 source: "user:http".into(),
                 target: ROOT_ACTOR_ID.into(),
                 mode: "next-turn".into(),
                 content: text.into(),
+                images: vec![],
             },
         )
     }
@@ -5667,6 +5669,58 @@ fn mcp_status_keeps_the_newest_revision_from_the_read_or_the_stream() {
     );
 }
 
+// Given an MCP status change, live or read back
+// Then the command list is read again (a server that became ready brings its prompts as
+//      commands), and an older read that changes nothing does not ask for it
+#[test]
+fn a_changed_mcp_status_reads_the_commands_again() {
+    let mut s = subagent_parent();
+    let incarnation = Ulid::generate();
+    let mut script = Script::new();
+    script.seq = s.last_applied_seq.unwrap_or(0) + 1;
+    script.raw(
+        "mcp.status",
+        serde_json::to_value(mcp_status(incarnation, 5, "ready")).unwrap(),
+    );
+    let fetches = |effects: &[Effect]| {
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::FetchCommands))
+            .count()
+    };
+    for envelope in script.out {
+        let generation = s.generation.clone();
+        let effects = update(
+            &mut s,
+            ClientEvent::Envelope {
+                generation,
+                envelope,
+            },
+        )
+        .unwrap();
+        assert_eq!(fetches(&effects), 1);
+    }
+    let generation = s.generation.clone();
+    let older = update(
+        &mut s,
+        ClientEvent::Mcp {
+            generation: generation.clone(),
+            result: Ok(mcp_status(incarnation, 4, "starting")),
+        },
+    )
+    .unwrap();
+    assert_eq!(fetches(&older), 0);
+    let restarted = update(
+        &mut s,
+        ClientEvent::Mcp {
+            generation,
+            result: Ok(mcp_status(Ulid::generate(), 1, "ready")),
+        },
+    )
+    .unwrap();
+    assert_eq!(fetches(&restarted), 1);
+}
+
 #[test]
 fn a_stream_connection_reads_the_mcp_status_again_and_an_mcp_event_marks_no_tab_unread() {
     let mut s = subagent_parent();
@@ -5697,4 +5751,483 @@ fn a_stream_connection_reads_the_mcp_status_again_and_an_mcp_event_marks_no_tab_
     }
     assert!(!s.tabs[background].unread);
     assert_eq!(s.mcp.as_ref().unwrap().servers[0].state, "ready");
+}
+
+fn attachment(name: &str, size: u64) -> PendingAttachment {
+    PendingAttachment {
+        path: format!("/ws/{name}").into(),
+        name: name.into(),
+        size,
+        uploaded: None,
+    }
+}
+
+fn checked_now(s: &mut State, result: Result<PendingAttachment, String>) {
+    let ev = ClientEvent::AttachmentChecked {
+        generation: s.generation.clone(),
+        revision: s.attachments_revision,
+        result,
+    };
+    update(s, ev).unwrap();
+}
+
+fn notice_texts(s: &State) -> Vec<String> {
+    s.conversation
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Notice(text) | BlockKind::Error(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn accepted() -> Result<SubmitResponse, String> {
+    Ok(SubmitResponse {
+        command_id: "c".into(),
+        accepted: true,
+        actor_state: "idle".into(),
+        notice: None,
+    })
+}
+
+#[test]
+fn attach_asks_the_runtime_to_look_at_the_file_and_a_good_one_becomes_a_chip() {
+    use withnav_tui::commands::{Routed, route};
+    let mut s = st();
+    let Routed::Local(action) = route("/attach shots/bug.png", Mode::NextTurn) else {
+        panic!("/attach is the client's own command")
+    };
+    assert_eq!(action, Action::Attach("shots/bug.png".into()));
+    let fx = handle_action(&mut s, &mut ui(), action);
+    assert_eq!(
+        fx,
+        vec![Effect::CheckAttachment {
+            path: "shots/bug.png".into(),
+            revision: 0,
+        }]
+    );
+    checked_now(&mut s, Ok(attachment("bug.png", 120_000)));
+    assert_eq!(s.pending_attachments, vec![attachment("bug.png", 120_000)]);
+    assert!(
+        notice_texts(&s)
+            .iter()
+            .any(|n| n.contains("[image bug.png, 120 KB]"))
+    );
+    // A refused file adds nothing and says why.
+    checked_now(&mut s, Err("4.2 MB is over the 3.9 MB limit".into()));
+    assert_eq!(s.pending_attachments.len(), 1);
+    assert!(
+        notice_texts(&s)
+            .last()
+            .unwrap()
+            .contains("over the 3.9 MB limit")
+    );
+}
+
+#[test]
+fn bare_attach_explains_itself_and_clear_drops_the_chips() {
+    use withnav_tui::commands::{Routed, route};
+    assert!(matches!(
+        route("/attach", Mode::NextTurn),
+        Routed::Refused(why) if why.contains("/attach <path")
+    ));
+    assert_eq!(
+        route("/attach clear", Mode::NextTurn),
+        Routed::Local(Action::ClearAttachments)
+    );
+    let mut s = st();
+    s.pending_attachments = vec![attachment("a.png", 10), attachment("b.png", 20)];
+    handle_action(&mut s, &mut ui(), Action::ClearAttachments);
+    assert!(s.pending_attachments.is_empty());
+}
+
+#[test]
+fn a_message_with_images_uploads_after_the_conversation_exists_and_keeps_the_chips_until_acknowledged()
+ {
+    let mut s = st();
+    s.pending_attachments = vec![attachment("a.png", 10), attachment("b.png", 20)];
+    // No conversation yet: it is created first, nothing is uploaded.
+    let fx = handle_action(
+        &mut s,
+        &mut ui(),
+        Action::SubmitAt {
+            text: "what is wrong here?".into(),
+            revision: 3,
+        },
+    );
+    assert!(matches!(fx[0], Effect::Create(_)));
+    let fx = created_now(&mut s, "S1").unwrap();
+    let Effect::SendWithAttachments {
+        request,
+        revision,
+        attachments,
+        ..
+    } = fx.last().unwrap().clone()
+    else {
+        panic!("{fx:?}")
+    };
+    assert_eq!(revision, 3);
+    assert_eq!(attachments, s.pending_attachments);
+    assert_eq!(
+        request.content,
+        vec![withnav_client_api::command::ContentBlock::Text {
+            text: "what is wrong here?".into()
+        }]
+    );
+    // In flight: the chips are still there and another send is refused.
+    assert_eq!(s.pending_attachments.len(), 2);
+    let fx = handle_action(
+        &mut s,
+        &mut ui(),
+        Action::SubmitAt {
+            text: "again".into(),
+            revision: 4,
+        },
+    );
+    assert!(fx.is_empty());
+    // Acknowledged: the chips go; the transcript shows the images from `message.received`.
+    submitted_now(&mut s, 3, accepted()).unwrap();
+    assert!(s.pending_attachments.is_empty());
+}
+
+#[test]
+fn transcript_images_are_numbered_and_open_by_number() {
+    let mut s = st();
+    with_session(&mut s, "S1");
+    let fx = handle_action(&mut s, &mut ui(), Action::OpenImage(String::new()));
+    assert!(fx.is_empty());
+    assert!(notice_texts(&s).iter().any(|n| n.contains("no image yet")));
+    subagent_event(
+        &mut s,
+        1,
+        "message.received",
+        json!({"source": "captain", "content": "look", "images": [
+            {"attachment_id": "A1", "media_type": "image/png", "name": "a.png",
+             "size": 10, "width": 3, "height": 2}
+        ]}),
+    );
+    subagent_event(
+        &mut s,
+        2,
+        "tool.post_call",
+        json!({"tool_call_id": "c1", "name": "read", "status": "ok", "output": "",
+               "metadata": {"images": [{"attachment_id": "A2", "name": "shot\u{7}.png"}]}}),
+    );
+    let notices = notice_texts(&s);
+    assert!(notices.contains(&"image 1: a.png, 3x2, 10 B (/image 1 to open)".to_string()));
+    assert!(notices.contains(&"image 2: shot.png (/image 2 to open)".to_string()));
+    let fx = handle_action(&mut s, &mut ui(), Action::OpenImage("1".into()));
+    assert!(matches!(
+        fx.as_slice(),
+        [Effect::OpenImage { session_id, number: 1, image }]
+            if session_id == "S1" && image.attachment_id == "A1"
+    ));
+    let fx = handle_action(&mut s, &mut ui(), Action::OpenImage(String::new()));
+    assert!(matches!(
+        fx.as_slice(),
+        [Effect::OpenImage { number: 2, .. }]
+    ));
+    assert!(handle_action(&mut s, &mut ui(), Action::OpenImage("3".into())).is_empty());
+    assert!(notice_texts(&s).iter().any(|n| n == "usage: /image [1-2]"));
+}
+
+// Given an event whose image list holds one valid reference and one malformed item
+// Then the valid image is still numbered and shown
+#[test]
+fn a_malformed_image_reference_does_not_hide_the_valid_ones() {
+    let mut s = st();
+    with_session(&mut s, "S1");
+    subagent_event(
+        &mut s,
+        1,
+        "message.received",
+        json!({"source": "captain", "content": "look", "images": [
+            {"bogus": 1},
+            {"attachment_id": "A1", "media_type": "image/png", "name": "a.png"},
+            {"attachment_id": 7}
+        ]}),
+    );
+    let images: Vec<_> = notice_texts(&s)
+        .into_iter()
+        .filter(|n| n.starts_with("image "))
+        .collect();
+    assert_eq!(images, ["image 1: a.png (/image 1 to open)"]);
+    let fx = handle_action(&mut s, &mut ui(), Action::OpenImage("1".into()));
+    assert!(matches!(
+        fx.as_slice(),
+        [Effect::OpenImage { number: 1, image, .. }] if image.attachment_id == "A1"
+    ));
+}
+
+#[test]
+fn a_pasted_image_path_attaches_it() {
+    let mut s = st();
+    let mut ui = ui();
+    let mut editor = withnav_tui::input::Editor::new();
+    let action = withnav_tui::input::route_paste("'/tmp/a b.png'".into(), &s, &mut ui, &mut editor);
+    assert_eq!(action, Some(Action::Attach("/tmp/a b.png".into())));
+    let fx = handle_action(&mut s, &mut ui, action.unwrap());
+    assert!(
+        matches!(fx.as_slice(), [Effect::CheckAttachment { path, .. }] if path == "/tmp/a b.png")
+    );
+    assert_eq!(
+        withnav_tui::input::route_paste("see /tmp/a.png".into(), &s, &mut ui, &mut editor),
+        None
+    );
+    assert_eq!(editor.text(), "see /tmp/a.png");
+}
+
+#[test]
+fn a_failed_send_keeps_the_images_for_another_try() {
+    let mut s = st();
+    with_session(&mut s, "S1");
+    s.pending_attachments = vec![attachment("a.png", 10)];
+    let fx = handle_action(
+        &mut s,
+        &mut ui(),
+        Action::SubmitAt {
+            text: "x".into(),
+            revision: 1,
+        },
+    );
+    assert!(matches!(&fx[0], Effect::SendWithAttachments { .. }));
+    submitted_now(&mut s, 1, Err("HTTP 400: unknown attachment".into())).unwrap();
+    assert_eq!(s.pending_attachments, vec![attachment("a.png", 10)]);
+    assert!(
+        notice_texts(&s)
+            .last()
+            .unwrap()
+            .contains("unknown attachment")
+    );
+    // Retry is allowed again and carries the same image.
+    let fx = handle_action(
+        &mut s,
+        &mut ui(),
+        Action::SubmitAt {
+            text: "x".into(),
+            revision: 1,
+        },
+    );
+    assert!(
+        matches!(&fx[0], Effect::SendWithAttachments { attachments, .. } if attachments.len() == 1)
+    );
+}
+
+#[test]
+fn a_file_check_that_finishes_after_attach_clear_is_dropped() {
+    let mut s = st();
+    let generation = s.generation.clone();
+    let fx = handle_action(&mut s, &mut ui(), Action::Attach("bug.png".into()));
+    let [Effect::CheckAttachment { revision, .. }] = fx.as_slice() else {
+        panic!("{fx:?}")
+    };
+    let stale = *revision;
+    let fx = handle_action(&mut s, &mut ui(), Action::PasteImage);
+    assert_eq!(fx, vec![Effect::PasteImage { revision: stale }]);
+    handle_action(&mut s, &mut ui(), Action::ClearAttachments);
+    let notices = notice_texts(&s).len();
+    for result in [
+        Ok(attachment("bug.png", 10)),
+        Err("cannot read the file".into()),
+    ] {
+        update(
+            &mut s,
+            ClientEvent::AttachmentChecked {
+                generation: generation.clone(),
+                revision: stale,
+                result,
+            },
+        )
+        .unwrap();
+    }
+    assert!(s.pending_attachments.is_empty());
+    assert_eq!(
+        notice_texts(&s).len(),
+        notices,
+        "a dropped check says nothing"
+    );
+    // An image attached after the clear still lands.
+    let fx = handle_action(&mut s, &mut ui(), Action::Attach("next.png".into()));
+    assert!(
+        matches!(fx.as_slice(), [Effect::CheckAttachment { revision, .. }] if *revision != stale)
+    );
+    checked_now(&mut s, Ok(attachment("next.png", 10)));
+    assert_eq!(s.pending_attachments, vec![attachment("next.png", 10)]);
+}
+
+#[test]
+fn a_retry_names_the_images_a_failed_send_already_stored() {
+    use withnav_tui::state::Uploaded;
+    let stored = |id: &str| Uploaded {
+        session_id: "S1".into(),
+        attachment_id: id.into(),
+    };
+    let mut s = st();
+    with_session(&mut s, "S1");
+    let generation = s.generation.clone();
+    s.pending_attachments = vec![attachment("a.png", 10), attachment("b.png", 20)];
+    let send = Action::SubmitAt {
+        text: "x".into(),
+        revision: 1,
+    };
+    handle_action(&mut s, &mut ui(), send.clone());
+    // Attached while the message is in flight: not part of it, never takes a stored id.
+    checked_now(&mut s, Ok(attachment("a.png", 10)));
+    // a.png reached the store, b.png failed.
+    let in_flight = s.attachments_send;
+    update(
+        &mut s,
+        ClientEvent::AttachmentsUploaded {
+            generation: generation.clone(),
+            send: in_flight,
+            uploads: vec![(attachment("a.png", 10), stored("att-1"))],
+        },
+    )
+    .unwrap();
+    submitted_now(&mut s, 1, Err("could not upload b.png: HTTP 500".into())).unwrap();
+    let mut first = attachment("a.png", 10);
+    first.uploaded = Some(stored("att-1"));
+    assert_eq!(
+        s.pending_attachments,
+        vec![
+            first.clone(),
+            attachment("b.png", 20),
+            attachment("a.png", 10)
+        ]
+    );
+    // The retry carries the stored id for a.png; only the others are uploaded.
+    let fx = handle_action(&mut s, &mut ui(), send);
+    let [Effect::SendWithAttachments { attachments, .. }] = fx.as_slice() else {
+        panic!("{fx:?}")
+    };
+    assert_eq!(attachments[0], first);
+    assert!(attachments[1..].iter().all(|a| a.uploaded.is_none()));
+}
+
+#[test]
+fn stored_ids_survive_attach_clear_of_the_images_after_the_message_in_flight() {
+    let mut s = st();
+    with_session(&mut s, "S1");
+    let generation = s.generation.clone();
+    s.pending_attachments = vec![attachment("a.png", 10)];
+    handle_action(
+        &mut s,
+        &mut ui(),
+        Action::SubmitAt {
+            text: "x".into(),
+            revision: 1,
+        },
+    );
+    checked_now(&mut s, Ok(attachment("b.png", 20)));
+    handle_action(&mut s, &mut ui(), Action::ClearAttachments);
+    let in_flight = s.attachments_send;
+    update(
+        &mut s,
+        ClientEvent::AttachmentsUploaded {
+            generation: generation.clone(),
+            send: in_flight,
+            uploads: vec![(
+                attachment("a.png", 10),
+                withnav_tui::state::Uploaded {
+                    session_id: "S1".into(),
+                    attachment_id: "att-1".into(),
+                },
+            )],
+        },
+    )
+    .unwrap();
+    update(
+        &mut s,
+        ClientEvent::DeliveryUncertain {
+            generation: generation.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.pending_attachments.len(), 1);
+    assert_eq!(
+        s.pending_attachments[0]
+            .uploaded
+            .as_ref()
+            .map(|u| u.attachment_id.as_str()),
+        Some("att-1")
+    );
+}
+
+#[test]
+fn stored_ids_reported_for_an_earlier_message_are_dropped() {
+    let mut s = st();
+    with_session(&mut s, "S1");
+    let generation = s.generation.clone();
+    let send = |s: &mut State| {
+        let fx = handle_action(
+            s,
+            &mut ui(),
+            Action::SubmitAt {
+                text: "x".into(),
+                revision: 1,
+            },
+        );
+        let [Effect::SendWithAttachments { send, .. }] = fx.as_slice() else {
+            panic!("{fx:?}")
+        };
+        *send
+    };
+    s.pending_attachments = vec![attachment("a.png", 10)];
+    let first = send(&mut s);
+    submitted_now(&mut s, 1, Err("HTTP 500".into())).unwrap();
+    // The same file attached again (perhaps with other bytes) rides in a second message, and
+    // the first message's late report arrives meanwhile.
+    let second = send(&mut s);
+    assert_ne!(first, second);
+    update(
+        &mut s,
+        ClientEvent::AttachmentsUploaded {
+            generation: generation.clone(),
+            send: first,
+            uploads: vec![(
+                attachment("a.png", 10),
+                withnav_tui::state::Uploaded {
+                    session_id: "S1".into(),
+                    attachment_id: "att-old".into(),
+                },
+            )],
+        },
+    )
+    .unwrap();
+    assert_eq!(s.pending_attachments, vec![attachment("a.png", 10)]);
+}
+
+#[test]
+fn a_message_of_images_only_carries_no_empty_text_block() {
+    let mut s = st();
+    with_session(&mut s, "S1");
+    s.pending_attachments = vec![attachment("a.png", 10)];
+    let fx = handle_action(
+        &mut s,
+        &mut ui(),
+        Action::SubmitAt {
+            text: String::new(),
+            revision: 1,
+        },
+    );
+    let Effect::SendWithAttachments { request, .. } = &fx[0] else {
+        panic!("{fx:?}")
+    };
+    assert!(request.content.is_empty());
+}
+
+#[test]
+fn enter_on_an_empty_message_sends_when_images_wait() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use withnav_tui::input::{Editor, route_key};
+    let mut s = st();
+    let mut editor = Editor::new();
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(route_key(enter, &s, &mut ui(), &mut editor), None);
+    s.pending_attachments = vec![attachment("a.png", 10)];
+    assert!(matches!(
+        route_key(enter, &s, &mut ui(), &mut editor),
+        Some(Action::SubmitAt { .. })
+    ));
 }

@@ -60,9 +60,15 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Metadata { generation, .. }
         | ClientEvent::Context { generation, .. }
         | ClientEvent::Submitted { generation, .. }
+        | ClientEvent::AttachmentChecked { generation, .. }
+        | ClientEvent::AttachmentsUploaded { generation, .. }
+        | ClientEvent::ImageOpened { generation, .. }
         | ClientEvent::Commands { generation, .. }
         | ClientEvent::PermissionAnswered { generation, .. }
         | ClientEvent::QuestionAnswered { generation, .. }
+        | ClientEvent::SecretAnswered { generation, .. }
+        | ClientEvent::SecretsListed { generation, .. }
+        | ClientEvent::SecretRevoked { generation, .. }
         | ClientEvent::CommandRan { generation, .. }
         | ClientEvent::Stopped { generation, .. }
         | ClientEvent::ChildControlled { generation, .. }
@@ -127,6 +133,9 @@ pub(crate) fn start_conversation(s: &mut State) {
     s.variant_list_wanted = false;
     s.pending_submit_text = None;
     s.pending_submit = None;
+    // Images attached to the old conversation's message box do not follow the tab elsewhere.
+    s.pending_attachments.clear();
+    s.attachments_sending = 0;
     s.delivery_uncertain = false;
     s.unread = false;
     let generation = Generation(s.issue());
@@ -190,8 +199,31 @@ pub(super) fn refresh_start_variant(
     };
 }
 
+#[cfg(test)]
 pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
-    let content = if let Some(arguments) = text
+    send_effect_with(text, revision, vec![], 0)
+}
+
+/// The send of the active tab's message: its pending images ride with it, and stay in the tab
+/// (counted in `attachments_sending`) until the server acknowledges the message.
+pub(crate) fn send_for_tab(s: &mut State, text: String, revision: u64) -> Effect {
+    let attachments = s.pending_attachments.clone();
+    s.attachments_sending = attachments.len();
+    s.attachments_send += 1;
+    send_effect_with(text, revision, attachments, s.attachments_send)
+}
+
+fn send_effect_with(
+    text: String,
+    revision: u64,
+    attachments: Vec<crate::state::PendingAttachment>,
+    send: u64,
+) -> Effect {
+    use withnav_client_api::command::ContentBlock;
+    let content = if text.trim().is_empty() && !attachments.is_empty() {
+        // A message may be images only: an empty text block would be noise for the model.
+        vec![]
+    } else if let Some(arguments) = text
         .strip_prefix("/skill")
         .filter(|arguments| arguments.starts_with(char::is_whitespace))
     {
@@ -201,14 +233,14 @@ pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
             .unwrap_or((arguments, ""));
         let request = request.trim();
         vec![
-            withnav_client_api::command::ContentBlock::Text {
+            ContentBlock::Text {
                 text: if request.is_empty() {
                     format!("Apply the {name} skill.")
                 } else {
                     request.to_string()
                 },
             },
-            withnav_client_api::command::ContentBlock::Skill {
+            ContentBlock::Skill {
                 name: name.to_string(),
             },
         ]
@@ -218,16 +250,23 @@ pub(crate) fn send_effect(text: String, revision: u64) -> Effect {
         } else {
             text
         };
-        vec![withnav_client_api::command::ContentBlock::Text { text }]
+        vec![ContentBlock::Text { text }]
     };
-    Effect::SendAt {
-        request: SubmitRequest {
-            answer: None,
-            target_actor_id: "agent:main".into(),
-            mode: "next-turn".into(),
-            content,
-        },
-        revision,
+    let request = SubmitRequest {
+        answer: None,
+        target_actor_id: "agent:main".into(),
+        mode: "next-turn".into(),
+        content,
+    };
+    if attachments.is_empty() {
+        Effect::SendAt { request, revision }
+    } else {
+        Effect::SendWithAttachments {
+            request,
+            revision,
+            attachments,
+            send,
+        }
     }
 }
 
@@ -327,6 +366,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 .or(s.resuming.clone());
             let read_only = s.read_only();
             let default_agent = s.tabs[s.active].default_agent.clone();
+            let mcp_before = mcp_version(&s.mcp);
             let State {
                 tabs,
                 active,
@@ -345,6 +385,10 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     mcp,
                 },
             )?;
+            // The prompts of a server that just became ready are commands of their own.
+            if mcp_version(&s.mcp) != mcp_before {
+                effects.push(Effect::FetchCommands);
+            }
             if selection_changed
                 && let Some(id) = s
                     .session
@@ -526,7 +570,11 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
         // A failed read keeps what is shown: the next event or reconnection brings it back.
         ClientEvent::Mcp { result, .. } => {
             if let Ok(snapshot) = result {
+                let before = mcp_version(&s.mcp);
                 keep_newer_mcp(&mut s.mcp, snapshot);
+                if mcp_version(&s.mcp) != before {
+                    effects.push(Effect::FetchCommands);
+                }
             }
         }
         ClientEvent::PermissionAnswered {
@@ -570,6 +618,100 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     )
                 }
             }
+        }
+        ClientEvent::SecretAnswered {
+            call_id,
+            name,
+            result,
+            ..
+        } => {
+            let mut stored = None;
+            for block in &mut s.conversation.blocks {
+                if let BlockKind::Secret(p) = &mut block.kind
+                    && p.call_id == call_id
+                {
+                    p.sending = false;
+                    match &result {
+                        Ok(accepted) => {
+                            if let Some(view) = &accepted.secret {
+                                p.last4 = Some(view.last4.clone());
+                                // A settled request is stored at once; an open one waits for
+                                // the server's note.
+                                if !p.is_open() {
+                                    p.state = crate::state::SecretState::Stored {
+                                        scope: view.scope,
+                                        expires_at: view.expires_at.clone(),
+                                    };
+                                }
+                                stored = Some(view.clone());
+                            }
+                        }
+                        Err(error) => p.error = Some(error.clone()),
+                    }
+                }
+            }
+            if let Err(error) = result {
+                push_local(s, BlockKind::Error(format!("secret ${name}: {error}")));
+            } else if stored.is_none()
+                && s.conversation
+                    .blocks
+                    .iter()
+                    .all(|b| !matches!(&b.kind, BlockKind::Secret(p) if p.call_id == call_id))
+            {
+                push_local(s, BlockKind::Notice(format!("secret ${name}: sent")));
+            }
+        }
+        ClientEvent::SecretsListed { result, .. } => match result {
+            Ok(body) => {
+                let now = time::OffsetDateTime::now_utc();
+                let text = if body.secrets.is_empty() {
+                    "secrets: none in this conversation".to_owned()
+                } else {
+                    let rows: Vec<String> = body
+                        .secrets
+                        .iter()
+                        .map(|v| {
+                            format!(
+                                "${}{} · {} · expires {} · used {}×",
+                                v.name,
+                                if v.last4.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" ••••{}", v.last4)
+                                },
+                                crate::secret::scope_text(v.scope),
+                                crate::secret::expires_in(v.expires_at.as_deref(), now)
+                                    .unwrap_or_else(|| "now".into()),
+                                v.use_count
+                            )
+                        })
+                        .collect();
+                    format!(
+                        "secrets:\n{}\n/secrets revoke NAME removes one",
+                        rows.join("\n")
+                    )
+                };
+                push_local(s, BlockKind::Notice(text));
+            }
+            Err(error) => push_local(s, BlockKind::Error(format!("secrets: {error}"))),
+        },
+        ClientEvent::SecretRevoked { name, result, .. } => {
+            let text = match result {
+                Ok(true) => {
+                    for block in &mut s.conversation.blocks {
+                        if let BlockKind::Secret(p) = &mut block.kind
+                            && p.request.name == name
+                            && matches!(p.state, crate::state::SecretState::Stored { .. })
+                        {
+                            p.state = crate::state::SecretState::Revoked;
+                        }
+                    }
+                    format!("secret ${name} revoked: commands no longer receive it")
+                }
+                Ok(false) => format!("secret ${name}: none to revoke"),
+                Err(error) => format!("secret ${name}: {error}"),
+            };
+            push_local(s, BlockKind::Notice(text));
         }
         ClientEvent::QuestionAnswered {
             call_id, result, ..
@@ -738,7 +880,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 });
                 if let Some(text) = s.pending_submit_text.take() {
                     let revision = s.pending_submit.take().unwrap_or(0);
-                    effects.push(send_effect(text, revision));
+                    effects.push(send_for_tab(s, text, revision));
                 }
             }
             Err(x) => {
@@ -831,10 +973,56 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 keep_newer_context(s, snapshot);
             }
         }
+        ClientEvent::ImageOpened { result, .. } => {
+            push_local(s, BlockKind::Notice(result.unwrap_or_else(|e| e)));
+        }
+        // Checked before an `/attach clear`: the Captain dropped it already.
+        ClientEvent::AttachmentChecked { revision, .. } if revision != s.attachments_revision => {}
+        ClientEvent::AttachmentChecked { result, .. } => match result {
+            Ok(attachment) => {
+                if s.pending_attachments.len() >= crate::state::MAX_ATTACHMENTS {
+                    push_local(
+                        s,
+                        BlockKind::Notice(format!(
+                            "a message carries at most {} images; send it or use /attach clear",
+                            crate::state::MAX_ATTACHMENTS
+                        )),
+                    );
+                } else {
+                    push_local(
+                        s,
+                        BlockKind::Notice(format!("attached {}", attachment.chip())),
+                    );
+                    s.pending_attachments.push(attachment);
+                }
+            }
+            Err(why) => push_local(s, BlockKind::Notice(format!("/attach: {why}"))),
+        },
+        // Reported for an earlier message: its images may be gone and a same-named file
+        // attached since must not take an id that holds other bytes.
+        ClientEvent::AttachmentsUploaded { send, .. } if send != s.attachments_send => {}
+        ClientEvent::AttachmentsUploaded { uploads, .. } => {
+            // Matched by the attachment itself, not its position: an image attached during the
+            // send lands after the ones in flight and never takes a stored id.
+            let sending = s.attachments_sending.min(s.pending_attachments.len());
+            for (attachment, uploaded) in uploads {
+                if let Some(pending) = s.pending_attachments[..sending]
+                    .iter_mut()
+                    .find(|p| p.uploaded.is_none() && **p == attachment)
+                {
+                    pending.uploaded = Some(uploaded);
+                }
+            }
+        }
         ClientEvent::Submitted {
             revision, result, ..
         } => match result {
             Ok(r) => {
+                // The server took the message with its images: only now do the chips go. The
+                // transcript shows the images from the `message.received` event.
+                let sent =
+                    std::mem::take(&mut s.attachments_sending).min(s.pending_attachments.len());
+                s.pending_attachments.drain(..sent);
                 if !background {
                     effects.push(Effect::ClearEditor { revision });
                 } else if s.draft_revision == revision {
@@ -845,10 +1033,17 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                     push_local(s, BlockKind::Notice(n));
                 }
             }
-            Err(x) => push_local(s, BlockKind::Error(x)),
+            Err(x) => {
+                // Text and chips stay for another try.
+                s.attachments_sending = 0;
+                push_local(s, BlockKind::Error(x));
+            }
         },
         ClientEvent::DeliveryUncertain { .. } => {
             s.delivery_uncertain = true;
+            // The message may have reached the server; its chips stay with the draft until the
+            // Captain has checked the conversation.
+            s.attachments_sending = 0;
             push_local(
                 s,
                 BlockKind::Notice(
@@ -1013,6 +1208,13 @@ fn seed_children(s: &mut State) {
             }
         }
     }
+}
+
+/// Which MCP status the client holds: the server list (and so the prompt commands) can only
+/// have changed when this does.
+fn mcp_version(mcp: &Option<withnav_client_api::event::McpStatus>) -> Option<(String, u64)> {
+    mcp.as_ref()
+        .map(|m| (m.incarnation.to_string(), m.revision))
 }
 
 #[cfg(test)]

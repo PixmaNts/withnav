@@ -9,6 +9,7 @@ import type { Child, SessionView, ToolCall, Turn } from "../session/reducer";
 import { useSessionStream } from "../session/useSessionStream";
 import { Markdown } from "./Markdown";
 import { ToolList } from "./ToolList";
+import { ImageProvider } from "./Images";
 
 const DELIVERY: Record<string, string> = { next_turn: "next-turn", steer: "steer", interrupt: "interrupt" };
 
@@ -121,7 +122,9 @@ export function SubagentView({ childId, parentId, parent, parentTitle, onBack }:
       </div>
       {calls.length > 0 ? (
         <div className="sub-calls">
-          <ToolList calls={calls} />
+          <ImageProvider sessionId={childId}>
+            <ToolList calls={calls} />
+          </ImageProvider>
         </div>
       ) : (
         <div className="muted">{stream.status === "connecting" ? "Loading its transcript…" : "No tool call yet."}</div>

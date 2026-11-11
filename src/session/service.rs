@@ -122,9 +122,9 @@ pub struct SessionHandle {
     pub status: Arc<runtime::RuntimeStatus>,
     /// Owner of this session when it is a background child.
     pub parent_session_id: Option<SessionId>,
-    /// The MCP tools frozen into this session's registry when it was built; a child
-    /// inherits exactly this inventory.
-    pub(crate) mcp_tools: Arc<Vec<crate::mcp::McpTool>>,
+    /// The MCP tools this session's registry holds. A root session's are refreshed between
+    /// two turns; a child is created from what its parent holds then and keeps it.
+    pub(crate) mcp_tools: crate::mcp::InstalledTools,
 }
 
 pub use crate::bus::event::{SkillEntry, SkillsBody};
@@ -320,7 +320,7 @@ struct PreparedSession {
     expired: Vec<(Ulid, String)>,
     save_late: bool,
     child_parent: Option<SessionId>,
-    mcp_tools: Arc<Vec<crate::mcp::McpTool>>,
+    mcp_tools: crate::mcp::InstalledTools,
 }
 
 /// Frozen `GET /v1/sessions/:id` body.
@@ -365,6 +365,8 @@ fn is_promptable(value: &bool) -> bool {
 #[derive(Clone, Debug)]
 pub struct Service {
     pub(crate) mcp: Arc<crate::mcp::McpManager>,
+    /// The Captain's secrets: every conversation's, and the saved workspace ones.
+    pub(crate) secrets: Arc<crate::secrets::SecretStore>,
     /// Publishes the MCP servers' status to every live session.
     pub(super) mcp_bridge: Arc<super::mcp::McpBridge>,
     pub(crate) flows: Arc<crate::flows::host::Host>,
@@ -379,9 +381,13 @@ pub struct Service {
     #[cfg(debug_assertions)]
     pub(crate) watchdog_ownership_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
+    pub(crate) budget_notice_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    #[cfg(debug_assertions)]
     pub(crate) lifecycle_claim_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
     pub(crate) watchdog_stop_failure: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(debug_assertions)]
+    pub(crate) budget_notice_failure: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(debug_assertions)]
     pub(crate) watchdog_teardown_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     #[cfg(debug_assertions)]
@@ -395,6 +401,9 @@ pub struct Service {
     pub(crate) config: Arc<SessionConfig>,
     /// The conversation-history store: every conversation is persisted.
     history: Arc<super::store::HistoryStore>,
+    /// Image attachments: its own connection to the history database, so blobs never queue
+    /// behind the history writer. `None` when the connection could not be opened.
+    attachments: Option<Arc<super::attachments::AttachmentStore>>,
     /// Editor context injected by the host binary.
     hooks: Arc<dyn SessionHooks>,
     /// The lifecycle gate: resume, close and delete run one at a time, so a
@@ -454,6 +463,32 @@ impl Service {
         self.mcp.status_snapshot()
     }
 
+    pub async fn mcp_read_resource(
+        &self,
+        server_id: &str,
+        uri: &str,
+    ) -> Result<serde_json::Value, crate::mcp::McpUiError> {
+        self.mcp.read_ui_resource(server_id, uri).await
+    }
+
+    /// The HTML and declared CSP of a `ui://` app resource, for serving it as a document.
+    pub async fn mcp_read_app(
+        &self,
+        server_id: &str,
+        uri: &str,
+    ) -> Result<(String, serde_json::Value), crate::mcp::McpUiError> {
+        self.mcp.read_app_resource(server_id, uri).await
+    }
+
+    pub async fn mcp_call_tool(
+        &self,
+        server_id: &str,
+        name: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, crate::mcp::McpUiError> {
+        self.mcp.call_ui_tool(server_id, name, arguments).await
+    }
+
     /// See [`crate::mcp::McpManager::wait_until_settled`]. Only `nav run` waits:
     /// session creation in `nav serve` never blocks on MCP servers.
     pub async fn wait_for_mcp(&self) {
@@ -488,6 +523,16 @@ impl Service {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
     }
+    /// Pauses the next budget-park notice after its first park check and
+    /// before its durable commit, the window a concurrent top-up can land in.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn pause_budget_notice(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .budget_notice_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn pause_watchdog_ownership(&self, barrier: ChildPreparationBarrier) {
@@ -509,6 +554,20 @@ impl Service {
     pub fn fail_watchdog_stop_write(&self) {
         self.watchdog_stop_failure
             .store(true, std::sync::atomic::Ordering::Release);
+    }
+    /// Makes the next budget-notice enqueue fail, as a history write would.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn fail_budget_notice_enqueue(&self) {
+        self.budget_notice_failure
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+    /// Whether the failure armed by `fail_budget_notice_enqueue` is still unused.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn budget_notice_failure_armed(&self) -> bool {
+        self.budget_notice_failure
+            .load(std::sync::atomic::Ordering::Acquire)
     }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
@@ -719,6 +778,13 @@ impl Service {
             super::instance::Instance::acquire(&config.history_db).map_err(ServerError::History)?,
         );
         history.set_owner(instance.id);
+        let attachments = match super::attachments::AttachmentStore::open(&config.history_db) {
+            Ok(store) => Some(Arc::new(store)),
+            Err(error) => {
+                tracing::warn!(%error, "image attachments unavailable");
+                None
+            }
+        };
         history
             .recover_children(&instance.directory)
             .map_err(ServerError::History)?;
@@ -731,8 +797,10 @@ impl Service {
         );
         let sessions = Arc::new(Mutex::new(HashMap::new()));
         let mcp_bridge = Arc::new(super::mcp::McpBridge::start(&mcp, &sessions));
+        let secrets = Arc::new(crate::secrets::SecretStore::open(&config.data_dir));
         Ok(Self {
             mcp,
+            secrets,
             mcp_bridge,
             flows: Arc::new(crate::flows::host::Host::new(
                 config.config_dir.clone(),
@@ -748,9 +816,13 @@ impl Service {
             #[cfg(debug_assertions)]
             watchdog_ownership_barrier: Arc::default(),
             #[cfg(debug_assertions)]
+            budget_notice_barrier: Arc::default(),
+            #[cfg(debug_assertions)]
             lifecycle_claim_barrier: Arc::default(),
             #[cfg(debug_assertions)]
             watchdog_stop_failure: Arc::default(),
+            #[cfg(debug_assertions)]
+            budget_notice_failure: Arc::default(),
             #[cfg(debug_assertions)]
             watchdog_teardown_barrier: Arc::default(),
             #[cfg(debug_assertions)]
@@ -761,6 +833,7 @@ impl Service {
             sessions,
             config: Arc::new(config),
             history: Arc::new(history),
+            attachments,
             hooks,
             gate: Arc::new(tokio::sync::Mutex::new(())),
             admission_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -805,6 +878,46 @@ impl Service {
     /// resume, close or delete; never call a gated method while holding it.
     pub(super) async fn lifecycle_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.gate.lock().await
+    }
+
+    /// Fills the command's image references from this session's stored rows, before anything is
+    /// sequenced: an unknown or foreign id refuses the whole message.
+    async fn resolve_images(&self, command: &mut Command) -> Result<(), ServerError> {
+        if !command
+            .content
+            .iter()
+            .any(|block| matches!(block, crate::bus::command::ContentBlock::Image(_)))
+        {
+            return Ok(());
+        }
+        let store = self.attachments.clone().ok_or_else(|| {
+            ServerError::MalformedBody("image attachments are unavailable".into())
+        })?;
+        let session = command.session_id.to_string();
+        let mut content = std::mem::take(&mut command.content);
+        let (content, result) = tokio::task::spawn_blocking(move || {
+            let result = super::attachments::resolve_command_images(&store, &session, &mut content);
+            (content, result)
+        })
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "image lookup task failed");
+            ServerError::AttachmentStore
+        })?;
+        command.content = content;
+        // A store failure carries SQLite text: logged, never sent back as a request error.
+        result.map_err(|error| match error {
+            super::attachments::AttachmentError::Db(detail) => {
+                tracing::error!(%detail, "attachment store failed");
+                ServerError::AttachmentStore
+            }
+            error => ServerError::MalformedBody(error.to_string()),
+        })
+    }
+
+    /// The image attachment store, `None` when its connection could not be opened.
+    pub fn attachments(&self) -> Option<Arc<super::attachments::AttachmentStore>> {
+        self.attachments.clone()
     }
 
     /// The history store.
@@ -949,7 +1062,8 @@ impl Service {
         // restriction.
         // Every tool the registry offers, MCP tools included, under the same
         // child and parent restrictions as the native ones.
-        let inherited_mcp = parent_handle.mcp_tools.clone();
+        // One detached copy serves both the policy and the child's registry.
+        let inherited_mcp = parent_handle.mcp_tools.get();
         for tool in super::actor::admissible_tools(&inherited_mcp) {
             let enabled = child_tool_allowed(&tool, &definition, &parent_role);
             policy.insert(tool.clone(), enabled);
@@ -1278,7 +1392,7 @@ impl Service {
             }
         };
         for (child, payload) in pending {
-            let kind = if payload["notice_kind"] == "watchdog" {
+            let kind = if matches!(payload["notice_kind"].as_str(), Some("watchdog" | "budget")) {
                 EventKind::SubagentWatchdog
             } else {
                 EventKind::SubagentDone
@@ -1346,7 +1460,10 @@ impl Service {
         })
     }
 
-    pub(super) async fn ensure_not_archived(&self, id: SessionId) -> Result<(), ServerError> {
+    /// Refuses an archived conversation with [`ServerError::SessionArchived`]. Shared by
+    /// the message route and the attachment-upload route, so both shape the refusal
+    /// identically; a stopped conversation is not archived and passes.
+    pub(crate) async fn ensure_not_archived(&self, id: SessionId) -> Result<(), ServerError> {
         if let Some(reason) = self
             .history
             .meta(id)
@@ -1404,6 +1521,7 @@ impl Service {
                 "loaded skill content is server-only".into(),
             ));
         }
+        self.resolve_images(&mut command).await?;
         let names: Vec<_> = command
             .content
             .iter()
@@ -1450,6 +1568,13 @@ impl Service {
                         content: snapshot.id.clone(),
                     };
                 }
+            }
+        }
+        // A value the Captain pasted into the chat is hidden like any other occurrence.
+        let secrets = self.secret_access(self.secret_owner(command.session_id)?, &handle.workspace);
+        for block in &mut command.content {
+            if let crate::bus::command::ContentBlock::Text { text } = block {
+                secrets.redact_in_place(text);
             }
         }
         accept(&handle, command).await
@@ -2144,10 +2269,17 @@ impl Service {
     }
 
     /// Finds the session's skills once and logs what became of each file.
-    async fn load_skills(&self, workspace: &Path, id: SessionId, resumed: bool) -> Skills {
+    pub(crate) async fn load_skills(
+        &self,
+        workspace: &Path,
+        id: SessionId,
+        resumed: bool,
+        settings: &crate::settings::Settings,
+    ) -> Skills {
         let roots = self.config.rules_roots.clone();
         let dir = workspace.to_path_buf();
-        let skills = tokio::task::spawn_blocking(move || Skills::load(&roots, &dir))
+        let settings = settings.clone();
+        let skills = tokio::task::spawn_blocking(move || Skills::load(&roots, &dir, &settings))
             .await
             .unwrap_or_default();
         super::rules_log::log_skills(id, resumed, &skills);
@@ -2561,12 +2693,15 @@ impl Service {
             api_key: api_key.clone(),
         });
         let root_tools_enabled = child_policy.is_none() && role.mode.is_primary();
-        // One frozen MCP inventory per session: a child's is its parent's, and a
-        // fresh root session's is what is ready now.
+        // A child keeps the MCP tools its parent held when it was created. A root session
+        // starts with what is ready now and refreshes it between two turns.
         let mcp_tools = match &child_policy {
-            Some((_, _, _, _, _, inherited)) => inherited.clone(),
-            None => Arc::new(self.mcp.snapshot()),
+            Some((_, _, _, _, _, inherited)) => {
+                crate::mcp::InstalledTools::frozen(inherited.clone())
+            }
+            None => crate::mcp::InstalledTools::from_inventory(self.mcp.inventory()),
         };
+        let mcp_registry = mcp_tools.get();
         let mut actor = match &child_policy {
             Some((allowed, read_only, _, _, _, _)) => build_child_actor(
                 &workspace,
@@ -2576,7 +2711,7 @@ impl Service {
                 session_cancel.child_token(),
                 allowed.clone(),
                 *read_only,
-                &mcp_tools,
+                &mcp_registry,
             ),
             None => build_actor(
                 &workspace,
@@ -2584,9 +2719,15 @@ impl Service {
                 resolved,
                 api_key,
                 session_cancel.child_token(),
-                &mcp_tools,
+                &mcp_registry,
             ),
         };
+        // A subagent hands its tools the secrets of the tree it works for.
+        let secret_owner = match child_parent {
+            Some(parent) => self.secret_owner(parent)?,
+            None => session_id,
+        };
+        actor.tool_context.secrets = Some(self.secret_access(secret_owner, &workspace));
         if root_tools_enabled && role.mode.is_primary() {
             actor.registry.register(Box::new(
                 crate::tools::decide_subagent::DecideSubagent::new(self.clone(), session_id),
@@ -2626,7 +2767,12 @@ impl Service {
             .load_rules(&workspace, session_id, resumed.is_some())
             .await;
         let mut skills = self
-            .load_skills(&workspace, session_id, resumed.is_some())
+            .load_skills(
+                &workspace,
+                session_id,
+                resumed.is_some(),
+                &captured.settings,
+            )
             .await;
         skills.validation = Arc::new(crate::agent::skills::validation::SkillValidation {
             data_dir: Some(self.config.data_dir.clone()),
@@ -2639,6 +2785,12 @@ impl Service {
             temp: crate::permission::floor::system_temp_roots(),
         };
         actor.permission_session = session_id.to_string();
+        actor.attachment_loader = self.attachments.clone().map(|store| {
+            Arc::new(super::attachments::SessionLoader {
+                store,
+                session_id: session_id.to_string(),
+            }) as crate::agent::images::SharedLoader
+        });
         actor.compaction_decision = compaction_decision(
             self.config.models_path.as_deref(),
             &workspace,
@@ -3007,11 +3159,20 @@ impl Service {
                 let service = self.clone();
                 Some(Box::new(move |message, outcome| {
                     use crate::bus::runtime::CompletionOutcome;
+                    if let CompletionOutcome::Budget { evidence, park } = outcome {
+                        let service = service.clone();
+                        tokio::spawn(async move {
+                            service
+                                .deliver_budget_notice(parent, session_id, park, evidence)
+                                .await;
+                        });
+                        return;
+                    }
                     let status = match outcome {
                         CompletionOutcome::Done => "done",
                         CompletionOutcome::Failed => "failed",
                         CompletionOutcome::Stopped => "stopped",
-                        CompletionOutcome::Parked => return,
+                        CompletionOutcome::Parked | CompletionOutcome::Budget { .. } => return,
                     };
                     let service = service.clone();
                     tokio::spawn(async move {
@@ -3151,7 +3312,7 @@ impl Service {
                                 "reason":payload.get("reason")}).to_string();
                         }
                         let event = super::subagents::live_result::candidate(child, &payload, &text);
-                        transcript.push(ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Subagent, content: text });
+                        transcript.push(ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Subagent, content: text, images: Vec::new() });
                         let committed_transcript = transcript.clone();
                         let committed_history = history.clone();
                         #[cfg(debug_assertions)]
@@ -3302,6 +3463,18 @@ impl Service {
             };
             self.lock_sessions().insert(session_id, handle);
         }
+        if child_parent.is_none()
+            && let Some(owner) = self.handle(session_id)
+        {
+            // A server that changed between taking the inventory and registering the
+            // session would otherwise wait for its next change.
+            owner
+                .status
+                .refresh_mcp(crate::bus::runtime::mcp_tools::McpRefresh {
+                    manager: self.mcp.clone(),
+                    installed: owner.mcp_tools.clone(),
+                });
+        }
         if child_parent.is_none() {
             if let Some(owner) = self.handle(session_id) {
                 self.history
@@ -3363,7 +3536,7 @@ fn child_tool_allowed(tool: &str, child: &AgentDefinition, parent: &AgentDefinit
         && parent.tools.get(tool).copied().unwrap_or(true)
         && parent_ceiling
         && child_access
-        && !matches!(tool, "ask" | "task" | "steer_subagent")
+        && !matches!(tool, "ask" | "request_secret" | "task" | "steer_subagent")
 }
 
 #[cfg(test)]
@@ -3411,6 +3584,7 @@ mod child_policy_tests {
             ("edit", &readonly_child, &build, false),
             ("fetch", &readonly_child, &build, true),
             ("ask", &build, &build, false),
+            ("request_secret", &build, &build, false),
             ("task", &build, &build, false),
         ] {
             assert_eq!(child_tool_allowed(tool, child, parent), expected, "{tool}");

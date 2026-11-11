@@ -13,6 +13,7 @@ pub mod bypass;
 mod compact;
 mod deferred;
 mod delivery;
+pub mod mcp_tools;
 pub mod progress;
 mod steering;
 mod watchdog;
@@ -57,14 +58,33 @@ use crate::error::AgentError;
 /// The turn-end transcript hook: called with the actor's transcript after
 /// each turn's terminal events (the history store's snapshot seam).
 pub type TurnEndHook = Box<dyn Fn(&[crate::provider::openai::ChatMessage]) + Send>;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompletionOutcome {
     Done,
     Failed,
     Stopped,
     Parked,
+    /// The step budget ran out: the turn parked at a safe boundary and the
+    /// owner may top it up (`decide_subagent`) or stop it. `park` is the
+    /// [`RuntimeStatus::budget_park_generation`] of this park.
+    Budget {
+        evidence: serde_json::Value,
+        park: u64,
+    },
 }
 pub type CompletionHook = Box<dyn Fn(crate::provider::AssistantMessage, CompletionOutcome) + Send>;
+
+/// Parent top-ups a child may receive over its lifetime, on top of its own budget.
+pub const MAX_BUDGET_TOPUPS: u32 = 3;
+
+/// Why a budget top-up was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetTopupError {
+    /// The child is not parked on its step budget.
+    NotParked,
+    /// The child already received `MAX_BUDGET_TOPUPS` top-ups.
+    LimitReached,
+}
 
 /// Cancel reason recorded on `session.end` when the session token fires.
 const CANCEL_REASON: &str = "cancel";
@@ -127,6 +147,10 @@ pub struct RuntimeStatus {
     pub root_supervisor: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub awaiting_fresh_captain: std::sync::atomic::AtomicBool,
     pub activity: progress::Activity,
+    /// The actor's view of the stored secrets, installed when the runtime starts: text that
+    /// reaches the session without passing through the actor (steering, flow notes, host
+    /// messages) is hidden with it before it is queued or published.
+    secrets: std::sync::OnceLock<crate::secrets::SecretAccess>,
     #[cfg(debug_assertions)]
     negative_eligibility_barrier:
         Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
@@ -138,6 +162,12 @@ pub struct RuntimeStatus {
     pending_notice: Mutex<Option<delivery::NoticeCell>>,
     steering: Arc<steering::Steering>,
     budget_parked: std::sync::atomic::AtomicBool,
+    /// Serializes top-up claims so the cap check and the park CAS are one step.
+    budget_topup_gate: Mutex<()>,
+    budget_topups: std::sync::atomic::AtomicU32,
+    /// Counts budget parks. A Captain continue releases a park without spending
+    /// a top-up, so the top-up count alone cannot tell two parks apart.
+    budget_parks: std::sync::atomic::AtomicU64,
     delivery: Mutex<Option<delivery::DeliveryCell>>,
     captain_commit: Mutex<Option<delivery::CaptainCommitCell>>,
     variant: Mutex<VariantSlot>,
@@ -216,6 +246,38 @@ impl RuntimeStatus {
             .as_ref()
             .ok_or("pending question has no choices")?
             .answer_text(&question.question, answer)
+    }
+
+    /// The secret request `request_id`, when it is the question the actor waits on and no
+    /// Captain message already queued for it.
+    pub(crate) fn pending_secret(
+        &self,
+        request_id: &str,
+    ) -> Option<crate::secrets::SecretRequestDetails> {
+        if self
+            .queued_captain
+            .load(std::sync::atomic::Ordering::Acquire)
+            > 0
+        {
+            return None;
+        }
+        self.waiting_secret(request_id)
+    }
+
+    /// The secret request `request_id` while the actor waits on it, queued answer or not.
+    pub(crate) fn waiting_secret(
+        &self,
+        request_id: &str,
+    ) -> Option<crate::secrets::SecretRequestDetails> {
+        let pending = self
+            .pending_question
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let question = pending
+            .as_ref()
+            .filter(|q| q.tool_call_id == request_id)
+            .filter(|q| q.kind.as_deref() == Some(crate::secrets::SECRET_KIND))?;
+        serde_json::from_value(question.details.clone()?).ok()
     }
 
     pub(crate) fn clear_question(&self) {
@@ -318,7 +380,14 @@ impl RuntimeStatus {
             None => false,
         }
     }
-    pub fn steer(&self, text: String, interrupt: bool) -> bool {
+    /// Hides the stored secrets `text` carries, with the actor's view of the store.
+    pub(crate) fn redact_in_place(&self, text: &mut String) {
+        if let Some(secrets) = self.secrets.get() {
+            secrets.redact_in_place(text);
+        }
+    }
+    pub fn steer(&self, mut text: String, interrupt: bool) -> bool {
+        self.redact_in_place(&mut text);
         let id = Ulid::generate();
         if !self.steering.admit(steering::Operation {
             wake: true,
@@ -338,16 +407,45 @@ impl RuntimeStatus {
             })
             .is_ok()
     }
+    /// Guidance accompanying a renewal must not enqueue another wake.
+    pub fn queue_budget_note(&self, mut content: String) -> bool {
+        self.redact_in_place(&mut content);
+        self.steering.admit(steering::Operation {
+            wake: false,
+            id: Ulid::generate(),
+            content,
+            provenance: crate::provider::openai::UserProvenance::Parent,
+            interrupt: false,
+        })
+    }
     pub fn flow_note(&self, text: String, flow: String, run_id: String) -> bool {
         self.queue_flow_note(text, flow, run_id, true)
     }
-    pub fn queue_flow_note(&self, text: String, flow: String, run_id: String, wake: bool) -> bool {
+    pub fn queue_flow_note(
+        &self,
+        mut text: String,
+        flow: String,
+        run_id: String,
+        wake: bool,
+    ) -> bool {
+        self.redact_in_place(&mut text);
         if !self.steering.admit_flow(text, flow, run_id, wake) {
             return false;
         }
         !wake || self.controls.tx.send(Control::Steer).is_ok()
     }
     pub fn continue_budget(&self) -> bool {
+        let _gate = self
+            .budget_topup_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if self
+            .watchdog
+            .stopped
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
         if self
             .budget_parked
             .compare_exchange(
@@ -361,6 +459,109 @@ impl RuntimeStatus {
             return false;
         }
         self.controls.tx.send(Control::Continue).is_ok()
+    }
+    /// Owner top-up of a budget park: claims the park and, under the same
+    /// atomic step, the parent's allowance (`MAX_BUDGET_TOPUPS` per child).
+    /// Refused (`Err`) when the child is not budget-parked or the cap is spent;
+    /// the park stays in place on refusal.
+    pub fn topup_budget(&self) -> Result<u32, BudgetTopupError> {
+        self.topup_budget_with(|| {})
+    }
+    pub fn topup_budget_with(&self, apply: impl FnOnce()) -> Result<u32, BudgetTopupError> {
+        let _gate = self
+            .budget_topup_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if self
+            .watchdog
+            .stopped
+            .load(std::sync::atomic::Ordering::Acquire)
+            || !self
+                .budget_parked
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(BudgetTopupError::NotParked);
+        }
+        let used = self
+            .budget_topups
+            .load(std::sync::atomic::Ordering::Acquire);
+        if used >= MAX_BUDGET_TOPUPS {
+            return Err(BudgetTopupError::LimitReached);
+        }
+        if self
+            .budget_parked
+            .compare_exchange(
+                true,
+                false,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Err(BudgetTopupError::NotParked);
+        }
+        apply();
+        self.budget_topups
+            .store(used + 1, std::sync::atomic::Ordering::Release);
+        if self.controls.tx.send(Control::Continue).is_err() {
+            self.budget_topups
+                .store(used, std::sync::atomic::Ordering::Release);
+            self.budget_parked
+                .store(true, std::sync::atomic::Ordering::Release);
+            return Err(BudgetTopupError::NotParked);
+        }
+        Ok(used + 1)
+    }
+    /// Claim terminal ownership while excluding competing budget continuations.
+    pub fn claim_budget_stop(&self) -> bool {
+        let _gate = self
+            .budget_topup_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.is_budget_parked() && self.watchdog.claim_terminal(TerminalOwner::Watchdog)
+    }
+    /// Runs `commit` only while the child is still in budget park `park` with
+    /// `used` top-ups and not stopped, holding the gate that top-ups, the Captain's
+    /// continue and the owner's stop take: none of them can land between this
+    /// check and the commit. `None` when the park has moved on; `commit` then
+    /// never runs. Nothing else done under this gate touches the database, so a
+    /// database write inside `commit` cannot deadlock against it.
+    pub fn while_budget_parked<R>(
+        &self,
+        park: u64,
+        used: u32,
+        commit: impl FnOnce() -> R,
+    ) -> Option<R> {
+        let _gate = self
+            .budget_topup_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let parked = !self
+            .watchdog
+            .stopped
+            .load(std::sync::atomic::Ordering::Acquire)
+            && self.is_budget_parked()
+            && self.budget_park_generation() == park
+            && self.budget_topups_used() == used;
+        parked.then(commit)
+    }
+    /// Whether the runtime is parked on its step budget right now.
+    pub fn is_budget_parked(&self) -> bool {
+        self.budget_parked
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// Top-ups already granted to this child (`0..=MAX_BUDGET_TOPUPS`).
+    pub fn budget_topups_used(&self) -> u32 {
+        self.budget_topups
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// The generation of the latest budget park, bumped before the park is set.
+    pub fn budget_park_generation(&self) -> u64 {
+        self.budget_parks.load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// Asks the runtime to refresh the session's MCP tools once nothing runs or waits.
+    pub fn refresh_mcp(&self, refresh: mcp_tools::McpRefresh) {
+        let _ = self.controls.tx.send(Control::McpTools(refresh));
     }
     pub fn wake_delivery(&self) {
         let _ = self.controls.tx.send(Control::Delivery);
@@ -910,6 +1111,9 @@ pub fn spawn_with_completion(
     completion: Option<CompletionHook>,
 ) -> tokio::task::JoinHandle<AgentActor> {
     status.init_ask(&actor);
+    if let Some(secrets) = &actor.tool_context.secrets {
+        let _ = status.secrets.set(secrets.clone());
+    }
     let mut actor = actor;
     actor.bypass = status.bypass.clone();
     actor.parent_captain = status.parent_captain.clone();
@@ -942,6 +1146,8 @@ async fn runtime_loop(
     let mut delivery_waiting = false;
     let mut replacement_waiting = false;
     let mut restart_waiting = false;
+    // The latest MCP refresh asked while a turn ran or a question was held.
+    let mut mcp_waiting: Option<mcp_tools::McpRefresh> = None;
     inbox.track_captain(status.queued_captain.clone());
     let boundary_status = status.clone();
     actor.safe_boundary = Some(Arc::new(move |transcript, cancel| {
@@ -1050,9 +1256,16 @@ async fn runtime_loop(
                 actor.cancel=session_cancel.child_token();
                 Some(Inbound::Continue)
             }
+            _ = std::future::ready(()), if mcp_waiting.is_some() && !actor.has_pending() && !status.progress_parked() => {
+                if let Some(request) = mcp_waiting.take() {
+                    mcp_tools::apply(&mut actor, &sequencer, request);
+                }
+                continue;
+            }
             Some(control) = recv_control(&mut control) => {
                 // Between turns: run it now, publish its result, then answer.
                 match control {
+                    Control::McpTools(request) => { mcp_waiting = Some(request); continue; }
                     Control::Steer => {
 
                         if actor.has_pending() || status.progress_parked()
@@ -1374,6 +1587,7 @@ async fn runtime_loop(
                     Some(control) = recv_control(&mut control) => {
                         // A turn is running: accept now, run it at its end.
                         match control {
+                            Control::McpTools(request) => { mcp_waiting = Some(request); }
                             Control::Bypass(request) => { bypass::apply(&status, &sequencer, request, None).await; }
                             Control::Steer => {}
                             Control::Interrupt(id) => {
@@ -1626,16 +1840,35 @@ async fn runtime_loop(
             }
             // `compact_when_full` consumes it before the run ends.
             Ok(RunOutcome::NeedsCompaction { .. }) | Ok(RunOutcome::StepBudgetExhausted) => {
+                let park = status
+                    .budget_parks
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+                    + 1;
                 status
                     .budget_parked
                     .store(true, std::sync::atomic::Ordering::Release);
                 if let Some(done) = &completion {
+                    let outcome = if matches!(outcome, Ok(RunOutcome::StepBudgetExhausted)) {
+                        let activity = status.activity.0.lock().unwrap_or_else(|e| e.into_inner());
+                        CompletionOutcome::Budget {
+                            park,
+                            evidence: serde_json::json!({
+                                "goal": crate::tools::bound_output(&actor.captain_task.clone().unwrap_or_default(), 1024).0,
+                                "step_count": activity.steps,
+                                "last_tool_call": activity.last_tool_call.as_ref().map(|s| crate::tools::bound_output(s, 1024).0),
+                                "last_tool_result": activity.last_tool_result.as_ref().map(|s| crate::tools::bound_output(s, 1024).0),
+                                "topups_used": status.budget_topups_used(),
+                            }),
+                        }
+                    } else {
+                        CompletionOutcome::Parked
+                    };
                     done(
                         crate::provider::AssistantMessage {
                             text: "step budget exhausted".into(),
                             ..Default::default()
                         },
-                        CompletionOutcome::Parked,
+                        outcome,
                     );
                 }
                 // The internal variant NEVER leaks: the wire sees a yield of
@@ -2009,6 +2242,138 @@ fn teardown(actor: &mut AgentActor, sequencer: &Sequencer) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A status parked on its step budget, as the runtime leaves it.
+    fn budget_parked_status() -> RuntimeStatus {
+        let status = RuntimeStatus::default();
+        status
+            .budget_parked
+            .store(true, std::sync::atomic::Ordering::Release);
+        status
+    }
+
+    #[test]
+    fn three_topups_are_granted_and_the_fourth_is_refused_without_clearing_the_park() {
+        let status = budget_parked_status();
+        for expected in 1..=MAX_BUDGET_TOPUPS {
+            assert_eq!(status.topup_budget(), Ok(expected));
+            assert!(!status.is_budget_parked(), "a top-up releases the park");
+            status
+                .budget_parked
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        assert_eq!(status.budget_topups_used(), MAX_BUDGET_TOPUPS);
+        assert_eq!(
+            status.topup_budget(),
+            Err(BudgetTopupError::LimitReached),
+            "the fourth top-up is refused"
+        );
+        assert!(
+            status.is_budget_parked(),
+            "a refused top-up leaves the child parked for the Captain"
+        );
+    }
+
+    #[test]
+    fn budget_stop_excludes_both_parent_and_captain_continuations() {
+        let status = budget_parked_status();
+        assert!(status.claim_budget_stop());
+        assert!(!status.continue_budget());
+        assert_eq!(status.topup_budget(), Err(BudgetTopupError::NotParked));
+        assert_eq!(status.budget_topups_used(), 0);
+    }
+
+    #[test]
+    fn budget_park_commit_runs_under_the_topup_gate_only_while_parked() {
+        let status = budget_parked_status();
+        let park = status.budget_park_generation();
+        let committed = status.while_budget_parked(park, 0, || {
+            assert!(
+                status.budget_topup_gate.try_lock().is_err(),
+                "the commit runs while the top-up gate is held"
+            );
+        });
+        assert_eq!(committed, Some(()));
+        assert_eq!(
+            status.while_budget_parked(park, 1, || panic!("stale top-up count")),
+            None
+        );
+        assert_eq!(
+            status.while_budget_parked(park + 1, 0, || panic!("another park")),
+            None
+        );
+
+        assert_eq!(status.topup_budget(), Ok(1));
+        assert_eq!(
+            status.while_budget_parked(park, 0, || panic!("committed after a top-up")),
+            None
+        );
+        assert_eq!(
+            status.while_budget_parked(park, 1, || panic!("committed after a top-up")),
+            None,
+            "a released park refuses whatever the count"
+        );
+
+        let captain = budget_parked_status();
+        assert!(captain.continue_budget());
+        assert_eq!(
+            captain.while_budget_parked(park, 0, || panic!("committed after a continue")),
+            None
+        );
+
+        let stopped = budget_parked_status();
+        assert!(stopped.claim_budget_stop());
+        assert_eq!(
+            stopped.while_budget_parked(park, 0, || panic!("committed after a stop claim")),
+            None
+        );
+    }
+
+    #[test]
+    fn renewal_guidance_enqueues_exactly_one_wake() {
+        let status = budget_parked_status();
+        let mut receiver = status.controls.take_receiver().unwrap();
+        status
+            .topup_budget_with(|| {
+                assert!(status.queue_budget_note("continue carefully".into()));
+            })
+            .unwrap();
+        assert!(matches!(receiver.try_recv(), Ok(Control::Continue)));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn refused_topup_does_not_apply_guidance() {
+        let status = RuntimeStatus::default();
+        assert_eq!(
+            status.topup_budget_with(|| panic!("must not steer")),
+            Err(BudgetTopupError::NotParked)
+        );
+    }
+
+    #[test]
+    fn topup_requires_a_budget_park() {
+        let status = RuntimeStatus::default();
+        assert_eq!(status.topup_budget(), Err(BudgetTopupError::NotParked));
+        assert_eq!(status.budget_topups_used(), 0, "a refusal spends no top-up");
+    }
+
+    #[test]
+    fn captain_continue_on_a_budget_park_does_not_use_a_topup() {
+        let status = budget_parked_status();
+        assert!(
+            status.continue_budget(),
+            "Captain continue releases the park"
+        );
+        assert_eq!(status.budget_topups_used(), 0);
+        // After the Captain's continue the child can still be topped up 3 times.
+        for expected in 1..=MAX_BUDGET_TOPUPS {
+            status
+                .budget_parked
+                .store(true, std::sync::atomic::Ordering::Release);
+            assert_eq!(status.topup_budget(), Ok(expected));
+        }
+    }
     use crate::bus::command::{Command, ContentBlock, DeliveryMode};
     use crate::bus::event::EventEnvelope;
     use crate::provider::config::{ProviderConfig, ReasoningHistory};
@@ -2378,6 +2743,7 @@ mod tests {
                 transcript.push(ChatMessage::User {
                     content: "child completion".into(),
                     provenance: UserProvenance::Subagent,
+                    images: Vec::new(),
                 });
                 history.save_transcript(id, transcript.clone());
                 history.load_for_resume(id).await.unwrap();
@@ -2901,7 +3267,7 @@ mod tests {
                                 assert_eq!(content.as_ptr() as usize, original);
                             }
                             if steer {
-                                assert!(matches!(&transcript[1], ChatMessage::User { content, provenance: UserProvenance::Parent } if content == "guidance"));
+                                assert!(matches!(&transcript[1], ChatMessage::User { content, provenance: UserProvenance::Parent, .. } if content == "guidance"));
                             }
                             match delivery {
                                 "empty" => Ok(None),
@@ -2910,8 +3276,7 @@ mod tests {
                                     let mut transcript = transcript.to_vec();
                                     transcript.push(ChatMessage::User {
                                         content: "delivered result".into(),
-                                        provenance: UserProvenance::Subagent,
-                                    });
+                                        provenance: UserProvenance::Subagent, images: Vec::new() });
                                     Ok(Some(transcript))
                                 }
                             }
@@ -2962,7 +3327,7 @@ mod tests {
                         );
                         if delivery == "inject" {
                             assert!(
-                                matches!(transcript.last(), Some(ChatMessage::User { content, provenance: UserProvenance::Subagent }) if content == "delivered result")
+                                matches!(transcript.last(), Some(ChatMessage::User { content, provenance: UserProvenance::Subagent, .. }) if content == "delivered result")
                             );
                         }
                     }
@@ -3066,6 +3431,7 @@ mod tests {
         AgentActor::new(
             registry_all(),
             ToolContext {
+                secrets: None,
                 binding: None,
                 workspace: ws.clone(),
                 writable_roots: vec![ws],
@@ -3630,5 +3996,112 @@ mod tests {
             .nth(1)
             .unwrap_or_default()
             .to_string()
+    }
+
+    const SECRET: &str = "sk-live-7f3a9c2e1d0b4a68";
+
+    /// The actor's view of a store holding `SECRET` as `API_KEY`.
+    fn secret_access(workspace: &std::path::Path) -> crate::secrets::SecretAccess {
+        let store = Arc::new(crate::secrets::SecretStore::in_memory());
+        let owner = Ulid::generate();
+        store
+            .put(
+                owner,
+                workspace,
+                "API_KEY",
+                SECRET,
+                crate::secrets::SecretTtl::Day,
+                crate::secrets::SecretScope::Session,
+            )
+            .unwrap();
+        crate::secrets::SecretAccess::new(store, owner, workspace)
+    }
+
+    #[tokio::test]
+    async fn tool_call_events_and_progress_never_show_a_secret_the_model_wrote() {
+        let call = format!(
+            r#"{{"choices":[{{"index":0,"delta":{{"tool_calls":[{{"index":0,"id":"call_1","function":{{"name":"bash","arguments":"{{\"command\":\"echo hi # {SECRET}\"}}"}}}}]}},"finish_reason":"tool_calls"}}]}}"#
+        );
+        let done =
+            r#"{"choices":[{"index":0,"delta":{"content":"all done"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[call.as_str()])),
+            http_sse(&sse_body(&[done])),
+        ])
+        .await;
+        let (inbox_tx, inbox) = ActorInbox::channel();
+        let mut actor = make_actor(server.url.clone(), CancellationToken::new());
+        allow_everything(&actor);
+        actor.tool_context.secrets = Some(secret_access(&actor.tool_context.workspace));
+        let session_id = Ulid::generate();
+        let sequencer = Sequencer::spawn(session_id, crate::bus::SessionBus::default(), 0);
+        let mut live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
+        let status = Arc::new(RuntimeStatus::default());
+        let session_cancel = CancellationToken::new();
+        let task = spawn_with_status(
+            session_id,
+            actor,
+            inbox,
+            sequencer,
+            session_cancel.clone(),
+            None,
+            status.clone(),
+        );
+        inbox_tx
+            .try_send(text_command(session_id, "run it"))
+            .unwrap();
+        let envelopes = drain_until(&mut live, |e| kind_of(e) == "task.done").await;
+        let pre = envelopes
+            .iter()
+            .find(|e| kind_of(e) == "tool.pre_call")
+            .expect("the call ran");
+        assert_eq!(pre.payload["args"]["command"], "echo hi # [secret API_KEY]");
+        for envelope in &envelopes {
+            let payload = envelope.payload.to_string();
+            assert!(!payload.contains(SECRET), "{}: {payload}", envelope.kind);
+        }
+        let last_call = status
+            .activity
+            .0
+            .lock()
+            .unwrap()
+            .last_tool_call
+            .clone()
+            .expect("the call is the progress evidence");
+        assert!(last_call.contains("[secret API_KEY]"), "{last_call}");
+        assert!(!last_call.contains(SECRET), "{last_call}");
+        drop(inbox_tx);
+        session_cancel.cancel();
+        task.await.unwrap();
+    }
+
+    #[test]
+    fn steered_and_flow_text_is_queued_with_the_secret_hidden() {
+        let status = RuntimeStatus::default();
+        let workspace = tempfile::tempdir().unwrap();
+        let _ = status.secrets.set(secret_access(workspace.path()));
+        assert!(status.queue_budget_note(format!("budget {SECRET}")));
+        status
+            .queue_flow_note_report(
+                format!("flow {SECRET}"),
+                "review".into(),
+                "run".into(),
+                false,
+                false,
+            )
+            .unwrap();
+        assert!(status.queue_flow_note(
+            format!("note {SECRET}"),
+            "review".into(),
+            "n".into(),
+            false
+        ));
+        // A steer is queued whether or not the runtime is there to be woken.
+        let _ = status.steer(format!("steer {SECRET}"), false);
+        let _ = status.steer(format!("interrupt {SECRET}"), true);
+        let (claimed, _) = status.steering.claim_replacements(Vec::new());
+        let queued = serde_json::to_string(&status.steering.apply(claimed)).unwrap();
+        assert_eq!(queued.matches("[secret API_KEY]").count(), 5, "{queued}");
+        assert!(!queued.contains(SECRET), "{queued}");
     }
 }

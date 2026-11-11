@@ -12,6 +12,9 @@ pub enum SseError {
     UnexpectedEof,
     #[error("malformed SSE frame: {0}")]
     MalformedFrame(String),
+    /// The response body failed while streaming (connection reset, timeout, decompression).
+    #[error("transport error in SSE stream: {0}")]
+    Transport(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
 #[derive(Debug, Error)]

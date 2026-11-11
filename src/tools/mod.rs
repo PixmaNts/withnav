@@ -22,6 +22,7 @@ pub mod native;
 pub mod nofollow;
 #[cfg(windows)]
 pub(crate) mod process_job;
+pub mod secret;
 pub mod steer_subagent;
 pub mod task;
 
@@ -104,6 +105,49 @@ pub struct ToolResult {
     pub error: Option<ToolErrorObj>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub metadata: Value,
+    /// Images the tool produced (a picture file, a screenshot). Never serialized: the agent loop
+    /// stores them as attachments of the session and keeps only their references.
+    #[serde(skip)]
+    pub images: Vec<ToolImage>,
+}
+
+/// One image a tool returned, as raw bytes. Its `Debug` prints only the size: a screenshot that
+/// reached a log or an event would carry the whole picture with it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ToolImage {
+    /// A display name (`shot.png`); the type is detected from the bytes when it is stored.
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Most images one tool result keeps; the rest are named in its output.
+pub const MAX_TOOL_IMAGES: usize = 4;
+
+/// Most image bytes one tool result keeps, all its images together: 16 MiB. The attachment store
+/// takes at most `MAX_IMAGE_BYTES` (3.75 MiB) per image, so four storable images always fit, while
+/// a tool returning several oversized pictures cannot make the agent hold them all in memory.
+pub const MAX_TOOL_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Why one more image of `incoming` bytes cannot join a tool result that already keeps `kept`
+/// images of `kept_bytes` bytes, or `None` when it can. Producers check it while converting, before
+/// they decode or copy the bytes.
+pub fn tool_image_refusal(kept: usize, kept_bytes: usize, incoming: usize) -> Option<String> {
+    if kept >= MAX_TOOL_IMAGES {
+        return Some(format!("at most {MAX_TOOL_IMAGES} images per tool result"));
+    }
+    if kept_bytes.saturating_add(incoming) > MAX_TOOL_IMAGE_BYTES {
+        return Some(format!(
+            "the images of one tool result are limited to {} together",
+            crate::provider::openai::human_size(MAX_TOOL_IMAGE_BYTES as u64)
+        ));
+    }
+    None
+}
+
+impl std::fmt::Debug for ToolImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ToolImage({}, {} bytes)", self.name, self.bytes.len())
+    }
 }
 
 impl ToolResult {
@@ -114,6 +158,7 @@ impl ToolResult {
             truncated: None,
             error: None,
             metadata: Value::Null,
+            images: Vec::new(),
         }
     }
 
@@ -143,6 +188,7 @@ impl ToolResult {
                 message,
             }),
             metadata: Value::Null,
+            images: Vec::new(),
         }
     }
 
@@ -158,6 +204,7 @@ impl ToolResult {
                 message: message.into(),
             }),
             metadata: Value::Null,
+            images: Vec::new(),
         }
     }
 
@@ -174,6 +221,7 @@ impl ToolResult {
             truncated: None,
             error: None,
             metadata: Value::Null,
+            images: Vec::new(),
         }
     }
 
@@ -213,6 +261,9 @@ pub struct ToolContext {
     /// Extra places `read` and `grep` may look, never change: the skill
     /// roots.
     pub readable_roots: Vec<PathBuf>,
+    /// The Captain's secrets this conversation may hand to the processes it starts
+    /// (`bash`), and hides from its model. `None` outside a session.
+    pub secrets: Option<crate::secrets::SecretAccess>,
 }
 
 #[derive(Clone)]
@@ -319,6 +370,7 @@ impl Registry {
                     message: format!("no such tool: {name}"),
                 }),
                 metadata: Value::Null,
+                images: Vec::new(),
             }),
         }
     }
@@ -527,6 +579,7 @@ mod tests {
 
     fn ctx(root: &Path) -> ToolContext {
         ToolContext {
+            secrets: None,
             binding: None,
             workspace: root.to_path_buf(),
             writable_roots: vec![root.to_path_buf()],
@@ -691,6 +744,7 @@ mod tests {
                 message: "blocked".into(),
             }),
             metadata: Value::Null,
+            images: Vec::new(),
         };
         let json = serde_json::to_value(&r).unwrap();
         assert_eq!(json["status"], "denied");

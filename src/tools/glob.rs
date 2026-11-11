@@ -451,6 +451,7 @@ mod tests {
 
     fn cx(root: &Path) -> ToolContext {
         ToolContext {
+            secrets: None,
             binding: None,
             workspace: root.to_path_buf(),
             writable_roots: vec![root.to_path_buf()],
@@ -648,6 +649,7 @@ mod tests {
         touch(&ws, "a.txt");
         touch(&skills, "s/SKILL.md");
         let cx = ToolContext {
+            secrets: None,
             binding: None,
             workspace: ws.clone(),
             writable_roots: vec![ws],

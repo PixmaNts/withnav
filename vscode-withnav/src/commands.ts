@@ -8,6 +8,9 @@ export const CLIENT_COMMANDS: CommandInfo[] = [
   { name: "stop", description: "Stop generation", args_hint: "" },
 ];
 
+/** A server command: a built-in name, or an MCP prompt as `<server>:<prompt>`. */
+export const SERVER_COMMAND_NAME = /^(?:[a-z][a-z0-9_-]*|[a-z0-9_-]{1,24}:[A-Za-z0-9][A-Za-z0-9_.-]{0,63})$/;
+
 export type Route = { kind: "message"; text: string } | { kind: "command"; name: string; arguments: string };
 /** Match the server's first-column rule; escaping never selects a skill. */
 export function routeComposer(text: string): Route {

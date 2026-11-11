@@ -302,6 +302,7 @@ async fn committed_transcript_message_replays_after_crash_before_live_publicatio
     let transcript = vec![ChatMessage::User {
         content: text.into(),
         provenance: UserProvenance::Subagent,
+        images: Vec::new(),
     }];
     let message = EventEnvelope::new(
         parent,

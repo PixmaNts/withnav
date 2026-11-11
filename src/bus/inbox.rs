@@ -235,6 +235,16 @@ impl ActorInbox {
                 outcome.refused.push((cmd.command_id, format!("skill {name:?} refused: this turn's agent cannot use the skill tool; the whole message was not delivered")));
                 continue;
             }
+            // An MCP prompt queued while the model was still answering must not become the
+            // answer to a question or a permission request raised meanwhile: the Captain never
+            // saw it, and the message is mostly the server's text.
+            if actor.has_pending() && crate::mcp::carries_prompt(&cmd.text_content()) {
+                outcome.refused.push((
+                    cmd.command_id,
+                    "the MCP prompt was not delivered: the agent is waiting for your answer; answer it, then run the prompt again".into(),
+                ));
+                continue;
+            }
             if !cmd.from_captain() {
                 if actor.has_pending() {
                     self.held = Some(cmd);
@@ -256,7 +266,7 @@ impl ActorInbox {
             outcome.applied += 1;
             let mut text = cmd.text_content();
             if cmd.from_captain() {
-                actor.captain_task = Some(text.clone());
+                actor.captain_task = Some(crate::mcp::captain_prose(&text).to_owned());
             }
             for block in &cmd.content {
                 if let crate::bus::command::ContentBlock::LoadedSkill { name, content } = block {
@@ -300,9 +310,14 @@ impl ActorInbox {
                     .push(crate::provider::openai::ChatMessage::User {
                         content: text,
                         provenance: cmd.user_provenance(),
+                        images: cmd.images(),
                     });
             } else {
-                actor.push_user_in_current_turn(text, cmd.user_provenance());
+                actor.push_user_with_images_in_current_turn(
+                    text,
+                    cmd.user_provenance(),
+                    cmd.images(),
+                );
             }
         }
         outcome
@@ -351,6 +366,54 @@ mod tests {
         ));
         assert_eq!(actor.captain_task.as_deref(), Some("original task"));
         assert_eq!(serde_json::to_string(&actor.transcript).unwrap(), before);
+    }
+
+    // Given an MCP prompt accepted while the model was answering, and a question the model
+    // raised meanwhile
+    // Then the prompt is refused at delivery: it neither answers the question nor becomes the
+    //      Captain's task, and the transcript is unchanged
+    #[test]
+    fn a_queued_mcp_prompt_never_answers_a_pending_interaction() {
+        let mut actor = test_actor();
+        actor.captain_task = Some("original task".into());
+        actor.pending = Some(PendingInteraction::Ask {
+            tool_call_id: "question".into(),
+        });
+        let before = serde_json::to_string(&actor.transcript).unwrap();
+        let (_, mut inbox) = ActorInbox::channel();
+        inbox.commands.push(text_command(
+            DeliveryMode::NextTurn,
+            &format!(
+                "Run the MCP prompt /s:p.\n{}\n{{}}\n{}",
+                crate::mcp::PROMPT_BLOCK_OPEN,
+                crate::mcp::PROMPT_BLOCK_CLOSE
+            ),
+        ));
+        let result = inbox.apply_batch_to_actor(&mut actor);
+        assert_eq!(result.refused.len(), 1);
+        assert_eq!(result.applied, 0);
+        assert!(matches!(
+            actor.pending,
+            Some(PendingInteraction::Ask { .. })
+        ));
+        assert_eq!(actor.captain_task.as_deref(), Some("original task"));
+        assert_eq!(serde_json::to_string(&actor.transcript).unwrap(), before);
+
+        // With nothing pending it is delivered, and the Captain's task is the prose alone.
+        actor.pending = None;
+        inbox.commands.push(text_command(
+            DeliveryMode::NextTurn,
+            &format!(
+                "Run the MCP prompt /s:p.\n{}\n{{}}\n{}",
+                crate::mcp::PROMPT_BLOCK_OPEN,
+                crate::mcp::PROMPT_BLOCK_CLOSE
+            ),
+        ));
+        assert_eq!(inbox.apply_batch_to_actor(&mut actor).applied, 1);
+        assert_eq!(
+            actor.captain_task.as_deref(),
+            Some("Run the MCP prompt /s:p.")
+        );
     }
 
     #[test]
@@ -505,6 +568,7 @@ mod tests {
         AgentActor::new(
             registry,
             crate::tools::ToolContext {
+                secrets: None,
                 binding: None,
                 workspace: std::env::temp_dir(),
                 writable_roots: vec![std::env::temp_dir()],
@@ -561,6 +625,54 @@ mod tests {
         assert_eq!(outcome.downgrade_notice, None);
         assert_eq!(user_texts(&actor), vec!["m0", "m1", "m2"]);
         assert!(!inbox.has_buffered());
+    }
+
+    fn image_ref(id: &str) -> withnav_client_api::attachment::ImageRef {
+        withnav_client_api::attachment::ImageRef {
+            attachment_id: id.into(),
+            media_type: "image/png".into(),
+            name: format!("{id}.png"),
+            size: 4,
+            width: 1,
+            height: 1,
+        }
+    }
+
+    fn image_command(text: &str) -> Command {
+        let mut cmd = text_command(DeliveryMode::NextTurn, text);
+        cmd.content.push(ContentBlock::Image(image_ref("a1")));
+        cmd
+    }
+
+    // The Captain's images land on the user message; the stored text is the typed text only.
+    #[tokio::test]
+    async fn captain_images_are_stored_on_the_user_message_without_touching_its_text() {
+        let (tx, mut inbox) = ActorInbox::channel();
+        let mut actor = test_actor();
+        send(&tx, image_command("what is this?"));
+        inbox.drain_transport();
+        inbox.apply_batch_to_actor(&mut actor);
+        assert!(
+            matches!(&actor.transcript[..], [ChatMessage::User { content, images, .. }]
+            if content == "what is this?" && images == &vec![image_ref("a1")])
+        );
+    }
+
+    // An answer to a pending ask stays a Tool result; the images follow as a Captain message.
+    #[tokio::test]
+    async fn images_sent_with_an_ask_answer_follow_it_in_a_captain_message() {
+        let (tx, mut inbox) = ActorInbox::channel();
+        let mut actor = test_actor();
+        actor.pending = Some(PendingInteraction::Ask {
+            tool_call_id: "ask_1".into(),
+        });
+        send(&tx, image_command("this one"));
+        inbox.drain_transport();
+        inbox.apply_batch_to_actor(&mut actor);
+        assert!(matches!(&actor.transcript[..], [
+            ChatMessage::Tool { content, answered_by: Some(crate::provider::openai::UserProvenance::Captain), .. },
+            ChatMessage::User { content: after, images, .. },
+        ] if content == "this one" && after.is_empty() && images.len() == 1));
     }
 
     // Given a command with a non-Text block at the accept boundary

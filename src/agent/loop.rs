@@ -17,6 +17,13 @@ use crate::tools::{ToolResult, ToolStatus};
 pub const DEFAULT_MAX_STEPS: usize = 50;
 pub const WATCHDOG_FALLBACK_STEPS: usize = 500;
 
+/// How long a step waits for the bytes of its images before sending them as unavailable
+/// placeholders. A responsiveness policy, not a bound derived from storage: the session loader
+/// reads up to `MAX_REQUEST_IMAGES` rows one after the other, each of which may wait on another
+/// SQLite writer, and a read stuck behind a lock must not stall the turn. The blocking read
+/// itself cannot be cancelled; its result is dropped.
+const IMAGE_LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub fn max_steps() -> usize {
     configured_max_steps(
         crate::paths::env_var("WITHNAV_MAX_STEPS"),
@@ -277,7 +284,17 @@ async fn run_steps_inner(
         // step is in, nothing waits for a human. A prompt over the input
         // budget is compacted by the caller before it is sent.
         let role_message = actor.role_message();
-        let history = actor.effective_history();
+        let mut transcript_history = actor.effective_history();
+        // Whatever a value reached the transcript by, the model never reads it. Redacted before
+        // the image plan, so every history built from it below is redacted too.
+        if let Some(secrets) = &actor.tool_context.secrets {
+            transcript_history
+                .iter_mut()
+                .for_each(|m| secrets.redact_message(m));
+        }
+        let image_plan = crate::agent::images::plan(&transcript_history, actor.images);
+        let image_ids = image_plan.send_ids(&transcript_history);
+        let mut history = actor.request_history(transcript_history.clone());
         let tools = actor.effective_tool_schemas();
         if actor.input_budget.is_some_and(|budget| {
             crate::agent::context::estimate(
@@ -295,9 +312,72 @@ async fn run_steps_inner(
             });
         }
 
+        // The bytes of the images this request sends, read after the estimate (which counts a
+        // fixed cost per image and needs none). An image that cannot be read becomes a text
+        // placeholder and the step goes on; the estimate only over-counted it.
+        let mut image_payloads = std::collections::HashMap::new();
+        if let Some(loader) = actor.attachment_loader.clone()
+            && !image_ids.is_empty()
+        {
+            let mut loaded = match tokio::time::timeout(
+                IMAGE_LOAD_TIMEOUT,
+                loader.load(image_ids.clone()),
+            )
+            .await
+            {
+                Ok(loaded) => loaded,
+                Err(_) => {
+                    tracing::warn!(
+                        images = image_ids.len(),
+                        timeout_secs = IMAGE_LOAD_TIMEOUT.as_secs(),
+                        "image loader did not answer in time; images unavailable for request"
+                    );
+                    Default::default()
+                }
+            };
+            let mut unavailable = std::collections::HashSet::new();
+            for id in &image_ids {
+                match loaded.remove(id) {
+                    Some(Ok(payload)) => {
+                        image_payloads.insert(id.clone(), payload);
+                    }
+                    Some(Err(reason)) => {
+                        tracing::warn!(attachment = %id, %reason, "image unavailable for request");
+                        unavailable.insert(id.clone());
+                    }
+                    None => {
+                        unavailable.insert(id.clone());
+                    }
+                }
+            }
+            if !unavailable.is_empty() {
+                history = image_plan.apply_excluding(&transcript_history, &unavailable);
+            }
+        }
+
+        // Which images this request carries: when a model says it cannot see an image, this
+        // line tells whether the bytes were sent at all. Ids only, never bytes.
+        if !image_ids.is_empty() || image_plan.placeholders() > 0 {
+            let sent: Vec<&str> = image_ids
+                .iter()
+                .filter(|id| image_payloads.contains_key(*id))
+                .map(String::as_str)
+                .collect();
+            tracing::info!(
+                step,
+                model_images = ?actor.images,
+                sent = sent.len(),
+                sent_ids = ?sent,
+                unavailable = image_ids.len() - sent.len(),
+                placeholders = image_plan.placeholders(),
+                base64_bytes = image_payloads.values().map(|p| p.base64_len()).sum::<usize>(),
+                "request images"
+            );
+        }
+
         observe(AgentEvent::StepStarted);
 
-        let request = build_request(
+        let mut request = build_request(
             &actor.model,
             role_message.as_deref(),
             actor.rules.message(),
@@ -306,13 +386,20 @@ async fn run_steps_inner(
             tools,
             actor.max_tokens,
         );
+        request.images = image_payloads;
 
         let turn = match client
             .chat_turn(
                 request,
                 actor.variant.as_ref(),
                 &actor.cancel,
-                &mut |delta| observe(AgentEvent::Delta(delta)),
+                &mut |mut delta| {
+                    // Best effort: a value split across two deltas is caught on the response.
+                    if let Some(secrets) = &actor.tool_context.secrets {
+                        redact_delta(secrets, &mut delta);
+                    }
+                    observe(AgentEvent::Delta(delta))
+                },
             )
             .await
         {
@@ -324,22 +411,37 @@ async fn run_steps_inner(
             Err(e) => return Err(AgentError::Provider(e)),
         };
 
-        let crate::provider::ChatTurn { message, opaque } = turn;
-        actor.transcript.push(assistant_history_message(
-            &message,
+        let crate::provider::ChatTurn {
+            mut message,
             opaque,
-            &actor.producer(),
-            actor.reasoning_history,
-        ));
-        observe(AgentEvent::Response(&message));
+        } = turn;
+        if let Some(secrets) = &actor.tool_context.secrets {
+            secrets.redact_in_place(&mut message.text);
+            secrets.redact_in_place(&mut message.thinking);
+        }
+        let mut history =
+            assistant_history_message(&message, opaque, &actor.producer(), actor.reasoning_history);
+        // The call itself still runs with the arguments the model wrote.
+        if let Some(secrets) = &actor.tool_context.secrets {
+            secrets.redact_message(&mut history);
+        }
+        actor.transcript.push(history);
+        // The event shows the calls' arguments with the stored secrets hidden too.
+        match &actor.tool_context.secrets {
+            Some(secrets) if !message.tool_calls.is_empty() => {
+                let mut shown = message.clone();
+                for call in &mut shown.tool_calls {
+                    secrets.redact_json(&mut call.args);
+                }
+                observe(AgentEvent::Response(&shown));
+            }
+            _ => observe(AgentEvent::Response(&message)),
+        }
         observe(AgentEvent::ContextEstimated(actor.context_breakdown()));
 
         let sibling_ids: Vec<String> = message.tool_calls.iter().map(|tc| tc.id.clone()).collect();
 
-        match crate::agent::response::classify_with_ask(
-            message,
-            actor.tool_allowed(crate::agent::response::ASK_TOOL),
-        ) {
+        match crate::agent::response::classify_with(message, |name| actor.tool_allowed(name)) {
             StepOutcome::Done { response } => {
                 actor.state = AgentState::Idle;
                 return Ok(RunOutcome::Done(response));
@@ -749,12 +851,13 @@ async fn resolve_skill(
     if let Some(note) = &gate {
         merge_approval_metadata(&mut result.metadata, note);
     }
-    observe(AgentEvent::PreCall {
-        permission_gate: gate.as_ref().and_then(|note| note.get("permission_gate")),
-        tool_call_id: &call.id,
-        name: &call.name,
-        args: &call.args,
-    });
+    redact_result(actor, &mut result);
+    observe_pre_call(
+        actor,
+        &call,
+        gate.as_ref().and_then(|note| note.get("permission_gate")),
+        observe,
+    );
     observe(AgentEvent::PostCall {
         tool_call_id: &call.id,
         name: &call.name,
@@ -940,12 +1043,13 @@ async fn run_skill(
             if let Some(note) = &approval {
                 merge_approval_metadata(&mut result.metadata, note);
             }
-            observe(AgentEvent::PreCall {
-                permission_gate: approval.as_ref().and_then(|v| v.get("permission_gate")),
-                tool_call_id: &call.id,
-                name: &call.name,
-                args: &call.args,
-            });
+            redact_result(actor, &mut result);
+            observe_pre_call(
+                actor,
+                call,
+                approval.as_ref().and_then(|v| v.get("permission_gate")),
+                observe,
+            );
             observe(AgentEvent::PostCall {
                 tool_call_id: &call.id,
                 name: &call.name,
@@ -1001,6 +1105,16 @@ async fn run_calls(
 ) -> Calls {
     let mut calls = std::collections::VecDeque::from(calls);
     while let Some(mut call) = calls.pop_front() {
+        // A valid secret request the turn may make pauses it before any call runs; one that
+        // reaches here is invalid or not allowed, and is never decided or dispatched.
+        if call.name == crate::tools::secret::REQUEST_SECRET_TOOL {
+            let reason = match crate::tools::secret::validated_request(&call.args) {
+                Err(reason) => reason,
+                Ok(_) => "request_secret is disabled by this session's policy".into(),
+            };
+            reject_call(actor, &call, reason, observe);
+            continue;
+        }
         if call.name == "skill" {
             // Provider arguments never choose host snapshots or claim human selection.
             if call.args.get("snapshot_id").is_some() || call.args.get("captain_selected").is_some()
@@ -1253,14 +1367,10 @@ fn deny_call(
     note: serde_json::Value,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) {
-    observe(AgentEvent::PreCall {
-        permission_gate: note.get("permission_gate"),
-        tool_call_id: &call.id,
-        name: &call.name,
-        args: &call.args,
-    });
+    observe_pre_call(actor, call, note.get("permission_gate"), observe);
     let mut result = ToolResult::permission_denied(message);
     merge_approval_metadata(&mut result.metadata, &note);
+    redact_result(actor, &mut result);
     observe(AgentEvent::PostCall {
         tool_call_id: &call.id,
         name: &call.name,
@@ -1377,18 +1487,19 @@ fn reject_call(
 ) {
     // In yolo the refusal carries the same evidence as a run: nothing was asked.
     let approval = actor.yolo.then(yolo_approval);
-    observe(AgentEvent::PreCall {
-        permission_gate: approval
+    observe_pre_call(
+        actor,
+        call,
+        approval
             .as_ref()
             .and_then(|note| note.get("permission_gate")),
-        tool_call_id: &call.id,
-        name: &call.name,
-        args: &call.args,
-    });
+        observe,
+    );
     let mut result = ToolResult::error("tool_error", message);
     if let Some(note) = &approval {
         merge_approval_metadata(&mut result.metadata, note);
     }
+    redact_result(actor, &mut result);
     observe(AgentEvent::PostCall {
         tool_call_id: &call.id,
         name: &call.name,
@@ -1425,12 +1536,12 @@ async fn execute_call(
     if actor.cancel.is_cancelled() {
         return DispatchOutcome::Settled(ToolResult::not_started());
     }
-    observe(AgentEvent::PreCall {
-        permission_gate: note.as_ref().and_then(|note| note.get("permission_gate")),
-        tool_call_id: &call.id,
-        name: &call.name,
-        args: &call.args,
-    });
+    observe_pre_call(
+        actor,
+        call,
+        note.as_ref().and_then(|note| note.get("permission_gate")),
+        observe,
+    );
     let args = call.args.clone();
     let mut cx = actor.tool_context.clone();
     if actor.yolo {
@@ -1474,6 +1585,8 @@ async fn execute_call(
             if let Some(note) = &note {
                 merge_approval_metadata(&mut result.metadata, note);
             }
+            // The path is the one the model asked for, and may name a stored secret.
+            redact_result(actor, &mut result);
             observe(AgentEvent::PostCall {
                 tool_call_id: &call.id,
                 name: &call.name,
@@ -1484,10 +1597,16 @@ async fn execute_call(
         Ok(result) => result,
         Err(e) => ToolResult::error("tool_error", e.to_string()),
     };
+    // Images go into the session's store before anything is published, so the event and the
+    // transcript only ever carry references to stored rows.
+    store_tool_images(actor, &mut result).await;
     // How the call was allowed: the durable `tool.post_call` says so.
     if let Some(note) = note {
         merge_approval_metadata(&mut result.metadata, &note);
     }
+    // A secret a tool printed, or a permission reason quoted, is hidden on the finished result,
+    // before the event, the transcript or the model see it.
+    redact_result(actor, &mut result);
     observe(AgentEvent::PostCall {
         tool_call_id: &call.id,
         name: &call.name,
@@ -1519,6 +1638,54 @@ fn merge_approval_metadata(metadata: &mut serde_json::Value, note: &serde_json::
     }
 }
 
+/// Publishes the start of `call`. The event shows its arguments and permission evidence with
+/// the stored secrets hidden, since the model may have written a value into them; the tool
+/// itself runs with the arguments as written.
+fn observe_pre_call(
+    actor: &AgentActor,
+    call: &ToolCall,
+    permission_gate: Option<&serde_json::Value>,
+    observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
+) {
+    let mut args = std::borrow::Cow::Borrowed(&call.args);
+    let mut gate = permission_gate.map(std::borrow::Cow::Borrowed);
+    if let Some(secrets) = &actor.tool_context.secrets {
+        secrets.redact_json(args.to_mut());
+        if let Some(gate) = &mut gate {
+            secrets.redact_json(gate.to_mut());
+        }
+    }
+    observe(AgentEvent::PreCall {
+        permission_gate: gate.as_deref(),
+        tool_call_id: &call.id,
+        name: &call.name,
+        args: &args,
+    });
+}
+
+/// Hides the secrets a tool result carries: its output, its metadata and its error message.
+fn redact_result(actor: &AgentActor, result: &mut ToolResult) {
+    let Some(secrets) = &actor.tool_context.secrets else {
+        return;
+    };
+    secrets.redact_in_place(&mut result.output);
+    secrets.redact_json(&mut result.metadata);
+    if let Some(error) = &mut result.error {
+        secrets.redact_in_place(&mut error.message);
+    }
+}
+
+/// Hides the secrets a streamed piece of text carries.
+fn redact_delta(secrets: &crate::secrets::SecretAccess, delta: &mut StreamDelta) {
+    match delta {
+        StreamDelta::Text { text } | StreamDelta::Thinking { text } => {
+            secrets.redact_in_place(text)
+        }
+        StreamDelta::ToolCallArgs { fragment, .. } => secrets.redact_in_place(fragment),
+        StreamDelta::ToolCallStarted { .. } => {}
+    }
+}
+
 /// What the model reads for a call cancelled before it started: an empty
 /// result would read as a success with no output.
 pub(crate) const NOT_RUN: &str = "interrupted: the call did not run";
@@ -1537,16 +1704,75 @@ fn interrupted_content(result: &ToolResult) -> String {
     }
 }
 
+/// Stores the images `result` carries as attachments of the session and records their references
+/// in `metadata.images`, where clients and the transcript read them. An image that cannot be
+/// stored (no store, a refused type or size, past the count or byte budget of one result) is
+/// reported in the output instead: the model learns a picture was there and why it cannot see it,
+/// and the call itself still succeeds. Producers already apply the budget while converting; it is
+/// checked again here so a producer that skipped it cannot reach the store with more.
+async fn store_tool_images(actor: &AgentActor, result: &mut ToolResult) {
+    let images = std::mem::take(&mut result.images);
+    if images.is_empty() {
+        return;
+    }
+    let mut stored = Vec::new();
+    let mut notes = Vec::new();
+    let (mut kept, mut kept_bytes) = (0, 0usize);
+    for image in images {
+        let name = image.name.clone();
+        if let Some(reason) = crate::tools::tool_image_refusal(kept, kept_bytes, image.bytes.len())
+        {
+            notes.push(format!("[image {name} not kept: {reason}]"));
+            continue;
+        }
+        kept += 1;
+        kept_bytes += image.bytes.len();
+        let outcome = match &actor.attachment_loader {
+            Some(loader) => loader.store(image.name, image.bytes).await,
+            None => Err("this conversation keeps no images".into()),
+        };
+        match outcome {
+            Ok(reference) => stored.push(reference),
+            Err(reason) => notes.push(format!("[image {name} not kept: {reason}]")),
+        }
+    }
+    for note in notes {
+        if !result.output.is_empty() {
+            result.output.push('\n');
+        }
+        result.output.push_str(&note);
+    }
+    if !stored.is_empty() {
+        if !result.metadata.is_object() {
+            result.metadata = serde_json::json!({});
+        }
+        result.metadata["images"] = serde_json::to_value(&stored).unwrap_or_default();
+    }
+}
+
+/// The image references [`store_tool_images`] recorded on a result.
+fn tool_result_images(result: &ToolResult) -> Vec<crate::provider::openai::ImageRef> {
+    result
+        .metadata
+        .get("images")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
 fn append_tool_result(actor: &mut AgentActor, tool_call_id: &str, result: &ToolResult) {
-    let content = match result.status {
+    let mut content = match result.status {
         ToolStatus::Ok => result.output.clone(),
         ToolStatus::Interrupted => interrupted_content(result),
         _ => serde_json::to_string(result).unwrap_or_else(|_| result.output.clone()),
     };
+    if let Some(secrets) = &actor.tool_context.secrets {
+        secrets.redact_in_place(&mut content);
+    }
     actor.transcript.push(ChatMessage::Tool {
         tool_call_id: tool_call_id.to_string(),
         content,
         answered_by: None,
+        images: tool_result_images(result),
     });
 }
 
@@ -1558,6 +1784,10 @@ fn append_interrupted(actor: &mut AgentActor, tool_call_id: &str) {
 #[cfg(test)]
 #[path = "loop_permission_tests.rs"]
 mod permission_tests;
+
+#[cfg(test)]
+#[path = "loop_image_tests.rs"]
+mod image_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1586,6 +1816,7 @@ mod tests {
                     transcript.push(ChatMessage::User {
                         provenance: crate::provider::openai::UserProvenance::Parent,
                         content: "committed steering".into(),
+                        images: Vec::new(),
                     });
                     Ok(crate::agent::boundary::BoundaryResult::Watchdog(Some(
                         transcript,
@@ -1742,6 +1973,7 @@ mod tests {
         let mut actor = AgentActor::new(
             registry,
             ToolContext {
+                secrets: None,
                 binding: None,
                 workspace: ws.clone(),
                 writable_roots: vec![ws],
@@ -1975,6 +2207,7 @@ mod tests {
         actor.set_skills(crate::agent::skills::Skills::load(
             &crate::agent::instructions::RulesRoots::default(),
             &actor.tool_context.workspace,
+            &crate::settings::Settings::default(),
         ));
         assert!(actor.effective_skills_catalog().is_some());
         let full = policy_role(AgentAccess::Full, &[]);
@@ -2205,6 +2438,7 @@ mod tests {
                         transcript.push(ChatMessage::User {
                             provenance: crate::provider::openai::UserProvenance::Parent,
                             content: "committed steering".into(),
+                            images: Vec::new(),
                         });
                         Err(crate::agent::boundary::BoundaryError {
                             message: "delivery failed".into(),
@@ -2959,6 +3193,7 @@ mod tests {
             t.push(ChatMessage::User {
                 provenance: Default::default(),
                 content: format!("request {n}"),
+                images: Vec::new(),
             });
             t.push(ChatMessage::Assistant {
                 content: None,
@@ -2977,6 +3212,7 @@ mod tests {
                 tool_call_id: format!("c{n}"),
                 content: "output ".repeat(200),
                 answered_by: None,
+                images: Vec::new(),
             });
             t.push(ChatMessage::Assistant {
                 content: Some(format!("done {n}")),
@@ -3511,5 +3747,274 @@ mod tests {
         };
         assert_eq!(result.status, ToolStatus::Error);
         assert!(!target.exists());
+    }
+
+    fn with_secret(actor: &mut AgentActor, value: &str) {
+        let store = Arc::new(crate::secrets::SecretStore::in_memory());
+        let owner = ulid::Ulid::generate();
+        let ws = actor.tool_context.workspace.clone();
+        store
+            .put(
+                owner,
+                &ws,
+                "API_KEY",
+                value,
+                crate::secrets::SecretTtl::Day,
+                crate::secrets::SecretScope::Session,
+            )
+            .unwrap();
+        actor.tool_context.secrets = Some(crate::secrets::SecretAccess::new(store, owner, &ws));
+    }
+
+    #[test]
+    fn a_denial_carrying_a_secret_is_redacted() {
+        const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
+        let mut actor = make_actor(String::new(), registry_all(), CancellationToken::new());
+        with_secret(&mut actor, VALUE);
+        let call = ToolCall {
+            id: "d1".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command":"echo"}),
+            args_valid: true,
+        };
+        let mut published = String::new();
+        deny_call(
+            &mut actor,
+            &call,
+            format!("no, use {VALUE}"),
+            serde_json::json!({}),
+            &mut |event| {
+                if let AgentEvent::PostCall { result, .. } = event {
+                    published = serde_json::to_string(result).unwrap();
+                }
+            },
+        );
+        settle_rejected(&mut actor, &call, &[], Some(format!("again {VALUE}")));
+        assert!(published.contains("[secret API_KEY]"), "{published}");
+        let transcript = serde_json::to_string(&actor.transcript).unwrap();
+        assert!(!transcript.contains(VALUE), "{transcript}");
+        assert!(transcript.contains("[secret API_KEY]"));
+    }
+
+    #[tokio::test]
+    async fn tool_arguments_are_redacted_in_the_transcript() {
+        const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[&calls_chunk(&[(
+                "r1",
+                "read",
+                serde_json::json!({"path": format!("/nowhere/{VALUE}")}),
+            )])])),
+            http_sse(&sse_body(&[&text_chunk("done")])),
+        ])
+        .await;
+        let mut actor = make_actor(server.url.clone(), registry_all(), CancellationToken::new());
+        with_secret(&mut actor, VALUE);
+        actor.push_user("go");
+        let mut noop = |_e: AgentEvent| {};
+        run_agent(&mut actor, &mut noop).await.unwrap();
+        let transcript = serde_json::to_string(&actor.transcript).unwrap();
+        assert!(!transcript.contains(VALUE), "{transcript}");
+        assert!(transcript.contains("[secret API_KEY]"), "{transcript}");
+    }
+
+    /// Every tool-call event as text, by kind: `pre`, `response` and `post`.
+    #[derive(Default)]
+    struct Shown {
+        pre: Vec<String>,
+        response: Vec<String>,
+        post: Vec<String>,
+    }
+
+    impl Shown {
+        fn record(&mut self, event: AgentEvent<'_>) {
+            match event {
+                AgentEvent::PreCall {
+                    permission_gate,
+                    args,
+                    ..
+                } => self.pre.push(format!("{args} {permission_gate:?}")),
+                AgentEvent::Response(message) => self
+                    .response
+                    .push(serde_json::to_string(&message.tool_calls).unwrap()),
+                AgentEvent::PostCall { result, .. } => {
+                    self.post.push(serde_json::to_string(result).unwrap())
+                }
+                _ => {}
+            }
+        }
+
+        fn assert_hidden(&self, value: &str) {
+            for text in self.pre.iter().chain(&self.response).chain(&self.post) {
+                assert!(!text.contains(value), "{text}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_call_events_hide_a_secret_the_model_wrote_and_the_call_runs_as_written() {
+        const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().canonicalize().unwrap();
+        let file = dir_path.join(format!("{VALUE}.txt"));
+        std::fs::write(&file, "the file body").unwrap();
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[&calls_chunk(&[(
+                "r1",
+                "read",
+                serde_json::json!({"path": file}),
+            )])])),
+            http_sse(&sse_body(&[&text_chunk("done")])),
+        ])
+        .await;
+        let mut actor = make_actor(server.url.clone(), registry_all(), CancellationToken::new());
+        allow_everything(&actor);
+        actor.tool_context.readable_roots.push(dir_path);
+        with_secret(&mut actor, VALUE);
+        actor.push_user("go");
+        let mut shown = Shown::default();
+        run_agent(&mut actor, &mut |event| shown.record(event))
+            .await
+            .unwrap();
+        assert_eq!((shown.pre.len(), shown.post.len()), (1, 1));
+        assert!(
+            shown.pre[0].contains("[secret API_KEY]"),
+            "{}",
+            shown.pre[0]
+        );
+        assert!(
+            shown
+                .response
+                .iter()
+                .any(|r| r.contains("[secret API_KEY]")),
+            "{:?}",
+            shown.response
+        );
+        // The tool read the file the model named, not one named after the marker.
+        assert!(shown.post[0].contains("the file body"), "{}", shown.post[0]);
+        shown.assert_hidden(VALUE);
+    }
+
+    #[test]
+    fn a_refused_call_hides_the_secret_in_its_arguments_and_its_error() {
+        const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
+        let mut actor = make_actor(String::new(), registry_all(), CancellationToken::new());
+        with_secret(&mut actor, VALUE);
+        let call = ToolCall {
+            id: "x1".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path": format!("/tmp/{VALUE}")}),
+            args_valid: true,
+        };
+        let mut shown = Shown::default();
+        reject_call(
+            &mut actor,
+            &call,
+            format!("cannot read /tmp/{VALUE}"),
+            &mut |event| shown.record(event),
+        );
+        assert_eq!((shown.pre.len(), shown.post.len()), (1, 1));
+        assert!(
+            shown.post[0].contains("[secret API_KEY]"),
+            "{}",
+            shown.post[0]
+        );
+        shown.assert_hidden(VALUE);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_changed_destination_hides_the_secret_in_the_path_it_reports() {
+        const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
+        let mut registry = Registry::new();
+        registry.register(Box::new(WriteTool));
+        let mut actor = make_actor(String::new(), registry, CancellationToken::new());
+        with_secret(&mut actor, VALUE);
+        let ws = actor.tool_context.workspace.canonicalize().unwrap();
+        let target = ws.join(format!("{VALUE}.txt"));
+        let elsewhere = ws.join("elsewhere.txt");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::write(&elsewhere, "kept").unwrap();
+        on_next_dispatch({
+            let (target, elsewhere) = (target.clone(), elsewhere.clone());
+            move || {
+                std::fs::remove_file(&target).unwrap();
+                std::os::unix::fs::symlink(&elsewhere, &target).unwrap();
+            }
+        });
+        let call = ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": target, "content": "new"}),
+            args_valid: true,
+        };
+        let mut shown = Shown::default();
+        let outcome = execute_call(&actor, &call, Some(&target), None, &mut |event| {
+            shown.record(event)
+        })
+        .await;
+        assert!(
+            matches!(outcome, DispatchOutcome::DestinationChanged),
+            "{:?}",
+            shown.post
+        );
+        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "kept");
+        assert_eq!((shown.pre.len(), shown.post.len()), (1, 1));
+        assert!(
+            shown.post[0].contains("destination_changed"),
+            "{}",
+            shown.post[0]
+        );
+        assert!(
+            shown.post[0].contains("[secret API_KEY]"),
+            "{}",
+            shown.post[0]
+        );
+        shown.assert_hidden(VALUE);
+    }
+
+    /// The captured `reasoning_details` of a real provider stream, sanitized before the
+    /// assistant message enters the transcript the history store snapshots.
+    #[tokio::test]
+    async fn a_captured_opaque_item_holding_a_secret_is_dropped_from_the_transcript() {
+        const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
+        let frame = serde_json::json!({"choices": [{
+            "index": 0,
+            "delta": {
+                "content": "answer",
+                "reasoning_details": [
+                    {"type": "reasoning.text", "text": format!("the key is {VALUE}")},
+                    {"type": "reasoning.text", "text": "unrelated reasoning"},
+                ],
+            },
+            "finish_reason": "stop",
+        }]})
+        .to_string();
+        let server = spawn_mock(vec![http_sse(&sse_body(&[&frame]))]).await;
+        let mut actor = make_actor(server.url.clone(), registry_all(), CancellationToken::new());
+        with_secret(&mut actor, VALUE);
+        actor.push_user("go");
+        let mut noop = |_e: AgentEvent| {};
+        assert!(matches!(
+            run_agent(&mut actor, &mut noop).await.unwrap(),
+            RunOutcome::Done(_)
+        ));
+
+        let ChatMessage::Assistant { opaque, .. } = actor.transcript.last().unwrap() else {
+            panic!("expected an assistant message last");
+        };
+        let opaque = opaque.as_ref().expect("the clean item is kept");
+        assert_eq!(
+            opaque.items.len(),
+            1,
+            "the item holding the secret was dropped"
+        );
+        assert!(opaque.items[0].data.contains("unrelated reasoning"));
+        assert!(!opaque.items[0].data.contains(VALUE));
+        let transcript = serde_json::to_string(&actor.transcript).unwrap();
+        assert!(
+            !transcript.contains(VALUE),
+            "the transcript leaks the value: {transcript}"
+        );
     }
 }

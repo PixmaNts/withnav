@@ -23,11 +23,17 @@ skill to load for your next message.
 It looks in these places, nearest first:
 
 1. For each directory from the workspace up to the repository root: `.agents/skills`,
-   `.claude/skills`, `.opencode/skills`.
-2. Your `~/.agents/skills`, then `~/.claude/skills`.
+   `.claude/skills`, `.opencode/skills`, and `.skills` (where `.skills/<name>/SKILL.md` holds
+   the skills directly).
+2. Any relative paths listed under `skills.paths` in your settings (`config.json`), resolved
+   against the project repository root and refused if they escape the worktree.
+3. Your `~/.agents/skills`, then `~/.claude/skills`.
+4. Any absolute paths listed under `skills.paths` in your settings.
 
-If two skills share an id, the nearer scope wins. At the same distance, `.agents` beats `.claude`,
-which beats `.opencode`, and your own `.agents` beats your `.claude`. If two skills of equal rank
+If two skills share an id, the nearer project scope wins. At the same distance, `.agents` beats `.claude`,
+which beats `.opencode`, which beats `.skills`, which beats configured relative paths in the order they
+are listed. All project skills beat user skills. For user skills, your own `~/.agents` beats `~/.claude`,
+followed by configured absolute paths in the order they are listed. If two skills of equal rank
 have the same id, neither is offered.
 
 A skill loads only once you have validated its current content; a skill that changes asks again.

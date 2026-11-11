@@ -120,6 +120,7 @@ mod tests {
                 let original = vec![ChatMessage::User {
                     content: "original".into(),
                     provenance: UserProvenance::Captain,
+                    images: Vec::new(),
                 }];
                 let untouched = steering.apply_at_boundary(Cow::Borrowed(&original));
                 assert!(matches!(untouched, Cow::Borrowed(_)));
@@ -156,6 +157,7 @@ mod tests {
                     ChatMessage::User {
                         content,
                         provenance: UserProvenance::Parent,
+                        ..
                     } => content.as_str(),
                     _ => panic!("expected parent guidance"),
                 })
@@ -281,6 +283,7 @@ impl Steering {
                 transcript.push(ChatMessage::User {
                     content: op.content,
                     provenance: op.provenance,
+                    images: Vec::new(),
                 });
             } else {
                 kept.push_back(op);
@@ -332,6 +335,7 @@ impl Steering {
             transcript.to_mut().push(ChatMessage::User {
                 content: operation.content,
                 provenance: operation.provenance,
+                images: Vec::new(),
             });
         }
         transcript
@@ -349,6 +353,7 @@ impl Steering {
         transcript.push(ChatMessage::User {
             content: operation.content,
             provenance: operation.provenance,
+            images: Vec::new(),
         });
         Some(transcript)
     }
@@ -365,12 +370,13 @@ impl super::RuntimeStatus {
 
     pub(crate) fn queue_flow_note_report(
         &self,
-        text: String,
+        mut text: String,
         flow: String,
         run_id: String,
         wake: bool,
         turn_end: bool,
     ) -> Result<(), String> {
+        self.redact_in_place(&mut text);
         self.steering
             .admit_flow_report(text, flow, run_id, wake, turn_end)?;
         if wake {

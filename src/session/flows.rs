@@ -98,7 +98,15 @@ pub(crate) async fn received(
     } else {
         "system"
     };
-    let mut payload = json!({"command_id":command.command_id.to_string(),"author":author,"text":command.text_content()});
+    let text = command.text_content();
+    // An MCP prompt's messages travel in the Captain's message but are the server's text.
+    let text = if command.from_captain() {
+        crate::mcp::captain_prose(&text)
+    } else {
+        &text
+    };
+    let mut payload =
+        json!({"command_id":command.command_id.to_string(),"author":author,"text":text});
     if let Some(name) = command.content.iter().find_map(|block| match block {
         crate::bus::command::ContentBlock::LoadedSkill { name, .. } => Some(name),
         _ => None,

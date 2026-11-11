@@ -143,12 +143,12 @@ test("real webview shows estimate and detail, rejects old generation, hides on n
   const { chatHtml } = require("../out/tests/chatHtml.js");
   const dom = new JSDOM(chatHtml("nonce", "chat.js", "chat.css", "vscode-resource:"), { runScripts: "outside-only" });
   dom.window.acquireVsCodeApi = () => ({ postMessage() {}, getState() {}, setState() {} });
-  dom.window.eval(fs.readFileSync("out/chat.js", "utf8"));
-  const receive = data => dom.window.dispatchEvent(new dom.window.MessageEvent("message", { data }));
+  dom.window.eval(fs.readFileSync("out/chat.js", "utf8"));dom.window.dispatchEvent(new dom.window.MessageEvent('message',{data:{type:'tabs',tabs:[{id:'t1',title:'S'}],active:'t1'}}));
+  const receive = data => dom.window.dispatchEvent(new dom.window.MessageEvent("message", { data: { tab: 't1', ...data } }));
   receive({ type: "conversationOpened", id: "A", title: "Conversation A", generation: 2 });
   receive({ type: "usage", snapshot: snapshot(), generation: 2 });
-  const gauge = dom.window.document.querySelector("#usage");
-  assert.equal(gauge.hidden, false); assert.match(gauge.textContent, /~42k \/ 1M · 4%/);
+  const gauge = dom.window.document.querySelector(".ctx-ring");
+  assert.equal(gauge.hidden, false); assert.match(gauge.textContent, /4%/); assert.match(gauge.title, /~42k \/ 1M · 4%/);
   assert.match(gauge.title, /Skills catalog: 2k/); assert.equal(gauge.tabIndex, 0);
   receive({ type: "usage", snapshot: snapshot(99, { estimate_total: 800000, percent: 80 }), generation: 1 });
   assert.match(gauge.textContent, /4%/);

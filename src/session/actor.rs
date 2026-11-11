@@ -72,12 +72,14 @@ fn build_actor_with_policy(
     mcp: &[crate::mcp::McpTool],
 ) -> AgentActor {
     let tool_context = ToolContext {
+        secrets: None,
         binding: None,
         workspace: workspace.to_path_buf(),
         writable_roots: vec![workspace.to_path_buf(), config_dir.to_path_buf()],
         readable_roots: Vec::new(),
     };
     let max_message_tokens = resolved.model.max_message_tokens;
+    let images = resolved.model.images;
     let mut actor = AgentActor::new(
         build_registry(allowed_tools, read_only, mcp),
         tool_context,
@@ -89,6 +91,7 @@ fn build_actor_with_policy(
         cancel,
     );
     actor.compaction_max_message_tokens = max_message_tokens;
+    actor.images = images;
     actor
 }
 
@@ -122,9 +125,15 @@ fn build_registry(
     }
     if !read_only {
         registry.register(Box::new(crate::tools::control::AskTool));
+        registry.register(Box::new(crate::tools::secret::RequestSecretTool));
     }
     if read_only {
-        registry.retain(|name| !matches!(name, "write" | "edit" | "bash" | "ask" | "task"));
+        registry.retain(|name| {
+            !matches!(
+                name,
+                "write" | "edit" | "bash" | "ask" | "request_secret" | "task"
+            )
+        });
     }
     // A child's policy lists every tool it may have; anything else is absent.
     if let Some(allowed) = allowed_tools {

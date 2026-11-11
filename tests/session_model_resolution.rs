@@ -118,6 +118,7 @@ async fn creation_saves_the_resolution() {
             "history_policy": "preserve",
             "provenance": {
                 "context_window": "discovered.context_length",
+                "images": "none",
                 "max_input_tokens": "discovered.max_input_tokens",
                 "reported_output": "discovered.max_output_tokens"
             }

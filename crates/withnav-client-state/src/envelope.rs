@@ -12,7 +12,10 @@ use crate::{
     ProtocolError,
     children::{ChildAgent, ChildStatus},
     command::{outcome_text, tokens},
-    conversation::{Activity, Block, BlockKind, PermissionPrompt, QuestionPrompt, block},
+    conversation::{
+        Activity, Block, BlockKind, PermissionPrompt, QuestionPrompt, SecretPrompt, SecretState,
+        block,
+    },
     projection::{
         SessionState, apply_selection, clear_answered, keep_bypass, keep_newer_context,
         keep_newer_mcp, set_variant_offer, settle_model_op,
@@ -22,6 +25,7 @@ use crate::{
 use serde::Deserialize;
 use serde_json::Value;
 use withnav_client_api::{
+    attachment::{ImageRef, human_size},
     event::{EventEnvelope, EventKind, McpStatus},
     protocol::{ModelChanged, ModelEntry},
     provider::{AssistantMessage, StreamDelta, ToolCall, Usage},
@@ -49,6 +53,24 @@ mod tests {
                 mcp: &mut mcp,
             },
         )
+    }
+
+    #[test]
+    fn parent_budget_notice_projects_without_a_child_subscription() {
+        let mut state = SessionState::default();
+        let session = Ulid::generate();
+        let child = Ulid::generate();
+        apply(
+            &mut state,
+            EventEnvelope::new(
+                session,
+                1,
+                EventKind::SubagentWatchdog,
+                json!({"child_session_id":child,"agent":"vigie","verdict":"budget"}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(state.children[0].status, ChildStatus::OutOfSteps);
     }
 
     #[test]
@@ -149,6 +171,39 @@ pub struct EnvelopeContext<'a> {
     pub mcp: &'a mut Option<McpStatus>,
 }
 
+/// Numbers the images of one event and shows each as a notice under it. A value that is not a
+/// list shows nothing; an item that is not a reference is skipped, so one malformed item does not
+/// hide the valid images beside it.
+fn push_images(s: &mut SessionState, seq: u64, value: &Value) {
+    let Some(items) = value.as_array() else {
+        return;
+    };
+    let images = items
+        .iter()
+        .filter_map(|item| ImageRef::deserialize(item).ok());
+    for (i, image) in images.enumerate() {
+        let mut chip = format!(
+            "image {}: {}",
+            s.conversation.images.len() + 1,
+            strip_controls(&image.name)
+        );
+        if image.width > 0 && image.height > 0 {
+            chip.push_str(&format!(", {}x{}", image.width, image.height));
+        }
+        if image.size > 0 {
+            chip.push_str(&format!(", {}", human_size(image.size)));
+        }
+        chip.push_str(&format!(
+            " (/image {} to open)",
+            s.conversation.images.len() + 1
+        ));
+        s.conversation.images.push(image);
+        s.conversation
+            .blocks
+            .push(block(format!("image:{seq}:{i}"), BlockKind::Notice(chip)));
+    }
+}
+
 pub fn apply_envelope(
     s: &mut SessionState,
     e: EventEnvelope,
@@ -226,6 +281,7 @@ pub fn apply_envelope(
             "subagent.done" => ChildStatus::from_wire(v["outcome"].as_str().ok_or_else(bad)?),
             _ if !child.status.terminal() => match v["verdict"].as_str() {
                 Some("doubt" | "stuck") => ChildStatus::Doubt,
+                Some("budget") => ChildStatus::OutOfSteps,
                 Some("active") if child.status == ChildStatus::Doubt => ChildStatus::Running,
                 _ => child.status,
             },
@@ -270,6 +326,58 @@ pub fn apply_envelope(
             let v = e.payload;
             let source = v["source"].as_str().ok_or_else(bad)?.to_string();
             let text = v["content"].as_str().ok_or_else(bad)?;
+            if let Ok(note) = serde_json::from_value::<withnav_client_api::secrets::SecretNote>(
+                v["secret"].clone(),
+            ) {
+                // The host's answer to a secret request settles its prompt: no Captain bubble.
+                let settled = s
+                    .conversation
+                    .blocks
+                    .iter_mut()
+                    .any(|block| match &mut block.kind {
+                        BlockKind::Secret(p) if Some(&p.call_id) == note.request_id.as_ref() => {
+                            p.sending = false;
+                            p.state = match note.outcome {
+                                withnav_client_api::secrets::SecretOutcome::Stored => {
+                                    SecretState::Stored {
+                                        scope: note.scope.unwrap_or_default(),
+                                        expires_at: note.expires_at.clone(),
+                                    }
+                                }
+                                withnav_client_api::secrets::SecretOutcome::Declined => {
+                                    SecretState::Declined
+                                }
+                            };
+                            true
+                        }
+                        _ => false,
+                    });
+                if !settled {
+                    s.conversation.blocks.push(block(
+                        e.seq.to_string(),
+                        BlockKind::Notice(format!(
+                            "secret ${} {}",
+                            strip_controls(&note.name),
+                            match note.outcome {
+                                withnav_client_api::secrets::SecretOutcome::Stored => "provided",
+                                withnav_client_api::secrets::SecretOutcome::Declined => "declined",
+                            }
+                        )),
+                    ));
+                }
+                return Ok(());
+            }
+            if withnav_client_api::command::is_captain_source(&source) {
+                // A written answer settles a waiting secret request: the agent reads the text.
+                for block in &mut s.conversation.blocks {
+                    if let BlockKind::Secret(p) = &mut block.kind
+                        && p.is_open()
+                    {
+                        p.state = SecretState::Declined;
+                        p.sending = false;
+                    }
+                }
+            }
             if let Ok(answer) = serde_json::from_value::<AskAnswer>(v["answer"].clone()) {
                 for block in &mut s.conversation.blocks {
                     if let BlockKind::Question(prompt) = &mut block.kind
@@ -287,6 +395,7 @@ pub fn apply_envelope(
                     text: strip_controls(text),
                 },
             ));
+            push_images(s, e.seq, &v["images"]);
             if matches!(
                 v["selected_skill"]["origin"].as_str(),
                 Some("driver" | "captain")
@@ -420,6 +529,7 @@ pub fn apply_envelope(
                 ..Default::default()
             };
             tool_merge(s, &actor, &turn, id, patch);
+            push_images(s, e.seq, &v["metadata"]["images"]);
         }
         Some(EventKind::AgentYield) => {
             let v = e.payload;
@@ -448,6 +558,21 @@ pub fn apply_envelope(
                     )
                 } else if v["kind"] == "watchdog" {
                     BlockKind::Notice(format!("Watchdog pause · {}", strip_controls(q)))
+                } else if let (Some(call_id), Some(request)) = (
+                    v["question_call_id"]
+                        .as_str()
+                        .filter(|_| v["kind"] == "secret"),
+                    secret_request(&v["details"]),
+                ) {
+                    BlockKind::Secret(SecretPrompt {
+                        call_id: call_id.into(),
+                        request,
+                        agent: s.agent.clone().filter(|a| !a.is_empty()),
+                        state: SecretState::Pending,
+                        last4: None,
+                        sending: false,
+                        error: None,
+                    })
                 } else {
                     match (
                         v["question_call_id"].as_str(),
@@ -1042,4 +1167,16 @@ fn tool_merge(s: &mut SessionState, actor: &str, turn: &str, id: String, p: Tool
             exit_code: p.exit_code,
         },
     ));
+}
+
+/// The details of a secret `agent.yield`, cleaned of control characters; `None` when malformed.
+fn secret_request(details: &Value) -> Option<withnav_client_api::secrets::SecretRequestDetails> {
+    let mut request: withnav_client_api::secrets::SecretRequestDetails =
+        serde_json::from_value(details.clone()).ok()?;
+    if !withnav_client_api::secrets::valid_secret_name(&request.name) {
+        return None;
+    }
+    request.label = strip_controls(&request.label);
+    request.reason = strip_controls(&request.reason);
+    Some(request)
 }

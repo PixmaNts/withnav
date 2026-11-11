@@ -48,6 +48,7 @@ async fn legacy_ids_resolve_at_creation_delegation_task_and_resume() {
     }
     let task = withnav::tools::task::TaskTool::new(state.service(), parent);
     let cx = ToolContext {
+        secrets: None,
         binding: None,
         workspace: env.ws.clone(),
         writable_roots: vec![env.ws.clone()],

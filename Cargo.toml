@@ -28,7 +28,7 @@ tracing = "0.1"
 
 [package]
 name = "withnav"
-version = "0.8.2"
+version = "0.8.3"
 edition = "2024"
 rust-version = "1.89"
 homepage = "https://withnav.dev"

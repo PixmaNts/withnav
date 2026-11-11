@@ -6,6 +6,8 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-11-11
+
 ### Added
 
 - Project skills: WithNav discovers `.skills/` alongside the existing project skill folders.

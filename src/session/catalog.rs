@@ -2,7 +2,7 @@
 //! stored conversations of a workspace joined with the registry's
 //! liveness, and the full removal of one (live teardown, memory, store).
 
-use super::service::{Lifecycle, Service, SessionId};
+use super::service::{Lifecycle, Service, SessionId, SessionSummary};
 use crate::error::ServerError;
 
 /// One conversation of a workspace: the stored summary plus whether a live,
@@ -23,10 +23,15 @@ pub struct SessionListing {
     pub parent_session_id: Option<String>,
     pub child_status: Option<String>,
     pub promptable: bool,
+    /// The `GET /v1/sessions/:id` summary of this row, built from the same read.
+    pub summary: SessionSummary,
 }
 
 impl Service {
-    /// The workspace's stored conversations, newest `updated_at` first.
+    /// The workspace's stored conversations, newest `updated_at` first, from
+    /// one store read: each row's summary overlays its live handle on the
+    /// listed metadata. A row whose saved selection cannot be read is left
+    /// out so it does not hide the other conversations.
     pub async fn list(&self, workspace: &str) -> Result<Vec<SessionListing>, ServerError> {
         let rows = self
             .history()
@@ -35,11 +40,7 @@ impl Service {
             .map_err(ServerError::History)?;
         let mut listings = Vec::new();
         for row in rows {
-            let link = self
-                .history()
-                .child_link(row.meta.id)
-                .await
-                .map_err(ServerError::History)?;
+            let link = row.child_link;
             if link.is_none()
                 && self
                     .unpublished_children
@@ -49,7 +50,18 @@ impl Service {
             {
                 continue;
             }
+            let summary = match self
+                .summary_of(row.meta.id, Some((row.meta.clone(), link.clone())))
+                .await
+            {
+                Ok(summary) => summary,
+                Err(error) => {
+                    tracing::warn!(session_id = %row.meta.id, %error, "session list: unreadable session skipped");
+                    continue;
+                }
+            };
             listings.push(SessionListing {
+                summary,
                 read_only: row.meta.resume_disabled_reason.is_some(),
                 live: matches!(
                     self.handle(row.meta.id),

@@ -9,10 +9,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
@@ -235,6 +232,7 @@ mod tests {
     use super::*;
     use crate::agent::flow_hook::{FlowVerdict, ToolCallContext};
     use crate::flows::store::Location;
+    use std::sync::atomic::Ordering;
 
     /// A disabled global copy of the built-in permission flow shadows it, so a
     /// test sees only the flows it saves itself.
@@ -1259,11 +1257,15 @@ mod tests {
         store.validate_test_documents();
         store.reload().unwrap();
         let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
-        let runtime = FlowRuntime::new(
+        let mut runtime = FlowRuntime::new(
             store,
             Arc::new(Recovering(std::sync::atomic::AtomicUsize::new(0))),
             effects.clone(),
         );
+        // This test pins the notice and clear cycle, so it must be able to reach
+        // a successful call: a zero cooldown leaves every call dialling. The
+        // window itself is exercised by the outage tests below.
+        runtime.outage = Arc::new(Outage::new(Duration::ZERO));
         let ctx = ToolCallContextLike {
             call_id: "x".into(),
             tool: "read".into(),
@@ -1280,6 +1282,400 @@ mod tests {
             }
         }
         assert_eq!(effects.0.load(Ordering::SeqCst), 2);
+    }
+    /// A blocking flow with one Instinct node, using the `tool.pre_call` trigger's
+    /// default fallback, so a failed decision applies the rule.
+    const DECISION_TOML: &str = "[flow]\nversion=1\nname='decision'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\n[node.inputs]\nx='session.agent'\n";
+    /// A store whose only enabled flow asks Instinct, so a call either dials the
+    /// client or does not.
+    fn decision_only_runtime(
+        dir: &std::path::Path,
+        client: Arc<dyn DecisionClient>,
+        effects: Arc<dyn FlowEffects>,
+    ) -> FlowRuntime {
+        let store = Arc::new(FlowStore::new(dir.into(), dir.join("config")));
+        without_builtin(&store);
+        store
+            .save(
+                "decision",
+                Location::Global,
+                None,
+                super::super::store::Content::Toml {
+                    toml: DECISION_TOML.into(),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        store.validate_test_documents();
+        store.reload().unwrap();
+        FlowRuntime::new(store, client, effects)
+    }
+    /// Counts every dial and fails with a provider error, like an endpoint that
+    /// is unreachable and answers nothing. A non-zero `delay` stalls like a dead
+    /// transport first, so a test can measure the wait it costs.
+    struct Unreachable {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        delay: Duration,
+    }
+    impl DecisionClient for Unreachable {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/unreachable".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            _: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                if !self.delay.is_zero() {
+                    tokio::time::sleep(self.delay).await;
+                }
+                Err(DecisionError::ProviderError)
+            })
+        }
+    }
+    /// Answers one call and fails every other, so a probe's outcome is scripted.
+    struct Scripted {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        answer_at: usize,
+    }
+    impl DecisionClient for Scripted {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/scripted".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            Box::pin(async move {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if call == self.answer_at {
+                    Ok(instinct_flow::protocol::DecisionResponse {
+                        answers: request
+                            .questions
+                            .keys()
+                            .map(|id| {
+                                (
+                                    id.clone(),
+                                    instinct_flow::protocol::Answer::Noul { noul: 1.0 },
+                                )
+                            })
+                            .collect(),
+                        usage: None,
+                    })
+                } else {
+                    Err(DecisionError::ProviderError)
+                }
+            })
+        }
+    }
+    /// Move the outage window into the past, as waiting out the cooldown does.
+    fn expire_outage(runtime: &FlowRuntime) {
+        let mut state = runtime
+            .outage
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        state.until = Some(Instant::now() - Duration::from_millis(1));
+    }
+    #[tokio::test]
+    async fn outage_short_circuits_later_tool_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Unreachable {
+                calls: calls.clone(),
+                delay: Duration::from_millis(50),
+            }),
+            effects.clone(),
+        );
+        let call = || permission_call(dir.path().into(), false);
+        let first = Instant::now();
+        let verdict = runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await
+            .verdict;
+        let first_wait = first.elapsed();
+        assert!(matches!(verdict, FlowVerdict::AskCaptain { .. }));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(effects.0.load(Ordering::SeqCst), 1);
+        assert!(
+            first_wait >= Duration::from_millis(50),
+            "the first call waits for the endpoint: {first_wait:?}"
+        );
+        let rest = Instant::now();
+        for _ in 0..4 {
+            let verdict = runtime
+                .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+                .await
+                .verdict;
+            assert!(matches!(verdict, FlowVerdict::AskCaptain { .. }));
+        }
+        let remaining = rest.elapsed();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a remembered outage must not dial Instinct again"
+        );
+        assert_eq!(
+            effects.0.load(Ordering::SeqCst),
+            1,
+            "the notice is sent once per outage"
+        );
+        assert!(
+            remaining < first_wait / 2,
+            "four calls during the outage waited {remaining:?}; the first alone waited {first_wait:?}"
+        );
+    }
+    #[tokio::test]
+    async fn a_suppressed_call_does_not_push_the_window_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Unreachable {
+                calls: calls.clone(),
+                delay: Duration::ZERO,
+            }),
+            effects.clone(),
+        );
+        let call = || permission_call(dir.path().into(), false);
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        let deadline = runtime
+            .outage
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .until;
+        assert!(deadline.is_some(), "the failure opened the window");
+        for _ in 0..3 {
+            runtime
+                .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+                .await;
+        }
+        assert_eq!(
+            runtime
+                .outage
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .until,
+            deadline,
+            "a call that dialled nothing is not evidence about the endpoint, so the \
+             window keeps the deadline the real failure set"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // The window a real failure opened still governs the probe, so a turn
+        // that keeps calling never hides a recovered endpoint forever.
+        expire_outage(&runtime);
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+    #[tokio::test]
+    async fn outage_cooldown_expiry_probes_and_an_answer_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Scripted {
+                calls: calls.clone(),
+                answer_at: 1,
+            }),
+            effects.clone(),
+        );
+        let call = || permission_call(dir.path().into(), false);
+        for _ in 0..2 {
+            runtime
+                .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+                .await;
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the window hides the endpoint from the call behind it"
+        );
+        assert_eq!(effects.0.load(Ordering::SeqCst), 1);
+        expire_outage(&runtime);
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "an expired window dials once to test the endpoint"
+        );
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "the answer cleared the outage, so the next call dials"
+        );
+        assert_eq!(
+            effects.0.load(Ordering::SeqCst),
+            2,
+            "a cleared outage reports the next failure as a new one"
+        );
+    }
+    #[tokio::test]
+    async fn outage_a_failed_probe_renews_without_a_second_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Unreachable {
+                calls: calls.clone(),
+                delay: Duration::ZERO,
+            }),
+            effects.clone(),
+        );
+        let call = || permission_call(dir.path().into(), false);
+        for _ in 0..2 {
+            runtime
+                .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+                .await;
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(effects.0.load(Ordering::SeqCst), 1);
+        expire_outage(&runtime);
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "the failed probe dialled once"
+        );
+        assert_eq!(
+            effects.0.load(Ordering::SeqCst),
+            1,
+            "a renewed window does not repeat the notice"
+        );
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "the probe renewed the window"
+        );
+    }
+    #[tokio::test]
+    async fn a_local_deny_flow_still_decides_during_an_outage() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        without_builtin(&store);
+        for (name, toml) in [
+            ("decision", DECISION_TOML.to_string()),
+            ("deny", text("deny", "deny")),
+        ] {
+            store
+                .save(
+                    name,
+                    Location::Global,
+                    None,
+                    super::super::store::Content::Toml {
+                        toml,
+                        templates: BTreeMap::new(),
+                    },
+                )
+                .unwrap();
+        }
+        store.validate_test_documents();
+        store.reload().unwrap();
+        let runtime = FlowRuntime::new(
+            store,
+            Arc::new(Unreachable {
+                calls: calls.clone(),
+                delay: Duration::ZERO,
+            }),
+            effects,
+        );
+        let call = || permission_call(dir.path().into(), false);
+        runtime
+            .permission_pre_call(call(), RuleResult::Allow, CancellationToken::new())
+            .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let verdict = runtime
+            .permission_pre_call(call(), RuleResult::Allow, CancellationToken::new())
+            .await
+            .verdict;
+        assert!(
+            matches!(verdict, FlowVerdict::Deny { .. }),
+            "a local deny flow still decides while Instinct is hidden"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "nothing is dialled during the outage"
+        );
+    }
+    #[tokio::test]
+    async fn an_outage_records_from_the_protected_check_and_reports_to_the_caller() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // The session asks the protected check through the workspace runtime,
+        // whose own sink is a no-op: the notice has to reach the hook's sink.
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Unreachable {
+                calls: calls.clone(),
+                delay: Duration::ZERO,
+            }),
+            Arc::new(NoEffects),
+        );
+        let hook = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
+        let call = || permission_call(dir.path().into(), true);
+        let first = runtime
+            .permission_protected_check_with_effects(call(), CancellationToken::new(), hook.clone())
+            .await;
+        assert_eq!(first, ProtectedCheck::Unavailable);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the first check dials");
+        assert_eq!(
+            hook.0.load(Ordering::SeqCst),
+            1,
+            "the outage is reported through the sink the caller passed"
+        );
+        let second = runtime
+            .permission_protected_check_with_effects(call(), CancellationToken::new(), hook.clone())
+            .await;
+        assert_eq!(second, ProtectedCheck::Unavailable);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the check that asks first records the outage for the checks behind it"
+        );
+        assert_eq!(hook.0.load(Ordering::SeqCst), 1);
     }
     #[tokio::test]
     async fn asynchronous_effect_does_not_delay_blocking_verdict() {
@@ -1665,11 +2061,116 @@ impl InputSource for ContextSnapshot {
         })
     }
 }
+/// How long an Instinct outage is remembered before an evaluation may dial the
+/// endpoint again. Long enough to cover a turn's worth of tool calls, short
+/// enough that a transient hiccup does not hide Instinct for long.
+const OUTAGE_COOLDOWN: Duration = Duration::from_secs(30);
+
+#[derive(Default)]
+struct OutageState {
+    /// End of the window in which no evaluation dials Instinct.
+    until: Option<Instant>,
+    /// Whether this episode was already reported, so the notice is sent once per
+    /// outage and not once per call: a second failure inside the window renews it
+    /// silently, and only an answer from Instinct reports the next one.
+    notified: bool,
+}
+
+/// Keeps an Instinct outage between evaluations, so a turn whose first decision
+/// fails does not pay the flow deadline (2 500 ms in `agent::authorize`) once
+/// per later tool call: measured 2026-11-13 behind a stalling fake at the
+/// decision-client seam (50 ms, then a provider error), the four calls after the
+/// first waited 209.8 ms before this and 1.98 ms with the window.
+struct Outage {
+    state: std::sync::Mutex<OutageState>,
+    cooldown: Duration,
+}
+
+impl Outage {
+    fn new(cooldown: Duration) -> Self {
+        Self {
+            state: std::sync::Mutex::new(OutageState::default()),
+            cooldown,
+        }
+    }
+
+    /// Whether an evaluation must not dial Instinct right now.
+    fn active(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.until.is_some_and(|until| Instant::now() < until)
+    }
+
+    /// Keep the memory of the endpoint from one evaluation's outcome. An answer
+    /// proves Instinct spoke, so it clears the outage; a timeout or a provider
+    /// outage opens the window again, reporting it only once per episode.
+    ///
+    /// `suppressed` marks a run whose decisions never left the process: its
+    /// failure is this window's own echo, not new evidence, so it neither renews
+    /// the window (that would push the probe back on every call and hide a
+    /// recovered endpoint for as long as the turn keeps calling) nor reports it.
+    fn observe(&self, outcome: &RunOutcome, effects: &dyn FlowEffects, suppressed: bool) {
+        if suppressed {
+            return;
+        }
+        if outcome.trace.nodes.iter().any(|n| n.answer.is_some()) {
+            self.clear();
+        }
+        if (matches!(
+            outcome.result,
+            RunResult::Failure {
+                kind: FailureKind::Timeout,
+                ..
+            }
+        ) || outcome.provider_outage)
+            && self.record()
+        {
+            effects.instinct_unavailable();
+        }
+    }
+
+    /// Open the window for the configured cooldown; true when this is the first
+    /// failure reported in the episode.
+    fn record(&self) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let first = !state.notified;
+        state.notified = true;
+        state.until = Some(Instant::now() + self.cooldown);
+        first
+    }
+
+    fn clear(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        *state = OutageState::default();
+    }
+}
+
+/// Fails a decision at once while an outage window is open. The flow still runs
+/// its local nodes and applies the failure policy it configured, so the verdict
+/// is the one a dead endpoint produces, but nothing is dialled and no later call
+/// waits for the flow deadline again.
+struct OutageClient(Arc<dyn DecisionClient>);
+impl DecisionClient for OutageClient {
+    fn capabilities(&self) -> Capabilities {
+        self.0.capabilities()
+    }
+    fn identity(&self) -> ClientIdentity {
+        self.0.identity()
+    }
+    fn decide<'a>(
+        &'a self,
+        _: instinct_flow::protocol::DecisionRequest<'a>,
+        _: &'a CancellationToken,
+        _: Instant,
+    ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>> {
+        Box::pin(async { Err(DecisionError::ProviderError) })
+    }
+}
+
 pub struct FlowRuntime {
     pub store: Arc<FlowStore>,
     client: Arc<dyn DecisionClient>,
     effects: std::sync::RwLock<Arc<dyn FlowEffects>>,
-    outage: Arc<AtomicBool>,
+    outage: Arc<Outage>,
     records: Option<Arc<super::records::Records>>,
 }
 impl FlowRuntime {
@@ -1695,6 +2196,19 @@ impl FlowRuntime {
     }
     pub fn client(&self) -> Arc<dyn DecisionClient> {
         self.client.clone()
+    }
+
+    /// The client an evaluation may dial, with whether it is the suppressed one:
+    /// while an Instinct outage is remembered, that client fails at once, so a
+    /// later call does not pay the flow deadline for an endpoint already known
+    /// unreachable. Its outcome must not be read as fresh evidence about the
+    /// endpoint (see [`Outage::observe`]).
+    fn dialable_client(&self) -> (Arc<dyn DecisionClient>, bool) {
+        if self.outage.active() {
+            (Arc::new(OutageClient(self.client.clone())), true)
+        } else {
+            (self.client.clone(), false)
+        }
     }
 
     /// Bind the hook to a session, not the instinct provider's identity.
@@ -1732,7 +2246,7 @@ impl FlowRuntime {
             store,
             client,
             effects: std::sync::RwLock::new(effects),
-            outage: Arc::new(AtomicBool::new(false)),
+            outage: Arc::new(Outage::new(OUTAGE_COOLDOWN)),
             records: None,
         }
     }
@@ -1814,7 +2328,7 @@ impl FlowRuntime {
                 run_id: ulid::Ulid::generate().to_string(),
             };
             let flow = flow.clone();
-            let client = self.client.clone();
+            let (client, suppressed) = self.dialable_client();
             let event = event.clone();
             let context = context.clone();
             let cancel = cancel.clone();
@@ -1863,20 +2377,7 @@ impl FlowRuntime {
                         outcome.trace.fallback_actions = fallback_actions.clone();
                     }
                 }
-                if outcome.trace.nodes.iter().any(|n| n.answer.is_some()) {
-                    outage.store(false, Ordering::SeqCst);
-                }
-                if (matches!(
-                    outcome.result,
-                    RunResult::Failure {
-                        kind: FailureKind::Timeout,
-                        ..
-                    }
-                ) || outcome.provider_outage)
-                    && !outage.swap(true, Ordering::SeqCst)
-                {
-                    effects.instinct_unavailable();
-                }
+                outage.observe(&outcome, effects.as_ref(), suppressed);
                 if !is_blocking && !cancel.is_cancelled() {
                     let actions = match &outcome.result {
                         RunResult::Success { actions } => actions,
@@ -1951,15 +2452,17 @@ impl FlowRuntime {
             if !evidence_cut {
                 protected_runs.insert(options.run_id.clone());
             }
+            let (client, suppressed) = self.dialable_client();
             let outcome = run(
                 &compiled,
                 &event,
                 &context,
-                self.client.as_ref(),
+                client.as_ref(),
                 options,
                 &cancel,
             )
             .await;
+            self.outage.observe(&outcome, effects.as_ref(), suppressed);
             outcomes.push(outcome);
         }
         outcomes.sort_by(|a, b| a.trace.flow_name.cmp(&b.trace.flow_name));
@@ -2168,6 +2671,20 @@ impl FlowRuntime {
             .await
     }
 
+    /// [`Self::permission_protected_check`] reporting through the caller's
+    /// effects sink: a session's outage notice belongs to the session, not to
+    /// the workspace runtime's sink.
+    pub async fn permission_protected_check_with_effects(
+        &self,
+        ctx: PermissionCallContext,
+        cancel: CancellationToken,
+        effects: Arc<dyn FlowEffects>,
+    ) -> ProtectedCheck {
+        self.protected_check_with_effects(compiled_protected_check(), ctx, cancel, effects)
+            .await
+            .0
+    }
+
     /// [`Self::permission_protected_check`] with the run that answered it.
     pub async fn permission_protected_check_traced(
         &self,
@@ -2175,6 +2692,18 @@ impl FlowRuntime {
         cancel: CancellationToken,
     ) -> (ProtectedCheck, Option<RunScores>) {
         self.protected_check_traced_with(compiled_protected_check(), ctx, cancel)
+            .await
+    }
+
+    /// [`Self::permission_protected_check_traced`] reporting through the
+    /// caller's effects sink.
+    pub async fn permission_protected_check_traced_with_effects(
+        &self,
+        ctx: PermissionCallContext,
+        cancel: CancellationToken,
+        effects: Arc<dyn FlowEffects>,
+    ) -> (ProtectedCheck, Option<RunScores>) {
+        self.protected_check_with_effects(compiled_protected_check(), ctx, cancel, effects)
             .await
     }
 
@@ -2195,6 +2724,18 @@ impl FlowRuntime {
         ctx: PermissionCallContext,
         cancel: CancellationToken,
     ) -> (ProtectedCheck, Option<RunScores>) {
+        let effects = self.effects();
+        self.protected_check_with_effects(compiled, ctx, cancel, effects)
+            .await
+    }
+
+    async fn protected_check_with_effects(
+        &self,
+        compiled: Option<CompiledDefinition>,
+        ctx: PermissionCallContext,
+        cancel: CancellationToken,
+        effects: Arc<dyn FlowEffects>,
+    ) -> (ProtectedCheck, Option<RunScores>) {
         let Some(compiled) = compiled else {
             return (ProtectedCheck::Unavailable, None);
         };
@@ -2214,11 +2755,12 @@ impl FlowRuntime {
         {
             return (ProtectedCheck::Unavailable, None);
         }
+        let (client, suppressed) = self.dialable_client();
         let outcome = run(
             &compiled,
             &event,
             &context,
-            self.client.as_ref(),
+            client.as_ref(),
             RunOptions {
                 deadline: Instant::now() + Duration::from_millis(2000),
                 run_id: ulid::Ulid::generate().to_string(),
@@ -2226,6 +2768,7 @@ impl FlowRuntime {
             &cancel,
         )
         .await;
+        self.outage.observe(&outcome, effects.as_ref(), suppressed);
         let result = match &outcome.result {
             RunResult::Success { actions }
                 if actions.iter().any(|a| grants_protected(&outcome, a)) =>
@@ -2339,17 +2882,22 @@ impl crate::agent::flow_hook::ToolCallFlows for SessionToolFlows {
         ctx: PermissionCallContext,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, ProtectedCheck> {
-        Box::pin(self.runtime.permission_protected_check(ctx, cancel.clone()))
+        Box::pin(self.runtime.permission_protected_check_with_effects(
+            ctx,
+            cancel.clone(),
+            self.effects.clone(),
+        ))
     }
     fn protected_check_traced<'a>(
         &'a self,
         ctx: PermissionCallContext,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, (ProtectedCheck, Option<RunScores>)> {
-        Box::pin(
-            self.runtime
-                .permission_protected_check_traced(ctx, cancel.clone()),
-        )
+        Box::pin(self.runtime.permission_protected_check_traced_with_effects(
+            ctx,
+            cancel.clone(),
+            self.effects.clone(),
+        ))
     }
 }
 

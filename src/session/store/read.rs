@@ -319,6 +319,8 @@ fn with_read_tx<T>(
     path: &Path,
     work: impl FnOnce(&Transaction<'_>) -> Result<T, String>,
 ) -> Result<T, String> {
+    #[cfg(test)]
+    read_count::note(path);
     let mut conn = Connection::open(path).map_err(|e| format!("open: {e}"))?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Deferred)
@@ -379,22 +381,40 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
                         s.model_resolution, s.variant, s.variant_override, s.primary_agent,
                         s.reasoning_floor, s.agent_overrides, s.selection_provenance, s.resume_disabled_reason,
                         (SELECT COUNT(*) FROM events e
-                         WHERE e.session_id = s.id AND e.kind = 'message.received')
-                 FROM sessions s WHERE s.workspace = ?1
+                         WHERE e.session_id = s.id AND e.kind = 'message.received'),
+                        c.parent_id, c.child_id, c.agent, c.goal, c.policy_snapshot,
+                        c.status, c.created_at, c.terminal_at, c.terminal_reason, c.result_text
+                 FROM sessions s LEFT JOIN child_links c ON c.child_id = s.id
+                 WHERE s.workspace = ?1
                  ORDER BY s.updated_at DESC, s.id DESC",
             )
             .map_err(|e| format!("prepare: {e}"))?;
         let rows = stmt
             .query_map(params![workspace], |row| {
-                Ok(ListedSession {
-                    meta: row_to_session(row)?,
-                    message_count: row.get::<_, i64>(16)?.max(0) as u64,
-                })
+                let link = if row.get::<_, Option<String>>(18)?.is_some() {
+                    Some(super::child_link_from_row_at(row, 17)?)
+                } else {
+                    None
+                };
+                Ok((
+                    row_to_session(row)?,
+                    row.get::<_, i64>(16)?.max(0) as u64,
+                    link,
+                ))
             })
             .map_err(|e| format!("query: {e}"))?;
         let mut out = Vec::new();
         for row in rows {
-            match row {
+            let decoded = row
+                .map_err(|e| e.to_string())
+                .and_then(|(meta, count, link)| {
+                    Ok(ListedSession {
+                        meta,
+                        message_count: count,
+                        child_link: link.map(super::ChildLinkRow::decode).transpose()?,
+                    })
+                });
+            match decoded {
                 Ok(session) => out.push(session),
                 // One unreadable row must not hide the healthy conversations of the
                 // workspace; opening that row (`meta`, resume) still fails explicitly.
@@ -470,4 +490,33 @@ fn replay_tx(
         envelopes.push(envelope);
     }
     Ok(envelopes)
+}
+
+/// Test-only count of read connections opened per database file, so a test can
+/// assert how many store reads one operation costs. Keyed by path: parallel tests
+/// each use their own temp database.
+#[cfg(test)]
+pub(crate) mod read_count {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static COUNTS: Mutex<Option<HashMap<PathBuf, usize>>> = Mutex::new(None);
+
+    pub(crate) fn note(path: &Path) {
+        let mut counts = COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+        *counts
+            .get_or_insert_with(HashMap::new)
+            .entry(path.to_path_buf())
+            .or_default() += 1;
+    }
+
+    pub(crate) fn get(path: &Path) -> usize {
+        COUNTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|counts| counts.get(path).copied())
+            .unwrap_or(0)
+    }
 }

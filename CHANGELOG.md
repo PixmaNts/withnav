@@ -6,6 +6,17 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+
+- Permission flows: an Instinct outage is remembered, so the tool calls that follow the first
+  failure no longer each wait out the flow deadline. A decision that times out or fails against
+  the endpoint opens a 30-second window in which every further decision fails at once instead of
+  dialling again: the rules, the local flows and each flow's configured failure policy still
+  decide, the runs are still recorded, and the "Instinct unavailable" notice is sent once per
+  outage rather than once per call. After the window, the next decision tries the endpoint again;
+  an answer clears the outage, another failure renews the window. A tool call that needs the
+  compiled protected check records and honours the same window.
+
 ## [0.8.3] - 2026-11-11
 
 ### Added

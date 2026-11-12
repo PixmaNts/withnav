@@ -33,23 +33,29 @@ pub struct ModelEntry {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
+    /// Where `context_window` came from: `models.json` or a `discovered.*` field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_source: Option<String>,
+    /// The provider's model list could not be refreshed and the discovered
+    /// values shown are past their 24 h TTL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_age_secs: Option<u64>,
+    /// Short, secret-free reason of the failed refresh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_output: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_input_tokens: Option<u64>,
+    /// An explicit `context_window` that differs from the provider's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discrepancy: Option<Discrepancy>,
     /// Whether the model takes images; absent when unknown or from an older server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<bool>,
+    /// Where `images` came from: `models.json`, `discovered.vision` or `none`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images_source: Option<String>,
     /// The variant names the model_id offers.
@@ -58,7 +64,9 @@ pub struct ModelEntry {
     /// The variant a new conversation starts on when none is chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_variant: Option<String>,
-    /// The configured default variant when the model does not offer it now.
+    /// The configured `default_variant`, when it names a variant that is not
+    /// on offer now (a tier the provider does not report, or could not be
+    /// asked for); `refresh_error` says why when the lookup failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_variant_unavailable: Option<String>,
 }

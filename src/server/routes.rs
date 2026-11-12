@@ -101,12 +101,10 @@ use crate::bus::command::{Command, ContentBlock, DeliveryMode};
 use crate::bus::event::ROOT_ACTOR_ID;
 use crate::error::ServerError;
 use crate::server::session::{AppState, ServerConfig};
-
-/// Frozen health body.
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-pub struct HealthBody {
-    pub status: &'static str,
-}
+use withnav_client_api::protocol::{
+    AcceptedBody, ApiKind, CommandsBody, CreateSessionResponse, Discrepancy, HealthBody,
+    ModelEntry, ModelsBody, ServerCommand, SessionListBody, SessionListEntry, StopResponse,
+};
 
 /// Distinguishes an omitted field (`None`, by `serde(default)`) from an
 /// explicit `null` (`Some(None)`).
@@ -141,14 +139,6 @@ pub struct CreateSessionRequest {
     pub resume: Option<String>,
 }
 
-/// Frozen create-session response.
-#[derive(Debug, Serialize, PartialEq)]
-pub struct CreateSessionResponse {
-    pub session_id: String,
-    pub root_actor_id: &'static str,
-    pub actor_state: &'static str,
-}
-
 /// `POST /v1/sessions/:id/messages` request. The server — never
 /// the client — assigns `source_actor_id` (`user:http`), so the wire carries
 /// no impersonatable sender field.
@@ -160,20 +150,6 @@ pub struct PostMessageRequest {
     #[serde(default)]
     pub mode: Option<String>,
     pub content: Vec<ContentBlock>,
-}
-
-/// The frozen 503 body.
-#[derive(Debug, Serialize, PartialEq)]
-pub struct InboxFullResponse {
-    pub accepted: bool,
-    pub reason: &'static str,
-}
-
-/// The frozen stop ack.
-#[derive(Debug, Serialize, PartialEq)]
-pub struct StopAccepted {
-    pub accepted: bool,
-    pub actor_state: &'static str,
 }
 
 /// The Axum router for this slice's routes. Tests mount it directly via
@@ -368,7 +344,9 @@ async fn shutdown_signal(state: AppState) {
 }
 
 async fn health() -> Json<HealthBody> {
-    Json(HealthBody { status: "ok" })
+    Json(HealthBody {
+        status: "ok".into(),
+    })
 }
 
 /// `GET /v1/mcp`: the MCP servers' status, for a client that connects after the last
@@ -549,8 +527,8 @@ async fn create_session(
             StatusCode::OK,
             Json(CreateSessionResponse {
                 session_id: id.to_string(),
-                root_actor_id: ROOT_ACTOR_ID,
-                actor_state: "idle",
+                root_actor_id: ROOT_ACTOR_ID.into(),
+                actor_state: "idle".into(),
             }),
         )
             .into_response(),
@@ -564,52 +542,6 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
         Err(err) => return error_response(err),
     };
     json_result(state.session_summary(parsed).await)
-}
-
-/// One row of `GET /v1/sessions?workspace=`: the stored summary plus the
-/// registry's liveness.
-#[derive(Debug, Serialize)]
-pub struct SessionListEntry {
-    pub yolo: bool,
-    pub permissions_unavailable: Option<String>,
-    pub bypass: bool,
-    pub bypass_seq: u64,
-    pub incarnation: Option<String>,
-    pub editor: bool,
-    pub read_only: bool,
-    pub resume_disabled_reason: Option<String>,
-    pub id: String,
-    pub title: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    /// Number of captain messages (`message.received` events).
-    pub message_count: u64,
-    /// The primary agent the session runs as.
-    pub agent: String,
-    pub model: String,
-    pub variant: Option<String>,
-    pub source: Option<String>,
-    pub variant_source: Option<String>,
-    pub gateway: String,
-    pub upstream_id: String,
-    pub current_seq: u64,
-    /// True when a live, active session with this id exists in this process.
-    pub live: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub child_status: Option<String>,
-    #[serde(skip_serializing_if = "is_promptable")]
-    pub promptable: bool,
-}
-
-fn is_promptable(value: &bool) -> bool {
-    *value
-}
-
-#[derive(Debug, Serialize)]
-pub struct SessionListBody {
-    pub sessions: Vec<SessionListEntry>,
 }
 
 /// `GET /v1/sessions?workspace=<abs path>`: the workspace's conversations,
@@ -682,70 +614,6 @@ async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct ModelEntry {
-    pub name: String,
-    pub gateway: String,
-    pub provider_group: String,
-    pub upstream_id: String,
-    pub api: crate::provider::config::ApiKind,
-    pub supports_tools: bool,
-    pub supports_parallel_tool_calls: Option<bool>,
-    pub context_window: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub disabled_reason: Option<String>,
-    /// Where `context_window` came from: `models.json` or a `discovered.*` field.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub window_source: Option<String>,
-    /// The provider's model list could not be refreshed and the discovered
-    /// values shown are past their 24 h TTL.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stale: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stale_age_secs: Option<u64>,
-    /// Short, secret-free reason of the failed refresh.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refresh_error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reported_output: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_input_tokens: Option<u64>,
-    /// An explicit `context_window` that differs from the provider's.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub discrepancy: Option<DiscrepancyBody>,
-    /// Names of the variants the model offers; never their override objects.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub variants: Vec<String>,
-    /// The default variant, when the model sets one that it offers.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_variant: Option<String>,
-    /// The configured `default_variant`, when it names a variant that is not
-    /// on offer now (a tier the provider does not report, or could not be
-    /// asked for); `refresh_error` says why when the lookup failed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_variant_unavailable: Option<String>,
-    /// Whether the model takes images: absent when unknown.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub images: Option<bool>,
-    /// Where `images` came from: `models.json`, `discovered.vision` or `none`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub images_source: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DiscrepancyBody {
-    pub configured: u64,
-    pub discovered: u64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ModelsBody {
-    pub models: Vec<ModelEntry>,
-    pub default_agent: String,
-}
-
 /// `GET /v1/models?workspace=<abs path>`: the canonical model catalog.
 async fn list_models(
     State(state): State<AppState>,
@@ -804,7 +672,7 @@ async fn list_models(
                                 .map_or_else(|| m.provider.clone(), |(group, _)| group.to_string()),
                             gateway: m.provider,
                             upstream_id: m.model,
-                            api: m.api,
+                            api: wire_api(m.api),
                             supports_tools: m.supports_tools,
                             supports_parallel_tool_calls: m.supports_parallel_tool_calls,
                             context_window: m.context_window,
@@ -827,7 +695,7 @@ async fn list_models(
                 })
                 .collect::<Vec<_>>();
             for (key, entry) in &mut models {
-                if entry.api != crate::provider::config::ApiKind::Chat {
+                if entry.api != ApiKind::Chat {
                     entry.enabled = Some(true);
                     continue;
                 }
@@ -848,7 +716,7 @@ async fn list_models(
                         entry.refresh_error = resolution.refresh_error;
                         entry.reported_output = resolution.reported_output;
                         entry.max_input_tokens = resolution.max_input_tokens;
-                        entry.discrepancy = resolution.discrepancy.map(|d| DiscrepancyBody {
+                        entry.discrepancy = resolution.discrepancy.map(|d| Discrepancy {
                             configured: d.configured,
                             discovered: d.discovered,
                         });
@@ -868,7 +736,7 @@ async fn list_models(
                 StatusCode::OK,
                 Json(ModelsBody {
                     models,
-                    default_agent,
+                    default_agent: Some(default_agent),
                 }),
             )
                 .into_response()
@@ -876,6 +744,17 @@ async fn list_models(
         Err(_) => error_response(ServerError::MalformedBody(
             "model catalog configuration unavailable".into(),
         )),
+    }
+}
+
+/// The catalog's API kind as clients read it; every kind the server knows has a wire name, so a
+/// served model never decodes as `Unknown` (which clients refuse to offer).
+fn wire_api(api: crate::provider::config::ApiKind) -> ApiKind {
+    use crate::provider::config::ApiKind as Catalog;
+    match api {
+        Catalog::Chat => ApiKind::Chat,
+        Catalog::Fim => ApiKind::Fim,
+        Catalog::SystemOne => ApiKind::SystemOne,
     }
 }
 
@@ -910,12 +789,20 @@ async fn get_skills(State(state): State<AppState>, Path(id): Path<String>) -> Re
 
 /// `GET /v1/commands`: the registered session commands, then the prompts of the ready MCP
 /// servers as `<server>:<prompt>` commands.
-async fn list_commands(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let mut commands = json!(state.list_commands());
-    if let Some(list) = commands.as_array_mut() {
-        list.extend(state.prompt_commands().into_iter().map(|c| json!(c)));
-    }
-    Json(json!({ "commands": commands }))
+async fn list_commands(State(state): State<AppState>) -> Json<CommandsBody> {
+    let builtins = state.list_commands().iter().map(|c| ServerCommand {
+        name: c.name.into(),
+        description: c.description.into(),
+        args_hint: c.args_hint.into(),
+    });
+    let prompts = state.prompt_commands().into_iter().map(|c| ServerCommand {
+        name: c.name,
+        description: c.description,
+        args_hint: c.args_hint,
+    });
+    Json(CommandsBody {
+        commands: builtins.chain(prompts).collect(),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1204,7 +1091,7 @@ async fn answer_permission(
         .answer_permission(session_id, request_id, decision)
         .await
     {
-        Ok(()) => Json(json!({ "accepted": true })).into_response(),
+        Ok(()) => Json(AcceptedBody { accepted: true }).into_response(),
         Err(err) => error_response(err),
     }
 }
@@ -1355,9 +1242,9 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
         Err(err) => return error_response(err),
     };
     match state.close_session(parsed).await {
-        Ok(()) => Json(StopAccepted {
+        Ok(()) => Json(StopResponse {
             accepted: true,
-            actor_state: "stopped",
+            actor_state: "stopped".into(),
         })
         .into_response(),
         Err(err) => error_response(err),
@@ -1385,7 +1272,7 @@ async fn continue_child(
         .continue_child_with_token(parent_id, child_id, token)
         .await
     {
-        Ok(()) => Json(json!({"accepted":true})).into_response(),
+        Ok(()) => Json(AcceptedBody { accepted: true }).into_response(),
         Err(error) => error_response(error),
     }
 }

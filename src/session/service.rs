@@ -33,7 +33,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
@@ -323,42 +322,8 @@ struct PreparedSession {
     mcp_tools: crate::mcp::InstalledTools,
 }
 
-/// Frozen `GET /v1/sessions/:id` body.
-#[derive(Debug, Clone, Serialize)]
-pub struct SessionSummary {
-    /// Captain setting `yolo`: the session runs with no permission control.
-    pub yolo: bool,
-    pub permissions_unavailable: Option<String>,
-    pub bypass: bool,
-    pub bypass_seq: u64,
-    pub incarnation: Option<String>,
-    pub editor: bool,
-    pub read_only: bool,
-    pub resume_disabled_reason: Option<String>,
-    pub session_id: String,
-    pub actor_state: String,
-    pub workspace: String,
-    pub model: String,
-    /// The primary agent the session runs as.
-    pub agent: String,
-    /// The model variant in use; `null` for none.
-    pub variant: Option<String>,
-    pub source: Option<String>,
-    pub variant_source: Option<String>,
-    pub gateway: String,
-    pub upstream_id: String,
-    pub current_seq: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub child_status: Option<String>,
-    #[serde(skip_serializing_if = "is_promptable")]
-    pub promptable: bool,
-}
-
-fn is_promptable(value: &bool) -> bool {
-    *value
-}
+/// The `GET /v1/sessions/:id` body, from the wire contract shared with clients.
+pub use withnav_client_api::protocol::SessionMetadata;
 
 /// The session service: the registry plus the immutable config. Cheap to
 /// clone (all fields are `Arc`).
@@ -1999,7 +1964,7 @@ impl Service {
     /// 404; a stored conversation with no registry entry answers "stopped"
     /// at its stored `last_seq`. `current_seq` = last EMITTED seq: for a
     /// live session it is the sequencer head minus one.
-    pub async fn session_summary(&self, id: SessionId) -> Result<SessionSummary, ServerError> {
+    pub async fn session_summary(&self, id: SessionId) -> Result<SessionMetadata, ServerError> {
         // Clone out of the guard; the head query below is a plain sequencer
         // round-trip (the manager reads no events).
         let Some(handle) = self.handle(id) else {
@@ -2026,7 +1991,7 @@ impl Service {
             .bypass
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        Ok(SessionSummary {
+        Ok(SessionMetadata {
             permissions_unavailable: handle.status.permissions_unavailable.clone(),
             yolo: selected
                 .execution
@@ -2042,7 +2007,7 @@ impl Service {
             workspace: handle.workspace.display().to_string(),
             variant: selected.variant_name(),
             model: identity.model,
-            agent: selected.agent,
+            agent: Some(selected.agent),
             gateway: identity.gateway,
             upstream_id: identity.upstream_id,
             source: identity.source,
@@ -2061,7 +2026,7 @@ impl Service {
 
     /// The summary of a conversation that only the store holds (stopped, or
     /// from before a restart): stopped at its stored `last_seq`.
-    async fn stored_summary(&self, id: SessionId) -> Result<SessionSummary, ServerError> {
+    async fn stored_summary(&self, id: SessionId) -> Result<SessionMetadata, ServerError> {
         let (meta, child_link) = self
             .history
             .meta_with_child_link(id)
@@ -2085,7 +2050,7 @@ impl Service {
             meta.variant.clone(),
             meta.provenance.as_ref(),
         );
-        Ok(SessionSummary {
+        Ok(SessionMetadata {
             yolo: false,
             permissions_unavailable: None,
             bypass: false,
@@ -2101,9 +2066,10 @@ impl Service {
             upstream_id: identity.upstream_id,
             source: identity.source,
             variant_source: identity.variant_source,
-            agent: meta
-                .primary_agent
-                .unwrap_or_else(|| AgentId::build().to_string()),
+            agent: Some(
+                meta.primary_agent
+                    .unwrap_or_else(|| AgentId::build().to_string()),
+            ),
             variant: meta.variant,
             current_seq: meta.last_seq,
             parent_session_id: child_link.as_ref().map(|link| link.parent_id.to_string()),

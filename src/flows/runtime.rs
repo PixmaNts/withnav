@@ -1536,12 +1536,13 @@ pub struct ContextSnapshot {
     pub workspace: Option<PathBuf>,
 }
 impl ContextSnapshot {
-    pub fn session(&mut self, session: &crate::session::SessionSummary) {
+    pub fn session(&mut self, session: &crate::session::SessionMetadata) {
+        let agent = session.agent.as_deref().unwrap_or_default();
         for (name, value) in [
-            ("session.id", &session.session_id),
-            ("session.agent", &session.agent),
-            ("session.model", &session.model),
-            ("session.workspace", &session.workspace),
+            ("session.id", session.session_id.as_str()),
+            ("session.agent", agent),
+            ("session.model", session.model.as_str()),
+            ("session.workspace", session.workspace.as_str()),
         ] {
             self.values.insert(
                 name.into(),

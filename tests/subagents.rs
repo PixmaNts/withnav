@@ -1082,8 +1082,9 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
             .bounded(file!(), line!())
             .await
             .unwrap()
-            .agent,
-        "vigie"
+            .agent
+            .as_deref(),
+        Some("vigie")
     );
     fx.state
         .close_session(child)
@@ -1147,8 +1148,9 @@ async fn filtered_agent_declared_false_tool_is_removed() {
             .bounded(file!(), line!())
             .await
             .unwrap()
-            .agent,
-        "filtered"
+            .agent
+            .as_deref(),
+        Some("filtered")
     );
     fx.state
         .close_session(child)
@@ -1687,8 +1689,9 @@ async fn full_access_child_of_plan_parent_has_no_write_dispatch() {
             .bounded(file!(), line!())
             .await
             .unwrap()
-            .agent,
-        "writer"
+            .agent
+            .as_deref(),
+        Some("writer")
     );
 }
 

@@ -1824,9 +1824,15 @@ function receive(event: HostToWebview): void {
     }
     case "usage": renderUsage(event.snapshot); break;
     case "turnStart": { const item = turn(event.id); item.startedAt = replaying ? undefined : Date.now(); setStatus("busy"); break; }
-    case "delta": {
+    case "delta":
+    case "text": {
       const item = textSegment(turn(event.id), event.stepId);
-      item.text += event.text;
+      if (event.type === "text") {
+        // The final text matches what streamed on a live turn: keep the
+        // rendered markdown as is rather than re-render it.
+        if (item.text === event.text) break;
+        item.text = event.text;
+      } else item.text += event.text;
       if (!pendingMarkdown.has(item.content)) {
         pendingMarkdown.add(item.content);
         requestAnimationFrame(() => {

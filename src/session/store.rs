@@ -86,6 +86,8 @@
 mod read;
 
 pub use read::Resumed;
+#[cfg(test)]
+pub(crate) use read::read_count;
 
 /// Session-local choice; inheritance and explicitly disabling a variant are distinct.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

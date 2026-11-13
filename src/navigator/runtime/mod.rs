@@ -412,7 +412,7 @@ impl Runtime {
             return resolve_root_for_uri(uri, &folders);
         }
         if let Some(ref w) = *ws {
-            return resolve_root_for_uri(uri, &[w.clone()]);
+            return resolve_root_for_uri(uri, std::slice::from_ref(w));
         }
         if !self.registered_root_mode.load(Ordering::SeqCst) {
             return Some(PathBuf::from("."));
@@ -590,6 +590,7 @@ impl Runtime {
     /// document is gone. `help_calls` are the calls for help the remark answers
     /// (empty for an ordinary remark); `conversation` marks a remark about
     /// the conversation, which is not tied to a version of the text.
+    #[allow(clippy::too_many_arguments)]
     async fn begin_remark(
         &self,
         uri: &str,

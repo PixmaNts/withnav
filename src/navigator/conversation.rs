@@ -935,33 +935,32 @@ impl ConversationFeed {
 
         // Fallback: If no sessions are bound to this editor and this is the sole registered editor,
         // snapshot the global active conversation.
-        if state.editors.len() == 1 && state.session_editors.values().all(|(e, _)| *e != editor_id)
-        {
-            if let Some((id, entry)) = state
+        if state.editors.len() == 1
+            && state.session_editors.values().all(|(e, _)| *e != editor_id)
+            && let Some((id, entry)) = state
                 .active
                 .and_then(|id| state.sessions.get(&id).map(|e| (id, e)))
-                && entry.available
-                && !entry.invalidated
-            {
-                let target = ConversationTarget {
-                    workspace: self.workspace.clone(),
-                    session_id: id,
-                    incarnation: entry.incarnation,
-                };
-                let mut out = String::new();
-                for (index, exchange) in entry.exchanges.iter().enumerate() {
-                    if index > 0 {
-                        out.push('\n');
-                    }
-                    let _ = write!(out, "{}: {}", exchange.author.as_str(), exchange.text);
+            && entry.available
+            && !entry.invalidated
+        {
+            let target = ConversationTarget {
+                workspace: self.workspace.clone(),
+                session_id: id,
+                incarnation: entry.incarnation,
+            };
+            let mut out = String::new();
+            for (index, exchange) in entry.exchanges.iter().enumerate() {
+                if index > 0 {
+                    out.push('\n');
                 }
-                return DigestSnapshot {
-                    target: Some(target),
-                    digest: out,
-                    waiting_on_captain: entry.waiting_on_captain,
-                    available: true,
-                };
+                let _ = write!(out, "{}: {}", exchange.author.as_str(), exchange.text);
             }
+            return DigestSnapshot {
+                target: Some(target),
+                digest: out,
+                waiting_on_captain: entry.waiting_on_captain,
+                available: true,
+            };
         }
 
         DigestSnapshot {

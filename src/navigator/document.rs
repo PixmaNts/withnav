@@ -382,7 +382,7 @@ impl Documents {
         let mut edits: Vec<&EditSummary> = self
             .open
             .iter()
-            .filter(|(u, _)| uri_filter.map_or(true, |f| f(u)))
+            .filter(|(u, _)| uri_filter.is_none_or(|f| f(u)))
             .flat_map(|(_, doc)| doc.edits.iter())
             .collect();
         edits.sort_by(|a, b| b.ts.cmp(&a.ts));
@@ -397,12 +397,12 @@ impl Documents {
         let open = self
             .open
             .iter()
-            .filter(|(u, _)| uri_filter.map_or(true, |f| f(u)))
+            .filter(|(u, _)| uri_filter.is_none_or(|f| f(u)))
             .map(|(uri, d)| (uri, &d.diagnostics));
         let unopened = self
             .unopened_diagnostics
             .iter()
-            .filter(|(u, _)| uri_filter.map_or(true, |f| f(u)));
+            .filter(|(u, _)| uri_filter.is_none_or(|f| f(u)));
         let mut diags: Vec<String> = Vec::new();
         'collect: for (uri, items) in open.chain(unopened) {
             for d in items {

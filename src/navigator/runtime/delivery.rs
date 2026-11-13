@@ -22,6 +22,7 @@ use super::trigger::TriggerContext;
 impl Runtime {
     /// Delivers a `remark` branch: calls the metacognition with the rendered
     /// branch prompt and writes the completed trigger record.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn deliver_remark(
         self: &Arc<Self>,
         uri: String,

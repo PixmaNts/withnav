@@ -85,17 +85,16 @@ impl Runtime {
                 {
                     return InlineCompletionResult::default();
                 }
-                if let Some(ref r) = root {
-                    if !self.has_root(r).await {
-                        return InlineCompletionResult::default();
-                    }
+                if let Some(ref r) = root
+                    && !self.has_root(r).await
+                {
+                    return InlineCompletionResult::default();
                 }
-                if let Some(target) = &target {
-                    if let Some(feed) = &feed {
-                        if !feed.is_incarnation_available(target.session_id, target.incarnation) {
-                            return InlineCompletionResult::default();
-                        }
-                    }
+                if let Some(target) = &target
+                    && let Some(feed) = &feed
+                    && !feed.is_incarnation_available(target.session_id, target.incarnation)
+                {
+                    return InlineCompletionResult::default();
                 }
                 if self.connection_cancel.is_cancelled() || self.routing_generation() != generation
                 {

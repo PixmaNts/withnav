@@ -295,6 +295,7 @@ impl ReflexService {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn suggest_with_cancel(
         &self,
         uri: &str,

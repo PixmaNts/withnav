@@ -896,7 +896,15 @@ mod tests {
 
         let err = run.await.unwrap().unwrap_err();
         assert!(matches!(err, ServerError::SessionStopping), "{err:?}");
-        assert_eq!(service.session_count(), 1, "the created session is closed");
+        // The first session left the registry on its own when its sequencer
+        // closed, so nothing is left once the created one is closed too.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while service.session_count() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both sessions are closed: the created one and the one that ended");
     }
 
     /// A provider that answers its one request with `text`.

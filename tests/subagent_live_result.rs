@@ -356,3 +356,102 @@ async fn committed_transcript_message_replays_after_crash_before_live_publicatio
     );
     assert_eq!(replay.last().unwrap(), &message);
 }
+
+// Given an idle conversation whose wake delivery of a finished subagent fails to commit
+// When the runtime stops on its own
+// Then the stream ends with a `session.end` naming the failure, the session leaves the
+//      registry, a message asks for a resume, and the resume runs a fresh runtime that
+//      delivers the result that was never consumed
+#[tokio::test]
+async fn a_runtime_that_ends_on_its_own_is_closed_and_can_be_resumed() {
+    let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let service = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128000)
+        .state();
+    let parent = service
+        .create_session(&ws, None, false)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let mut subscription = service
+        .subscribe(parent, None)
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    service.fail_delivery_commit(1);
+    let child = service
+        .create_child_session(parent, "vigie", "inspect")
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (_, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    stream.send(text_chunk("late finding")).unwrap();
+    drop(stream);
+
+    let end = async {
+        loop {
+            let event = subscription
+                .live
+                .as_mut()
+                .unwrap()
+                .recv()
+                .await
+                .expect("the stream ends with session.end");
+            if event.kind == "session.end" {
+                break event;
+            }
+        }
+    }
+    .bounded(file!(), line!())
+    .await;
+    let reason = end.payload["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("runtime ended: subagent wake delivery failed")
+            && reason.contains("injected delivery commit failure"),
+        "{reason}"
+    );
+    async {
+        while service.session_count() != 0 {
+            tokio::task::yield_now().await;
+        }
+    }
+    .bounded(file!(), line!())
+    .await;
+
+    let refused = service
+        .send(common::server::text_command(parent, "anyone there?"))
+        .bounded(file!(), line!())
+        .await;
+    assert!(
+        matches!(refused, Err(withnav::error::ServerError::ResumeRequired)),
+        "{refused:?}"
+    );
+    let summary = service.session_summary(parent).await.unwrap();
+    assert_eq!(summary.actor_state, "stopped");
+
+    // Once it fired, the injected failure stays armed: disarm it for the resume.
+    service.fail_delivery_commit(0);
+    service
+        .create_or_resume_session(&ws, None, false, Some(parent))
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let (request, resumed) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    assert!(request.contains("late finding"), "{request}");
+    let _ = child;
+    drop(resumed);
+    service.close_all().bounded(file!(), line!()).await;
+}

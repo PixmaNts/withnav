@@ -3216,7 +3216,12 @@ impl Service {
             } else {
                 None
             };
+            let supervised = child_parent.is_none().then(|| handle.clone());
             self.lock_sessions().insert(session_id, handle);
+            // Registered first: an end seen at once still finds its entry.
+            if let Some(handle) = supervised {
+                self.supervise_runtime(session_id, &handle);
+            }
         }
         if child_parent.is_none()
             && let Some(owner) = self.handle(session_id)

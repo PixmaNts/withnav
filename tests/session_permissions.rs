@@ -745,6 +745,66 @@ async fn admitted_captain_answer_keeps_captain_provenance_after_bypass() {
     state.close_session(id).await.unwrap();
 }
 
+// Given a conversation that reads files inside the project and lets a rule
+//      allow a command
+// Then the reads leave no row in the decision table, the allowed call does, and
+//      `nav permissions history` therefore lists the decisions, not every call
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_free_read_records_nothing_and_a_decided_call_records_itself() {
+    let env = Env::new();
+    let source = env.ws.join("src/main.rs");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "fn main() {}\n").unwrap();
+    let provider = provider(vec![
+        calls(&[
+            ("r1", "read", json!({"path": source.to_str().unwrap()})),
+            (
+                "g2",
+                "glob",
+                json!({"pattern": "*.rs", "path": env.ws.to_str().unwrap()}),
+            ),
+            ("b1", "bash", json!({"command": "echo decided"})),
+        ]),
+        done("done"),
+    ])
+    .await;
+    let state = config(&env, &provider)
+        .rule("bash", "echo *", withnav::permission::rules::Effect::Allow)
+        .state();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    say(&state, id, "look around").await;
+    let events = wait_events(&state, id, "tool.post_call", 3).await;
+    let approved: Vec<_> = events
+        .iter()
+        .map(|event| event.payload["metadata"]["approved_by"].clone())
+        .collect();
+    assert_eq!(approved, [json!("rule"), json!("rule"), json!("rule")]);
+    wait_events(&state, id, "task.done", 1).await;
+
+    // The row is written off the call path, so it may land a moment later.
+    let rows = common::deadline::eventually("the decision row of the bash call", || async {
+        let rows = withnav::permission::store::PermissionStore::open(env.root.join("data"))
+            .unwrap()
+            .list_decisions(
+                &withnav::permission::decisions::DecisionFilter {
+                    session_id: Some(id.to_string()),
+                    ..Default::default()
+                },
+                10,
+            )
+            .unwrap();
+        (!rows.is_empty()).then_some(rows)
+    })
+    .await;
+    assert_eq!(rows.len(), 1, "only the decided call has a row: {rows:?}");
+    assert_eq!(rows[0].tool, "bash");
+    assert_eq!(
+        rows[0].outcome,
+        withnav::permission::decisions::Outcome::Allowed
+    );
+    state.close_session(id).await.unwrap();
+}
+
 // Given allow-folder on one folder
 // Then a write below it runs without a request, a write in another folder
 //      asks, and a denial with a message reaches the model as

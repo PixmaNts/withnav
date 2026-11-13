@@ -21,6 +21,9 @@ pub enum Error {
 /// one decision; each call is a short local query.
 pub struct PermissionStore {
     pub(crate) connection: std::sync::Mutex<Connection>,
+    /// Writes handed to [`Self::detach`] that have not run yet, so that a test
+    /// can wait for them instead of polling the table.
+    writes_in_flight: std::sync::atomic::AtomicUsize,
     /// Makes rule lookups for this action fail, to exercise failure paths.
     #[cfg(test)]
     pub(crate) fail_action: std::sync::Mutex<Option<String>>,
@@ -97,11 +100,17 @@ impl PermissionStore {
             CREATE INDEX IF NOT EXISTS validations_current
                 ON validations(kind, location, content_sha256) WHERE revoked_at IS NULL;",
         )?;
-        Ok(Self {
+        Ok(Self::with_connection(connection))
+    }
+
+    /// A store over an already opened connection, with nothing in flight.
+    pub(crate) fn with_connection(connection: Connection) -> Self {
+        Self {
             connection: std::sync::Mutex::new(connection),
+            writes_in_flight: Default::default(),
             #[cfg(test)]
             fail_action: Default::default(),
-        })
+        }
     }
 
     /// Runs `work` on the blocking pool. A query can wait up to the busy
@@ -122,15 +131,58 @@ impl PermissionStore {
     pub fn detach(self: &std::sync::Arc<Self>, work: impl FnOnce(&Self) + Send + 'static) {
         match tokio::runtime::Handle::try_current() {
             Ok(runtime) => {
-                let store = self.clone();
-                runtime.spawn_blocking(move || work(&store));
+                self.writes_in_flight
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                // The guard releases the count even if the task is cancelled
+                // before it runs, so a waiter is never left waiting forever.
+                let store = InFlight::new(self.clone());
+                runtime.spawn_blocking(move || {
+                    work(&store);
+                });
             }
             Err(_) => work(self),
         }
     }
 
+    /// Waits for the writes [`Self::detach`] started to land, for a test that
+    /// reads the table right after a call instead of polling it. The writes run
+    /// on the blocking pool, so spinning here never holds them up.
+    #[cfg(test)]
+    pub fn settled(&self) {
+        use std::sync::atomic::Ordering;
+        while self.writes_in_flight.load(Ordering::SeqCst) > 0 {
+            std::thread::yield_now();
+        }
+    }
+
     pub(crate) fn db(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.connection.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// Keeps a detached write counted while it runs, including when its task is
+/// cancelled before it starts.
+struct InFlight(std::sync::Arc<PermissionStore>);
+
+impl InFlight {
+    fn new(store: std::sync::Arc<PermissionStore>) -> Self {
+        Self(store)
+    }
+}
+
+impl std::ops::Deref for InFlight {
+    type Target = PermissionStore;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0
+            .writes_in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

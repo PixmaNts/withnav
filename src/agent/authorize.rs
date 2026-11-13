@@ -3,13 +3,17 @@
 //! session's flow runtime, the decision table, and the request the Captain
 //! answers. See docs/adr/0015-permission-rules-and-instinct-flow.md.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::actor::AgentActor;
+use crate::agent::actor::{AgentActor, ParentCaptain};
 use crate::agent::flow_hook::{
     FlowVerdict, PermissionCallContext, PermissionCommand, ProtectedCheck, RuleResult as FlowRule,
     RunScores, ToolCallContext, ToolCallFlows, ValidatedSkill, captain_messages_with_cut,
@@ -26,7 +30,7 @@ use crate::permission::{
     rules::{Effect, RuleOrigin, RuleScope},
     shell,
 };
-use crate::provider::ToolCall;
+use crate::provider::{ToolCall, openai::ChatMessage};
 
 /// The permission flows answer within their own budget; past this the rule applies.
 const FLOW_DEADLINE: Duration = Duration::from_millis(2500);
@@ -46,7 +50,12 @@ pub(super) enum Authorized {
 /// The session's permission flows: the flow runtime's aggregate verdict and its
 /// compiled-in protected check. Without a flow runtime the rule applies and
 /// nothing can establish a protected request.
-struct SessionFlows {
+///
+/// The conversation evidence is read from the transcript the first time a flow
+/// is asked, never before: a call a rule, the floor, a free read or bypass
+/// decides runs without scanning the whole conversation, which on a long one
+/// is the costliest step before the decision.
+struct SessionFlows<'s> {
     reason: std::sync::Mutex<Option<String>>,
     /// The flow runs that answered, kept for the decision row.
     runs: std::sync::Mutex<Vec<crate::agent::flow_hook::PermissionFlowAnswer>>,
@@ -58,17 +67,79 @@ struct SessionFlows {
     inside_project: Option<bool>,
     location: Option<&'static str>,
     skill: Option<ValidatedSkill>,
+    transcript: &'s [ChatMessage],
+    parent_captain: &'s ParentCaptain,
+    /// The skill the Captain selected in the composer, when this call loads it.
+    captain_skill: Option<String>,
+    evidence: OnceLock<Evidence>,
+    cancel: CancellationToken,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread read the conversation evidence.
+    pub(super) static EVIDENCE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// What the conversation says, as the permission flows read it.
+#[derive(Debug, Clone, PartialEq)]
+struct Evidence {
     captain_messages: Vec<String>,
     captain_messages_cut: bool,
     delegation: Vec<String>,
     delegation_cut: bool,
     recent: Vec<crate::agent::flow_hook::RecentMessage>,
     recent_cut: bool,
-    cancel: CancellationToken,
 }
 
-impl SessionFlows {
+impl Evidence {
+    fn read(
+        transcript: &[ChatMessage],
+        parent_captain: &ParentCaptain,
+        captain_skill: Option<&str>,
+    ) -> Self {
+        #[cfg(test)]
+        EVIDENCE_READS.with(|reads| reads.set(reads.get() + 1));
+        let (mut captain_messages, mut captain_messages_cut) =
+            captain_messages_with_cut(transcript);
+        if let Some((parent, cut)) = parent_captain
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            // The parent's words come first: they are older than the child.
+            captain_messages = parent.into_iter().chain(captain_messages).collect();
+            captain_messages_cut |= cut;
+        }
+        if let Some(name) = captain_skill {
+            captain_messages.push(format!("Load the skill {name}."));
+        }
+        let (delegation, delegation_cut) = delegation_with_cut(transcript);
+        let (recent, recent_cut) = recent_with_cut(transcript);
+        Self {
+            captain_messages,
+            captain_messages_cut,
+            delegation,
+            delegation_cut,
+            recent,
+            recent_cut,
+        }
+    }
+}
+
+impl SessionFlows<'_> {
+    fn evidence(&self) -> &Evidence {
+        self.evidence.get_or_init(|| {
+            Evidence::read(
+                self.transcript,
+                self.parent_captain,
+                self.captain_skill.as_deref(),
+            )
+        })
+    }
+
     fn context(&self, query: &FlowQuery<'_>) -> PermissionCallContext {
+        let evidence = self.evidence().clone();
         PermissionCallContext {
             call: ToolCallContext {
                 call_id: self.call.id.clone(),
@@ -85,18 +156,18 @@ impl SessionFlows {
             location: self.location,
             protected: matches!(query.floor, Floor::Protected(_) | Floor::NamesProtected(_)),
             skill: self.skill.clone(),
-            captain_messages: self.captain_messages.clone(),
-            captain_messages_cut: self.captain_messages_cut,
-            delegation: self.delegation.clone(),
-            delegation_cut: self.delegation_cut,
-            recent: self.recent.clone(),
-            recent_cut: self.recent_cut,
+            captain_messages: evidence.captain_messages,
+            captain_messages_cut: evidence.captain_messages_cut,
+            delegation: evidence.delegation,
+            delegation_cut: evidence.delegation_cut,
+            recent: evidence.recent,
+            recent_cut: evidence.recent_cut,
             protected_check: query.protected_check,
         }
     }
 }
 
-impl PermissionFlows for SessionFlows {
+impl PermissionFlows for SessionFlows<'_> {
     fn flow<'a>(&'a self, query: &'a FlowQuery<'a>) -> BoxFuture<'a, FlowAnswer> {
         Box::pin(async move {
             let Some(hook) = &self.hook else {
@@ -283,28 +354,6 @@ pub(super) async fn authorize(
     };
     let mut cx = floor_context(actor);
     let agent = agent_name(actor);
-    let (mut captain_messages, mut captain_messages_cut) =
-        captain_messages_with_cut(&actor.transcript);
-    if let Some((parent, cut)) = actor
-        .parent_captain
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-    {
-        // The parent's words come first: they are older than the child.
-        captain_messages = parent.into_iter().chain(captain_messages).collect();
-        captain_messages_cut |= cut;
-    }
-    // The host set this flag from the Captain's own selection, never from
-    // model arguments (`run_calls` refuses it there).
-    if call.name == "skill" && call.args["captain_selected"] == true {
-        captain_messages.push(format!(
-            "Load the skill {}.",
-            call.args["name"].as_str().unwrap_or_default()
-        ));
-    }
-    let (delegation, delegation_cut) = delegation_with_cut(&actor.transcript);
-    let (recent, recent_cut) = recent_with_cut(&actor.transcript);
     let scratch = actor.scratch_roots.clone();
     let mut place = location(call, &commands, &cx, &scratch);
     // A call that would leave the project may be in another worktree of the repository. The list
@@ -339,12 +388,13 @@ pub(super) async fn authorize(
         skill: actor
             .active_validated_skill()
             .map(|(name, instructions)| ValidatedSkill { name, instructions }),
-        captain_messages,
-        captain_messages_cut,
-        delegation,
-        delegation_cut,
-        recent,
-        recent_cut,
+        transcript: &actor.transcript,
+        parent_captain: &actor.parent_captain,
+        // The host set this flag from the Captain's own selection, never from
+        // model arguments (`run_calls` refuses it there).
+        captain_skill: (call.name == "skill" && call.args["captain_selected"] == true)
+            .then(|| call.args["name"].as_str().unwrap_or_default().to_owned()),
+        evidence: OnceLock::new(),
         cancel: actor.cancel.clone(),
     };
     let control = control(actor);

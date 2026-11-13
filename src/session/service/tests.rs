@@ -501,3 +501,56 @@ async fn session_summary_round_trips_through_the_client_wire_type() {
         assert_eq!(wire["gateway"], "mock");
     }
 }
+
+#[tokio::test]
+async fn listing_fifty_conversations_costs_one_store_read() {
+    let (dir, service) = test_service();
+    let parent = Ulid::generate();
+    service
+        .history()
+        .record_session(parent, "/workspace", "default", false)
+        .await
+        .unwrap();
+    for _ in 0..48 {
+        service
+            .history()
+            .record_session(Ulid::generate(), "/workspace", "default", false)
+            .await
+            .unwrap();
+    }
+    let child = Ulid::generate();
+    service
+        .history()
+        .record_session(child, "/workspace", "default", false)
+        .await
+        .unwrap();
+    service
+        .history()
+        .create_child_link(
+            child,
+            "vigie".into(),
+            "inspect".into(),
+            "{}".into(),
+            4,
+            crate::bus::event::EventEnvelope::new(
+                parent,
+                0,
+                EventKind::SubagentSpawned,
+                serde_json::json!({}),
+            ),
+        )
+        .await
+        .unwrap();
+    let db = dir.path().join("history.db");
+    let before = crate::session::store::read_count::get(&db);
+    let listed = service.list("/workspace").await.unwrap();
+    assert_eq!(crate::session::store::read_count::get(&db) - before, 1);
+    assert_eq!(listed.len(), 50);
+    let row = listed.iter().find(|row| row.id == child).unwrap();
+    assert_eq!(
+        row.summary.parent_session_id.as_deref(),
+        Some(parent.to_string().as_str())
+    );
+    assert_eq!(row.summary.actor_state, "stopped");
+    assert!(!row.summary.promptable);
+}

@@ -43,6 +43,7 @@ use super::config::SessionConfig;
 use super::hooks::{NoHooks, SessionHooks, StartedSession};
 use super::message::{MessageAccepted, accept};
 use super::sender::SessionSender;
+use super::store::{ChildLink, StoredSession};
 #[cfg(any(test, feature = "test-support"))]
 use super::test_points::ChildPreparationBarrier;
 use super::test_points::{ParkPoint, TestPoints};
@@ -324,6 +325,7 @@ struct PreparedSession {
 
 /// The `GET /v1/sessions/:id` body, from the wire contract shared with clients.
 pub use withnav_client_api::protocol::SessionMetadata;
+pub type SessionSummary = SessionMetadata;
 
 /// The session service: the registry plus the immutable config. Cheap to
 /// clone (all fields are `Arc`).
@@ -1643,10 +1645,29 @@ impl Service {
     /// at its stored `last_seq`. `current_seq` = last EMITTED seq: for a
     /// live session it is the sequencer head minus one.
     pub async fn session_summary(&self, id: SessionId) -> Result<SessionMetadata, ServerError> {
+        let stored = self
+            .history
+            .meta_with_child_link(id)
+            .await
+            .map_err(ServerError::History)?;
+        self.summary_of(id, stored).await
+    }
+
+    /// The summary of `id` from its stored row (metadata and child link, read
+    /// by the caller) overlaid with its live handle when one exists. Reads
+    /// nothing from the store, so a list builds every row's summary from its
+    /// one list read.
+    pub(crate) async fn summary_of(
+        &self,
+        id: SessionId,
+        stored: Option<(StoredSession, Option<ChildLink>)>,
+    ) -> Result<SessionMetadata, ServerError> {
         // Clone out of the guard; the head query below is a plain sequencer
         // round-trip (the manager reads no events).
         let Some(handle) = self.handle(id) else {
-            return self.stored_summary(id).await;
+            let (meta, child_link) =
+                stored.ok_or_else(|| ServerError::SessionNotFound(id.to_string()))?;
+            return Self::stored_summary(id, meta, child_link);
         };
         let current_seq = handle
             .sequencer
@@ -1656,12 +1677,7 @@ impl Service {
             .unwrap_or(0);
         let selected = handle.selected();
         let identity = selected.identity();
-        let (metadata, child_link) = self
-            .history
-            .meta_with_child_link(id)
-            .await
-            .map_err(ServerError::History)?
-            .map_or((None, None), |(meta, link)| (Some(meta), link));
+        let (metadata, child_link) = stored.map_or((None, None), |(meta, link)| (Some(meta), link));
         let editor = metadata.as_ref().is_some_and(|meta| meta.editor);
         let resume_disabled_reason = metadata.and_then(|meta| meta.resume_disabled_reason);
         let bypass = *handle
@@ -1704,13 +1720,11 @@ impl Service {
 
     /// The summary of a conversation that only the store holds (stopped, or
     /// from before a restart): stopped at its stored `last_seq`.
-    async fn stored_summary(&self, id: SessionId) -> Result<SessionMetadata, ServerError> {
-        let (meta, child_link) = self
-            .history
-            .meta_with_child_link(id)
-            .await
-            .map_err(ServerError::History)?
-            .ok_or_else(|| ServerError::SessionNotFound(id.to_string()))?;
+    fn stored_summary(
+        id: SessionId,
+        meta: StoredSession,
+        child_link: Option<ChildLink>,
+    ) -> Result<SessionMetadata, ServerError> {
         let agent = meta
             .primary_agent
             .as_deref()

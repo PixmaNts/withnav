@@ -558,15 +558,7 @@ async fn list_sessions(
         Ok(rows) => {
             let mut sessions = Vec::with_capacity(rows.len());
             for row in rows {
-                let summary = match state.session_summary(row.id).await {
-                    Ok(summary) => summary,
-                    Err(error) => {
-                        // A session whose stored selection cannot be read must not hide
-                        // the other conversations of the workspace.
-                        tracing::warn!(session_id = %row.id, %error, "session list: unreadable session skipped");
-                        continue;
-                    }
-                };
+                let summary = row.summary;
                 sessions.push(SessionListEntry {
                     yolo: summary.yolo,
                     permissions_unavailable: summary.permissions_unavailable,

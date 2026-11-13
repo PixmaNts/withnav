@@ -597,6 +597,78 @@ mod tests {
         assert!(token.is_cancelled());
     }
 
+    struct RecordingModel {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl FimModel for RecordingModel {
+        fn complete<'a>(
+            &'a self,
+            _request: FimRequest,
+            _cancel: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<crate::navigator::ports::FimAnswer, crate::navigator::ports::ModelError>,
+        > {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Ok(crate::navigator::ports::FimAnswer {
+                    text: "completion".into(),
+                    usage: Default::default(),
+                    latency: Duration::from_millis(10),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn rapid_keystrokes_debounce_and_cancel_superseded_requests() {
+        tokio::time::pause();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let model = Arc::new(RecordingModel {
+            calls: Arc::clone(&calls),
+        });
+        let service = Arc::new(ReflexService::new(model));
+
+        let pos1 = Position {
+            line: 0,
+            character: 4,
+        };
+        let pos2 = Position {
+            line: 0,
+            character: 5,
+        };
+
+        let svc1 = Arc::clone(&service);
+        let task1 = tokio::spawn(async move {
+            svc1.suggest("file:///a.rs", "fn a() {}", 1, pos1, "", "rust")
+                .await
+        });
+
+        // Advance less than the 150 ms debounce duration.
+        tokio::time::advance(Duration::from_millis(50)).await;
+
+        // A second keystroke arrives before the first debounce window expires.
+        let svc2 = Arc::clone(&service);
+        let task2 = tokio::spawn(async move {
+            svc2.suggest("file:///a.rs", "fn ab() {}", 2, pos2, "", "rust")
+                .await
+        });
+
+        // The first request must be debounced and aborted without invoking the model.
+        let res1 = task1.await.unwrap();
+        assert_eq!(res1.unwrap_err(), SuggestOutcome::Debounced);
+
+        // Advance through the second request's debounce window.
+        tokio::time::advance(Duration::from_millis(150)).await;
+
+        let res2 = task2.await.unwrap();
+        assert!(res2.is_ok());
+
+        // Only the second request called the model.
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn utf16_offset_lands_after_a_non_ascii_char() {
         // "héllo": é is one char, two UTF-16 units. Position 3 must be the

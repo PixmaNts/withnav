@@ -3,58 +3,30 @@ import { LanguageClient, State } from "vscode-languageclient/node";
 import { readSetting } from "./settings";
 import { InlineCompletionParams, InlineCompletionResult, ReflexShownNotification } from "./protocol";
 
-const DEBOUNCE_MS = 150;
-
 /** Reads the reflex on/off setting (declared by the integration step). */
 const reflexEnabled = () =>
   readSetting<boolean>("reflex.enabled", true);
 
 /**
  * The reflex layer's editor half: an inline-completion provider that asks
- * the language server (`withnav/inlineCompletion`, after a 150 ms
- * debounce) and reports display time back (`withnav/reflexShown`) so the
- * server's log holds both halves of the pause-to-display latency.
+ * the language server (`withnav/inlineCompletion`) and reports display time
+ * back (`withnav/reflexShown`) so the server's log holds both halves of the
+ * pause-to-display latency. Debouncing occurs server-side across all editor
+ * clients.
  *
  * Suggestions apply on Tab (VS Code's inlineSuggest default); continuing
  * to type dismisses them. Returning an empty list hides the ghost text.
  */
 export function registerReflex(client: LanguageClient): vscode.Disposable[] {
-  const timers = new Map<
-    string,
-    { timer: ReturnType<typeof setTimeout>; resolve: (fire: boolean) => void }
-  >();
-
   const provider: vscode.InlineCompletionItemProvider = {
     provideInlineCompletionItems: async (document, position, _context, token) => {
-      if (!reflexEnabled()) {
+      if (!reflexEnabled() || token.isCancellationRequested) {
         return { items: [] };
       }
-      const uri = document.uri.toString();
-
-      // Debounce: the last keystroke wins. A superseded request resolves to
-      // "do not fire" instead of hanging forever.
-      const pending = timers.get(uri);
-      if (pending) {
-        clearTimeout(pending.timer);
-        pending.resolve(false);
-      }
-      const fire = await new Promise<boolean>((resolve) => {
-        const entry = {
-          timer: setTimeout(() => {
-            timers.delete(uri);
-            resolve(true);
-          }, DEBOUNCE_MS),
-          resolve,
-        };
-        timers.set(uri, entry);
-      });
-      if (!fire || token.isCancellationRequested || !reflexEnabled()) {
-        return { items: [] };
-      }
-
       if (client.state !== State.Running) {
         return { items: [] };
       }
+      const uri = document.uri.toString();
       const params: InlineCompletionParams = {
         uri,
         version: document.version,
@@ -66,10 +38,14 @@ export function registerReflex(client: LanguageClient): vscode.Disposable[] {
         result = await client.sendRequest<InlineCompletionResult>(
           "withnav/inlineCompletion",
           params,
+          token,
         );
       } catch {
-        // A transport failure never breaks the editor: no suggestion (the
-        // server logs its own half of the error).
+        // A transport failure or cancellation never breaks the editor: no suggestion
+        // (the server logs its own half of the error).
+        return { items: [] };
+      }
+      if (token.isCancellationRequested || !reflexEnabled()) {
         return { items: [] };
       }
       if (!result || !result.items || result.items.length === 0) {

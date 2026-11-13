@@ -444,7 +444,23 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
         return run(ApprovedBy::Bypass, trace);
     }
 
-    // 6. The permission flow, with the rules' result.
+    // 6. An `allow` rule runs a call the Captain already approved without an
+    // Instinct evaluation. `bash` is the exception: a rule on a shell prefix
+    // cannot foresee the line that will run, so the flow keeps judging a
+    // destructive one. A rule-less `allow` is a validated skill (`lookup`); it
+    // is a different provenance from a written rule, hence the separate label.
+    if rules.result == RuleResult::Allow && input.call.name != "bash" {
+        return run(
+            if rules.rule.is_none() {
+                ApprovedBy::Validation
+            } else {
+                ApprovedBy::Rule
+            },
+            trace,
+        );
+    }
+
+    // 7. The permission flow, with the rules' result.
     let answer = flows
         .flow(&FlowQuery {
             rule: rules.result,
@@ -479,7 +495,7 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
             proposals,
             trace,
         ),
-        // 7. The Captain.
+        // 8. The Captain.
         FlowAnswer::ApplyRule if rules.result == RuleResult::Allow && rules.rule.is_none() => {
             run(ApprovedBy::Validation, trace)
         }
@@ -939,6 +955,21 @@ mod tests {
         fn decide(&self, control: Control, call: &ToolCall) -> Decision {
             self.decide_with(control, call, 1, FlowAnswer::ApplyRule).0
         }
+
+        /// [`Self::decide_full`] for a call the Captain validated (a skill).
+        fn decide_validated(&self, control: Control, call: &ToolCall, flows: &Script) -> Decision {
+            let input = Input {
+                control,
+                call,
+                commands: &[],
+                cx: &self.cx,
+                store: Some(&self.store),
+                agent: "build",
+                repeats: 1,
+                validated: true,
+            };
+            futures::executor::block_on(decide(&input, flows))
+        }
     }
 
     /// A scripted flow side that counts what it is asked.
@@ -1225,29 +1256,22 @@ mod tests {
             file("write", &in_wt(&wt, "src/new.rs")),
             file("edit", &in_wt(&wt, "src/a.rs")),
         ] {
-            // Reads never reach the flow; a write's flow answer is the rules' word.
-            let flow = if matches!(call.name.as_str(), "write" | "edit") {
-                FlowAnswer::ApplyRule
-            } else {
-                FlowAnswer::Deny
-            };
-            let (decision, asked) = f.decide_with(Control::Normal, &call, 1, flow);
+            // A read inside the roots is free, and the `allow` rule covers the
+            // write and the edit: none of them asks the flow, whose contradicting
+            // answer would otherwise deny the call.
+            let (decision, asked) = f.decide_with(Control::Normal, &call, 1, FlowAnswer::Deny);
             let relative = Path::new(call.args["path"].as_str().unwrap())
                 .strip_prefix(&wt)
                 .unwrap()
                 .display()
                 .to_string();
             let relative = file(&call.name, &relative);
-            let (same, _) = f.decide_with(Control::Normal, &relative, 1, flow);
+            let (same, _) = f.decide_with(Control::Normal, &relative, 1, FlowAnswer::Deny);
             assert_eq!(run_by(&decision), Some(ApprovedBy::Rule), "{call:?}");
             assert_eq!(decision.verdict, same.verdict, "{call:?}");
             assert_eq!(decision.trace.rule_id, same.trace.rule_id, "{call:?}");
             assert_eq!(decision.trace.effect, same.trace.effect, "{call:?}");
-            assert_eq!(
-                asked,
-                usize::from(flow == FlowAnswer::ApplyRule),
-                "{call:?}"
-            );
+            assert_eq!(asked, 0, "{call:?}");
         }
     }
 
@@ -1342,8 +1366,8 @@ mod tests {
         let (mut f, wt) = with_worktree();
         f.cx.temp_roots = vec![f.root()];
         f.cx.workspace = f.root().join("project");
-        f.add("write", "*", Effect::Allow);
-        // Judged as the workspace: the flow is consulted, not short-circuited as scratch space.
+        // Judged as the workspace, not short-circuited as scratch space: with no
+        // rule the flow is consulted and its question decides the call.
         let (decision, asked) = f.decide_with(
             Control::Normal,
             &file("write", &in_wt(&wt, "src/a.rs")),
@@ -1490,6 +1514,151 @@ mod tests {
         let line = format!("echo x > {}", f.root().join("tmp/x").display());
         let (_, asked) = f.decide_with(Control::Normal, &bash(&line), 1, FlowAnswer::Allow);
         assert_eq!(asked, 1);
+    }
+
+    /// The calls an `allow` rule covers without a flow: reads, searches, writes
+    /// and edits the rule matches outside the free roots, and a fetch. A call
+    /// inside the readable roots or the temp directory is already free before the
+    /// rule is read, so it would not exercise the rule's early exit.
+    #[test]
+    fn an_allow_rule_runs_a_native_call_without_the_flow() {
+        let f = fixture();
+        for action in ["read", "grep", "glob", "write", "edit"] {
+            f.add(action, "*", Effect::Allow);
+        }
+        f.add("external_directory", "*", Effect::Allow);
+        f.add("fetch", "https://docs.rs/*", Effect::Allow);
+        let project = |name: &str| f.cx.workspace.join(name).display().to_string();
+        let outside = f.root().join("outside").display().to_string();
+        for call in [
+            file("read", &format!("{outside}/x")),
+            file("grep", &outside),
+            call("glob", json!({"pattern": "*.rs", "path": outside})),
+            file("write", &project("new.rs")),
+            file("edit", &project("a.rs")),
+            fetch("https://docs.rs/x"),
+        ] {
+            // The contradicting answer proves the flow was never consulted: a
+            // `deny` would refuse the call, an `ask` would raise a question.
+            let (decision, asked) = f.decide_with(Control::Normal, &call, 1, FlowAnswer::Deny);
+            assert_eq!(run_by(&decision), Some(ApprovedBy::Rule), "{call:?}");
+            assert_eq!(asked, 0, "{call:?}: the flow was consulted");
+            assert_eq!(decision.trace.flow_verdict, None, "{call:?}");
+            assert!(decision.trace.rule_id.is_some(), "{call:?}");
+        }
+    }
+
+    #[test]
+    fn an_allow_rule_on_bash_still_reaches_the_flow() {
+        let f = fixture();
+        f.add("bash", "git status *", Effect::Allow);
+        // The rule is a prefix: the line it runs is still the flow's to judge.
+        let (decision, asked) =
+            f.decide_with(Control::Normal, &bash("git status"), 1, FlowAnswer::Deny);
+        assert_eq!(asked, 1);
+        assert!(
+            matches!(decision.verdict, Verdict::Deny { .. }),
+            "{decision:?}"
+        );
+        let (decision, asked) =
+            f.decide_with(Control::Normal, &bash("git status"), 1, FlowAnswer::Allow);
+        assert_eq!(asked, 1);
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Flow));
+        // A flow that says nothing still leaves the rule in force.
+        let (decision, asked) = f.decide_with(
+            Control::Normal,
+            &bash("git status"),
+            1,
+            FlowAnswer::ApplyRule,
+        );
+        assert_eq!(asked, 1);
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
+    }
+
+    #[test]
+    fn an_allowed_native_call_still_obeys_the_rules_above_the_flow() {
+        let f = fixture();
+        f.add("write", "*", Effect::Allow);
+        let write = file("write", &f.cx.workspace.join("a.rs").display().to_string());
+        // Three identical calls in a turn ask before the rule is reached.
+        let (decision, asked) = f.decide_with(
+            Control::Normal,
+            &write,
+            DOOM_LOOP_THRESHOLD,
+            FlowAnswer::Allow,
+        );
+        assert!(
+            matches!(decision.verdict, Verdict::AskCaptain { .. }),
+            "{decision:?}"
+        );
+        assert_eq!(asked, 0);
+        // Bypass keeps its own provenance.
+        let (decision, _) = f.decide_with(Control::Bypass, &write, 1, FlowAnswer::Deny);
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Bypass));
+        // A deny on the path is final.
+        let denied = f.cx.workspace.join("b.rs").display().to_string();
+        f.add("write", &literal(&denied), Effect::Deny);
+        let (decision, _) = f.decide_with(
+            Control::Normal,
+            &file("write", &denied),
+            1,
+            FlowAnswer::Allow,
+        );
+        assert!(matches!(decision.verdict, Verdict::Deny { .. }));
+    }
+
+    #[test]
+    fn a_validated_call_with_no_rule_runs_without_the_flow() {
+        let f = fixture();
+        let skill = call("skill", json!({"name": "release"}));
+        // The Captain validated the content and no rule covers it: the flow is
+        // not asked, and the provenance is the validation, not a rule.
+        let flows = Script::new(FlowAnswer::Deny, ProtectedCheck::Unavailable);
+        let decision = f.decide_validated(Control::Normal, &skill, &flows);
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Validation));
+        assert_eq!((flows.flow_calls.get(), decision.trace.rule_id), (0, None));
+        // An `ask` rule still asks; the validation does not resolve it.
+        let ask = f.add("skill", "release", Effect::Ask);
+        let flows = Script::new(FlowAnswer::ApplyRule, ProtectedCheck::Unavailable);
+        let decision = f.decide_validated(Control::Normal, &skill, &flows);
+        assert!(
+            matches!(decision.verdict, Verdict::AskCaptain { .. }),
+            "{decision:?}"
+        );
+        assert_eq!(flows.flow_calls.get(), 1);
+        // A `deny` rule is final and never reaches a flow.
+        f.store.revoke(ask.id).unwrap();
+        let deny = f.add("skill", "release", Effect::Deny);
+        let flows = Script::new(FlowAnswer::Allow, ProtectedCheck::Unavailable);
+        let decision = f.decide_validated(Control::Normal, &skill, &flows);
+        assert!(
+            matches!(&decision.verdict, Verdict::Deny { rule: Some(rule), .. } if rule.id == deny.id)
+        );
+        assert_eq!(flows.flow_calls.get(), 0);
+    }
+
+    #[test]
+    fn an_allow_rule_never_stands_in_for_the_protected_check() {
+        let f = fixture();
+        let target = f.root().join("config/config.json").display().to_string();
+        f.add("write", "*", Effect::Allow);
+        f.add("external_directory", "*", Effect::Allow);
+        let write = file("write", &target);
+        for check in [ProtectedCheck::Failed, ProtectedCheck::Unavailable] {
+            let flows = Script::new(FlowAnswer::Allow, check);
+            let decision = f.decide_full(Control::Normal, &write, 1, &flows);
+            assert!(
+                matches!(&decision.verdict, Verdict::AskCaptain { always, .. } if always.is_empty()),
+                "{check:?} {decision:?}"
+            );
+            assert_eq!((flows.flow_calls.get(), flows.check_calls.get()), (0, 1));
+        }
+        // A passed check does not turn the rule into a flow allow either: the
+        // call runs under the rule, and the flow is never asked.
+        let flows = Script::new(FlowAnswer::Deny, ProtectedCheck::Passed);
+        let decision = f.decide_full(Control::Normal, &write, 1, &flows);
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
+        assert_eq!((flows.flow_calls.get(), flows.check_calls.get()), (0, 1));
     }
 
     #[test]

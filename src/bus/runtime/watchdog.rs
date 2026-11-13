@@ -221,10 +221,7 @@ impl WatchdogPark {
     }
     pub fn claim_stop(&self) -> bool {
         let _state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !self.is_doubt() || self.stopped.swap(true, Ordering::AcqRel) {
-            return false;
-        }
-        true
+        self.is_doubt() && !self.stopped.swap(true, Ordering::AcqRel)
     }
     pub(super) async fn boundary(&self, cancel: &CancellationToken) -> bool {
         loop {

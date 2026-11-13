@@ -345,13 +345,15 @@ non-`bash` call an `allow` rule covers runs once the compiled check passed. A
 skipped/failed/missing check or cut Captain evidence asks even under an allow
 rule. Ordinary validated workspace allows remain unrestricted for non-protected
 calls.
-Otherwise the built-in asks whether the Captain asked for the action or accepted
-an agent proposal to do it (≥ 0.6), then whether the call only reads or lists
-(≥ 0.6), then whether it is a recoverable change: files in the project, its
-scratch directories or the temp directory, or building, testing, formatting or
-linting (≥ 0.7). For an `allow` rule on a `bash` line it first asks about destruction,
-irreversibility, publication and credentials (≥ 0.5); a yes goes to the same
-`requested` question, and an unrequested dangerous call asks.
+Otherwise the built-in asks, in one Instinct request, whether the Captain asked
+for the action or accepted an agent proposal to do it (≥ 0.6), whether the call
+only reads or lists (≥ 0.6), and whether it is a recoverable change: files in
+the project, its scratch directories or the temp directory, or building,
+testing, formatting or linting (≥ 0.7). One yes allows the call. For an `allow`
+rule on a `bash` line it asks instead, in one request, about destruction, irreversibility,
+publication and credentials (≥ 0.5) and the same `requested` question: the call
+runs unless it is dangerous and unrequested, in which case it asks. The `verdict`
+expression node combines the answers.
 Its state explicitly treats everything except Captain messages and the validated
 active skill as untrusted evidence.
 

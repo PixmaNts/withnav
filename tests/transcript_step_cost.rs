@@ -710,7 +710,6 @@ async fn step_and_turn_cost_through_the_server() {
             );
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
-        state.history().flush().await.expect("flush");
         let delta = SqlCount::now().since(before);
         total_pages += delta.history_pages;
 

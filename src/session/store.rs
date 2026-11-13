@@ -86,6 +86,8 @@
 mod read;
 
 pub use read::Resumed;
+#[cfg(test)]
+pub(crate) use read::read_count;
 
 /// Session-local choice; inheritance and explicitly disabling a variant are distinct.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -859,6 +861,8 @@ impl HistoryStore {
     pub async fn child_link(&self, child_id: Ulid) -> Result<Option<ChildLink>, String> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            read::read_count::note(&path);
             let conn = Connection::open(&*path).map_err(|e| e.to_string())?;
             conn.query_row(
                 "SELECT parent_id, child_id, agent, goal, policy_snapshot, status, created_at, terminal_at, terminal_reason, result_text
@@ -1371,12 +1375,14 @@ fn split_variant(
     Ok((Some(name.clone()), Some(raw)))
 }
 
-/// One row of the list projection: the session metadata plus its captain
-/// message count (`message.received` events).
+/// One row of the list projection: the session metadata, its captain
+/// message count (`message.received` events) and its child link, all from one read.
 #[derive(Debug, Clone)]
 pub struct ListedSession {
     pub meta: StoredSession,
     pub message_count: u64,
+    /// Set when the session is a background child of another one.
+    pub child_link: Option<ChildLink>,
 }
 
 /// One workspace seen in the history: how many conversations it has and when the

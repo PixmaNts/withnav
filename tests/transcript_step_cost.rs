@@ -207,6 +207,7 @@ fn actor(steps: usize, redaction: Redaction, workspace: &Path) -> AgentActor {
         withnav::provider::config::ReasoningHistory::Preserve,
         Some(8_192),
         tokio_util::sync::CancellationToken::new(),
+        Arc::new(withnav::provider::openai::ClientCache::new()),
     );
     // A budget, so the estimate runs as it does for every model with a known window.
     actor.input_budget = Some(u64::MAX);

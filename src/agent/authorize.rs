@@ -18,8 +18,8 @@ use crate::agent::flow_hook::{
 use crate::agent::permissions::{PermissionRequest, Scope};
 use crate::permission::{
     decide::{
-        self, ApprovedBy, Control, Decision, FlowAnswer, FlowQuery, Input, PermissionFlows,
-        RuleProposal, RuleResult, Verdict,
+        self, Control, Decision, FlowAnswer, FlowQuery, Input, PermissionFlows, RuleProposal,
+        RuleResult, Verdict,
     },
     decisions::{self, CallSnapshot, Outcome},
     floor::{Floor, FloorContext, Location, location, resolve_path},
@@ -414,19 +414,23 @@ pub(super) async fn authorize(
     }
     match decision.verdict.clone() {
         Verdict::Run { approved_by } => {
-            settle_row(
-                actor,
-                call,
-                &decision,
-                previous,
-                Outcome::Allowed,
-                Some(approved_by.as_str()),
-            )
-            .await;
+            // A read inside the roots that no rule looked at was not decided
+            // by anything, so the table gets no row for it; the call still says
+            // `approved_by: rule` on its tool events.
+            if !decision.trace.unconstrained {
+                settle_row(
+                    actor,
+                    call,
+                    &decision,
+                    previous,
+                    Outcome::Allowed,
+                    Some(approved_by.as_str()),
+                );
+            }
             Authorized::Run(approval(approved_by.as_str(), &decision))
         }
         Verdict::Deny { message, .. } => {
-            settle_row(actor, call, &decision, previous, Outcome::Denied, None).await;
+            settle_row(actor, call, &decision, previous, Outcome::Denied, None);
             let by = if decision.trace.effect == Some(Effect::Deny) {
                 "rule"
             } else {
@@ -442,7 +446,7 @@ pub(super) async fn authorize(
         }
         Verdict::AskCaptain { reason, always } => {
             if let Some(id) = previous {
-                update(actor, id, Outcome::Cancelled, None, None).await;
+                update(actor, id, Outcome::Cancelled, None, None);
             }
             let mut request = PermissionRequest::new(call, scope(call, &cx), &agent);
             // The scores behind the question, so that the card explains itself.
@@ -461,13 +465,16 @@ pub(super) async fn authorize(
                 &decision,
                 Some(&request.reason),
             )));
-            request.decision_id = record(
+            request.decision_id = record_pending(
                 actor,
-                call,
-                &decision,
-                Outcome::Pending,
-                None,
-                Some(request.id),
+                row(
+                    actor,
+                    call,
+                    &decision,
+                    Outcome::Pending,
+                    None,
+                    Some(request.id),
+                ),
             )
             .await;
             request.always = always;
@@ -654,16 +661,16 @@ pub(super) fn answered_approval(request: &PermissionRequest, approved_by: &str) 
     json!({"approved_by": approved_by, "permission_gate": gate})
 }
 
-async fn record(
+/// The row this decision becomes, before it is written.
+fn row(
     actor: &AgentActor,
     call: &ToolCall,
     decision: &Decision,
     outcome: Outcome,
     approved_by: Option<&str>,
     request_id: Option<ulid::Ulid>,
-) -> Option<i64> {
-    let store = actor.permission_store.as_ref()?;
-    let row = decisions::Decision {
+) -> decisions::Decision {
+    decisions::Decision {
         id: 0,
         time: crate::bus::event::now_rfc3339(),
         session_id: actor.permission_session.clone(),
@@ -685,7 +692,29 @@ async fn record(
         captain_answer: None,
         outcome,
         approved_by: approved_by.map(str::to_owned),
+    }
+}
+
+/// Writes the decision row of a call that has already run or been refused, off
+/// the tool path: nothing waits for the insert, so dispatch never waits on
+/// SQLite. The row is lost if the process dies first, which a history of the
+/// decisions that were made can afford.
+fn record_detached(actor: &AgentActor, row: decisions::Decision) {
+    let Some(store) = actor.permission_store.clone() else {
+        return;
     };
+    store.detach(move |store| {
+        if let Err(error) = store.record(&row) {
+            tracing::warn!(%error, "permission decision not recorded");
+        }
+    });
+}
+
+/// Writes the `pending` row of a question before the turn yields: its id is
+/// what the Captain's answer settles, so this one is awaited. No tool runs on
+/// this path.
+async fn record_pending(actor: &AgentActor, row: decisions::Decision) -> Option<i64> {
+    let store = actor.permission_store.as_ref()?;
     store
         .run(move |store| store.record(&row))
         .await
@@ -694,8 +723,8 @@ async fn record(
 }
 
 /// A bypass answer settles the pending row with the fresh decision; any
-/// other decision is a new row.
-async fn settle_row(
+/// other decision is a new row. Both leave the caller free straight away.
+fn settle_row(
     actor: &AgentActor,
     call: &ToolCall,
     decision: &Decision,
@@ -704,58 +733,37 @@ async fn settle_row(
     approved_by: Option<&str>,
 ) {
     match previous {
-        Some(id) => {
-            update(
-                actor,
-                id,
-                outcome,
-                Some(&json!({"answer": "bypass"})),
-                approved_by,
-            )
-            .await
-        }
-        None => {
-            record(actor, call, decision, outcome, approved_by, None).await;
-        }
+        Some(id) => update(
+            actor,
+            id,
+            outcome,
+            Some(&json!({"answer": "bypass"})),
+            approved_by,
+        ),
+        None => record_detached(
+            actor,
+            row(actor, call, decision, outcome, approved_by, None),
+        ),
     }
 }
 
-pub(super) async fn update(
+/// Settles a row already written, off the call path: a Captain's answer and a
+/// cancellation both reach here while a tool is about to run.
+pub(super) fn update(
     actor: &AgentActor,
     id: i64,
     outcome: Outcome,
     answer: Option<&Value>,
     approved_by: Option<&str>,
 ) {
-    let Some(store) = &actor.permission_store else {
+    let Some(store) = actor.permission_store.clone() else {
         return;
     };
     let (answer, approved_by) = (answer.cloned(), approved_by.map(str::to_owned));
-    let updated = store
-        .run(move |store| {
-            store.update_outcome(id, outcome, answer.as_ref(), approved_by.as_deref())
-        })
-        .await;
-    if let Err(error) = updated {
-        tracing::warn!(%error, "permission decision outcome not recorded");
-    }
-}
-
-/// Yolo checks nothing, and the decision table says so.
-pub(super) async fn record_yolo(actor: &AgentActor, call: &ToolCall) {
-    let decision = Decision {
-        verdict: Verdict::Run {
-            approved_by: ApprovedBy::Yolo,
-        },
-        trace: Default::default(),
-    };
-    record(
-        actor,
-        call,
-        &decision,
-        Outcome::Allowed,
-        Some(ApprovedBy::Yolo.as_str()),
-        None,
-    )
-    .await;
+    store.detach(move |store| {
+        let updated = store.update_outcome(id, outcome, answer.as_ref(), approved_by.as_deref());
+        if let Err(error) = updated {
+            tracing::warn!(%error, "permission decision outcome not recorded");
+        }
+    });
 }

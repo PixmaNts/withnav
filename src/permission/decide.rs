@@ -167,6 +167,11 @@ pub struct Trace {
     pub command_matches: Value,
     pub floor: Option<String>,
     pub doom_loop: bool,
+    /// Nothing decided this call: a read inside the readable roots, which no
+    /// rule, floor, bypass, flow or Captain answered. The table records the
+    /// decisions that were made, not the plain invocations of the tools, so such
+    /// a call writes no row.
+    pub unconstrained: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -436,6 +441,12 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
     }
 
     if free_read || (temp_write && rules.result != RuleResult::Ask) {
+        // A read inside the roots is never looked at by a rule at all
+        // (`lookup` does not read them for it), so no rule, floor, bypass, flow
+        // or Captain decided the call: it runs, and the table gets no row. A
+        // temporary write does reach the rules (its path is also judged as an
+        // `external_directory`), so it keeps its row.
+        trace.unconstrained = free_read;
         return run(ApprovedBy::Rule, trace);
     }
 
@@ -1192,11 +1203,54 @@ mod tests {
                 f.decide_with(Control::Normal, &call, 1, allow(FlowAnswer::Deny));
             assert_eq!(run_by(&decision), Some(ApprovedBy::Rule), "{call:?}");
             assert_eq!(asked, 0);
+            // Nothing decided it: no rule was read, no flow asked.
+            assert!(decision.trace.unconstrained, "{call:?}");
         }
         // Outside the roots a read goes through the rules.
         let outside = f.root().join("outside/x").display().to_string();
         let decision = f.decide(Control::Normal, &file("read", &outside));
         assert!(matches!(decision.verdict, Verdict::AskCaptain { .. }));
+        assert!(!decision.trace.unconstrained);
+    }
+
+    /// A temporary write still goes through the rule lookup (its path is also
+    /// judged as an `external_directory`), so it is not the undecided case and
+    /// keeps its row.
+    #[test]
+    fn a_temporary_write_is_a_decision() {
+        let mut f = fixture();
+        f.cx.temp_roots = vec![f.root()];
+        let target = f.root().join("tmp/x");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let call = file("write", &target.display().to_string());
+        let (decision, asked) = f.decide_with(Control::Normal, &call, 1, FlowAnswer::Deny);
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
+        assert_eq!(asked, 0);
+        assert!(!decision.trace.unconstrained);
+    }
+
+    /// Every other way a call runs is a decision and keeps its row.
+    #[test]
+    fn a_decided_call_is_never_unconstrained() {
+        let f = fixture();
+        f.add("bash", "echo *", Effect::Allow);
+        for (control, answer, call) in [
+            (Control::Normal, FlowAnswer::Allow, bash("git status")),
+            (Control::Bypass, FlowAnswer::ApplyRule, bash("git status")),
+            (Control::Normal, FlowAnswer::ApplyRule, bash("echo hi")),
+        ] {
+            let (decision, _) = f.decide_with(control, &call, 1, answer);
+            assert!(
+                matches!(decision.verdict, Verdict::Run { .. }),
+                "{control:?}"
+            );
+            assert!(!decision.trace.unconstrained, "{control:?} {answer:?}");
+        }
+        // Yolo is never marked: the caller drops its row by control level, so a
+        // flag here would be a second, divergent source of truth.
+        let decision = f.decide(Control::Yolo, &bash("echo hi"));
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Yolo));
+        assert!(!decision.trace.unconstrained);
     }
 
     /// A fixture whose repository has a second worktree `wt`, next to the project.

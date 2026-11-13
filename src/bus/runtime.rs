@@ -317,6 +317,28 @@ impl RuntimeStatus {
                 .load(std::sync::atomic::Ordering::Acquire)
             || self.watchdog.root_hold().is_some()
     }
+
+    /// What the actor is doing right now, as summaries and message acks
+    /// report it: `running` while turn work is in flight (a turn, a
+    /// compaction summary, a model-switch measurement), `waiting` while the
+    /// actor is parked for the Captain (pending `ask` answer, pending
+    /// permission, a budget or watchdog park, a resumed pause), `idle` when
+    /// nothing is in flight. A park wins over running because a mid-turn
+    /// park still faces the Captain with a decision; parks normally end the
+    /// turn, but a policy pin can re-mark it running while the pending
+    /// interaction survives until it is consumed.
+    pub fn actor_state(&self) -> &'static str {
+        if self.pending_permission().is_some() || self.pending_ask() || self.progress_parked() {
+            "waiting"
+        } else if self.selection.is_running()
+            || self.selection.compacting()
+            || self.selection.switching()
+        {
+            "running"
+        } else {
+            "idle"
+        }
+    }
     pub fn wake_continue(&self) {
         let _ = self.controls.tx.send(Control::Continue);
     }
@@ -4103,5 +4125,81 @@ mod tests {
         let queued = serde_json::to_string(&status.steering.apply(claimed)).unwrap();
         assert_eq!(queued.matches("[secret API_KEY]").count(), 5, "{queued}");
         assert!(!queued.contains(SECRET), "{queued}");
+    }
+
+    // The live actor state derives from the runtime's own flags, so the
+    // summary and the message ack report what the actor actually does: an
+    // owed interaction waits for the Captain, turn and maintenance work
+    // run, everything else is idle. Each branch is entered and left in
+    // sequence so one left-behind flag cannot mask a missing branch.
+    #[tokio::test]
+    async fn actor_state_reports_running_waiting_and_idle() {
+        use crate::agent::{definitions::Agents, selection::AgentSelection};
+        let agents = Arc::new(Agents::builtin());
+        let status = Arc::new(RuntimeStatus::with_selection(AgentSelection::new(
+            agents.clone(),
+            Arc::new((**agents.get("build").unwrap()).clone()),
+        )));
+        assert_eq!(status.actor_state(), "idle");
+
+        // A turn in flight runs.
+        status.selection.pin_turn().await;
+        assert_eq!(status.actor_state(), "running");
+        // The turn ends on an ask: the answer is owed to the Captain.
+        status.selection.end_turn(true);
+        assert_eq!(status.actor_state(), "waiting");
+        status.selection.set_ask_pending(false);
+        assert_eq!(status.actor_state(), "idle");
+
+        // A pending permission waits for the Captain's decision.
+        status.set_pending_permission(Some(Ulid::generate()));
+        assert_eq!(status.actor_state(), "waiting");
+        status.set_pending_permission(None);
+        assert_eq!(status.actor_state(), "idle");
+
+        // Maintenance work outside a turn runs: a compaction summary and a
+        // model switch each make their own model request.
+        let compaction = status.selection.begin_compaction().await;
+        assert_eq!(status.actor_state(), "running");
+        drop(compaction);
+        let switch = status.selection.begin_switch().await;
+        assert_eq!(status.actor_state(), "running");
+        drop(switch);
+        assert_eq!(status.actor_state(), "idle");
+
+        // Every Captain park waits: budget, a resumed pause, a published
+        // watchdog pause.
+        status
+            .budget_parked
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(status.actor_state(), "waiting");
+        status
+            .budget_parked
+            .store(false, std::sync::atomic::Ordering::Release);
+        status
+            .awaiting_fresh_captain
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(status.actor_state(), "waiting");
+        status
+            .awaiting_fresh_captain
+            .store(false, std::sync::atomic::Ordering::Release);
+        status.watchdog.transition(true);
+        assert!(
+            status
+                .watchdog
+                .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({}))
+        );
+        let hold = status.watchdog.publish_root_hold().unwrap();
+        assert_eq!(status.actor_state(), "waiting");
+        assert!(status.watchdog.resolve_root(hold.token, || {}));
+        assert_eq!(status.actor_state(), "idle");
+
+        // A park may overlap a running turn: the Captain still owes an
+        // answer, so waiting wins over running.
+        status.selection.pin_turn().await;
+        status
+            .budget_parked
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(status.actor_state(), "waiting");
     }
 }

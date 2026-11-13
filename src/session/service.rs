@@ -109,8 +109,6 @@ pub struct SessionHandle {
     /// Always `agent:main` this slice (the single root actor).
     pub actor_id: String,
     pub lifecycle: Lifecycle,
-    /// Last state the manager knows about ("idle" at creation).
-    pub actor_state: String,
     pub workspace: PathBuf,
     /// The alias and saved resolution the session talks to now: they change
     /// when `/model` switches it.
@@ -228,6 +226,18 @@ impl SessionHandle {
         self.selected().alias
     }
 
+    /// What the actor reports as doing in summaries and message acks:
+    /// `"stopped"` once stopping has begun (new commands and subscriptions
+    /// are rejected from there on), otherwise the runtime's live view of
+    /// its actor. Stopped and stored conversations report `"stopped"`
+    /// through the store instead.
+    pub fn actor_state(&self) -> &'static str {
+        match self.lifecycle {
+            Lifecycle::Stopping => "stopped",
+            Lifecycle::Active => self.status.actor_state(),
+        }
+    }
+
     /// Holds the selection while a reader looks at the other things that
     /// change with it (the context gauge). No `.await` while it is held.
     pub(crate) fn lock_selected(&self) -> MutexGuard<'_, SelectedModel> {
@@ -244,7 +254,7 @@ impl std::fmt::Debug for SessionHandle {
             .field("incarnation", &self.incarnation)
             .field("actor_id", &self.actor_id)
             .field("lifecycle", &self.lifecycle)
-            .field("actor_state", &self.actor_state)
+            .field("actor_state", &self.actor_state())
             .field("workspace", &self.workspace)
             .field("model", &self.model())
             .finish_non_exhaustive()
@@ -2003,7 +2013,7 @@ impl Service {
             editor,
             read_only: resume_disabled_reason.is_some(),
             session_id: id.to_string(),
-            actor_state: handle.actor_state.clone(),
+            actor_state: handle.actor_state().to_string(),
             workspace: handle.workspace.display().to_string(),
             variant: selected.variant_name(),
             model: identity.model,
@@ -3411,7 +3421,6 @@ impl Service {
             runtime_task,
             actor_id: ROOT_ACTOR_ID.to_string(),
             lifecycle: Lifecycle::Active,
-            actor_state: "idle".to_string(),
             workspace: workspace.clone(),
             selected: selected_model,
             status,

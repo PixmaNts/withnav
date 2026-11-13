@@ -327,7 +327,22 @@ impl Tool for EditTool {
             if !resolved.is_file() {
                 return Err(ToolError::NotFound(resolved));
             }
-            let content = tokio::fs::read_to_string(&resolved).await?;
+            let content = {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                std::fs::File::open(&resolved)?
+                    .take(16 * 1024 * 1024 + 1)
+                    .read_to_end(&mut bytes)?;
+                if bytes.len() > 16 * 1024 * 1024 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "edit target exceeds 16 MiB",
+                    )
+                    .into());
+                }
+                String::from_utf8(bytes)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
+            };
             let (updated, report) = change(content)?;
             atomic_write(&resolved, updated.as_bytes())?;
             Ok(ToolResult::ok(report))
@@ -407,7 +422,6 @@ fn grep_builtin(pattern: &str, root: &Path) -> Result<ToolResult, ToolError> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(windows)]
     #[tokio::test]
     async fn unbound_edit_over_limit_leaves_the_file_untouched() {
         let dir = tempfile::tempdir().unwrap();

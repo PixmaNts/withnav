@@ -456,6 +456,30 @@ test('history tool groups remain closed', t => {
   assert.equal(dom.window.document.querySelector('.tool-group').open,false);
 });
 
+test('a session-end interrupted tool row renders interrupted, not failed, and the turn ends stopped', t => {
+  const { b, dom } = fullChat(t);
+  dom.window.requestAnimationFrame = fn => { fn(); return 1; };
+  const emit = data => b.emit(data);
+  emit({type:'turnStart',id:'T'});
+  emit({type:'tool',id:'T',callId:'c',phase:'start',name:'bash',summary:'bash sleep 100'});
+  const row = dom.window.document.querySelector('.tool-row');
+  assert.equal(row.className,'tool-row working');
+  assert.equal(row.getAttribute('aria-label'),'Running: bash sleep 100');
+  emit({type:'tool',id:'T',callId:'c',phase:'end',name:'bash',summary:'bash sleep 100',interrupted:true});
+  assert.equal(row.className,'tool-row interrupted');
+  assert.equal(row.querySelector('.tool-mark').textContent,'■');
+  assert.equal(row.getAttribute('aria-label'),'Interrupted: bash sleep 100');
+  const group = dom.window.document.querySelector('.tool-group');
+  assert.match(group.querySelector('summary').textContent,/1 action · ran 1 command · 1 interrupted/);
+  assert.ok(!group.querySelector('summary').textContent.includes('failed'));
+  emit({type:'turnEnd',id:'T',outcome:'stopped'});
+  assert.match(dom.window.document.querySelector('.turn-result').textContent,/Stopped/);
+  // A resync gap can replay the turn's own end after the session already
+  // settled it: the result row must not duplicate.
+  emit({type:'turnEnd',id:'T',outcome:'stopped'});
+  assert.equal(dom.window.document.querySelectorAll('.turn-result').length,1);
+});
+
 /** The subagent dropdown's buttons; the dropdown is opened first. */
 function menuButtons(dom) {
   const d = dom.window.document;

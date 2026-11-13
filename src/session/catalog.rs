@@ -79,6 +79,14 @@ impl Service {
     pub async fn delete(&self, id: SessionId) -> Result<(), ServerError> {
         let _gate = self.lifecycle_gate().await;
         self.wait_child_operation(id).await;
+        // The children are read before anything is deleted: deleting this
+        // session removes its `child_links` rows, so after that the list can
+        // no longer be rebuilt. The same list drives the decision cleanup.
+        let children = self
+            .history()
+            .child_ids(id)
+            .await
+            .map_err(ServerError::History)?;
         // A live session is closed; a stored one is a no-op; an id the store
         // does not know is a 404.
         let parent = self.handle(id).and_then(|handle| handle.parent_session_id);
@@ -101,15 +109,10 @@ impl Service {
             .await?;
         }
         self.discard(id);
-        for child in self
-            .history()
-            .child_ids(id)
-            .await
-            .map_err(ServerError::History)?
-        {
-            self.discard(child);
+        for child in &children {
+            self.discard(*child);
             self.history()
-                .delete(child)
+                .delete(*child)
                 .await
                 .map_err(ServerError::History)?;
         }
@@ -117,6 +120,51 @@ impl Service {
             .delete(id)
             .await
             .map_err(ServerError::History)?;
+        self.forget_decisions(id, &children).await;
         Ok(())
+    }
+
+    /// Removes the deleted conversation's permission decisions from
+    /// `withnav.db`, and those of the children deleted with it.
+    ///
+    /// The decision rows are not a ledger that outlives its conversation (owner
+    /// decision of 2026-11-10): they hold the truncated call arguments the
+    /// Captain promotes into rules, and nothing else ever deletes them, so a
+    /// deleted conversation would keep them for the life of the installation.
+    /// The rows are keyed by session id, one per conversation of the tree,
+    /// which is why the children are passed in rather than skipped the way
+    /// session-lifetime secrets are.
+    ///
+    /// A permission database that cannot be opened leaves the delete
+    /// successful: the conversation is already gone from history, and a
+    /// session whose database is unavailable already runs degraded
+    /// (`permissions_unavailable`) rather than failing, so a failure here is
+    /// reported and dropped. The open and the delete run on the blocking
+    /// pool, as the per-session open does: the database may wait on another
+    /// connection's write for its busy timeout.
+    async fn forget_decisions(&self, id: SessionId, children: &[SessionId]) {
+        let data_dir = self.config.data_dir.clone();
+        let ids = std::iter::once(id)
+            .chain(children.iter().copied())
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>();
+        let removed = tokio::task::spawn_blocking(move || {
+            let store = crate::permission::store::PermissionStore::open(&data_dir)?;
+            let mut removed = 0;
+            for id in &ids {
+                removed += store.forget_session(id)?;
+            }
+            Ok::<usize, crate::permission::store::Error>(removed)
+        })
+        .await;
+        match removed {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "permission decisions not forgotten with the conversation")
+            }
+            Err(error) => {
+                tracing::warn!(%error, "permission decisions not forgotten with the conversation")
+            }
+        }
     }
 }

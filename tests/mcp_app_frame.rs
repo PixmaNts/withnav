@@ -408,6 +408,64 @@ fn log_tail(path: &Path, secrets: &[&str]) -> String {
         .join("\n")
 }
 
+/// Flags both browser runs share: headless, and none of the first-run work a desktop session
+/// would do, since the test only cares about the document's sandbox.
+const BROWSER_FLAGS: [&str; 6] = [
+    "--headless",
+    "--no-sandbox",
+    "--disable-gpu",
+    "--no-first-run",
+    "--no-proxy-server",
+    "--enable-logging=stderr",
+];
+
+/// Starts the browser once on a page that only has to report itself, then waits for that report
+/// or for the browser to exit, and kills it. Chromium's first start on a cold Linux runner loads
+/// the binary, its locales and a fresh profile before it renders anything: on 2026-11-13 a hosted
+/// run printed its first line 20 s after it was spawned and still had not run the host page 40 s
+/// in, so the startup bound below measured the runner, not the app. Paying that cold start here,
+/// before the document is minted, leaves the bound on the app and keeps the document's minute for
+/// the run that is asserted. A warm-up that never reports costs its own bound and nothing else.
+/// Its profile is separate, so killing it cannot leave a lock in the profile the run uses.
+async fn warm_up_browser(browser: &str, dir: &Path) {
+    let (port, seen) = recording_listener().await;
+    let page = dir.join("warmup.html");
+    std::fs::write(
+        &page,
+        format!(
+            r#"<!doctype html><body><script>
+fetch("http://127.0.0.1:{port}/warm", {{mode: "no-cors"}}).catch(() => {{}});
+</script></body>"#
+        ),
+    )
+    .unwrap();
+    let mut child = tokio::process::Command::new(browser)
+        .args(BROWSER_FLAGS)
+        .arg(format!(
+            "--user-data-dir={}",
+            dir.join("warmup-profile").display()
+        ))
+        .arg(format!("file://{}", page.display()))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
+    while tokio::time::Instant::now() < deadline {
+        let reported = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|target| target.starts_with("/warm"));
+        if reported || child.try_wait().unwrap().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let _ = child.kill().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_browser_runs_the_app_in_a_sandbox_that_reaches_nothing_it_did_not_declare() {
     let Some(browser) = browser() else {
@@ -425,22 +483,18 @@ async fn a_browser_runs_the_app_in_a_sandbox_that_reaches_nothing_it_did_not_dec
     )
     .await;
     let client = reqwest::Client::new();
+    let profile = tempfile::tempdir().unwrap();
+    // Chromium's cold start is the runner's cost, not the app's: pay it before the document is
+    // minted, so the minute the document waits is spent on the run that is asserted.
+    warm_up_browser(&browser, profile.path()).await;
     let path = minted_path(&client, addr, json!({"uri": "ui://fixture/probe.html"})).await;
     let frame_url = format!("http://{addr}{path}#{declared_port},{undeclared_port}");
-    let profile = tempfile::tempdir().unwrap();
     let host_file = profile.path().join("host.html");
     std::fs::write(&host_file, host_page(&frame_url, collector_port)).unwrap();
     let log_path = profile.path().join("browser.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let mut browser = tokio::process::Command::new(&browser)
-        .args([
-            "--headless",
-            "--no-sandbox",
-            "--disable-gpu",
-            "--no-first-run",
-            "--no-proxy-server",
-            "--enable-logging=stderr",
-        ])
+        .args(BROWSER_FLAGS)
         .arg(format!("--user-data-dir={}", profile.path().display()))
         .arg(format!("file://{}", host_file.display()))
         .stdout(log.try_clone().unwrap())
@@ -458,9 +512,9 @@ async fn a_browser_runs_the_app_in_a_sandbox_that_reaches_nothing_it_did_not_dec
     // Two bounds, so a slow browser and a stuck app stay apart. A cold Chromium on the hosted
     // Linux runner first ran the host page 11.7 s after it was spawned (2026-11-10), and printed
     // nothing for 16.5 s in a run that then missed a single 20 s bound; the app itself went from
-    // the host page to its report in 0.2 s. Startup gets 40 s, which keeps the frame's load
-    // inside the 60 s a minted document waits; once the host page runs, the app keeps the 20 s
-    // it always had.
+    // the host page to its report in 0.2 s. The warm-up above has already paid the cold start, so
+    // startup gets 40 s, which keeps the frame's load inside the 60 s a minted document waits;
+    // once the host page runs, the app keeps the 20 s it always had.
     let started = tokio::time::Instant::now();
     let startup_deadline = started + std::time::Duration::from_secs(40);
     let app_bound = std::time::Duration::from_secs(20);

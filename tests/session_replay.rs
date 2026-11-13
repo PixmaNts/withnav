@@ -1,7 +1,8 @@
 //! Live subscriptions replay the stored history, then follow live events:
 //! the replay/live seam past the 4096-event ring, the three cursor cases,
-//! hidden stale `session.end` envelopes, and the fallback to the ring when
-//! the history read fails.
+//! hidden stale `session.end` envelopes, the fallback to the ring when
+//! the history read fails, and the resumed ring's refusal of what it
+//! cannot replay.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -259,6 +260,91 @@ async fn a_failing_history_read_falls_back_to_the_ring() {
     post_message_ok(&base, &id.to_string(), "still there?").await;
     let events = live_until(&mut live, |e| e.kind == "turn.end").await;
     assert!(events.iter().all(|e| e.seq > *all.last().unwrap()));
+    assert!(events.iter().any(|e| e.kind == "message.received"));
+    task.abort();
+}
+
+// Given a resumed conversation whose stored history cannot be read (a row
+//       in the replay range is corrupt)
+// When a client subscribes without a cursor, or with one below the
+//      conversation's stored head at resume
+// Then the ring fallback refuses with `Resync` instead of presenting the
+//      post-resume tail as the whole conversation, and a client at the
+//      stored head still gets the events since, then live.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resumed_ring_refuses_what_it_cannot_replay() {
+    let fx = fixture().await;
+    let state = state(&fx);
+    let (addr, task) = spawn_server(state.clone()).await;
+    let base = format!("http://{addr}");
+    let (id, all) = session_with_one_turn(&state, &base, &fx.ws).await;
+
+    // Stop the conversation: a resume must spawn a fresh session whose ring
+    // is born with the stored head as its floor. (Resuming a live session
+    // would reuse the original ring, which legitimately holds the turn.)
+    let mut closing = state.subscribe(id, None).await.expect("subscribe");
+    state.close_session(id).await.expect("close");
+    let mut live = closing.live.take().expect("live receiver");
+    let end_seq = live_until(&mut live, |e| e.kind == "session.end")
+        .await
+        .last()
+        .expect("session.end")
+        .seq;
+    // The stored head at resume: the conversation's final event.
+    let ring_floor = end_seq;
+
+    state
+        .create_or_resume_session(&fx.ws, None, false, Some(id))
+        .await
+        .expect("resume");
+
+    let conn = rusqlite::Connection::open(&fx.db).expect("open db");
+    let corrupted = conn
+        .execute(
+            "UPDATE events SET envelope = 'not json' WHERE session_id = ?1 AND seq = ?2",
+            rusqlite::params![id.to_string(), all[1] as i64],
+        )
+        .expect("corrupt a row");
+    assert_eq!(corrupted, 1);
+    drop(conn);
+
+    // No cursor = the whole conversation: the ring refuses.
+    let Subscription { replay, live } = state.subscribe(id, None).await.expect("subscribe");
+    assert!(
+        matches!(replay, ResumeOutcome::Resync),
+        "the resumed ring never answers a whole-history request: {replay:?}"
+    );
+    assert!(live.is_none(), "a refused cursor gets no live stream");
+
+    // Below the floor: events the ring never witnessed.
+    let Subscription { replay, live } = state.subscribe(id, Some(all[0])).await.expect("subscribe");
+    assert!(matches!(replay, ResumeOutcome::Resync));
+    assert!(live.is_none());
+
+    // At the floor: the events since the resume replay, then the stream
+    // follows live. The conversation keeps working for an up-to-date client.
+    let Subscription { replay, live } = state
+        .subscribe(id, Some(ring_floor))
+        .await
+        .expect("subscribe");
+    let replayed = match replay {
+        ResumeOutcome::Replay(events) => events,
+        other => panic!("expected the post-resume tail, got {other:?}"),
+    };
+    assert!(
+        replayed.iter().all(|e| e.seq > ring_floor),
+        "only the events since the resume: {replayed:?}"
+    );
+    assert!(
+        replayed.iter().all(|e| e.kind != "session.end"),
+        "no stale end rides the tail"
+    );
+    let mut live = live.expect("the tail subscription follows live events");
+
+    post_message_ok(&base, &id.to_string(), "still there?").await;
+    let events = live_until(&mut live, |e| e.kind == "turn.end").await;
+    let replay_head = replayed.last().map(|e| e.seq).unwrap_or(ring_floor);
+    assert!(events.iter().all(|e| e.seq > replay_head));
     assert!(events.iter().any(|e| e.kind == "message.received"));
     task.abort();
 }

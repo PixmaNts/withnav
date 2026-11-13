@@ -2794,9 +2794,15 @@ impl Service {
         if resumed.is_some() {
             self.test_points.park(ParkPoint::ResumeRegistration).await;
         }
-        // The in-memory ring starts empty on resume: subscribers replay from
-        // the store, and the ring is only a bounded fallback cache.
-        let bus = SessionBus::default();
+        // The in-memory ring of a fresh session starts empty with no floor.
+        // A resumed one starts with the stored `last_seq` as its floor: the
+        // ring never holds the conversation's past (only the store does), so
+        // it must refuse a replay it cannot serve gaplessly — the fallback
+        // path then answers `Resync` instead of a partial history.
+        let bus = match resumed.as_ref() {
+            Some(loaded) => SessionBus::starting_after(loaded.meta.last_seq),
+            None => SessionBus::new(),
+        };
         let is_resume = resumed.is_some();
 
         // History hooks: a persisting emitter + a turn-end transcript

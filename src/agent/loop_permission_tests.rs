@@ -1842,3 +1842,56 @@ async fn a_folder_that_is_not_a_worktree_of_the_repository_still_asks() {
     let _ = std::fs::remove_dir_all(&other);
     let _ = std::fs::remove_dir_all(&other_worktree);
 }
+
+/// A conversation of `turns` Captain messages, each answered by a long agent text.
+fn long_transcript(turns: usize) -> Vec<crate::provider::openai::ChatMessage> {
+    (0..turns)
+        .flat_map(|turn| {
+            [
+                crate::provider::openai::ChatMessage::User {
+                    provenance: crate::provider::openai::UserProvenance::Captain,
+                    content: format!("Step {turn}: edit the notes and keep the tests green."),
+                    images: Vec::new(),
+                },
+                crate::provider::openai::ChatMessage::Assistant {
+                    content: Some(format!("Done with step {turn}. {}", "detail ".repeat(300))),
+                    reasoning_content: None,
+                    tool_calls: vec![],
+                    opaque: None,
+                },
+            ]
+        })
+        .collect()
+}
+
+/// The time `authorize` takes for a write a written `allow` rule decides, on a
+/// conversation of 300 turns (600 messages). Run by hand to compare revisions:
+/// `cargo test -p withnav --release authorize_time_on_a_long_conversation -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "timing measurement, run by hand"]
+async fn authorize_time_on_a_long_conversation() {
+    const ROUNDS: u32 = 300;
+    let flows = Arc::new(FakeFlows::new("allow"));
+    let mut actor = actor_with(Some(flows.clone()));
+    add_rule(&actor, "write", "*", Effect::Allow);
+    actor.transcript = long_transcript(300);
+    let call = crate::provider::ToolCall {
+        id: "w1".into(),
+        name: "write".into(),
+        args: json!({"path": actor.tool_context.workspace.join("notes.txt"), "content": "x"}),
+        args_valid: true,
+    };
+    let started = std::time::Instant::now();
+    for _ in 0..ROUNDS {
+        let authorized = crate::agent::authorize::authorize(&actor, &call, 1, None, false).await;
+        assert!(matches!(
+            authorized,
+            crate::agent::authorize::Authorized::Run(_)
+        ));
+    }
+    assert_eq!(flows.asked(), 0, "a rule-allowed write never asks the flow");
+    println!(
+        "authorize, rule-allowed write, 600 messages: {:?} per call",
+        started.elapsed() / ROUNDS
+    );
+}

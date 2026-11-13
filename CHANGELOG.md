@@ -6,6 +6,14 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- Permissions: the built-in permission flow asks its questions in one Instinct request instead of
+  one after the other. Without an allow rule it asks together whether the call was requested, only
+  reads, or is a recoverable change; under an allow rule, whether it is dangerous and whether it
+  was requested. Decisions are unchanged; a call that needed two or three round trips now needs
+  one, at the cost of asking questions that were previously skipped.
+
 ## [0.8.3] - 2026-11-11
 
 ### Added

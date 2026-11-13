@@ -25,7 +25,7 @@ requests land in `develop`.
   the events since the resume, labelled as the full conversation, with no
   error. Now the ring is born with the conversation's stored head as its
   floor: a request it cannot serve gaplessly — the whole history, or any
-  cursor at or below that floor — is refused with a `resync` signal, so the
+  cursor below that floor — is refused with a `resync` signal, so the
   client reloads instead of silently missing every turn from before the
   resume. A client already at the conversation's head keeps replaying the
   events since and following live.

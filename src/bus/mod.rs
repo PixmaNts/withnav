@@ -150,8 +150,9 @@ impl SessionBus {
 
     /// A bus for a session resumed at `last_stored_seq`: the ring starts
     /// empty with the stored seq as its floor, so a subscription it cannot
-    /// answer gaplessly (the whole history, or anything at or below the
-    /// floor) is refused with `Resync` instead of a partial replay.
+    /// answer gaplessly (the whole history, or a cursor below the current
+    /// floor) is refused with `Resync` instead of a partial replay. A cursor
+    /// at the floor can replay every later retained event.
     pub fn starting_after(last_stored_seq: u64) -> Self {
         Self {
             ring: EventRing::starting_after(last_stored_seq),

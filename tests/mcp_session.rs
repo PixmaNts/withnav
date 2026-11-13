@@ -223,9 +223,13 @@ async fn a_child_keeps_the_tools_it_was_created_with_and_a_later_one_gets_the_pa
         .chat_tools(128_000)
         .rules_home(&env.home)
         .config();
+    // The server answers initialize only once the gate file exists: the parent and the
+    // first child are created while it is still starting, however slow the runner is,
+    // instead of relying on a fixed delay that a busy host can spend before the child.
+    let gate = env.root.join("mcp-ready");
     with_mcp(
         &cfg,
-        json!({"command":[common::python(),FIXTURE],"env":{"INIT_DELAY_SECONDS":"1"}}),
+        json!({"command":[common::python(),FIXTURE],"env":{"INIT_GATE":gate},"startup_timeout_ms":30000}),
         false,
     );
     let state = AppState::new(
@@ -256,6 +260,7 @@ async fn a_child_keeps_the_tools_it_was_created_with_and_a_later_one_gets_the_pa
     };
     assert!(policy(early).await.get("mcp__fake__echo").is_none());
     // The idle parent takes the server's tools once it is ready, and says so.
+    std::fs::write(&gate, "").unwrap();
     let events = common::server::collect_until(sub, mcp_note).await;
     let note = events.iter().find(|e| mcp_note(e)).unwrap();
     let added = note.payload["data"]["added"].as_array().unwrap();

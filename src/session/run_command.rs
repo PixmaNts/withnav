@@ -826,7 +826,6 @@ mod tests {
         assert!(out.ok, "{out:?}");
         stop.await.unwrap().expect("stop");
 
-        service.history().flush().await.unwrap();
         let kinds = stored_kinds(&service, id).await;
         let result = kinds.iter().position(|k| k == "command.result").unwrap();
         let end = kinds.iter().position(|k| k == "session.end").unwrap();
@@ -936,7 +935,6 @@ mod tests {
         use crate::provider::openai::ChatMessage;
         let id = service.create_session(dir, None, false).await.unwrap();
         service.close_session(id).await.unwrap();
-        service.history().flush().await.unwrap();
         let turns: Vec<ChatMessage> = (0..4)
             .flat_map(|n| {
                 [
@@ -954,8 +952,7 @@ mod tests {
                 ]
             })
             .collect();
-        service.history().save_transcript(id, turns);
-        service.history().flush().await.unwrap();
+        service.history().save_transcript(id, turns).await.unwrap();
         service
             .create_or_resume_session(dir, None, false, Some(id))
             .await
@@ -993,7 +990,6 @@ mod tests {
         assert_eq!(out.data.as_ref().unwrap()["applies"], "now");
         stop.await.unwrap().expect("stop");
 
-        service.history().flush().await.unwrap();
         let kinds = stored_kinds(&service, id).await;
         let result = kinds.iter().position(|k| k == "command.result").unwrap();
         let compacted = kinds.iter().position(|k| k == "context.compacted").unwrap();

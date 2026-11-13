@@ -87,9 +87,11 @@ async fn seeded(state: &AppState, ws: &Path, turns: usize) -> ulid::Ulid {
 async fn seeded_with(state: &AppState, ws: &Path, transcript: Vec<ChatMessage>) -> ulid::Ulid {
     let id = state.create_session(ws, None, false).await.expect("create");
     state.close_session(id).await.expect("close");
-    state.history().flush().await.expect("flush");
-    state.history().save_transcript(id, transcript);
-    state.history().flush().await.expect("flush");
+    state
+        .history()
+        .save_transcript(id, transcript)
+        .await
+        .unwrap();
     state
         .create_or_resume_session(ws, None, false, Some(id))
         .await
@@ -98,7 +100,6 @@ async fn seeded_with(state: &AppState, ws: &Path, transcript: Vec<ChatMessage>) 
 }
 
 async fn stored(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelope> {
-    state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
         withnav::bus::ResumeOutcome::Replay(events) => {
@@ -919,9 +920,7 @@ async fn a_switched_session_with_large_old_reasoning_compacts_and_continues() {
         .collect();
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
-    state.history().save_transcript(id, heavy);
-    state.history().flush().await.unwrap();
+    state.history().save_transcript(id, heavy).await.unwrap();
     state
         .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
@@ -1082,7 +1081,6 @@ async fn a_failed_switch_rolls_back_the_staged_checkpoint_and_selection() {
     let b = spawn_capturing_provider(vec![]).await;
     let state = two_models(&env, &a, &b, 20_000);
     let id = seeded(&state, &env.ws, 8).await;
-    state.history().flush().await.unwrap();
     let before = state.history().load_for_resume(id).await.unwrap().unwrap();
     let before_gauge = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
     // Occupy the later model.changed seq, after context.compacted was inserted.

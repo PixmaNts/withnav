@@ -86,7 +86,6 @@ async fn create_then_stop(service: &Service, fx: &Fixture) -> Ulid {
         .await
         .expect("create");
     service.close_session(id).await.expect("close");
-    service.history().flush().await.expect("flush");
     id
 }
 
@@ -229,7 +228,6 @@ async fn a_resolution_without_an_endpoint_is_filled_on_resume() {
         .await
         .expect("a legacy resolution resumes");
     service.close_session(id).await.expect("close");
-    service.history().flush().await.expect("flush");
     let filled: Value = serde_json::from_str(&fx.saved(id).unwrap()).unwrap();
     assert_eq!(filled["endpoint"], base(&server));
 }
@@ -279,7 +277,6 @@ async fn a_legacy_row_gets_its_snapshot_at_activation() {
         .await
         .expect("resume");
     service.close_session(legacy).await.expect("close");
-    service.history().flush().await.expect("flush");
     let saved: Value = serde_json::from_str(&fx.saved(legacy).expect("snapshot")).unwrap();
     assert_eq!(saved["bounds"]["context_window"], 1_000_000);
 
@@ -291,7 +288,6 @@ async fn a_legacy_row_gets_its_snapshot_at_activation() {
         .await
         .expect("resume again");
     fresh.close_session(legacy).await.expect("close");
-    fresh.history().flush().await.expect("flush");
     let again: Value = serde_json::from_str(&fx.saved(legacy).expect("snapshot")).unwrap();
     assert_eq!(again, saved);
 }
@@ -309,7 +305,6 @@ async fn a_catalog_refresh_does_not_change_a_live_session() {
         .create_session(&fx.ws, None, false)
         .await
         .expect("create");
-    service.history().flush().await.expect("flush");
     let before = fx.saved(id);
 
     mount_models(&server, 500_000).await;
@@ -327,7 +322,6 @@ async fn a_catalog_refresh_does_not_change_a_live_session() {
         .await
         .expect("resume");
     service.close_session(id).await.expect("close");
-    service.history().flush().await.expect("flush");
     assert_eq!(fx.saved(id), before, "nor does the next activation");
 }
 

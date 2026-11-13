@@ -553,7 +553,6 @@ pub async fn send_text(
 
 /// Every persisted event of `kind`, in order, after the writer has drained.
 pub async fn stored_events(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelope> {
-    state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
         withnav::bus::ResumeOutcome::Replay(all) => {

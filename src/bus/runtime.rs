@@ -56,8 +56,12 @@ use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::error::AgentError;
 
 /// The turn-end transcript hook: called with the actor's transcript after
-/// each turn's terminal events (the history store's snapshot seam).
-pub type TurnEndHook = Box<dyn Fn(&[crate::provider::openai::ChatMessage]) + Send>;
+/// each turn's terminal events (the history store's snapshot seam). The
+/// returned future resolves when the snapshot write is durable.
+pub type TurnEndHook = Box<
+    dyn Fn(&[crate::provider::openai::ChatMessage]) -> futures::future::BoxFuture<'static, ()>
+        + Send,
+>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompletionOutcome {
     Done,
@@ -1145,7 +1149,7 @@ pub fn spawn_with_completion(
         inbox,
         sequencer,
         session_cancel,
-        on_turn_end.unwrap_or_else(|| Box::new(|_| {})),
+        on_turn_end.unwrap_or_else(|| Box::new(|_| Box::pin(async {}))),
         status,
         completion,
     ))
@@ -1703,7 +1707,7 @@ async fn runtime_loop(
         }
         status.watchdog.bind_root_turn(turn_id);
         if let Some(hold) = status.watchdog.publish_root_hold() {
-            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript).await;
             turn.publish(EventKind::AgentYield, to_value(&AgentYield {
                 choices: None, question_call_id: None,
                 actor_id: ROOT_ACTOR_ID.into(), turn_id,
@@ -1720,7 +1724,7 @@ async fn runtime_loop(
                 None,
             );
             emit_agent_state(&mut turn, "yielded");
-            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript).await;
             if !session_cancel.is_cancelled() {
                 actor.cancel = session_cancel.child_token();
             }
@@ -1749,7 +1753,7 @@ async fn runtime_loop(
                 }),
             );
             emit_agent_state(&mut turn, "idle");
-            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript).await;
             deferred::report_cancelled(&sequencer, &deferred, compact::CANCELLED);
             break;
         }
@@ -1951,7 +1955,7 @@ async fn runtime_loop(
         }
 
         // Every terminal outcome saves the transcript, a cancelled turn too.
-        snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+        snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript).await;
 
         if interrupted_for_input && !session_cancel.is_cancelled() {
             actor.cancel = session_cancel.child_token();
@@ -1993,7 +1997,7 @@ async fn runtime_loop(
             &request,
             PermissionResolution::Cancelled,
         );
-        snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+        snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript).await;
     }
     if let Some(hold) = status.watchdog.take_root_on_exit() {
         publish_pause_resolution(&sequencer, hold.token, "expired");
@@ -2127,27 +2131,35 @@ type SharedHook = Arc<Mutex<TurnEndHook>>;
 
 /// Hands the transcript to the turn-end hook THROUGH the sequencer: the
 /// sequencer runs the hook after every event this turn already published
-/// has been emitted, so the store's FIFO writer sees the snapshot behind the
-/// turn's events, never before them. The hook is only a channel send, so the
-/// sequencer never waits on SQLite. If the session is already closed no
-/// more events can be written and the hook runs here directly.
-fn snapshot_transcript(
+/// has been emitted (and, store-first, durably written), so the store's FIFO
+/// writer sees the snapshot behind the turn's events, never before them. The
+/// hook's future is awaited here, so a caller that reaches the close path
+/// afterwards knows the snapshot is durable. If the session is already closed
+/// no more events can be written and the hook runs here directly.
+async fn snapshot_transcript(
     sequencer: &Sequencer,
     hook: &SharedHook,
     transcript: &[crate::provider::openai::ChatMessage],
 ) {
-    fn run(hook: &SharedHook, transcript: &[crate::provider::openai::ChatMessage]) {
-        let guard = match hook.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+    async fn run(hook: SharedHook, transcript: Vec<crate::provider::openai::ChatMessage>) {
+        let future = {
+            let guard = match hook.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard(&transcript)
         };
-        (guard)(transcript);
+        future.await;
     }
     let (queued_hook, owned) = (Arc::clone(hook), transcript.to_vec());
-    let queued = sequencer.after_events(Box::new(move || run(&queued_hook, &owned)));
-    if queued.is_err() {
-        run(hook, transcript);
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let queued = sequencer.after_events(Box::new(move || {
+        let _ = done_tx.send(());
+    }));
+    if queued.is_ok() {
+        let _ = done_rx.await; // after_events reached: turn events are stored+emitted
     }
+    run(queued_hook, owned).await;
 }
 
 fn permission_requested(
@@ -2772,7 +2784,7 @@ mod tests {
                     provenance: UserProvenance::Subagent,
                     images: Vec::new(),
                 });
-                history.save_transcript(id, transcript.clone());
+                let _ = history.save_transcript(id, transcript.clone()).await;
                 history.load_for_resume(id).await.unwrap();
                 done.notify_one();
                 Err(crate::agent::boundary::BoundaryError {
@@ -2805,10 +2817,6 @@ mod tests {
             .unwrap();
         let actor = handle.await.unwrap();
         assert!(actor.transcript.iter().any(|message| matches!(message, ChatMessage::User { content, .. } if content == "child completion")));
-        // `save_transcript` is fire-and-forget: without this barrier the reopened store can
-        // read the session before the writer thread applied the write (observed 2026-10-12:
-        // an empty transcript on a loaded CI runner, and once locally).
-        store.flush().await.unwrap();
         drop(store);
         let reopened = crate::session::store::HistoryStore::open(&path).unwrap();
         let (_, restored, _) = reopened.load_for_resume(id).await.unwrap().unwrap();

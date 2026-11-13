@@ -11,6 +11,14 @@ requests land in `develop`.
 - A conversation whose stop is slow (a tool that ignores cancellation) no longer holds up the
   others: slash commands, stop, resume, delete and archive of a conversation wait only for its own
   tree (the conversation and its subagents), not for every conversation of the server.
+### Fixed
+
+- Every durable event is stored before any client sees it. Before, events were written in the
+  background after being shown, and one failed history write (a deleted session, a busy database
+  past its timeout, a full disk) was remembered for the whole process: every conversation then
+  ended at its next turn and every resume failed until WithNav restarted. Now a failed write ends
+  only the conversation it belongs to, with a `session.end` whose reason names the failure, and
+  the other conversations keep running.
 
 ## [0.8.3] - 2026-11-11
 

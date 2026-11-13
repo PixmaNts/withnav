@@ -406,19 +406,16 @@ async fn interrupt_held_automatic_summary_restores_valid_checkpoint_and_input_on
     .bounded(file!(), line!())
     .await
     .unwrap();
-    state
-        .history()
-        .flush()
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
-    let (_, transcript, checkpoint) = state
-        .history()
-        .load_for_resume(child)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .unwrap();
+    // The child's turn-end transcript snapshot is saved just after its
+    // terminal events, which may follow the status change: wait for it.
+    let (transcript, checkpoint) = common::deadline::eventually("the child's stored transcript", || async {
+        let (_, transcript, checkpoint) = state.history().load_for_resume(child).await.unwrap().unwrap();
+        transcript
+            .iter()
+            .any(|m| matches!(m, withnav::provider::openai::ChatMessage::User { content, .. } if content == "replacement after summary"))
+            .then_some((transcript, checkpoint))
+    })
+    .await;
     // A cancelled summary may leave no checkpoint; any committed one must
     // restore against the actual paired transcript, never a partial summary.
     if let Some(checkpoint) = checkpoint {
@@ -776,12 +773,6 @@ async fn interrupt_provider_request_keeps_child_session_and_starts_a_fresh_turn(
 }
 
 async fn replay(state: &AppState, id: ulid::Ulid) -> Vec<withnav::bus::event::EventEnvelope> {
-    state
-        .history()
-        .flush()
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
     let withnav::bus::ResumeOutcome::Replay(events) = state
         .subscribe(id, None)
         .bounded(file!(), line!())

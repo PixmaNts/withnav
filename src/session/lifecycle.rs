@@ -402,7 +402,6 @@ mod tests {
             mcp_tools: Default::default(),
             actor_id: ROOT_ACTOR_ID.to_string(),
             lifecycle: Lifecycle::Active,
-            actor_state: "idle".to_string(),
             workspace: PathBuf::from("/w"),
             selected: Arc::new(std::sync::Mutex::new(
                 crate::session::service::SelectedModel {

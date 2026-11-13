@@ -343,8 +343,8 @@ async fn a_command_during_a_pending_ask_is_refused() {
     assert_eq!(state.session_count(), 1, "/new did not run");
     assert_eq!(
         state.session_summary(id).await.unwrap().actor_state,
-        "idle",
-        "/stop did not run"
+        "waiting",
+        "/stop did not run; the ask is still owed"
     );
 
     // The refused commands queued nothing: the next message answers the ask

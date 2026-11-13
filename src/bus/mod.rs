@@ -167,6 +167,16 @@ impl SessionBus {
 }
 
 impl sequencer::Emitter for SessionBus {
+    /// `SessionBus` is fan-out only: durability is the wrapping
+    /// [`crate::session::store::PersistingEmitter`]'s job, so this store is a
+    /// no-op behind the same seam.
+    fn store<'a>(
+        &'a mut self,
+        _envelopes: &'a [EventEnvelope],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// seq-assign (by the caller) → ring-append (durable only) → fan-out,
     /// all synchronous. A full subscriber queue disconnects that subscriber:
     /// dropping the sender closes its stream cleanly, and the events it
@@ -513,6 +523,14 @@ mod tests {
     }
 
     impl Emitter for Probe {
+        fn store<'a>(
+            &'a mut self,
+            _envelopes: &'a [EventEnvelope],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+
         fn emit(&mut self, envelope: EventEnvelope) {
             self.emitted += 1;
             self.bus.emit(envelope);

@@ -162,6 +162,7 @@ async fn route(handle: &SessionHandle, command: Command) -> Result<MessageAccept
 fn map_bus_error(err: BusError) -> ServerError {
     match err {
         BusError::InboxFull => ServerError::InboxFull,
+        BusError::History(why) => ServerError::History(why),
         BusError::SequencerClosed | BusError::SessionNotFound(_) | BusError::SeqSpaceExhausted => {
             ServerError::SessionStopping
         }

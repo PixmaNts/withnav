@@ -6,16 +6,13 @@
 //! connection in `tokio::task::spawn_blocking`. WAL mode.
 //!
 //! Writes: every write is ONE transaction (an event insert and the
-//! `last_seq` bump commit together or not at all). Enqueueing never waits
-//! on SQLite, so the sequencer stays off the disk. A failure is never only a
-//! log line: writes whose caller needs to know ([`HistoryStore::record_session`],
-//! [`HistoryStore::delete`]) are acknowledged through a oneshot; every other
-//! write (event appends, transcript snapshots, titles) is fire-and-forget and
-//! its failure is remembered by the writer until [`HistoryStore::flush`],
-//! which is also a barrier: it returns once every earlier write has been
-//! applied, carrying the first error since the previous flush. A failed write
-//! still never breaks a live conversation: the callers decide what a failure
-//! means.
+//! `last_seq` bump commit together or not at all), and every write is
+//! acknowledged through a oneshot: its caller gets that write's own outcome.
+//! Durable events are written by [`PersistingEmitter`] from the sequencer
+//! task, which awaits the write before showing the event to any client, so a
+//! failed write is the synchronous error of the publication that produced it
+//! and ends only that session. No failure is remembered for a later,
+//! unrelated write.
 //!
 //! Two notions that must not be confused. "Conversation resumable" means the
 //! row and its events are in this store: `POST /v1/sessions` with `resume`
@@ -404,12 +401,8 @@ enum Write {
 
 /// One message on the writer channel.
 enum Msg {
-    /// A write; `ack` (when present) receives its outcome, otherwise a
-    /// failure is remembered for every later [`Msg::Flush`].
+    /// A write; `ack` (when present) receives its outcome.
     Write(Box<Write>, Option<Ack>),
-    /// Barrier: replies with the first error any write has hit since the
-    /// store was opened.
-    Flush(Ack),
 }
 
 /// Why a single write failed.
@@ -635,31 +628,12 @@ impl HistoryStore {
         })
     }
 
-    /// Enqueues a fire-and-forget write. Never waits on SQLite.
-    fn enqueue(&self, write: Write) {
-        if self.tx.send(Msg::Write(Box::new(write), None)).is_err() {
-            tracing::error!("history write dropped: {WRITER_GONE}");
-        }
-    }
-
-    /// Enqueues a write and waits for its outcome.
+    /// Enqueues a write and waits for its outcome. Every persistent write goes
+    /// through this: an unacknowledged write no longer exists.
     async fn acked(&self, write: Write) -> Result<(), String> {
         let (ack, outcome) = oneshot::channel();
         self.tx
             .send(Msg::Write(Box::new(write), Some(ack)))
-            .map_err(|_| WRITER_GONE.to_string())?;
-        outcome.await.map_err(|_| WRITER_GONE.to_string())?
-    }
-
-    /// Barrier: resolves once every write enqueued before this call has been
-    /// applied, with the FIRST error any fire-and-forget write has hit since
-    /// the store was opened. The failure is sticky: every later flush keeps
-    /// returning it until the store is reopened. `Ok` means no write was
-    /// ever lost.
-    pub async fn flush(&self) -> Result<(), String> {
-        let (reply, outcome) = oneshot::channel();
-        self.tx
-            .send(Msg::Flush(reply))
             .map_err(|_| WRITER_GONE.to_string())?;
         outcome.await.map_err(|_| WRITER_GONE.to_string())?
     }
@@ -1280,18 +1254,8 @@ impl HistoryStore {
     }
 
     /// Appends one durable envelope (the caller filters the live-only kinds) and
-    /// bumps `last_seq` in the same transaction. Fire-and-forget: a failure
-    /// surfaces at the next [`HistoryStore::flush`].
-    pub fn append_event(&self, id: Ulid, envelope: EventEnvelope) {
-        self.enqueue(Write::AppendEvent {
-            id,
-            envelope: Arc::new(envelope),
-        });
-    }
-
-    /// Appends one durable envelope like [`HistoryStore::append_event`] and
-    /// waits for ITS transaction: the result is that append's own outcome,
-    /// not the store's sticky first failure.
+    /// bumps `last_seq` in the same transaction, waiting for its commit: the
+    /// result is that append's own outcome.
     pub async fn append_event_acked(
         &self,
         id: Ulid,
@@ -1305,10 +1269,14 @@ impl HistoryStore {
     }
 
     /// Snapshots the actor transcript after a turn end (also bumps
-    /// `updated_at`; `last_seq` is owned by `append_event`). Fire-and-forget:
-    /// a failure surfaces at the next [`HistoryStore::flush`].
-    pub fn save_transcript(&self, id: Ulid, transcript: Vec<ChatMessage>) {
-        self.enqueue(Write::SaveTranscript { id, transcript });
+    /// `updated_at`; `last_seq` is owned by `append_event_acked`), waiting for
+    /// the commit so a resume always reads a durable transcript.
+    pub async fn save_transcript(
+        &self,
+        id: Ulid,
+        transcript: Vec<ChatMessage>,
+    ) -> Result<(), String> {
+        self.acked(Write::SaveTranscript { id, transcript }).await
     }
 
     /// Saves the transcript and the compaction that goes with it in ONE
@@ -1328,10 +1296,10 @@ impl HistoryStore {
         .await
     }
 
-    /// Sets the session title (first captain message; only when unset).
-    /// Fire-and-forget, like [`HistoryStore::append_event`].
-    pub fn set_title(&self, id: Ulid, title: String) {
-        self.enqueue(Write::SetTitle { id, title });
+    /// Sets the session title (first captain message; only when unset),
+    /// waiting for the commit.
+    pub async fn set_title(&self, id: Ulid, title: String) -> Result<(), String> {
+        self.acked(Write::SetTitle { id, title }).await
     }
 
     /// Removes a session row and its events in one transaction, and waits
@@ -1392,11 +1360,9 @@ pub struct WorkspaceSummary {
 const WRITER_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The single writer thread: one connection, one message at a time, FIFO.
-/// A failed write is reported to its ack, or else remembered (first one
-/// wins) and reported by every later flush, since a lost write leaves a
-/// hole that a clean flush would hide; it is always logged.
+/// Every write carries an ack; a failure is reported to its ack and logged,
+/// never remembered for a later unrelated write.
 fn writer_loop(mut conn: Connection, rx: mpsc::Receiver<Msg>) {
-    let mut first_error: Option<String> = None;
     for msg in rx {
         match msg {
             Msg::Write(write, ack) => {
@@ -1404,19 +1370,9 @@ fn writer_loop(mut conn: Connection, rx: mpsc::Receiver<Msg>) {
                 if let Err(err) = &outcome {
                     tracing::error!("history write failed: {err}");
                 }
-                match ack {
-                    Some(ack) => {
-                        let _ = ack.send(outcome);
-                    }
-                    None => {
-                        if let Err(err) = outcome {
-                            first_error.get_or_insert(err);
-                        }
-                    }
+                if let Some(ack) = ack {
+                    let _ = ack.send(outcome);
                 }
-            }
-            Msg::Flush(reply) => {
-                let _ = reply.send(first_error.clone().map_or(Ok(()), Err));
             }
         }
     }
@@ -2075,10 +2031,12 @@ fn now_rfc3339() -> String {
 use crate::bus::SubscribeReply;
 use crate::bus::sequencer::Emitter;
 
-/// Wraps a session's [`SessionBus`] as the sequencer's emitter and forwards
-/// every DURABLE envelope — everything except the live-only kinds
-/// (`llm.delta`, `context.updated`; never stored), `session.end` included — to the writer thread, in seq order, synchronously inside the single sequencer task. The
-/// hand-off is a channel send: the sequencer never waits on SQLite.
+/// Wraps a session's [`SessionBus`] as the sequencer's emitter. Its
+/// [`Emitter::store`] writes every DURABLE envelope — everything except the
+/// live-only kinds (`llm.delta`, `context.updated`; never stored),
+/// `session.end` included — to the writer thread and awaits the commit, so the
+/// sequencer stores a durable event before its [`Emitter::emit`] fans it out to
+/// clients. Live-only events are filtered and never stored.
 pub struct PersistingEmitter {
     mirror: Option<(Ulid, Ulid, crate::bus::sequencer::Sequencer)>,
     bus: crate::bus::SessionBus,
@@ -2107,6 +2065,36 @@ impl PersistingEmitter {
 }
 
 impl Emitter for PersistingEmitter {
+    fn store<'a>(
+        &'a mut self,
+        envelopes: &'a [EventEnvelope],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        let store = self.store.clone();
+        let session_id = self.session_id;
+        let owned: Vec<EventEnvelope> = envelopes.to_vec();
+        Box::pin(async move {
+            for envelope in owned {
+                let kind = envelope.kind.as_str();
+                if !EventKind::from_wire(kind).is_none_or(EventKind::is_durable) {
+                    continue; // live-only: never stored
+                }
+                // The first captain message becomes the title (the store
+                // guards: only when the title is still NULL). A title write
+                // failure is ignored: the event write below is authoritative.
+                if kind == "message.received"
+                    && envelope.payload["source"] != "subagent"
+                    && let Some(content) = envelope.payload["content"].as_str()
+                {
+                    let _ = store
+                        .set_title(session_id, title_from_message(content))
+                        .await;
+                }
+                store.append_event_acked(session_id, envelope).await?;
+            }
+            Ok(())
+        })
+    }
+
     fn emit(&mut self, envelope: EventEnvelope) {
         if matches!(
             envelope.kind.as_str(),
@@ -2120,29 +2108,15 @@ impl Emitter for PersistingEmitter {
                 let _ = parent.publish(crate::bus::sequencer::Candidate::new(kind, payload));
             }
         }
-        let kind = envelope.kind.as_str();
-        // An unknown name is stored: only a catalog kind marked live-only is not.
-        if EventKind::from_wire(kind).is_none_or(EventKind::is_durable) {
-            // The first captain message becomes the title (the store guards:
-            // only when the title is still NULL).
-            if kind == "message.received"
-                && envelope.payload["source"] != "subagent"
-                && let Some(content) = envelope.payload["content"].as_str()
-            {
-                self.store
-                    .set_title(self.session_id, title_from_message(content));
-            }
-            self.store.append_event(self.session_id, envelope.clone());
-            if envelope.kind == "permission.resolved"
-                && let Some((_, parent_id, parent)) = &self.mirror
-            {
-                let (store, parent_id, parent) = (self.store.clone(), *parent_id, parent.clone());
-                tokio::spawn(async move {
-                    if store.flush().await.is_ok() {
-                        let _ = store.drain_permission_mirrors(parent_id, parent).await;
-                    }
-                });
-            }
+        if envelope.kind == "permission.resolved"
+            && let Some((_, parent_id, parent)) = &self.mirror
+        {
+            // The store-first ordering makes this event durable before `emit`
+            // runs, so the mirror can drain without a barrier.
+            let (store, parent_id, parent) = (self.store.clone(), *parent_id, parent.clone());
+            tokio::spawn(async move {
+                let _ = store.drain_permission_mirrors(parent_id, parent).await;
+            });
         }
         self.bus.emit(envelope);
     }
@@ -2725,7 +2699,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn permission_writer_waits_for_outbox_write_ownership_without_poisoning_flush() {
+    async fn permission_writer_waits_for_outbox_write_ownership() {
         let (dir, store) = temp_store();
         let id = Ulid::generate();
         store
@@ -2741,7 +2715,7 @@ mod tests {
             [id.to_string()],
         )
         .unwrap();
-        store.append_event(
+        let appending = store.append_event_acked(
             id,
             EventEnvelope::new(
                 id,
@@ -2750,19 +2724,17 @@ mod tests {
                 serde_json::json!({"request_id":Ulid::generate(),"resolution":"allow_once"}),
             ),
         );
-        let flushing = store.flush();
-        tokio::pin!(flushing);
+        tokio::pin!(appending);
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), &mut flushing)
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut appending)
                 .await
                 .is_err()
         );
         tx.commit().unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), &mut flushing)
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut appending)
             .await
             .unwrap()
             .unwrap();
-        store.flush().await.unwrap();
         assert_eq!(store.replay(id, None, 0).await.unwrap().len(), 1);
     }
 
@@ -2784,8 +2756,8 @@ mod tests {
         panic!("history writer never set the title");
     }
 
-    /// Polls the (fire-and-forget) writer until `list` returns `min` rows:
-    /// the channel offers no flush barrier, so tests observe drain by read.
+    /// Reads `list` until it returns `min` rows (every write is acknowledged,
+    /// so the first read normally suffices; the loop only bounds a slow disk).
     async fn poll_list(store: &HistoryStore, workspace: &str, min: usize) -> Vec<ListedSession> {
         for _ in 0..200 {
             let listed = store.list(workspace).await.expect("list");
@@ -2819,22 +2791,33 @@ mod tests {
             .record_session(id2, "/w", "default", false)
             .await
             .expect("record");
-        store.append_event(id, envelope(0, EventKind::SessionStart));
-        store.append_event(id, envelope(1, EventKind::MessageReceived));
-        store.save_transcript(
-            id,
-            vec![ChatMessage::User {
-                provenance: Default::default(),
-                content: "hi".into(),
-                images: Vec::new(),
-            }],
-        );
+        store
+            .append_event_acked(id, envelope(0, EventKind::SessionStart))
+            .await
+            .unwrap();
+        store
+            .append_event_acked(id, envelope(1, EventKind::MessageReceived))
+            .await
+            .unwrap();
+        store
+            .save_transcript(
+                id,
+                vec![ChatMessage::User {
+                    provenance: Default::default(),
+                    content: "hi".into(),
+                    images: Vec::new(),
+                }],
+            )
+            .await
+            .unwrap();
         // id2 updated later: it must list first even though id was created
         // first. When both stamps share a millisecond the order between them
         // is undefined, so the assertion runs only on a real timestamp gap.
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        store.append_event(id2, envelope(0, EventKind::SessionStart));
-        store.flush().await.expect("flush");
+        store
+            .append_event_acked(id2, envelope(0, EventKind::SessionStart))
+            .await
+            .unwrap();
 
         let listed = poll_list(&store, "/w", 2).await;
         assert_eq!(listed.len(), 2);
@@ -2873,9 +2856,8 @@ mod tests {
             .record_session(id, "/w", "m", false)
             .await
             .expect("record");
-        store.set_title(id, "first".into());
-        store.set_title(id, "second".into());
-        store.flush().await.expect("flush");
+        store.set_title(id, "first".into()).await.unwrap();
+        store.set_title(id, "second".into()).await.unwrap();
         let loaded = poll_title(&store, id).await;
         assert_eq!(loaded.meta.title.as_deref(), Some("first"));
     }
@@ -2891,23 +2873,12 @@ mod tests {
             .record_session(id, "/w", "m", false)
             .await
             .expect("record");
-        store.append_event(id, envelope(0, EventKind::SessionStart));
-        // Wait for the row to EXIST first (the channel is fire-and-forget,
-        // so observing the insert proves the earlier commands drained).
-        for _ in 0..200 {
-            if store.load(id).await.expect("load").is_some() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        store
+            .append_event_acked(id, envelope(0, EventKind::SessionStart))
+            .await
+            .unwrap();
+        assert!(store.load(id).await.expect("load").is_some());
         store.delete(id).await.expect("delete");
-        // Then wait for it to be GONE.
-        for _ in 0..200 {
-            if store.load(id).await.expect("load").is_none() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
         assert!(store.load(id).await.expect("load").is_none());
         assert!(store.list("/w").await.expect("list").is_empty());
     }
@@ -2980,11 +2951,16 @@ mod tests {
             .record_session(id, "/w", "m", false)
             .await
             .expect("record");
-        store.append_event(id, envelope(0, EventKind::SessionStart));
+        store
+            .append_event_acked(id, envelope(0, EventKind::SessionStart))
+            .await
+            .unwrap();
         for seq in 1..=4 {
-            store.append_event(id, envelope(seq, EventKind::MessageReceived));
+            store
+                .append_event_acked(id, envelope(seq, EventKind::MessageReceived))
+                .await
+                .unwrap();
         }
-        store.flush().await.expect("flush");
         let seqs = |events: Vec<EventEnvelope>| events.iter().map(|e| e.seq).collect::<Vec<_>>();
 
         let all = store.replay(id, None, 4).await.expect("replay all");
@@ -3032,16 +3008,21 @@ mod tests {
             .record_session(id, "/w", "m", true)
             .await
             .expect("record");
-        store.append_event(id, envelope(0, EventKind::SessionStart));
-        store.save_transcript(
-            id,
-            vec![ChatMessage::User {
-                provenance: Default::default(),
-                content: "hi".into(),
-                images: Vec::new(),
-            }],
-        );
-        store.flush().await.expect("flush");
+        store
+            .append_event_acked(id, envelope(0, EventKind::SessionStart))
+            .await
+            .unwrap();
+        store
+            .save_transcript(
+                id,
+                vec![ChatMessage::User {
+                    provenance: Default::default(),
+                    content: "hi".into(),
+                    images: Vec::new(),
+                }],
+            )
+            .await
+            .unwrap();
 
         let meta = store.meta(id).await.expect("meta").expect("present");
         assert!(meta.editor);
@@ -3235,33 +3216,31 @@ mod tests {
         );
     }
 
-    // Given a store whose events table has been destroyed underneath it
-    // When an event is appended and the store is flushed several times
-    // Then the first flush names the cause, and every later flush keeps
-    //      reporting the same failure: the history has a hole that no later
-    //      flush may hide
+    // Given an append that fails (no session row)
+    // When later appends run on the same store
+    // Then each append reports its own outcome: the earlier failure never
+    //      leaks into an unrelated later write
     #[tokio::test]
-    async fn acked_append_reports_its_own_outcome_not_the_poison() {
+    async fn a_failed_append_does_not_poison_later_writes() {
         let (_dir, store) = temp_store();
         let id = Ulid::generate();
         store
             .record_session(id, "/w", "m", false)
             .await
             .expect("record");
-        store.append_event(Ulid::generate(), envelope(0, EventKind::SessionStart));
         store
-            .flush()
+            .append_event_acked(Ulid::generate(), envelope(0, EventKind::SessionStart))
             .await
-            .expect_err("poisoned by an unknown session");
+            .expect_err("an unknown session fails its own append");
         let event = envelope(0, EventKind::SessionStart);
         store
             .append_event_acked(id, event.clone())
             .await
             .expect("its own append committed");
         store
-            .flush()
+            .save_transcript(id, vec![])
             .await
-            .expect_err("the poison is still reported");
+            .expect("a later write is not poisoned");
         store
             .append_event_acked(id, event.clone())
             .await
@@ -3274,14 +3253,13 @@ mod tests {
         assert_eq!(loaded.envelopes.len(), 1);
         assert_eq!(loaded.meta.last_seq, 0);
         assert!(store.load_for_resume(id).await.unwrap().is_some());
-        store
-            .append_event_acked(Ulid::generate(), envelope(1, EventKind::SessionStart))
-            .await
-            .expect_err("its own failure is reported");
     }
 
+    // Given a store whose events table has been destroyed underneath it
+    // When an event is appended
+    // Then the append itself reports the cause
     #[tokio::test]
-    async fn failed_append_poison_survives_multiple_flushes() {
+    async fn a_failed_append_names_its_cause() {
         let (dir, store) = temp_store();
         let id = Ulid::generate();
         store
@@ -3292,13 +3270,11 @@ mod tests {
             .execute_batch("DROP TABLE events")
             .expect("drop events");
 
-        store.append_event(id, envelope(0, EventKind::SessionStart));
-        let first = store.flush().await.expect_err("the insert must fail");
-        assert!(first.contains("events"), "names the cause: {first}");
-        let second = store.flush().await.expect_err("still poisoned");
-        let third = store.flush().await.expect_err("and still");
-        assert_eq!(first, second);
-        assert_eq!(second, third);
+        let err = store
+            .append_event_acked(id, envelope(0, EventKind::SessionStart))
+            .await
+            .expect_err("the insert must fail");
+        assert!(err.contains("events"), "names the cause: {err}");
     }
 
     // Given a store whose sessions table has been destroyed underneath it
@@ -3317,25 +3293,27 @@ mod tests {
         assert!(result.is_err(), "the ack must carry the failure");
     }
 
-    // Given a store with a session
-    // When two snapshots race a failing write
-    // Then flush reports only the FIRST error
+    // Given a store with one known session
+    // When transcripts are saved for unknown and known sessions
+    // Then only the unknown ones fail, each with its own session named
     #[tokio::test]
-    async fn flush_reports_the_first_error_only() {
+    async fn each_transcript_save_reports_its_own_outcome() {
         let (_dir, store) = temp_store();
         let known = Ulid::generate();
-        let unknown_a = Ulid::generate();
-        let unknown_b = Ulid::generate();
+        let unknown = Ulid::generate();
         store
             .record_session(known, "/w", "m", false)
             .await
             .expect("record");
-        store.save_transcript(unknown_a, vec![]);
-        store.save_transcript(known, vec![]);
-        store.save_transcript(unknown_b, vec![]);
-
-        let err = store.flush().await.expect_err("first failure surfaces");
-        assert!(err.contains(&unknown_a.to_string()), "first error: {err}");
+        let err = store
+            .save_transcript(unknown, vec![])
+            .await
+            .expect_err("unknown session");
+        assert!(err.contains(&unknown.to_string()), "names it: {err}");
+        store
+            .save_transcript(known, vec![])
+            .await
+            .expect("the known session saves");
     }
 
     // Given an event for a session that has no row
@@ -3346,8 +3324,10 @@ mod tests {
     async fn event_and_last_seq_commit_together_or_not_at_all() {
         let (dir, store) = temp_store();
         let id = Ulid::generate();
-        store.append_event(id, envelope(0, EventKind::SessionStart));
-        store.flush().await.expect_err("no session row");
+        store
+            .append_event_acked(id, envelope(0, EventKind::SessionStart))
+            .await
+            .expect_err("no session row");
 
         let orphans: i64 = side_connection(&dir)
             .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
@@ -3644,8 +3624,7 @@ mod tests {
             },
             items,
         });
-        store.save_transcript(id, transcript.clone());
-        store.flush().await.unwrap();
+        store.save_transcript(id, transcript.clone()).await.unwrap();
         let (_, back, _) = store.load_for_resume(id).await.unwrap().unwrap();
         let (
             ChatMessage::Assistant { opaque: want, .. },
@@ -3709,8 +3688,7 @@ mod tests {
         let (dir, store) = temp_store();
         let id = Ulid::generate();
         store.record_session(id, "/w", "m", false).await.unwrap();
-        store.save_transcript(id, exchange(0));
-        store.flush().await.unwrap();
+        store.save_transcript(id, exchange(0)).await.unwrap();
         assert!(
             store
                 .load_for_resume(id)

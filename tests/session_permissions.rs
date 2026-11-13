@@ -123,11 +123,6 @@ async fn answer(
 async fn await_persisted_transcript(state: &AppState, id: ulid::Ulid) {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            state
-                .history()
-                .flush()
-                .await
-                .expect("flush transcript writer");
             let stored = state
                 .history()
                 .load(id)

@@ -143,7 +143,6 @@ impl Service {
             });
         }
         let stored = async {
-            self.history().flush().await?;
             self.history()
                 .replay(id, cursor, head.unwrap_or_default())
                 .await

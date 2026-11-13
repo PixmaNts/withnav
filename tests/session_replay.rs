@@ -94,9 +94,11 @@ async fn seed_conversation(fx: &Fixture) -> Ulid {
         } else {
             EventKind::TurnStart
         };
-        store.append_event(id, EventEnvelope::new(id, seq, kind, json!({ "n": seq })));
+        store
+            .append_event_acked(id, EventEnvelope::new(id, seq, kind, json!({ "n": seq })))
+            .await
+            .unwrap();
     }
-    store.flush().await.expect("flush seed");
     id
 }
 
@@ -109,7 +111,6 @@ async fn session_with_one_turn(state: &AppState, base: &str, ws: &Path) -> (Ulid
     post_message_ok(base, &id, "hello").await;
     let mut live = sub.live.take().expect("live receiver");
     live_until(&mut live, |e| e.kind == "turn.end").await;
-    state.history().flush().await.expect("flush");
     let all = state.subscribe(ulid, None).await.expect("subscribe");
     (ulid, seqs(&all.replay))
 }
@@ -212,7 +213,6 @@ async fn a_resumed_stream_hides_the_stale_session_end() {
     let mut live = fresh.live.take().expect("live receiver");
     post_message_ok(&base, &id.to_string(), "second turn").await;
     live_until(&mut live, |e| e.kind == "turn.end").await;
-    state.history().flush().await.expect("flush");
 
     let sub = state.subscribe(id, None).await.expect("subscribe");
     let replayed = match &sub.replay {

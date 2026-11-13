@@ -923,16 +923,18 @@ async fn abandoned_mirrored_permission_is_expired_on_resume() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    store.append_event(
-        parent,
-        withnav::bus::event::EventEnvelope::new(
+    store
+        .append_event_acked(
             parent,
-            1,
-            withnav::bus::event::EventKind::PermissionRequested,
-            json!({"request_id":request,"child_session_id":child,"tool_call_id":"pending"}),
-        ),
-    );
-    store.flush().bounded(file!(), line!()).await.unwrap();
+            withnav::bus::event::EventEnvelope::new(
+                parent,
+                1,
+                withnav::bus::event::EventKind::PermissionRequested,
+                json!({"request_id":request,"child_session_id":child,"tool_call_id":"pending"}),
+            ),
+        )
+        .await
+        .unwrap();
     drop(store);
     let state = AppState::new(config).unwrap();
     state
@@ -1510,12 +1512,6 @@ async fn child_permission_is_answered_by_owner_without_parent_interaction() {
     drop(stream);
     let request = tokio::time::timeout(WAIT, async {
         loop {
-            state
-                .history()
-                .flush()
-                .bounded(file!(), line!())
-                .await
-                .unwrap();
             let replay = state
                 .subscribe(parent, None)
                 .bounded(file!(), line!())

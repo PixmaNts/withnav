@@ -530,3 +530,84 @@ async fn service_send_refuses_an_unknown_attachment_id_before_sequencing() {
     );
     service.close_all().await;
 }
+
+// Given two live root sessions on one Service and history database
+// When one session's stored row disappears, so its next history write fails
+// Then that session's message is refused with the write error and the session
+//      ends with a `session.end` that names the failure, while the other
+//      session keeps accepting messages: a failed write ends only its own
+//      conversation
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_history_write_ends_only_its_own_session() {
+    use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
+    use withnav::error::ServerError;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("workspace");
+    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
+        .expect("service");
+    let broken = service
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
+    let healthy = service
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
+    let mut broken_live = service
+        .subscribe(broken, None)
+        .await
+        .expect("subscribe")
+        .live
+        .take()
+        .expect("live receiver");
+
+    let db = rusqlite::Connection::open(tmp.path().join("history.db")).expect("open history db");
+    db.execute(
+        "DELETE FROM events WHERE session_id = ?1",
+        [broken.to_string()],
+    )
+    .expect("delete events");
+    db.execute("DELETE FROM sessions WHERE id = ?1", [broken.to_string()])
+        .expect("delete row");
+
+    let message = |session_id| Command {
+        command_id: ulid::Ulid::generate(),
+        session_id,
+        source_actor_id: "user:test".to_string(),
+        target_actor_id: "agent:main".to_string(),
+        mode: DeliveryMode::NextTurn,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+        }],
+        created_at: std::time::SystemTime::now(),
+    };
+
+    let refused = service.send(message(broken)).await;
+    assert!(
+        matches!(&refused, Err(ServerError::History(why)) if why.contains("no stored session")),
+        "{refused:?}"
+    );
+    let end = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = broken_live.recv().await.expect("stream open until the end");
+            if event.kind.as_str() == "session.end" {
+                return event;
+            }
+            assert_ne!(event.kind.as_str(), "message.received", "never shown");
+        }
+    })
+    .await
+    .expect("session.end arrives");
+    let reason = end.payload["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("history write failed") && reason.contains("no stored session"),
+        "{reason}"
+    );
+
+    service
+        .send(message(healthy))
+        .await
+        .expect("the other session still accepts messages");
+}

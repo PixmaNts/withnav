@@ -50,8 +50,8 @@ condition = 'is_set(effect) && effect == "allow"'
 [node.inputs]
 effect = "event.rule_effect"
 [node.next]
-true = ["danger"]
-false = ["requested"]
+true = ["danger", "requested"]
+false = ["requested", "read_only", "recoverable"]
 
 [[node]]
 id = "requested"
@@ -71,18 +71,8 @@ inside_project = "event.inside_project"
 location = "event.location"
 rule = "event.rule"
 [node.next]
-yes = ["allow"]
-no = ["unrequested"]
-
-[[node]]
-id = "unrequested"
-type = "expression"
-condition = 'is_set(effect) && effect == "allow"'
-[node.inputs]
-effect = "event.rule_effect"
-[node.next]
-true = ["danger_ask"]
-false = ["read_only"]
+yes = ["verdict"]
+no = ["verdict"]
 
 [[node]]
 id = "read_only"
@@ -102,8 +92,8 @@ inside_project = "event.inside_project"
 location = "event.location"
 rule = "event.rule"
 [node.next]
-yes = ["allow"]
-no = ["recoverable"]
+yes = ["verdict"]
+no = ["verdict"]
 
 [[node]]
 id = "recoverable"
@@ -123,8 +113,8 @@ inside_project = "event.inside_project"
 location = "event.location"
 rule = "event.rule"
 [node.next]
-yes = ["allow"]
-no = ["unrequested_ask"]
+yes = ["verdict"]
+no = ["verdict"]
 
 [[node]]
 id = "danger"
@@ -144,8 +134,48 @@ inside_project = "event.inside_project"
 location = "event.location"
 rule = "event.rule"
 [node.next]
-yes = ["requested"]
-no = ["allow"]
+yes = ["verdict"]
+no = ["verdict"]
+
+# The questions above are wired in parallel so the engine sends the ones of one path in a
+# single Instinct request; this node combines their answers. A question not asked on the path
+# is unreachable and its answer unset. Under an allow rule the call runs unless it is
+# dangerous and was not requested; otherwise it runs when it was requested, only reads, or is
+# a recoverable change.
+[[node]]
+id = "verdict"
+type = "expression"
+condition = """
+(is_set(effect) && effect == "allow"
+  && !(is_set(danger) && danger >= danger_min))
+|| (is_set(requested) && requested >= requested_min)
+|| (!(is_set(effect) && effect == "allow")
+  && ((is_set(read_only) && read_only >= read_only_min)
+    || (is_set(recoverable) && recoverable >= recoverable_min)))
+"""
+[node.inputs]
+effect = "event.rule_effect"
+requested = "answer.requested"
+read_only = "answer.read_only"
+recoverable = "answer.recoverable"
+danger = "answer.danger"
+requested_min = "constant.REQUESTED_MIN"
+read_only_min = "constant.READ_ONLY_MIN"
+recoverable_min = "constant.RECOVERABLE_MIN"
+danger_min = "constant.DANGER_MIN"
+[node.next]
+true = ["allow"]
+false = ["unrequested"]
+
+[[node]]
+id = "unrequested"
+type = "expression"
+condition = 'is_set(effect) && effect == "allow"'
+[node.inputs]
+effect = "event.rule_effect"
+[node.next]
+true = ["danger_ask"]
+false = ["unrequested_ask"]
 
 [[node]]
 id = "protected_allow"

@@ -955,6 +955,136 @@ mod tests {
         }
     }
 
+    /// Records the question ids of every request and answers each from its table (0 otherwise).
+    struct BatchClient(
+        BTreeMap<&'static str, f64>,
+        std::sync::Mutex<Vec<Vec<String>>>,
+    );
+    impl DecisionClient for BatchClient {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/batch".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            self.1
+                .lock()
+                .unwrap()
+                .push(request.questions.keys().cloned().collect());
+            Box::pin(async move {
+                Ok(instinct_flow::protocol::DecisionResponse {
+                    answers: request
+                        .questions
+                        .keys()
+                        .map(|id| {
+                            let noul = self.0.get(id.as_str()).copied().unwrap_or(0.0);
+                            (id.clone(), instinct_flow::protocol::Answer::Noul { noul })
+                        })
+                        .collect(),
+                    usage: None,
+                })
+            })
+        }
+    }
+
+    /// Each round trip to Instinct adds its latency to the permission decision, and the overall
+    /// flow deadline can cut a second or third one: the questions of one path are asked together.
+    #[tokio::test]
+    async fn the_builtin_flow_asks_the_questions_of_a_path_in_one_request() {
+        let ask_path = ["read_only", "recoverable", "requested"];
+        let allow_path = ["danger", "requested"];
+        for (rule, answers, batch, allowed) in [
+            (RuleResult::None, vec![], &ask_path[..], false),
+            (
+                RuleResult::Ask,
+                vec![("requested", 0.6)],
+                &ask_path[..],
+                true,
+            ),
+            (
+                RuleResult::None,
+                vec![("read_only", 0.6)],
+                &ask_path[..],
+                true,
+            ),
+            (
+                RuleResult::None,
+                vec![("recoverable", 0.7)],
+                &ask_path[..],
+                true,
+            ),
+            (
+                RuleResult::Ask,
+                vec![
+                    ("requested", 0.59),
+                    ("read_only", 0.59),
+                    ("recoverable", 0.69),
+                ],
+                &ask_path[..],
+                false,
+            ),
+            // A danger answer is not read without an allow rule.
+            (
+                RuleResult::None,
+                vec![("danger", 1.0)],
+                &ask_path[..],
+                false,
+            ),
+            (RuleResult::Allow, vec![], &allow_path[..], true),
+            (
+                RuleResult::Allow,
+                vec![("danger", 0.49)],
+                &allow_path[..],
+                true,
+            ),
+            (
+                RuleResult::Allow,
+                vec![("danger", 0.5)],
+                &allow_path[..],
+                false,
+            ),
+            (
+                RuleResult::Allow,
+                vec![("danger", 0.5), ("requested", 0.6)],
+                &allow_path[..],
+                true,
+            ),
+        ] {
+            let client = Arc::new(BatchClient(
+                answers.into_iter().collect(),
+                Default::default(),
+            ));
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+            let runtime = FlowRuntime::new(store, client.clone(), Arc::new(NoEffects));
+            let result = runtime
+                .permission_pre_call(
+                    permission_call(dir.path().into(), false),
+                    rule,
+                    CancellationToken::new(),
+                )
+                .await;
+            assert_eq!(
+                matches!(result.verdict, FlowVerdict::Allow),
+                allowed,
+                "{rule:?} {:?}",
+                result.verdict
+            );
+            let requests = client.1.lock().unwrap().clone();
+            assert_eq!(requests, vec![batch.to_vec()], "{rule:?}");
+        }
+    }
+
     /// Records the state of every question it is asked and answers `answer`.
     struct StateClient(std::sync::Mutex<Vec<(String, String)>>, f64);
     impl DecisionClient for StateClient {

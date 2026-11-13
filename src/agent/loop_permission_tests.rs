@@ -13,7 +13,7 @@ use super::tests::{
 };
 use super::*;
 use crate::agent::flow_hook::{
-    FlowVerdict, PermissionCallContext, PermissionVerdict, ProtectedCheck, RuleResult,
+    FlowAction, FlowVerdict, PermissionCallContext, PermissionVerdict, ProtectedCheck, RuleResult,
     ToolCallFlows,
 };
 use crate::agent::permissions::PermissionOrigin;
@@ -80,12 +80,21 @@ impl ToolCallFlows for FakeFlows {
             };
             // A scripted verdict is the flow's own; the default applies the rule.
             let own = matches!(self.mode, "allow" | "deny" | "ask");
+            let action = if own {
+                match &verdict {
+                    FlowVerdict::Allow => FlowAction::Allow,
+                    FlowVerdict::Deny { .. } => FlowAction::Deny,
+                    FlowVerdict::AskCaptain { .. } => FlowAction::AskCaptain,
+                }
+            } else {
+                FlowAction::ApplyRule
+            };
             PermissionVerdict {
                 verdict,
                 flows: vec![crate::agent::flow_hook::PermissionFlowAnswer {
                     flow: "test".into(),
                     run_id: "run".into(),
-                    action: String::new(),
+                    action,
                     used_rule: !own,
                     scores: Default::default(),
                 }],

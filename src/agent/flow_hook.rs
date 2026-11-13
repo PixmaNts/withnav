@@ -22,6 +22,62 @@ pub enum FlowVerdict {
     },
 }
 
+/// The verdict actions a flow may propose on `tool.pre_call`, carried as a
+/// type so that aggregation matches exhaustively instead of falling through a
+/// string wildcard. The snake_case names are the flow-definition spelling and
+/// the serialized form (`flow_trace` in `permission_decisions`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowAction {
+    Allow,
+    AskCaptain,
+    Deny,
+    ApplyRule,
+}
+
+impl FlowAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::AskCaptain => "ask_captain",
+            Self::Deny => "deny",
+            Self::ApplyRule => "apply_rule",
+        }
+    }
+
+    /// Parse a proposed action name. `None` for anything the catalogue does
+    /// not declare: callers must fail safe on it, never allow.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "allow" => Some(Self::Allow),
+            "ask_captain" => Some(Self::AskCaptain),
+            "deny" => Some(Self::Deny),
+            "apply_rule" => Some(Self::ApplyRule),
+            _ => None,
+        }
+    }
+
+    /// Strictest-wins order: `deny`, then `ask_captain`, then `allow`.
+    /// `apply_rule` is resolved to the rule's action before comparison.
+    fn rank(self) -> u8 {
+        match self {
+            Self::Allow => 0,
+            Self::AskCaptain => 1,
+            Self::Deny => 2,
+            Self::ApplyRule => 0,
+        }
+    }
+
+    /// The strictest of two resolved actions (neither `ApplyRule`).
+    pub fn strictest(self, other: Self) -> Self {
+        if other.rank() > self.rank() {
+            other
+        } else {
+            self
+        }
+    }
+}
+
 /// A rule reaching the flow cannot be a deny: written denies stop beforehand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -111,7 +167,7 @@ pub struct PermissionVerdict {
 pub struct PermissionFlowAnswer {
     pub flow: String,
     pub run_id: String,
-    pub action: String,
+    pub action: FlowAction,
     pub used_rule: bool,
     /// The score of each node of this run that asked Instinct.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]

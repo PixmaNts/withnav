@@ -17,7 +17,6 @@ impl std::fmt::Debug for TestWatchdog {
     }
 }
 use crate::provider::config::load_models;
-use crate::provider::openai::ClientCache;
 use crate::session::service::{Lifecycle, Service, SessionId};
 
 impl Service {
@@ -44,7 +43,7 @@ impl Service {
             crate::provider::layers::available_instinct(
                 &models,
                 &self.config.config_dir,
-                Arc::new(ClientCache::new()),
+                self.client_cache.clone(),
             )
         })
         .map(|client| Arc::new(client) as Arc<dyn DecisionModel>);

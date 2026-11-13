@@ -100,6 +100,7 @@ use ulid::Ulid;
 use crate::bus::command::{Command, ContentBlock, DeliveryMode};
 use crate::bus::event::ROOT_ACTOR_ID;
 use crate::error::ServerError;
+use crate::provider::openai::ClientCache;
 use crate::server::session::{AppState, ServerConfig};
 
 /// Frozen health body.
@@ -278,11 +279,12 @@ pub fn app(state: AppState) -> Router {
 pub async fn serve(
     config: ServerConfig,
     hooks: std::sync::Arc<dyn crate::session::SessionHooks>,
+    client_cache: Arc<ClientCache>,
 ) -> Result<(), ServerError> {
     config.validate()?;
     let addr: SocketAddr = config.bind;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    serve_state_on(AppState::with_hooks(config, hooks)?, listener).await
+    serve_state_on(AppState::with_hooks(config, hooks, client_cache)?, listener).await
 }
 
 /// The serve body over an already-bound listener with a fresh shared state —
@@ -291,8 +293,9 @@ pub async fn serve(
 pub async fn serve_on(
     config: ServerConfig,
     listener: tokio::net::TcpListener,
+    client_cache: Arc<ClientCache>,
 ) -> Result<(), ServerError> {
-    serve_state_on(AppState::new(config)?, listener).await
+    serve_state_on(AppState::new(config, client_cache)?, listener).await
 }
 
 /// The serve body over an already-bound listener and a CALLER-SUPPLIED

@@ -7,7 +7,7 @@ use crate::agent::response::{HumanRequest, StepOutcome};
 use crate::error::{AgentError, ProviderError, ToolError};
 use crate::permission::decisions::Outcome;
 use crate::provider::client::ModelClient;
-use crate::provider::openai::{ChatMessage, ClientCache};
+use crate::provider::openai::ChatMessage;
 use crate::provider::{AssistantMessage, StreamDelta, ToolCall};
 use std::path::{Path, PathBuf};
 
@@ -231,7 +231,7 @@ async fn run_steps_inner(
         "agent",
         &actor.provider,
         actor.api_key.clone(),
-        &ClientCache::new(),
+        &actor.client_cache,
     )?;
 
     for step in 0..budget {

@@ -6,6 +6,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::error::ServerError;
+use crate::provider::openai::ClientCache;
 use crate::session::{Service, SessionHooks};
 
 pub use super::config::{HttpConfig, ServerConfig};
@@ -27,17 +28,18 @@ impl AppState {
     }
     /// A state without any profile behaviour. Fails when the history
     /// database cannot be opened.
-    pub fn new(config: ServerConfig) -> Result<Self, ServerError> {
-        Self::with_hooks(config, Arc::new(crate::session::NoHooks))
+    pub fn new(config: ServerConfig, client_cache: Arc<ClientCache>) -> Result<Self, ServerError> {
+        Self::with_hooks(config, Arc::new(crate::session::NoHooks), client_cache)
     }
 
     /// [`AppState::new`] with the host's session hooks.
     pub fn with_hooks(
         config: ServerConfig,
         hooks: Arc<dyn SessionHooks>,
+        client_cache: Arc<ClientCache>,
     ) -> Result<Self, ServerError> {
         let (session, http) = config.split();
-        let service = Service::with_hooks(session, hooks)?;
+        let service = Service::with_hooks(session, hooks, client_cache)?;
         let flows = service.flows.clone();
         Ok(Self {
             service,

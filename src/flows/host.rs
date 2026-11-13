@@ -15,6 +15,7 @@ pub struct Host {
     pub config: PathBuf,
     pub data: PathBuf,
     models: Option<PathBuf>,
+    pub client_cache: Arc<crate::provider::openai::ClientCache>,
     workspaces: Mutex<BTreeMap<PathBuf, Workspace>>,
 }
 
@@ -43,11 +44,17 @@ impl Host {
                 .shutdown(deadline.saturating_duration_since(std::time::Instant::now()));
         }
     }
-    pub fn new(config: PathBuf, data: PathBuf, models: Option<PathBuf>) -> Self {
+    pub fn new(
+        config: PathBuf,
+        data: PathBuf,
+        models: Option<PathBuf>,
+        client_cache: Arc<crate::provider::openai::ClientCache>,
+    ) -> Self {
         Self {
             config,
             data,
             models,
+            client_cache,
             workspaces: Mutex::default(),
         }
     }
@@ -65,11 +72,7 @@ impl Host {
             crate::provider::config::load_models(self.models.as_deref(), &workspace, &self.config)
                 .map_err(anyhow::Error::from)
                 .and_then(|(models, _)| {
-                    WithNavDecisionClient::new(
-                        &models,
-                        &self.config,
-                        Arc::new(crate::provider::openai::ClientCache::new()),
-                    )
+                    WithNavDecisionClient::new(&models, &self.config, self.client_cache.clone())
                 });
         let (client, diagnostic): (Arc<dyn instinct_flow::DecisionClient>, _) = match client {
             Ok(client) => (Arc::new(client), None),

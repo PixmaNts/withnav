@@ -401,6 +401,7 @@ pub(super) async fn summarize_written_by(
                 None => actor.compaction_max_message_tokens,
             },
             progress: actor.compaction_progress.as_deref(),
+            client_cache: actor.client_cache.clone(),
         },
         cancel,
     )

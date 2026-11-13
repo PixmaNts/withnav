@@ -602,7 +602,7 @@ Output of every tool is bounded to 64 KiB, with the original size in the result 
 
 - Paths are checked against roots. `write`, `edit` and `bash` may change files under the workspace and the WithNav config directory. `read` and `grep` also accept the read-only roots, which are the skill directories. Path traversal outside the roots is refused.
 - `bash` is not sandboxed. It runs with the operator's OS permissions.
-- An allowed `write` or `edit` is bound to the canonical pathname it was decided for and opened without following any link (`src/tools/nofollow.rs`: `openat2` with `RESOLVE_NO_SYMLINKS`, else a component-by-component `O_NOFOLLOW` walk). A link put in the destination after the decision is refused and the call is decided again.
+- An allowed `write` or `edit` runs once on the canonical pathname it was decided for, with ordinary file operations (atomic replace through a temporary file and a rename). A target changed after the decision is not decided again: symlink races are out of scope (ADR 0015).
 - Tool denial is a structured tool result, so the model can recover. Tool errors never crash the agent actor.
 
 ### 9.4 Permission Decision
@@ -2021,7 +2021,7 @@ nav/
 │   │                          instructions (rules), skills, definitions (agents), selection
 │   ├── bus/                   sequencer, event catalog, commands, inboxes, runtime task
 │   ├── provider/              models.json, auth, catalog, chat client, SSE, FIM, System One
-│   ├── tools/                 read, write, edit, bash, grep, glob, fetch, ask, no-follow open
+│   ├── tools/                 read, write, edit, bash, grep, glob, fetch, ask
 │   ├── session/               service, commands, store (SQLite), lifecycle, hooks, subagents
 │   ├── permission/            rules, decision history, validations, shell splitting, fixed floor, decision order
 │   ├── flows/                 flow store, runtime, built-in flows, run records

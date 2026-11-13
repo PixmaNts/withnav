@@ -170,7 +170,7 @@ pub(super) fn floor_context(actor: &AgentActor) -> FloorContext {
             .temp
             .iter()
             .cloned()
-            .chain(actor.scratch_roots.iter().map(|root| root.path.clone()))
+            .chain(actor.scratch_roots.iter().cloned())
             .collect(),
         config_dir: actor.permission_dirs.config.clone(),
         data_dir: actor.permission_dirs.data.clone(),
@@ -227,7 +227,7 @@ fn inside_project(call: &ToolCall, cx: &FloorContext, location: Option<Location>
             .any(|root| {
                 #[cfg(windows)]
                 {
-                    crate::tools::nofollow::path_within(&target, &root)
+                    crate::tools::win_path::path_within(&target, &root)
                 }
                 #[cfg(unix)]
                 {
@@ -305,11 +305,7 @@ pub(super) async fn authorize(
     }
     let (delegation, delegation_cut) = delegation_with_cut(&actor.transcript);
     let (recent, recent_cut) = recent_with_cut(&actor.transcript);
-    let scratch: Vec<PathBuf> = actor
-        .scratch_roots
-        .iter()
-        .map(|root| root.path.clone())
-        .collect();
+    let scratch = actor.scratch_roots.clone();
     let mut place = location(call, &commands, &cx, &scratch);
     // A call that would leave the project may be in another worktree of the repository. The list
     // is read on this call, never kept: a worktree created a moment ago is already known, and a

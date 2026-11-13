@@ -102,7 +102,7 @@ pub struct AgentActor {
     pub bypass: Arc<std::sync::Mutex<BypassState>>,
     /// Private temporary storage offered to the model; a write there is bound
     /// to the directory's identity (inode and mode).
-    pub scratch_roots: Vec<super::scratch::Identity>,
+    pub scratch_roots: Vec<std::path::PathBuf>,
     /// Captain setting `yolo`: no permission control at all for this session.
     pub yolo: bool,
     /// The Instinct judge compaction asks which old tool outputs still matter.
@@ -318,7 +318,7 @@ impl AgentActor {
         let usable: Vec<_> = self
             .scratch_roots
             .iter()
-            .filter(|root| root.valid())
+            .filter(|root| root.is_dir())
             .collect();
         if usable.is_empty() {
             message
@@ -328,7 +328,7 @@ impl AgentActor {
                 message.as_deref().unwrap_or(""),
                 usable
                     .iter()
-                    .map(|root| root.path.display().to_string())
+                    .map(|root| root.display().to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
             ))

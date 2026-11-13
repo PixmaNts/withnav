@@ -2448,7 +2448,7 @@ impl Service {
                 None => match settings.permissions_scratch_dirs() {
                     Ok(paths) => paths,
                     Err(error) => {
-                        crate::agent::scratch::warn_once(&error);
+                        warn_scratch_once(&error);
                         Vec::new()
                     }
                 },
@@ -2615,19 +2615,16 @@ impl Service {
             let path = match scratch_candidate(config_root.as_deref(), path) {
                 Ok(path) => path,
                 Err(error) => {
-                    crate::agent::scratch::warn_once(&error);
+                    warn_scratch_once(&error);
                     continue;
                 }
             };
-            match crate::agent::scratch::Identity::capture(&path) {
-                Ok(identity) => {
-                    actor
-                        .tool_context
-                        .writable_roots
-                        .push(identity.path.clone());
-                    actor.scratch_roots.push(identity);
+            match prepare_scratch(&path) {
+                Ok(root) => {
+                    actor.tool_context.writable_roots.push(root.clone());
+                    actor.scratch_roots.push(root);
                 }
-                Err(error) => crate::agent::scratch::warn_once(&error),
+                Err(error) => warn_scratch_once(&error),
             }
         }
         if let Some((_, _, captain_task, _, _, _)) = &child_policy {
@@ -3366,6 +3363,35 @@ pub(crate) use resolve::exact_variant;
 #[cfg(test)]
 pub(crate) mod tests;
 
+/// Logs the first scratch directory problem of the process; later ones are the same
+/// misconfiguration and would only repeat it.
+fn warn_scratch_once(error: &str) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!("scratch directory disabled: {error}");
+    }
+}
+
+/// Creates a scratch directory private to the current user (mode 0700 on Unix) and
+/// returns its canonical path.
+fn prepare_scratch(path: &std::path::Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("scratch directory must be absolute".into());
+    }
+    std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+    }
+    let path = path.canonicalize().map_err(|e| e.to_string())?;
+    if !path.is_dir() {
+        return Err("scratch path is not a directory".into());
+    }
+    Ok(path)
+}
+
 /// WithNav's configuration directory as scratch candidates are compared with it; `None`
 /// when it cannot be resolved, which refuses every scratch directory.
 fn scratch_config_root(config_dir: &std::path::Path) -> Option<PathBuf> {
@@ -3403,8 +3429,8 @@ fn scratch_candidate(
     #[cfg(windows)]
     {
         let path = crate::tools::canonical_path(path).map_err(|error| error.to_string())?;
-        if crate::tools::nofollow::path_within(root, &path)
-            || crate::tools::nofollow::path_within(&path, root)
+        if crate::tools::win_path::path_within(root, &path)
+            || crate::tools::win_path::path_within(&path, root)
         {
             return Err(OVERLAP.into());
         }
@@ -3438,7 +3464,7 @@ mod scratch_candidate_tests {
         let tmp = tempfile::tempdir().unwrap();
         let config = tmp.path().join("withnav long configuration directory");
         std::fs::create_dir_all(&config).unwrap();
-        let Some(short) = crate::tools::nofollow::short_alias(&config).filter(|s| s != &config)
+        let Some(short) = crate::tools::win_path::short_alias(&config).filter(|s| s != &config)
         else {
             eprintln!("skipping: the volume does not generate 8.3 short names");
             return;

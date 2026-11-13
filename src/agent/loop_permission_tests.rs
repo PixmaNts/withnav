@@ -740,45 +740,6 @@ async fn the_same_call_three_times_in_a_turn_asks_and_a_new_turn_resets() {
     assert_eq!(request.tool_call_id, "b3");
 }
 
-#[cfg(unix)]
-#[tokio::test]
-async fn a_target_swapped_after_the_decision_is_decided_again_floor_included() {
-    let flows = Arc::new(FakeFlows::with_check("allow", ProtectedCheck::Failed));
-    let mut actor = actor_with(Some(flows));
-    add_rule(&actor, "write", "*", Effect::Allow);
-    let ws = actor.tool_context.workspace.clone();
-    let config = actor
-        .permission_dirs
-        .config
-        .clone()
-        .unwrap()
-        .join("config.json");
-    std::fs::write(&config, "original").unwrap();
-    let target = ws.join("notes.txt");
-    std::fs::write(&target, "old").unwrap();
-    super::tests::on_next_dispatch({
-        let (target, config) = (target.clone(), config.clone());
-        move || {
-            std::fs::remove_file(&target).unwrap();
-            std::os::unix::fs::symlink(&config, &target).unwrap();
-        }
-    });
-    script(
-        &mut actor,
-        vec![owned(&[(
-            "w1".into(),
-            "write".into(),
-            json!({"path": target, "content": "new"}),
-        )])],
-    )
-    .await;
-    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
-        panic!("the moved target now names the configuration");
-    };
-    assert!(request.requires_captain);
-    assert_eq!(std::fs::read_to_string(&config).unwrap(), "original");
-}
-
 /// Answers every instinct question yes and counts the protected ones.
 struct CountingInstinct {
     protected: AtomicUsize,

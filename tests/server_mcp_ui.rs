@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! Route-level integration tests for the MCP UI HTTP endpoints:
 //! `GET /v1/mcp/{server}/resource`, `POST /v1/mcp/{server}/call`, and `GET /v1/mcp`.
 //! Exercises real socket handling, query parsing, body deserialization, bearer authentication,

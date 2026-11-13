@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! MCP tools inside sessions: shutdown order, subagent inventories and `nav run` startup.
 use serde_json::{Value, json};
 use std::{path::Path, time::Duration};

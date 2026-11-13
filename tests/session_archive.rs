@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! Explicit archive markers preserve legacy history without preparing a runtime.
 use axum::http::StatusCode;
 use http_body_util::BodyExt;

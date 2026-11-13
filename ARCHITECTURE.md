@@ -848,6 +848,12 @@ the later 0.6 scope, not this contract.
   should join an editor's server uses the same two functions, never its own file.
 - A workspace's git state is read by `workspace/git.rs`, for any caller; the server must not import `withnav-tui`.
 - `crates/withnav-tui` is a server client: HTTP + SSE only, through `withnav-client`. It shares the wire types of `withnav-client-api` and never depends on the root package: anything it needs from the machine is a method of `TuiHost`. A type that must be on the wire goes in `withnav-client-api`; per-conversation state derived from events goes in `withnav-client-state`.
+- A seam an integration test needs to pause, fail or observe a session flow goes in
+  `session/test_points.rs` (`TestPoints`, one field of `Service`): a park point is a `ParkPoint`
+  variant consumed with `self.test_points.park(..).await`, a failure is a `take_*` flag. It compiles
+  only under the `test-support` feature (or `cfg(test)`); without it every helper is a no-op, so
+  release builds carry none of it. A test file that arms one starts with
+  `#![cfg(feature = "test-support")]`. Never gate a test seam on `debug_assertions`.
 - Tests use `tests/common/`: `server.rs` (configs, servers, sessions, messages), `sse.rs` (scripted
   chat streams), `navigator.rs` (the in-memory LSP client and one scripted fake per model seam). Do
   not copy a harness into a new test file.

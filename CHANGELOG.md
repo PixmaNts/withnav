@@ -19,6 +19,11 @@ requests land in `develop`.
   ended at its next turn and every resume failed until WithNav restarted. Now a failed write ends
   only the conversation it belongs to, with a `session.end` whose reason names the failure, and
   the other conversations keep running.
+- The session service's test seams (pause points, injected failures, watchdog doubles) live in
+  one registry compiled only under the new `test-support` cargo feature, instead of being spread
+  across the service under `debug_assertions`. Release builds no longer depend on the build
+  profile to leave them out, and CI checks the release profile with and without the feature.
+  Run the test suite with `cargo test --workspace --features test-support`.
 
 ## [0.8.3] - 2026-11-11
 

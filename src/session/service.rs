@@ -43,6 +43,9 @@ use super::config::SessionConfig;
 use super::hooks::{NoHooks, SessionHooks, StartedSession};
 use super::message::{MessageAccepted, accept};
 use super::sender::SessionSender;
+#[cfg(any(test, feature = "test-support"))]
+use super::test_points::ChildPreparationBarrier;
+use super::test_points::{ParkPoint, TestPoints};
 use crate::agent::actor::AgentActor;
 use crate::agent::context::{ContextLimits, ContextSnapshot, ContextTracker};
 use crate::agent::definitions::{AgentDefinition, AgentId, AgentRoots, Agents};
@@ -63,20 +66,6 @@ use crate::provider::openai::ChatMessage;
 
 /// A session id on the wire and in the registry.
 pub type SessionId = Ulid;
-
-/// Debug-build seam for deterministic child admission integration tests.
-#[cfg(debug_assertions)]
-#[doc(hidden)]
-#[derive(Clone, Debug, Default)]
-pub struct ChildPreparationBarrier {
-    pub reached: Arc<tokio::sync::Notify>,
-    pub release: Arc<tokio::sync::Notify>,
-}
-
-#[cfg(debug_assertions)]
-fn take_barrier(slot: &Mutex<Option<ChildPreparationBarrier>>) -> Option<ChildPreparationBarrier> {
-    slot.lock().unwrap_or_else(|e| e.into_inner()).take()
-}
 
 /// Synchronously-readable lifecycle state of a LIVE registry entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,31 +335,6 @@ pub struct Service {
     /// Publishes the MCP servers' status to every live session.
     pub(super) mcp_bridge: Arc<super::mcp::McpBridge>,
     pub(crate) flows: Arc<crate::flows::host::Host>,
-    #[cfg(debug_assertions)]
-    skill_loading_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    delivery_failure_countdown: Arc<std::sync::atomic::AtomicUsize>,
-    #[cfg(debug_assertions)]
-    pub(crate) shutdown_snapshot_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    pub(crate) watchdog_claim_write_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    pub(crate) watchdog_ownership_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    pub(crate) budget_notice_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    pub(crate) lifecycle_claim_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    pub(crate) watchdog_stop_failure: Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(debug_assertions)]
-    pub(crate) budget_notice_failure: Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(debug_assertions)]
-    pub(crate) watchdog_teardown_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    pub(crate) watchdog_test: Arc<Mutex<Option<super::subagents::supervisor::TestWatchdog>>>,
-    #[cfg(debug_assertions)]
-    pub(crate) root_watchdog_test:
-        Arc<Mutex<Option<super::subagents::root_watchdog::TestRootWatchdog>>>,
     _instance: Arc<super::instance::Instance>,
     /// The live sessions of this process; a closed session is removed.
     pub(super) sessions: Arc<Mutex<HashMap<SessionId, SessionHandle>>>,
@@ -391,29 +355,7 @@ pub struct Service {
     pub(super) subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
     pub(super) unpublished_children: Arc<Mutex<std::collections::HashSet<SessionId>>>,
     pub(crate) child_operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
-    #[cfg(debug_assertions)]
-    child_registration_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    child_cleanup_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     catalog: crate::provider::catalog::ModelCatalog,
-    #[cfg(debug_assertions)]
-    child_preparation_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    child_publication_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    resume_registration_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    child_start_failure: Arc<Mutex<Option<bool>>>,
-    #[cfg(debug_assertions)]
-    child_bypass_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    bypass_commit_failure: Arc<std::sync::atomic::AtomicUsize>,
-    #[cfg(debug_assertions)]
-    bypass_commit_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    root_publication_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    root_publication_failure: Arc<std::sync::atomic::AtomicBool>,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
     /// Test seam: parks a model switch after its store write and before its
@@ -424,11 +366,12 @@ pub struct Service {
     pub(super) preparation_barrier: Arc<Mutex<Option<Arc<super::run_command::Barrier>>>>,
     #[cfg(test)]
     pub(super) publish_barrier: Arc<Mutex<Option<Arc<super::run_command::Barrier>>>>,
+    pub(super) test_points: TestPoints,
 }
 
 impl Service {
     /// Debug-build readiness seam: tests create frozen registries only after discovery settles.
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn mcp_statuses(&self) -> Vec<crate::mcp::ServerStatus> {
         self.mcp.statuses()
@@ -471,88 +414,12 @@ impl Service {
     pub async fn wait_for_mcp(&self) {
         self.mcp.wait_until_settled().await;
     }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn fail_delivery_commit(&self, ordinal: usize) {
-        self.delivery_failure_countdown
-            .store(ordinal, std::sync::atomic::Ordering::Release);
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_shutdown_snapshot(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .shutdown_snapshot_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub async fn watchdog_natural_retained(&self, child: SessionId) {
         if let Some(handle) = self.handle(child) {
             handle.status.watchdog.natural_retained.notified().await;
         }
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_watchdog_claim_write(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .watchdog_claim_write_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    /// Pauses the next budget-park notice after its first park check and
-    /// before its durable commit, the window a concurrent top-up can land in.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_budget_notice(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .budget_notice_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_watchdog_ownership(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .watchdog_ownership_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_lifecycle_claim(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .lifecycle_claim_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn fail_watchdog_stop_write(&self) {
-        self.watchdog_stop_failure
-            .store(true, std::sync::atomic::Ordering::Release);
-    }
-    /// Makes the next budget-notice enqueue fail, as a history write would.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn fail_budget_notice_enqueue(&self) {
-        self.budget_notice_failure
-            .store(true, std::sync::atomic::Ordering::Release);
-    }
-    /// Whether the failure armed by `fail_budget_notice_enqueue` is still unused.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn budget_notice_failure_armed(&self) -> bool {
-        self.budget_notice_failure
-            .load(std::sync::atomic::Ordering::Acquire)
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_watchdog_teardown(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .watchdog_teardown_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
     }
 
     /// Called under admission: publication/teardown retains ownership until completion.
@@ -570,12 +437,12 @@ impl Service {
             done,
         }
     }
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn expire_catalog_backoff(&self) {
         self.catalog.expire_failures();
     }
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn pause_negative_result_eligibility(
         &self,
@@ -605,127 +472,28 @@ impl Service {
             pending.cancelled().await;
         }
     }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_child_registration(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .child_registration_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-
-    /// Parks a child start inside the bypass gate, after its runtime is
-    /// registered and before its first prompt.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_child_bypass_gate(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .child_bypass_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-
-    /// Parks the next durable bypass write before it is recorded.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_bypass_commit(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .bypass_commit_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
 
     /// Whether an answer already holds the request waiting in `id`.
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn permission_claimed(&self, id: SessionId) -> bool {
         self.handle(id)
             .is_some_and(|handle| handle.status.permission_claimed())
     }
 
-    /// Makes the next durable bypass write fail.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn fail_bypass_commit(&self) {
-        self.fail_bypass_commit_after(0);
-    }
-
-    /// Makes the durable bypass write fail after `skip` successful ones.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn fail_bypass_commit_after(&self, skip: usize) {
-        self.bypass_commit_failure
-            .store(skip + 1, std::sync::atomic::Ordering::Release);
-    }
-
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_root_publication(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .root_publication_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn fail_root_publication(&self) {
-        self.root_publication_failure
-            .store(true, std::sync::atomic::Ordering::Release);
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_child_cleanup(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .child_cleanup_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn session_has_runtime(&self, id: SessionId) -> bool {
         self.handle(id).is_some()
     }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn fail_child_start(&self, publication: bool) {
-        *self
-            .child_start_failure
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(publication);
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_child_preparation(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .child_preparation_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_child_publication(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .child_publication_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn session_is_cancelled(&self, id: SessionId) -> bool {
         self.handle(id)
             .is_some_and(|h| h.session_cancel.is_cancelled())
     }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_resume_registration(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .resume_registration_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn reserved_child_count(&self, parent: SessionId) -> usize {
         self.subagent_slots
@@ -784,28 +552,6 @@ impl Service {
                 config.data_dir.clone(),
                 config.models_path.clone(),
             )),
-            #[cfg(debug_assertions)]
-            delivery_failure_countdown: Arc::default(),
-            #[cfg(debug_assertions)]
-            shutdown_snapshot_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            watchdog_claim_write_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            watchdog_ownership_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            budget_notice_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            lifecycle_claim_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            watchdog_stop_failure: Arc::default(),
-            #[cfg(debug_assertions)]
-            budget_notice_failure: Arc::default(),
-            #[cfg(debug_assertions)]
-            watchdog_teardown_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            watchdog_test: Arc::default(),
-            #[cfg(debug_assertions)]
-            root_watchdog_test: Arc::default(),
             _instance: instance,
             sessions,
             config: Arc::new(config),
@@ -817,37 +563,14 @@ impl Service {
             subagent_slots: Arc::new(Mutex::new(seeded_slots)),
             unpublished_children: Arc::default(),
             child_operations: Arc::default(),
-            #[cfg(debug_assertions)]
-            child_registration_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            child_cleanup_barrier: Arc::default(),
             catalog,
-            #[cfg(debug_assertions)]
-            child_preparation_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            skill_loading_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            child_publication_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            resume_registration_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            child_start_failure: Arc::default(),
-            #[cfg(debug_assertions)]
-            child_bypass_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            bypass_commit_failure: Arc::default(),
-            #[cfg(debug_assertions)]
-            bypass_commit_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            root_publication_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            root_publication_failure: Arc::default(),
             #[cfg(test)]
             install_barrier: Arc::default(),
             #[cfg(test)]
             preparation_barrier: Arc::default(),
             #[cfg(test)]
             publish_barrier: Arc::default(),
+            test_points: TestPoints::default(),
         })
     }
 
@@ -924,7 +647,7 @@ impl Service {
     }
 
     /// Debug-build observation seam for resume and child inheritance tests.
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn captain_task_probe(&self, id: SessionId) -> Option<String> {
         let handle = self.handle(id)?;
@@ -1107,14 +830,7 @@ impl Service {
             )
             .await;
         let prepared = prepared?;
-        #[cfg(debug_assertions)]
-        {
-            let barrier = take_barrier(&self.child_preparation_barrier);
-            if let Some(barrier) = barrier {
-                barrier.reached.notify_one();
-                barrier.release.notified().await;
-            }
-        }
+        self.test_points.park(ParkPoint::ChildPreparation).await;
         let _admission = self.child_admission(&parent_handle.session_cancel).await?;
         let current = self.routable_handle(parent).await?;
         if current.incarnation != incarnation || current.session_cancel.is_cancelled() {
@@ -1142,14 +858,7 @@ impl Service {
             done,
         };
         drop(_admission);
-        #[cfg(debug_assertions)]
-        {
-            let barrier = take_barrier(&self.child_publication_barrier);
-            if let Some(barrier) = barrier {
-                barrier.reached.notify_one();
-                barrier.release.notified().await;
-            }
-        }
+        self.test_points.park(ParkPoint::ChildPublication).await;
         if parent_handle.session_cancel.is_cancelled() {
             return Err(ServerError::SessionStopping);
         }
@@ -1208,27 +917,9 @@ impl Service {
         }
         let mut reservation = reservation;
         reservation.committed = true;
-        #[cfg(debug_assertions)]
-        {
-            let barrier = take_barrier(&self.child_registration_barrier);
-            if let Some(barrier) = barrier {
-                barrier.reached.notify_one();
-                barrier.release.notified().await;
-            }
-        }
+        self.test_points.park(ParkPoint::ChildRegistration).await;
         let start = async {
-            #[cfg(debug_assertions)]
-            if self
-                .child_start_failure
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                == Some(&true)
-            {
-                self.child_start_failure
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take();
+            if self.test_points.child_start_publication_failure() {
                 return Err(ServerError::History(
                     "injected child publication failure".into(),
                 ));
@@ -1240,14 +931,7 @@ impl Service {
             if parent_handle.session_cancel.is_cancelled() {
                 return Err(ServerError::SessionStopping);
             }
-            #[cfg(debug_assertions)]
-            {
-                let barrier = take_barrier(&self.child_bypass_barrier);
-                if let Some(barrier) = barrier {
-                    barrier.reached.notify_one();
-                    barrier.release.notified().await;
-                }
-            }
+            self.test_points.park(ParkPoint::ChildBypass).await;
             if let Some(handle) = self.handle(child) {
                 handle
                     .sequencer
@@ -1269,14 +953,7 @@ impl Service {
                     )
                     .await?;
                 }
-                #[cfg(debug_assertions)]
-                if self
-                    .child_start_failure
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                    == Some(false)
-                {
+                if self.test_points.take_child_start_failure() == Some(false) {
                     return Err(ServerError::History("injected child start failure".into()));
                 }
                 accept(&handle, Command::child_prompt(child, prompt.to_string())).await?;
@@ -1288,14 +965,7 @@ impl Service {
         .await;
         if let Err(error) = start {
             if let Some(handle) = self.mark_stopping(child) {
-                #[cfg(debug_assertions)]
-                {
-                    let barrier = take_barrier(&self.child_cleanup_barrier);
-                    if let Some(barrier) = barrier {
-                        barrier.reached.notify_one();
-                        barrier.release.notified().await;
-                    }
-                }
+                self.test_points.park(ParkPoint::ChildCleanup).await;
                 self.fence_and_remove(child, handle, "child start failed")
                     .await;
             }
@@ -1540,18 +1210,7 @@ impl Service {
                     "this agent cannot use the skill tool".into(),
                 ));
             }
-            #[cfg(debug_assertions)]
-            {
-                let barrier = self
-                    .skill_loading_barrier
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .take();
-                if let Some(barrier) = barrier {
-                    barrier.reached.notify_one();
-                    barrier.release.notified().await;
-                }
-            }
+            self.test_points.park(ParkPoint::SkillLoading).await;
             let skills = handle.skills.clone();
             let skill_name = name.clone();
             let snapshot = tokio::task::spawn_blocking(move || skills.snapshot(&skill_name))
@@ -1575,16 +1234,6 @@ impl Service {
             }
         }
         accept(&handle, command).await
-    }
-
-    /// Debug-build seam to hold loading across an agent switch in deterministic tests.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_skill_loading(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .skill_loading_barrier
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(barrier);
     }
 
     /// Lists only the session snapshot's catalog-visible skills and current tool policy.
@@ -2191,30 +1840,151 @@ impl Service {
             .map_err(ServerError::History)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_shutdown_snapshot(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_shutdown_snapshot(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_watchdog_claim_write(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_watchdog_claim_write(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_budget_notice(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_budget_notice(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_watchdog_ownership(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_watchdog_ownership(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_lifecycle_claim(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_lifecycle_claim(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fail_watchdog_stop_write(&self) {
+        self.test_points.fail_watchdog_stop_write()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fail_budget_notice_enqueue(&self) {
+        self.test_points.fail_budget_notice_enqueue()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn budget_notice_failure_armed(&self) -> bool {
+        self.test_points.budget_notice_failure_armed()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_watchdog_teardown(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_watchdog_teardown(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_child_registration(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_child_registration(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_child_bypass_gate(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_child_bypass_gate(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_bypass_commit(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_bypass_commit(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fail_bypass_commit(&self) {
+        self.test_points.fail_bypass_commit()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fail_bypass_commit_after(&self, skip: usize) {
+        self.test_points.fail_bypass_commit_after(skip)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_root_publication(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_root_publication(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fail_root_publication(&self) {
+        self.test_points.fail_root_publication()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_child_cleanup(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_child_cleanup(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fail_child_start(&self, publication: bool) {
+        self.test_points.fail_child_start(publication)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_child_preparation(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_child_preparation(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_child_publication(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_child_publication(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_resume_registration(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_resume_registration(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_skill_loading(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_skill_loading(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fail_delivery_commit(&self, ordinal: usize) {
+        self.test_points.fail_delivery_commit(ordinal)
+    }
+
     fn bypass_commit(&self, id: SessionId) -> crate::bus::sequencer::AckedCommit {
         let history = self.history.clone();
-        #[cfg(debug_assertions)]
-        let failure = self.bypass_commit_failure.clone();
-        #[cfg(debug_assertions)]
-        let barrier = self.bypass_commit_barrier.clone();
+        let bypass_seam = self.test_points.bypass_commit_seam();
         Box::new(move |envelope| {
             Box::pin(async move {
-                #[cfg(debug_assertions)]
-                {
-                    let barrier = barrier.lock().unwrap_or_else(|e| e.into_inner()).take();
-                    if let Some(barrier) = barrier {
-                        barrier.reached.notify_one();
-                        barrier.release.notified().await;
-                    }
-                    // Test seam: one writer at a time, so load/store is enough.
-                    let left = failure.load(std::sync::atomic::Ordering::Acquire);
-                    if left > 0 {
-                        failure.store(left - 1, std::sync::atomic::Ordering::Release);
-                    }
-                    let fails = left == 1;
-                    if fails {
-                        return Err("injected bypass commit failure".into());
-                    }
+                if bypass_seam.before_commit().await {
+                    return Err("injected bypass commit failure".into());
                 }
                 history.append_event_acked(id, envelope).await
             })
@@ -2407,21 +2177,9 @@ impl Service {
             None
         };
         self.store_prepared(&prepared).await?;
-        #[cfg(debug_assertions)]
         if root_operation.is_some() {
-            let barrier = self
-                .root_publication_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
-            if let Some(barrier) = barrier {
-                barrier.reached.notify_one();
-                barrier.release.notified().await;
-            }
-            if self
-                .root_publication_failure
-                .swap(false, std::sync::atomic::Ordering::AcqRel)
-            {
+            self.test_points.park(ParkPoint::RootPublication).await;
+            if self.test_points.take_root_publication_failure() {
                 return Err(ServerError::History(
                     "injected root publication failure".into(),
                 ));
@@ -3009,17 +2767,8 @@ impl Service {
             .as_ref()
             .map(|loaded| loaded.meta.last_seq + 1)
             .unwrap_or(0);
-        #[cfg(debug_assertions)]
         if resumed.is_some() {
-            let barrier = self
-                .resume_registration_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
-            if let Some(barrier) = barrier {
-                barrier.reached.notify_one();
-                barrier.release.notified().await;
-            }
+            self.test_points.park(ParkPoint::ResumeRegistration).await;
         }
         // The in-memory ring starts empty on resume: subscribers replay from
         // the store, and the ring is only a bounded fallback cache.
@@ -3275,13 +3024,11 @@ impl Service {
             }));
             let history = self.history.clone();
             let delivery_sequencer = sequencer.clone();
-            #[cfg(debug_assertions)]
-            let failure_countdown = self.delivery_failure_countdown.clone();
+            let delivery_seam = self.test_points.delivery_seam();
             status.install_delivery(Arc::new(move |transcript, mid_turn| {
                 let history = history.clone();
                 let sequencer = delivery_sequencer.clone();
-                #[cfg(debug_assertions)]
-                let failure_countdown = failure_countdown.clone();
+                let delivery_seam = delivery_seam.clone();
                 Box::pin(async move {
                     let mut notices = history.unconsumed_completions(session_id).await?;
                     notices.retain(|(_, payload, _)| !mid_turn || payload["delivery"] == "steer");
@@ -3312,22 +3059,10 @@ impl Service {
                         transcript.push(ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Subagent, content: text, images: Vec::new() });
                         let committed_transcript = transcript.clone();
                         let committed_history = history.clone();
-                        #[cfg(debug_assertions)]
-                        let failure_countdown = failure_countdown.clone();
+                        let delivery_seam = delivery_seam.clone();
                         let result = sequencer.commit_acked(event, Box::new(move |envelope| Box::pin(async move {
-                            #[cfg(debug_assertions)]
-                            {
-                                // `fetch_update` is deprecated in Rust 1.99 in favour of `try_update`, which
-                                // does not exist on the minimum supported Rust (1.89, Cargo.toml); keep the old
-                                // name until the minimum moves past the rename.
-                                #[allow(deprecated)]
-                                let previous = failure_countdown.fetch_update(std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire, |n| {
-                                    if n == usize::MAX { Some(n) } else { n.checked_sub(1) }
-                                });
-                                if previous == Ok(1) || previous == Ok(usize::MAX) {
-                                    failure_countdown.store(usize::MAX, std::sync::atomic::Ordering::Release);
-                                    return Err("injected delivery commit failure".into());
-                                }
+                            if delivery_seam.should_fail_commit() {
+                                return Err("injected delivery commit failure".into());
                             }
                             committed_history.consume_completions_shared(session_id, vec![child], committed_transcript, Some(envelope)).await
                         }))).await;

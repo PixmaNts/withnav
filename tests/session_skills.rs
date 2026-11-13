@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! Skills through the session service: a scripted provider captures the
 //! requests, so the catalog's place on the wire, the `skill` call and the
 //! result's survival across a resume are all checked end to end. The home

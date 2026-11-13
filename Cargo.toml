@@ -113,6 +113,13 @@ resvg = { version = "0.49", default-features = false, features = ["text", "syste
 gif = { version = "0.14", default-features = false, features = ["std"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
+[features]
+# Exposes the deterministic test-point registry to integration tests: the
+# seams and their arming methods are compiled and public only under this
+# feature, while production code keeps calling no-op stubs in every other
+# configuration.
+test-support = ["withnav-provider/test-support"]
+
 [dev-dependencies]
 withnav-provider = { path = "crates/withnav-provider", features = ["test-support"] }
 # The terminal client tests that start a real server drive its runtime with key events.

@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! `request_secret` end to end: the agent asks, the Captain answers on the dedicated endpoint,
 //! the value reaches a command's environment, and it never appears in a model request, a tool
 //! result, the SSE stream or the stored conversation.

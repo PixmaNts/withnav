@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! Integration tests: POST /v1/sessions/:id/messages and
 //! POST /v1/sessions/:id/stop over a REAL HTTP server on an ephemeral
 //! loopback socket. Sessions are created against a MOCK PROVIDER (the same

@@ -195,7 +195,7 @@ impl ModelCatalog {
         }
     }
     /// Allow failed endpoints to retry without discarding cached metadata.
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn expire_failures(&self) {
         let endpoints = self.endpoints.lock().expect("catalog endpoints poisoned");
         for endpoint in endpoints.values() {

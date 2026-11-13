@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 use std::time::Duration;
 
 use serde_json::{Value, json};

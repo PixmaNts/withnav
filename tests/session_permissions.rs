@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! The permission gate through the session service and the HTTP surface: a
 //! gated tool call yields the turn, the Captain answers with a typed decision,
 //! and the decision (never chat text) resumes it.

@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! Automatic compaction through the service: a turn that outgrows the input
 //! budget is compacted at a step boundary and goes on, a conversation that
 //! cannot be made to fit ends the turn with a clear error, nothing runs while

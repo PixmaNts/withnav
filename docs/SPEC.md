@@ -607,7 +607,7 @@ Output of every tool is bounded to 64 KiB, with the original size in the result 
 
 ### 9.4 Permission Decision
 
-Every tool call is decided before it runs, in a fixed order: yolo, the fixed floor (credentials, WithNav's own configuration and database), free reads inside the project, the Captain's rules (a `deny` stops the call), bypass, the permission flow, then the Captain. See ADR 0015.
+Every tool call is decided before it runs, in a fixed order: yolo, the fixed floor (credentials, WithNav's own configuration and database), free reads inside the project, the Captain's rules (a `deny` stops the call), bypass, an `allow` rule on a call other than `bash` (the call runs), the permission flow, then the Captain. See ADR 0015.
 
 - A call that needs the Captain does not run. The turn yields and the server publishes a durable `permission.requested`, with `always_label` when an "Always" answer can save a rule.
 - The Captain answers with `POST /v1/sessions/{id}/permissions/{request_id}`: `allow_once`, `allow_always` or `reject` with an optional message. Older answers still parse: `allow_folder` and `allow_config_session` count as `allow_once`, `deny` as `reject`. Chat text never approves a request: a message sent while a request waits cancels it.

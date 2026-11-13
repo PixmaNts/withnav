@@ -159,7 +159,9 @@ flowchart TD
   FR -- yes --> RUN
   FR -- no --> BP{bypass?}
   BP -- yes --> RUN
-  BP -- no --> FW{permission flows<br/>instinct / System One}
+  BP -- no --> AL{allow rule,<br/>not bash?}
+  AL -- yes --> RUN
+  AL -- no --> FW{permission flows<br/>instinct / System One}
   FW -- allow --> RUN
   FW -- deny --> DENY
   FW -- "apply rule: allow" --> RUN

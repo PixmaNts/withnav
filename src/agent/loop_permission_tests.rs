@@ -853,6 +853,107 @@ impl ToolCallFlows for RuntimeFlows {
     }
 }
 
+/// Answers every question with "no" after a fixed delay: the stand-in for the
+/// wait an Instinct round trip adds before a call starts.
+struct SlowInstinct {
+    delay: std::time::Duration,
+}
+
+impl instinct_flow::DecisionClient for SlowInstinct {
+    fn capabilities(&self) -> instinct_flow::Capabilities {
+        instinct_flow::Capabilities { images: false }
+    }
+    fn identity(&self) -> instinct_flow::ClientIdentity {
+        instinct_flow::ClientIdentity {
+            model: "fake/slow".into(),
+            variant: None,
+        }
+    }
+    fn decide<'a>(
+        &'a self,
+        request: instinct_flow::protocol::DecisionRequest<'a>,
+        _: &'a CancellationToken,
+        _: std::time::Instant,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<instinct_flow::protocol::DecisionResponse, instinct_flow::DecisionError>,
+    > {
+        Box::pin(async move {
+            tokio::time::sleep(self.delay).await;
+            Ok(instinct_flow::protocol::DecisionResponse {
+                answers: request
+                    .questions
+                    .keys()
+                    .map(|id| {
+                        (
+                            id.clone(),
+                            instinct_flow::protocol::Answer::Noul { noul: 0.0 },
+                        )
+                    })
+                    .collect(),
+                usage: None,
+            })
+        })
+    }
+}
+
+/// The wait an Instinct round trip adds between the model's tool call and the
+/// tool's start, measured through the production path (`run_agent` ->
+/// `authorize` -> `permission::decide` -> dispatch). The endpoint is a
+/// controlled in-process client that answers after a fixed delay, not a live
+/// model: a synthetic dispatch measurement of the same quantity.
+#[tokio::test]
+async fn an_allowed_native_call_starts_without_waiting_for_instinct() {
+    const FLOW_DELAY: std::time::Duration = std::time::Duration::from_millis(800);
+    let mut actor = actor_with(None);
+    let ws = actor.tool_context.workspace.clone();
+    let store = Arc::new(crate::flows::store::FlowStore::new(
+        ws.clone(),
+        actor.permission_dirs.config.clone().unwrap(),
+    ));
+    let runtime = Arc::new(crate::flows::runtime::FlowRuntime::new(
+        store,
+        Arc::new(SlowInstinct { delay: FLOW_DELAY }),
+        Arc::new(crate::flows::runtime::NoEffects),
+    ));
+    actor.tool_flows = Some(Arc::new(RuntimeFlows(runtime)));
+    add_rule(&actor, "write", "*", Effect::Allow);
+    script(
+        &mut actor,
+        vec![
+            owned(&[(
+                "w1".into(),
+                "write".into(),
+                json!({"path": ws.join("notes.txt"), "content": "x"}),
+            )]),
+            done("ok"),
+        ],
+    )
+    .await;
+    // The response carries the call; the next `PreCall` is that call starting,
+    // so the two stamps bracket the decision and nothing else.
+    let mut asked_at = None;
+    let mut started_at = None;
+    let outcome = run_agent(&mut actor, &mut |event| match event {
+        AgentEvent::Response(_) if started_at.is_none() => {
+            asked_at = Some(std::time::Instant::now());
+        }
+        AgentEvent::PreCall { .. } => {
+            started_at.get_or_insert(std::time::Instant::now());
+        }
+        _ => {}
+    })
+    .await
+    .unwrap();
+    assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+    let waited = started_at.expect("the allowed call was dispatched")
+        - asked_at.expect("the model's response carried the call");
+    assert!(
+        waited < FLOW_DELAY / 2,
+        "an allowed native call waited {waited:?} between the model's call and its start"
+    );
+}
+
 #[tokio::test]
 async fn a_protected_write_asks_the_protected_question_exactly_once() {
     let mut actor = actor_with(None);

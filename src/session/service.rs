@@ -19,9 +19,10 @@
 //! store, as "stopped" at its `last_seq`; a message post to it is a 409
 //! asking to resume first. Only an id the store does not know is a 404.
 //!
-//! Lifecycle gate: resume, close and delete take one async mutex for their
-//! whole run, so an id never has two runtimes and is never resumed while it
-//! is stopping or being deleted (the resume waits, then proceeds).
+//! Lifecycle gate: resume, close and delete take their conversation tree's
+//! gate ([`super::gate`]) for their whole run, so an id never has two
+//! runtimes and is never resumed while it is stopping or being deleted (the
+//! resume waits, then proceeds). Other trees do not wait.
 //!
 //! Lock discipline: the registry is a `std::sync::Mutex`
 //! whose critical sections are short and purely synchronous. Every `.await`
@@ -381,10 +382,11 @@ pub struct Service {
     attachments: Option<Arc<super::attachments::AttachmentStore>>,
     /// Editor context injected by the host binary.
     hooks: Arc<dyn SessionHooks>,
-    /// The lifecycle gate: resume, close and delete run one at a time, so a
-    /// session id never has two runtimes and is never resumed while it is
-    /// being stopped or deleted. One client, so one gate for the service.
-    gate: Arc<tokio::sync::Mutex<()>>,
+    /// The lifecycle gates: resume, close and delete of one conversation
+    /// tree run one at a time, so a session id never has two runtimes and is
+    /// never resumed while it is being stopped or deleted; shutdown excludes
+    /// them all.
+    pub(super) gates: Arc<super::gate::LifecycleGates>,
     pub(super) admission_gate: Arc<tokio::sync::Mutex<()>>,
     pub(super) subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
     pub(super) unpublished_children: Arc<Mutex<std::collections::HashSet<SessionId>>>,
@@ -810,7 +812,7 @@ impl Service {
             history: Arc::new(history),
             attachments,
             hooks,
-            gate: Arc::new(tokio::sync::Mutex::new(())),
+            gates: Arc::default(),
             admission_gate: Arc::new(tokio::sync::Mutex::new(())),
             subagent_slots: Arc::new(Mutex::new(seeded_slots)),
             unpublished_children: Arc::default(),
@@ -849,10 +851,31 @@ impl Service {
         })
     }
 
-    /// Takes the lifecycle gate. Hold the guard across the whole of a
-    /// resume, close or delete; never call a gated method while holding it.
-    pub(super) async fn lifecycle_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.gate.lock().await
+    /// Takes the lifecycle gate of `id`'s conversation tree. Hold the guard
+    /// across the whole of a resume, close or delete; never call a gated
+    /// method while holding it.
+    pub(super) async fn lifecycle_gate(
+        &self,
+        id: SessionId,
+    ) -> Result<super::gate::LifecycleGuard, ServerError> {
+        let root = self.tree_root(id).await?;
+        Ok(self.gates.tree(root).await)
+    }
+
+    /// The root of `id`'s conversation tree: its live parent, else its stored
+    /// parent link (a stopped child), else `id` itself. Children cannot start
+    /// children (ADR 0009), so one link is the whole way up; a link never
+    /// changes, so the root found here still holds once its gate is taken.
+    async fn tree_root(&self, id: SessionId) -> Result<SessionId, ServerError> {
+        if let Some(handle) = self.handle(id) {
+            return Ok(handle.parent_session_id.unwrap_or(id));
+        }
+        Ok(self
+            .history
+            .child_link(id)
+            .await
+            .map_err(ServerError::History)?
+            .map_or(id, |link| link.parent_id))
     }
 
     /// Fills the command's image references from this session's stored rows, before anything is
@@ -1457,7 +1480,7 @@ impl Service {
     /// Explicitly archive an offline conversation. Any retained runtime (including
     /// stopping) is refused; stop it completely before marking its history.
     pub async fn mark_archive(&self, id: SessionId, reason: &str) -> Result<(), ServerError> {
-        let _lifecycle = self.lifecycle_gate().await;
+        let _lifecycle = self.lifecycle_gate(id).await?;
         let _admission = self.admission_gate.lock().await;
         if self.handle(id).is_some()
             || self
@@ -1898,7 +1921,7 @@ impl Service {
             }
             // A resume waits for any stop or delete of this id to finish,
             // and holds the gate until the new runtime is registered.
-            let _gate = self.lifecycle_gate().await;
+            let _gate = self.lifecycle_gate(id).await?;
             self.history.flush().await.map_err(ServerError::History)?;
             if let Some(reason) = self
                 .history

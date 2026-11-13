@@ -484,7 +484,8 @@ user-facing roles.
 **Background children.** Admission reserves capacity and snapshots the parent's complete effective
 execution configuration and policy. Publication and failed-start cleanup have parent- and
 child-scoped ownership records; lifecycle callers wait outside admission, so child deletion cannot
-race registration or joining. Child work never takes the lifecycle gate. Parent stop marks and
+race registration or joining. Child work never takes the lifecycle gate; a child's stop or delete
+takes its root's gate (`session/gate.rs`: one gate per conversation tree, plus the shutdown gate). Parent stop marks and
 cancels every live member before joining; parent deletion removes stored descendants too.
 
 Terminal `child_links` CAS records a self-contained `completion_outbox` notice and only its winner

@@ -1,6 +1,6 @@
 //! Session ownership: the registry and router (`service`), what it needs
 //! to run (`config`), listing and deletion (`catalog`), teardown and close
-//! (`lifecycle`), command acceptance (`message`), the host's posting handle
+//! (`lifecycle`), the per-tree lifecycle gates (`gate`), command acceptance (`message`), the host's posting handle
 //! (`sender`), subscriptions (`subscription`), the host's editor policy and
 //! lifecycle callbacks (`hooks`), the instructions log (`rules_log`), actor construction (`actor`) and the SQLite
 //! history (`store`). Transport-free: HTTP and SSE live in `server/`.
@@ -10,6 +10,7 @@ mod catalog;
 mod commands;
 mod config;
 mod flows;
+mod gate;
 mod hooks;
 mod instance;
 mod lifecycle;

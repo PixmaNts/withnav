@@ -77,7 +77,7 @@ impl Service {
     /// store. [`ServerError::SessionNotFound`] only when the id is neither
     /// in memory nor on disk.
     pub async fn delete(&self, id: SessionId) -> Result<(), ServerError> {
-        let _gate = self.lifecycle_gate().await;
+        let _gate = self.lifecycle_gate(id).await?;
         self.wait_child_operation(id).await;
         // The children are read before anything is deleted: deleting this
         // session removes its `child_links` rows, so after that the list can

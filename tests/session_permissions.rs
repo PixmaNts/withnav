@@ -1518,3 +1518,106 @@ async fn an_always_that_cannot_be_saved_says_so_and_runs_once() {
     assert_eq!(error, "rule write rejected");
     state.close_session(id).await.unwrap();
 }
+
+/// One settled decision row for `session`, written through the store's own
+/// insert path: the conversations this test does not need to run get their
+/// rows this way, and the deleted one gets a real one from a real call.
+fn record_decision(env: &Env, session: &str) {
+    use withnav::permission::decisions::{CallSnapshot, Decision, Outcome};
+    withnav::permission::store::PermissionStore::open(env.root.join("data"))
+        .unwrap()
+        .record(&Decision {
+            id: 0,
+            time: withnav::bus::event::now_rfc3339(),
+            session_id: session.to_string(),
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            request_id: None,
+            agent: "build".into(),
+            workspace: env.ws.clone(),
+            tool: "bash".into(),
+            call_snapshot: CallSnapshot {
+                arguments: "git status".into(),
+                truncated: false,
+            },
+            command_matches: json!([]),
+            rule_id: None,
+            effect: None,
+            flow_verdict: None,
+            flow_trace: None,
+            captain_answer: None,
+            outcome: Outcome::Allowed,
+            approved_by: None,
+        })
+        .unwrap();
+}
+
+fn decision_rows(env: &Env, session: &str) -> i64 {
+    rusqlite::Connection::open(env.root.join("data/withnav.db"))
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM permission_decisions WHERE session_id = ?1",
+            [session],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+// Given a conversation whose write call was decided and recorded, a second
+//       conversation of the same workspace and a live child of the first,
+//       each with its own decision rows
+// When the first conversation is deleted
+// Then the rows of the deleted conversation and of its child are gone from
+//      `permission_decisions`, the other conversation keeps its rows, and the
+//      history deletion still removes the conversation
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deleting_a_conversation_forgets_its_permission_decisions() {
+    let env = Env::new();
+    let target = env.ws.join("decided.txt");
+    let provider = provider(vec![one_write("w1", &target), done("written")]).await;
+    let state = config(&env, &provider).state();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    say(&state, id, "write decided.txt").await;
+    let requested = wait_events(&state, id, "permission.requested", 1).await;
+    allow(&state, id, request_id(&requested[0]).parse().unwrap()).await;
+    wait_events(&state, id, "turn.end", 1).await;
+    assert_eq!(
+        decision_rows(&env, &id.to_string()),
+        1,
+        "the answered call left one decision row"
+    );
+
+    let other = state.create_session(&env.ws, None, false).await.unwrap();
+    let child = tokio::time::timeout(
+        Duration::from_secs(5),
+        state.create_child_session(id, "vigie", "inspect"),
+    )
+    .await
+    .expect("child creation deadline")
+    .unwrap();
+    record_decision(&env, &other.to_string());
+    record_decision(&env, &child.to_string());
+
+    state.delete(id).await.unwrap();
+
+    assert_eq!(
+        decision_rows(&env, &id.to_string()),
+        0,
+        "the deleted conversation forgot its decision rows"
+    );
+    assert_eq!(
+        decision_rows(&env, &child.to_string()),
+        0,
+        "the child deleted with it forgot its rows too"
+    );
+    assert_eq!(
+        decision_rows(&env, &other.to_string()),
+        1,
+        "another conversation keeps its decision rows"
+    );
+    let listed = state.list(&env.ws.display().to_string()).await.unwrap();
+    assert!(
+        listed.iter().all(|listing| listing.id != id),
+        "the history delete still removed the conversation"
+    );
+}

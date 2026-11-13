@@ -190,15 +190,15 @@ fn protected_resolved(path: &Path, cx: &FloorContext) -> bool {
     let (files, roots) = protected_targets(cx);
     #[cfg(windows)]
     {
-        let identity = |path: &Path| crate::tools::nofollow::path_identity(path);
+        let identity = |path: &Path| crate::tools::win_path::path_identity(path);
         identity(path).is_ok_and(|path| {
             files.iter().any(|file| {
                 identity(file).is_ok_and(|file| {
-                    crate::tools::nofollow::path_within(&path, &file)
-                        && crate::tools::nofollow::path_within(&file, &path)
+                    crate::tools::win_path::path_within(&path, &file)
+                        && crate::tools::win_path::path_within(&file, &path)
                 })
             }) || roots.iter().any(|root| {
-                identity(root).is_ok_and(|root| crate::tools::nofollow::path_within(&path, &root))
+                identity(root).is_ok_and(|root| crate::tools::win_path::path_within(&path, &root))
             })
         })
     }
@@ -276,7 +276,7 @@ pub fn resolve_path(path: &str, cx: &FloorContext) -> Option<PathBuf> {
 /// [`resolve_path`], optionally leaving a link in the final component alone.
 #[cfg(windows)]
 fn resolve(path: &str, cx: &FloorContext, _follow_last: bool) -> Option<PathBuf> {
-    crate::tools::nofollow::resolve_target(Path::new(path), &cx.workspace, cx.home.as_deref()).ok()
+    crate::tools::win_path::resolve_target(Path::new(path), &cx.workspace, cx.home.as_deref()).ok()
 }
 
 #[cfg(unix)]
@@ -709,9 +709,9 @@ fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
 #[cfg(windows)]
 fn not_a_windows_path(word: &str, cx: &FloorContext) -> bool {
     if let Ok(path) =
-        crate::tools::nofollow::requested_path(Path::new(word), &cx.workspace, cx.home.as_deref())
+        crate::tools::win_path::requested_path(Path::new(word), &cx.workspace, cx.home.as_deref())
     {
-        if matches!(crate::tools::nofollow::path_identity(&path), Err(crate::error::ToolError::Io(ref error)) if matches!(error.raw_os_error(), Some(123 | 206)))
+        if matches!(crate::tools::win_path::path_identity(&path), Err(crate::error::ToolError::Io(ref error)) if matches!(error.raw_os_error(), Some(123 | 206)))
         {
             return true;
         }
@@ -928,7 +928,7 @@ mod tests {
         ] {
             let target = f.cx.workspace.parent().unwrap().join(relative);
             std::fs::write(&target, "original").unwrap();
-            let canonical = crate::tools::nofollow::path_identity(&target).unwrap();
+            let canonical = crate::tools::win_path::path_identity(&target).unwrap();
             let mut spellings = vec![
                 format!("{}.", target.display()),
                 format!("{} ", target.display()),
@@ -943,7 +943,7 @@ mod tests {
                 spellings.push(target.display().to_string().replace("flows\\", "flows.\\"));
                 spellings.push(target.display().to_string().replace("flows\\", "flows \\"));
             }
-            if let Some(alias) = crate::tools::nofollow::short_alias(target.parent().unwrap()) {
+            if let Some(alias) = crate::tools::win_path::short_alias(target.parent().unwrap()) {
                 spellings.push(
                     alias
                         .join(target.file_name().unwrap())
@@ -963,7 +963,7 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(dispatch, canonical, "{spelling}");
-                crate::tools::nofollow::write_atomic(&dispatch, b"updated").unwrap();
+                std::fs::write(&dispatch, b"updated").unwrap();
                 assert_eq!(std::fs::read_to_string(&target).unwrap(), "updated");
                 for suffix in [":$DATA", "::$DATA"] {
                     assert!(matches!(
@@ -986,7 +986,8 @@ mod tests {
             .join("file.toml");
         let resolved = crate::tools::canonical_path(&target).unwrap();
         assert!(resolved.to_string_lossy().starts_with(r"\\?\"));
-        crate::tools::nofollow::write_atomic(&resolved, b"flow").unwrap();
+        std::fs::create_dir_all(resolved.parent().unwrap()).unwrap();
+        std::fs::write(&resolved, b"flow").unwrap();
         assert!(protected_resolved(&resolved, &f.cx));
         assert!(
             matches!(check(&native_call("write", &target.to_string_lossy()), &[], &f.cx),
@@ -1080,8 +1081,8 @@ mod tests {
         let f = fixture();
         let target = f.cx.config_dir.as_ref().unwrap().join("config.json");
         std::fs::write(&target, "protected").unwrap();
-        let target = crate::tools::nofollow::path_identity(&target).unwrap();
-        let root = crate::tools::nofollow::drive_root(&target).unwrap();
+        let target = crate::tools::win_path::path_identity(&target).unwrap();
+        let root = crate::tools::win_path::drive_root(&target).unwrap();
         let tail = target
             .strip_prefix(&root)
             .unwrap()

@@ -499,7 +499,7 @@ fn inside(path: &Path, roots: &[PathBuf]) -> bool {
     {
         roots
             .iter()
-            .any(|root| crate::tools::nofollow::path_within(path, root))
+            .any(|root| crate::tools::win_path::path_within(path, root))
     }
     #[cfg(unix)]
     {
@@ -1365,7 +1365,7 @@ mod tests {
             format!("{}.", target.display()),
             f.cx.workspace.join("file.txt ").display().to_string(),
         ];
-        if let Some(alias) = crate::tools::nofollow::short_alias(&f.cx.workspace) {
+        if let Some(alias) = crate::tools::win_path::short_alias(&f.cx.workspace) {
             spellings.push(alias.join("file.txt").display().to_string());
         }
         for path in spellings {

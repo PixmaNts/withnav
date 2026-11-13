@@ -1407,17 +1407,17 @@ async fn a_wake_held_behind_a_request_does_not_cancel_the_next_request() {
     );
 }
 
-// Given a write held for the Captain, bound to its canonical destination, and
-//       a navigator wake posted while the request waits
+// Given a write held for the Captain and a navigator wake posted while the
+//       request waits
 // When the destination file is replaced by a symlink to another file before
 //      the Captain allows the call
-// Then the bound pathname no longer opens without following a link: nothing
-//      is written through it, the call enters the decision again and asks a
-//      fresh request, the held wake does not cancel it, and the wake runs only
-//      after the turn ends
+// Then the answer runs the call once on the path the request named, with no
+//      second question (symlink races are out of scope, ADR 0015): the
+//      atomic write replaces the link itself, the linked file is untouched,
+//      and the held wake runs after the turn ends
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_destination_replaced_by_a_link_while_a_wake_is_held_is_decided_again() {
+async fn a_destination_replaced_by_a_link_while_a_wake_is_held_is_written_once() {
     let env = Env::new();
     let target = env.ws.join("notes.txt");
     let elsewhere = env.ws.join("elsewhere.txt");
@@ -1437,42 +1437,16 @@ async fn a_destination_replaced_by_a_link_while_a_wake_is_held_is_decided_again(
     wake(&state, id, "drift: look at the parser").await;
     wait_events(&state, id, "message.received", 2).await;
 
-    // The bound file becomes a link while the question waits.
     std::fs::remove_file(&target).unwrap();
     std::os::unix::fs::symlink(&elsewhere, &target).unwrap();
     allow(&state, id, first).await;
 
-    let second = nth_suspended_request(&state, id, 2).await;
-    assert_ne!(first, second, "the moved destination is decided again");
-    assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "keep");
-    assert!(
-        std::fs::symlink_metadata(&target)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
+    wait_events(&state, id, "task.done", 2).await;
+    assert_eq!(events(&state, id, "permission.requested").await.len(), 1);
     let posts = events(&state, id, "tool.post_call").await;
     assert_eq!(posts.len(), 1);
-    assert_eq!(posts[0].payload["status"], "error");
-    assert!(
-        posts[0].payload["output"]
-            .as_str()
-            .unwrap()
-            .contains("nothing was written")
-    );
-    assert_eq!(events(&state, id, "permission.resolved").await.len(), 1);
-    assert_eq!(provider.bodies().len(), 1, "the wake did not start a turn");
-
-    // Rejecting the fresh request ends the turn; the wake then runs.
-    state
-        .answer_permission(
-            id,
-            second,
-            withnav::agent::permissions::PermissionDecision::Reject { message: None },
-        )
-        .await
-        .unwrap();
-    wait_events(&state, id, "task.done", 2).await;
+    assert_eq!(posts[0].payload["status"], "ok", "{}", posts[0].payload);
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "from w1");
     assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "keep");
     let bodies = provider.bodies();
     assert_eq!(bodies.len(), 3);

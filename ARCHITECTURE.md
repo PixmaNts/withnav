@@ -83,7 +83,7 @@ Dependencies point down this list. A module never imports one above it.
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `src/provider/mod.rs` re-exports the `withnav-provider` crate (the `models.json` catalogue in `config.rs`/`load_models`, `model_name.rs`, keys in `auth.rs`, `ModelClient` in `client.rs`, the chat SSE decoder, the FIM and System One clients, the provider errors) at its old paths, and adds `provider::assignments` and `provider::layers`, which live in `src/assignments.rs` and `src/layers.rs` because they read `config.json`: pure assignment resolution and the lower-layer clients built from it | the wire clients themselves, which are in `crates/withnav-provider/` |
 | `secrets/` | the Captain's secrets (`SecretStore`: session-scoped in memory, workspace-scoped also in `<data dir>/credentials/secrets.json`, 0600, plain text, with expiry), reserved names, the per-tree `SecretAccess` a `ToolContext` carries (the `bash` environment, `[secret NAME]` redaction of exact values of 8+ characters), the metadata texts the model reads (`file.rs`: the atomic private file) | the answer route (`session/secrets.rs`), the tool (`tools/secret.rs`) |
-| `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens the bound write/edit destination without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
+| `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `win_path.rs` (Windows only) normalizes paths and refuses UNC, device and alternate-stream targets; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
 | `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the permission store, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission decision of each tool call (`authorize.rs`: the input of `permission::decide`, the session's permission flows, the decision table and the `PermissionRequest`; the rules, floor and shell splitting live in `src/permission/`), the wire types of a question (`permissions.rs`: `PermissionRequest`, `PermissionDecision`, `Scope`), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`vigie`/`lux` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events; `runtime/bypass.rs`: the `Control::Bypass` handler (durable `session.bypass` commit, then the live state, then the eligible pending request) | HTTP, storage |
 | `session/` | the `Service` (registry/router, `service.rs`; `set_bypass` sets a root and then its live children under the root's bypass gate, which child creation also takes, and a resume appends `session.bypass` off before its runtime starts), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), the shared permission store, the session's permission flows and the parent's Captain evidence for a child, primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
@@ -189,9 +189,9 @@ parsed `.withnav/intent.md`.
 ## Data flows
 
 Scratch roots default to private `$XDG_RUNTIME_DIR/withnav` (fallback `~/.cache/withnav/scratch`) and
-shared `<temp_dir>/withnav`, snapshotted in `permissions.scratch_dirs`. Every component is opened
-descriptor-relatively without following links. A write into one carries the root's identity (inode,
-mode), opens it again without creation and writes relative to that descriptor. Validation is read-only.
+shared `<temp_dir>/withnav`, snapshotted in `permissions.scratch_dirs`. Each is created with mode
+0700 (Unix) and kept as its canonical path: a writable root and a temp root for the decision. Its
+identity is not re-checked later; writes into it are ordinary file writes.
 
 The fixed floor (`permission/floor.rs`) protects WithNav's `config.json`, `withnav.db` and global
 flows directory: a write there needs the compiled-in protected check, asked once by the host and
@@ -199,7 +199,7 @@ passed to the flows, which never ask it again; anything else asks the Captain. L
 bash are checked too, best effort: certain writes (redirections, output options, writer operands,
 SQLite `.save`) are `Floor::Protected`; any other command naming a protected file is
 `Floor::NamesProtected` and goes through the same check, which also passes a pure read; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
-from the parent's execution snapshot, and its no-follow descriptor/inode validation is repeated.
+from the parent's execution snapshot.
 
 The other git worktrees of the workspace's repository are part of the project: `authorize` reads
 them (`workspace/worktrees.rs`) on a call whose target falls outside the project or in the temp
@@ -352,10 +352,12 @@ every proposal in one transaction, then runs it, and is refused when nothing can
 settles the held call and every call behind it with the Captain's message. After an allow, each
 sibling goes through the whole decision again, floor included, so a saved rule releases it. Legacy
 answers still parse: "allow folder" and "allow configuration for the session" count as Once, `deny`
-as Reject. An allowed file tool is bound to the canonical pathname the decision was made for and opens it
-without following links; when that pathname is no longer a plain file there (a link put in its
-place), nothing is written and the call goes through the decision again. The binding is the
-pathname, not the inode: a regular file swapped in at the same path is written. A stop or a chat message cancels the request; a resume expires every request that has no
+as Reject. An allowed file tool or search runs on the canonical target the decision resolved
+(`ToolContext::binding`), with ordinary file operations, once: WithNav does not bind targets
+without following links and does not decide a call again when its target changed after the
+decision (ADR 0015: symlink races are out of scope). `write` and `edit` replace the file
+atomically (temporary file and rename), so a link put at the target is replaced, not written
+through. A stop or a chat message cancels the request; a resume expires every request that has no
 `permission.resolved`, settles its calls as interrupted, and marks its decisions `expired`.
 
 **Secret request to answer.** `request_secret` (`tools/secret.rs`, never in a child or read-only

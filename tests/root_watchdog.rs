@@ -256,6 +256,24 @@ async fn pause_lifecycle(mode: u8) {
     })
     .await;
     assert_eq!(events.iter().filter(|e| e.kind == "turn.start").count(), 2);
+    // Every turn carries a task id, never the nil one. Within one actor the
+    // released turn keeps the parked turn's id; mode 2 closes and recreates
+    // the session, so its second turn starts a fresh task on a fresh actor.
+    let started: Vec<Option<ulid::Ulid>> = events
+        .iter()
+        .filter(|e| e.kind == "turn.start")
+        .map(|e| e.correlation_id)
+        .collect();
+    assert_eq!(started.len(), 2, "exactly two turn starts");
+    for task_id in &started {
+        assert_ne!(*task_id, Some(ulid::Ulid::nil()));
+    }
+    if mode != 2 {
+        assert_eq!(
+            started[0], started[1],
+            "the released turn keeps the parked turn's task id"
+        );
+    }
     assert_eq!(
         events.iter().filter(|e| e.kind == "turn.end").count(),
         2,

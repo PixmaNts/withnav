@@ -1687,13 +1687,18 @@ export class CognitionBackend implements ChatBackend {
       }
       case "llm.response": {
         // During a history replay no `llm.delta` arrives: a turn that got
-        // no live text renders its final message as one delta. Live steps
-        // (flagged above) must not be duplicated.
+        // no live text renders its final message as one delta. A step that
+        // streamed live text gets the final text as a replacement instead:
+        // `llm.delta` is never stored, so a stream reconnect mid-answer
+        // replays only this event and the deltas after the gap are lost.
         const id = String(payload.turn_id ?? this.state.currentTurn ?? envelope.seq);
+        const stepId = String(payload.step_id ?? "");
         const message = payload.message ?? {};
         const text = typeof message.text === "string" ? message.text : "";
         const thinking = typeof message.thinking === "string" ? message.thinking : "";
-        if (this.state.turnTextDelta.has(`${id}:${String(payload.step_id ?? "")}`)) return undefined;
+        if (this.state.turnTextDelta.delete(`${id}:${stepId}`)) {
+          return text ? { type: "text", id, stepId, text } : undefined;
+        }
         if (!text && !thinking) return undefined;
         if (thinking) this.emit({ type: "reasoning", id, stepId: String(payload.step_id ?? ""), text: thinking });
         return text ? { type: "delta", id, stepId: String(payload.step_id ?? ""), text } : undefined;
@@ -1771,6 +1776,7 @@ export class CognitionBackend implements ChatBackend {
             : undefined;
         const message: HostToWebview = { type: "turnEnd", id, outcome };
         if (error !== undefined) (message as any).error = error;
+        for (const key of this.state.turnTextDelta) if (key.startsWith(`${id}:`)) this.state.turnTextDelta.delete(key);
         this.state.currentTurn = undefined;
         this.emit({ type: "status", state: outcome === "error" ? "error" : "ready" });
         return message;

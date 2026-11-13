@@ -841,3 +841,18 @@ test('the image chooser has its own control, blocks sending until it answers and
   assert.deepEqual(chips(), ['first.png · 1 KiB', 'a.png · 1 KiB'], 'an answer from before the reset is dropped');
   dom.window.close();
 });
+test('final step text replaces a truncated stream and leaves a complete one rendered as is', () => {
+  const { dom, d, receive } = keyboardPage();
+  const frames = []; dom.window.requestAnimationFrame = callback => frames.push(callback);
+  receive({ type: 'turnStart', id: 'T' });
+  receive({ type: 'delta', id: 'T', stepId: 'S', text: 'Hello' });
+  frames.shift()();
+  receive({ type: 'text', id: 'T', stepId: 'S', text: 'Hello world' });
+  assert.equal(frames.length, 1); frames.shift()();
+  assert.equal(d.querySelector('.message-body').textContent.trim(), 'Hello world');
+  receive({ type: 'text', id: 'T', stepId: 'S', text: 'Hello world' });
+  assert.equal(frames.length, 0, 'identical final text does not re-render');
+  assert.equal(d.querySelectorAll('.message-body').length, 1);
+  assert.equal(d.querySelector('.message-body').textContent.trim(), 'Hello world');
+  dom.window.close();
+});

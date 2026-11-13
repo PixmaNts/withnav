@@ -144,6 +144,8 @@ export type HostToWebview = { generation?: number; tab?: string } & (
   | { type: "turnStart"; id: string }
   /** Streamed answer text for the current turn, to append. */
   | { type: "delta"; id: string; stepId?: string; text: string }
+  /** The complete answer text of a step: replaces what streamed for it (deltas lost to a reconnect). */
+  | { type: "text"; id: string; stepId?: string; text: string }
   /** Streamed reasoning text for the current turn, to append (shown collapsed). */
   | { type: "reasoning"; id: string; stepId?: string; text: string }
   /** A tool call inside the current turn. `summary` is a short human line (e.g. "read src/main.rs"). */

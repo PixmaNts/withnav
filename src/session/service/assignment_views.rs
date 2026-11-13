@@ -911,17 +911,20 @@ mod tests {
             )
             .unwrap();
         }
-        let state = crate::server::AppState::new(crate::server::ServerConfig {
-            bind: "127.0.0.1:0".parse().unwrap(),
-            models_path: Some(config_dir.join("models.json")),
-            config_dir,
-            allow_non_loopback: false,
-            bearer_token: None,
-            history_db: root.path().join("history.db"),
-            data_dir: root.path().join("data"),
-            rules_roots: Default::default(),
-            web: None,
-        })
+        let state = crate::server::AppState::new(
+            crate::server::ServerConfig {
+                bind: "127.0.0.1:0".parse().unwrap(),
+                models_path: Some(config_dir.join("models.json")),
+                config_dir,
+                allow_non_loopback: false,
+                bearer_token: None,
+                history_db: root.path().join("history.db"),
+                data_dir: root.path().join("data"),
+                rules_roots: Default::default(),
+                web: None,
+            },
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
+        )
         .unwrap();
         (root, state)
     }

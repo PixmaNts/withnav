@@ -597,7 +597,7 @@ fn build_client_with(
 /// one provider apply different deadlines (observed 2026-09-29: the instinct's
 /// 2 s client was reused by the metacognition on the same `omniroute`
 /// provider, cutting every remark at exactly 2000 ms).
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ClientCache {
     clients: std::sync::Mutex<std::collections::HashMap<(String, u64, u64), reqwest::Client>>,
     same_origin: std::sync::Mutex<std::collections::HashMap<(String, u64, u64), reqwest::Client>>,

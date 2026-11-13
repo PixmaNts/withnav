@@ -264,15 +264,16 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
     };
     let config_dir =
         auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
+    let clients = Arc::new(ClientCache::new());
     let preflight = crate::session::preflight::Preflight::capture(
         &config_dir,
         models_path,
         &initialized_workspace,
         &crate::agent::instructions::RulesRoots::from_user_home(),
+        clients.clone(),
     )
     .await?;
     preflight.check(&initialized_workspace).await?;
-    let clients = Arc::new(ClientCache::new());
 
     let log_path = crate::paths::decision_log()
         .ok_or_else(|| anyhow::anyhow!("cannot resolve user data dir"))?;
@@ -281,7 +282,7 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
         &config_dir,
         &ModelCatalog::system(),
         log_path.clone(),
-        clients,
+        clients.clone(),
     );
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -301,7 +302,13 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
     // register themselves there) and to the navigator deps (wakes post
     // through it): one process, two channels, one conversation.
     let conversation = ConversationFeed::new();
-    let http = match spawn_cognition_server(preflight.models_path(), conversation.clone()).await {
+    let http = match spawn_cognition_server(
+        preflight.models_path(),
+        conversation.clone(),
+        clients.clone(),
+    )
+    .await
+    {
         Ok(http) => Some(http),
         Err(e) => {
             // A failed bind or an unopenable history database must not take
@@ -326,6 +333,7 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
                 config_dir.clone(),
                 crate::paths::data_dir().unwrap_or_else(|| config_dir.join("data")),
                 Some(preflight.models_path().to_path_buf()),
+                clients.clone(),
             ))
         });
     // Loading the workspace's flows reads their validations from the
@@ -477,6 +485,7 @@ struct CognitionHttp {
 async fn spawn_cognition_server(
     models_path: &Path,
     conversation: ConversationFeed,
+    client_cache: Arc<ClientCache>,
 ) -> anyhow::Result<CognitionHttp> {
     use crate::server::session::{AppState, ServerConfig};
 
@@ -501,6 +510,7 @@ async fn spawn_cognition_server(
     let state = AppState::with_hooks(
         config,
         Arc::new(navigator::NavigatorHooks::with_feed(conversation)),
+        client_cache,
     )?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();

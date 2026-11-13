@@ -3485,6 +3485,7 @@ mod tests {
             ReasoningHistory::Preserve,
             Some(256),
             cancel,
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
         )
     }
 

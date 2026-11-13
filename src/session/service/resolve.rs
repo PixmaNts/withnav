@@ -286,14 +286,9 @@ impl Service {
             &resolved.provider_name,
             resolved.provider.api_key_env.as_deref(),
         )?;
-        crate::provider::catalog::resolve_chat(
-            &self.catalog,
-            &resolved,
-            &key,
-            &crate::provider::openai::ClientCache::new(),
-        )
-        .await
-        .map_err(|e| no_context_window(e, &models_path))
+        crate::provider::catalog::resolve_chat(&self.catalog, &resolved, &key, &self.client_cache)
+            .await
+            .map_err(|e| no_context_window(e, &models_path))
     }
 
     /// The alias's model, its key and its bounds. A conversation that has a
@@ -370,7 +365,7 @@ impl Service {
                     &self.catalog,
                     &resolved,
                     &api_key,
-                    &crate::provider::openai::ClientCache::new(),
+                    &self.client_cache,
                 )
                 .await
                 .map_err(|e| no_context_window(e, models_path))?;
@@ -400,11 +395,7 @@ impl Service {
         {
             let data = self
                 .catalog
-                .lookup(
-                    &resolved,
-                    &api_key,
-                    &crate::provider::openai::ClientCache::new(),
-                )
+                .lookup(&resolved, &api_key, &self.client_cache)
                 .await;
             let vision = data.limits.and_then(|l| l.vision);
             // A failed lookup leaves the support unknown for a different reason than a list
@@ -461,11 +452,7 @@ impl Service {
             resolved.model.variants.is_none() && resolved.provider.catalog_format.is_some();
         let data = if generated {
             self.catalog
-                .lookup(
-                    resolved,
-                    api_key,
-                    &crate::provider::openai::ClientCache::new(),
-                )
+                .lookup(resolved, api_key, &self.client_cache)
                 .await
         } else {
             self.catalog.cached(resolved)
@@ -909,7 +896,7 @@ impl Service {
             &self.catalog,
             &resolved,
             &api_key,
-            &crate::provider::openai::ClientCache::new(),
+            &self.client_cache,
         )
         .await
         .map_err(|e| no_context_window(e, &models_file))?;

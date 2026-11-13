@@ -387,7 +387,11 @@ async fn service_session_creation_does_not_wait_for_initialization() {
     let mut settings = withnav::settings::load(&config.config_dir).unwrap();
     settings.set_dotted("mcp", json!({"hang":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py"),"hang"],"startup_timeout_ms":60000}}));
     withnav::settings::save(&config.config_dir, &settings).unwrap();
-    let state = withnav::server::AppState::new(config).unwrap();
+    let state = withnav::server::AppState::new(
+        config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     // Far below the 60 s initialization a blocking creation would wait for, and loose enough for
     // a slow Windows runner (2 s timed out there on 2026-11-08).
     tokio::time::timeout(
@@ -530,7 +534,11 @@ async fn service_mcp_paths_report_unknown_disconnected_and_unknown_servers() {
     );
     withnav::settings::save(&cfg.config_dir, &settings).expect("save settings");
     let (session_config, _) = cfg.split();
-    let service = Service::new(session_config).expect("service");
+    let service = Service::new(
+        session_config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .expect("service");
 
     // The fixture must be ready before the positive controls.
     tokio::time::timeout(Duration::from_secs(10), async {

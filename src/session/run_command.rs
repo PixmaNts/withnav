@@ -774,13 +774,16 @@ mod tests {
             r#"{"agents":{"build":{"model":"mock/m"},"plan":{"model":"mock/m"}}}"#,
         )
         .unwrap();
-        Service::new(SessionConfig {
-            models_path: Some(dir.join("models.json")),
-            config_dir: dir.join("cfg"),
-            history_db: dir.join("history.db"),
-            data_dir: dir.join("data"),
-            rules_roots: Default::default(),
-        })
+        Service::new(
+            SessionConfig {
+                models_path: Some(dir.join("models.json")),
+                config_dir: dir.join("cfg"),
+                history_db: dir.join("history.db"),
+                data_dir: dir.join("data"),
+                rules_roots: Default::default(),
+            },
+            Arc::new(crate::provider::openai::ClientCache::new()),
+        )
         .expect("service")
     }
 

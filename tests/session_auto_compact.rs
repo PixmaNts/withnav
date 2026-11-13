@@ -391,7 +391,11 @@ fn two_models_both(
     )
     .expect("auth.json");
     std::fs::write(config.config_dir.join("config.json"),json!({"agents":{"build":{"model":"a/model-a"},"plan":{"model":"a/model-a"}},"permissions":{"scratch_dirs":[]}}).to_string()).unwrap();
-    AppState::new(config).expect("state")
+    AppState::new(
+        config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .expect("state")
 }
 
 // Given a long conversation on a large window

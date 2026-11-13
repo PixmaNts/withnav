@@ -184,7 +184,11 @@ pub(crate) fn test_service() -> (tempfile::TempDir, Service) {
         data_dir: dir.path().join("data"),
         rules_roots: Default::default(),
     };
-    let service = Service::new(config).expect("service over a temp database");
+    let service = Service::new(
+        config,
+        Arc::new(crate::provider::openai::ClientCache::new()),
+    )
+    .expect("service over a temp database");
     (dir, service)
 }
 
@@ -390,6 +394,7 @@ async fn a_host_message_is_published_with_the_secret_hidden() {
             rules_roots: Default::default(),
         },
         hooks.clone(),
+        Arc::new(crate::provider::openai::ClientCache::new()),
     )
     .unwrap();
     let id = service
@@ -553,4 +558,58 @@ async fn listing_fifty_conversations_costs_one_store_read() {
     );
     assert_eq!(row.summary.actor_state, "stopped");
     assert!(!row.summary.promptable);
+}
+
+#[tokio::test]
+async fn two_actors_created_by_one_service_share_client_cache_instance() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_dir = dir.path().join("cfg");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.json"),
+        r#"{"agents":{"build":{"model":"mock/test"}}}"#,
+    )
+    .unwrap();
+    crate::provider::auth::set_key(&cfg_dir, "mock", "test").unwrap();
+    std::fs::write(
+        dir.path().join("models.json"),
+        r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/test":{"provider":"mock","model":"test","context_window":128000}}}"#,
+    )
+    .unwrap();
+
+    let client_cache = Arc::new(crate::provider::openai::ClientCache::new());
+    let service = Service::new(
+        SessionConfig {
+            models_path: None,
+            config_dir: cfg_dir,
+            history_db: dir.path().join("history.db"),
+            data_dir: dir.path().join("data"),
+            rules_roots: Default::default(),
+        },
+        client_cache.clone(),
+    )
+    .unwrap();
+
+    let id1 = service
+        .create_session(dir.path(), None, false)
+        .await
+        .unwrap();
+    let id2 = service
+        .create_session(dir.path(), None, false)
+        .await
+        .unwrap();
+
+    let handle1 = service.handle(id1).unwrap();
+    let task1 = handle1.runtime_task.lock().unwrap().take().unwrap();
+    handle1.session_cancel.cancel();
+    let actor1 = task1.await.unwrap();
+
+    let handle2 = service.handle(id2).unwrap();
+    let task2 = handle2.runtime_task.lock().unwrap().take().unwrap();
+    handle2.session_cancel.cancel();
+    let actor2 = task2.await.unwrap();
+
+    assert!(Arc::ptr_eq(&actor1.client_cache, &service.client_cache));
+    assert!(Arc::ptr_eq(&actor2.client_cache, &service.client_cache));
+    assert!(Arc::ptr_eq(&actor1.client_cache, &actor2.client_cache));
 }

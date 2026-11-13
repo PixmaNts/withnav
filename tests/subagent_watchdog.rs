@@ -749,6 +749,7 @@ async fn parent_stop_joins_its_preclaimed_child_before_releasing_capacity() {
             .chat_tools(128000)
             .config(),
         Arc::new(HeldToolHooks(tool.clone())),
+        Arc::new(withnav_provider::openai::ClientCache::new()),
     )
     .unwrap();
     let parent = service
@@ -931,6 +932,7 @@ async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
             .chat_tools(128000)
             .config(),
         Arc::new(HeldToolHooks(tool.clone())),
+        Arc::new(withnav_provider::openai::ClientCache::new()),
     )
     .unwrap();
     std::fs::write(

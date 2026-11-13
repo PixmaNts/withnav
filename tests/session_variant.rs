@@ -752,7 +752,11 @@ async fn variant_errors_name_the_models_file_that_was_loaded() {
     let mut session = cfg.config().split().0;
     std::fs::copy(cfg.models_path(), ws.join("models.json")).unwrap();
     session.models_path = None;
-    let service = withnav::session::Service::new(session).expect("service");
+    let service = withnav::session::Service::new(
+        session,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .expect("service");
     let id = service
         .create_session_with_variant(&ws, None, false, VariantChoice::from_word(Some("low")))
         .await

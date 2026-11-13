@@ -15,6 +15,7 @@ use withnav::agent::instructions::RulesRoots;
 use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
 use withnav::bus::event::EventEnvelope;
 use withnav::server::{AppState, ServerConfig};
+use withnav_provider::openai::ClientCache;
 
 use super::sse::spawn_mock_provider;
 
@@ -321,7 +322,8 @@ impl TestServerConfig {
 
     /// An in-process [`AppState`] over [`Self::config`].
     pub fn state(&self) -> AppState {
-        AppState::new(self.config()).expect("state over a temp history database")
+        AppState::new(self.config(), std::sync::Arc::new(ClientCache::new()))
+            .expect("state over a temp history database")
     }
 
     /// Like [`Self::state`], with editor hooks.
@@ -368,8 +370,12 @@ impl TestServerConfig {
             settings["agents"] = json!({"build": {"model": assigned}});
         }
         std::fs::write(path, settings.to_string()).expect("explicit build assignment");
-        AppState::with_hooks(config, std::sync::Arc::new(hooks))
-            .expect("state over a temp history database")
+        AppState::with_hooks(
+            config,
+            std::sync::Arc::new(hooks),
+            std::sync::Arc::new(ClientCache::new()),
+        )
+        .expect("state over a temp history database")
     }
 }
 

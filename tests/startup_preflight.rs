@@ -48,6 +48,7 @@ async fn captured(dir: &Path) -> Preflight {
         None,
         dir,
         &RulesRoots::default(),
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
     )
     .await
     .unwrap()
@@ -671,6 +672,7 @@ async fn global_primary_default_and_invalid_runtime_variant_are_checked() {
         None,
         dir.path(),
         &RulesRoots { home: Some(home) },
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
     )
     .await
     .unwrap();

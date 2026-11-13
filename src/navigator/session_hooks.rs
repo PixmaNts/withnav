@@ -204,6 +204,7 @@ mod tests {
                 rules_roots: Default::default(),
             },
             Arc::new(NavigatorHooks::with_feed(feed.clone())),
+            Arc::new(crate::provider::openai::ClientCache::new()),
         )
         .unwrap();
         let id = service

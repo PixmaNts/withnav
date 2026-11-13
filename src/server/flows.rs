@@ -439,19 +439,22 @@ mod tests {
         use tower::ServiceExt;
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().canonicalize().unwrap();
-        let state = AppState::new(super::super::ServerConfig {
-            bind: "127.0.0.1:8080".parse().unwrap(),
-            models_path: None,
-            config_dir: dir.path().join("config"),
-            allow_non_loopback: false,
-            bearer_token: None,
-            history_db: dir.path().join("history.db"),
-            data_dir: dir.path().join("data"),
-            rules_roots: Default::default(),
-            web: Some(super::super::WebConfig {
-                launch_workspaces: vec![workspace.clone()],
-            }),
-        })
+        let state = AppState::new(
+            super::super::ServerConfig {
+                bind: "127.0.0.1:8080".parse().unwrap(),
+                models_path: None,
+                config_dir: dir.path().join("config"),
+                allow_non_loopback: false,
+                bearer_token: None,
+                history_db: dir.path().join("history.db"),
+                data_dir: dir.path().join("data"),
+                rules_roots: Default::default(),
+                web: Some(super::super::WebConfig {
+                    launch_workspaces: vec![workspace.clone()],
+                }),
+            },
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
+        )
         .unwrap();
         state
             .flows
@@ -593,19 +596,22 @@ mod tests {
     async fn studio_documents_revisions_reload_and_network_policy() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().canonicalize().unwrap();
-        let state = AppState::new(super::super::ServerConfig {
-            bind: "127.0.0.1:8080".parse().unwrap(),
-            models_path: None,
-            config_dir: dir.path().join("config"),
-            allow_non_loopback: false,
-            bearer_token: None,
-            history_db: dir.path().join("history.db"),
-            data_dir: dir.path().join("data"),
-            rules_roots: Default::default(),
-            web: Some(super::super::WebConfig {
-                launch_workspaces: vec![workspace.clone()],
-            }),
-        })
+        let state = AppState::new(
+            super::super::ServerConfig {
+                bind: "127.0.0.1:8080".parse().unwrap(),
+                models_path: None,
+                config_dir: dir.path().join("config"),
+                allow_non_loopback: false,
+                bearer_token: None,
+                history_db: dir.path().join("history.db"),
+                data_dir: dir.path().join("data"),
+                rules_roots: Default::default(),
+                web: Some(super::super::WebConfig {
+                    launch_workspaces: vec![workspace.clone()],
+                }),
+            },
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
+        )
         .unwrap();
         let query = HashMap::from([("workspace".into(), workspace.to_string_lossy().into_owned())]);
         let mut headers = HeaderMap::new();

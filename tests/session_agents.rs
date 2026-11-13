@@ -16,7 +16,11 @@ async fn legacy_ids_resolve_at_creation_delegation_task_and_resume() {
     use withnav::tools::{Tool, ToolContext};
     let env = Env::new();
     let config = TestServerConfig::unreachable(&env.root).config();
-    let state = AppState::new(config.clone()).unwrap();
+    let state = AppState::new(
+        config.clone(),
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     for old in ["review", "oracle"] {
         let id = state
             .create_session_as(&env.ws, None, false, Some(old))
@@ -32,7 +36,11 @@ async fn legacy_ids_resolve_at_creation_delegation_task_and_resume() {
             .await
             .unwrap();
         state.close_session(id).await.unwrap();
-        let resumed = AppState::new(config.clone()).unwrap();
+        let resumed = AppState::new(
+            config.clone(),
+            std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+        )
+        .unwrap();
         resumed
             .create_or_resume_session(&env.ws, None, false, Some(id))
             .await
@@ -91,7 +99,11 @@ async fn successful_switch_fallback_warning_is_durable_and_replayed() {
             .to_string(),
     )
     .unwrap();
-    let state = AppState::new(config).unwrap();
+    let state = AppState::new(
+        config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     let result = state.run_command(id, "agent", "plan").await.unwrap();
     assert!(result.ok);
@@ -118,7 +130,11 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
     let config = TestServerConfig::unreachable(&env.root)
         .variants(json!({"low":{"reasoning_effort":"low"}}), Some("low"))
         .config();
-    let state = AppState::new(config).unwrap();
+    let state = AppState::new(
+        config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     for off in [json!(null), json!("off")] {
         std::fs::write(
             env.root.join("cfg/config.json"),
@@ -206,7 +222,11 @@ async fn live_agent_switch_restores_model_and_off_override_after_restart() {
             .to_string(),
     )
     .unwrap();
-    let state = AppState::new(config.clone()).unwrap();
+    let state = AppState::new(
+        config.clone(),
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     assert!(
         state
@@ -226,7 +246,11 @@ async fn live_agent_switch_restores_model_and_off_override_after_restart() {
     assert_eq!(build.model, "mock/plan-model");
     assert_eq!(build.variant, None);
     state.close_session(id).await.unwrap();
-    let reopened = AppState::new(config).unwrap();
+    let reopened = AppState::new(
+        config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     reopened
         .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
@@ -282,7 +306,11 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
     );
     let settings = env.root.join("cfg/config.json");
     std::fs::write(&settings,json!({"agents":{"build":{"model":"mock/mock-model"},"custom":{"model":"mock/mock-model"},"plan":{"model":"mock/missing"}}}).to_string()).unwrap();
-    let state = AppState::new(config.clone()).unwrap();
+    let state = AppState::new(
+        config.clone(),
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     for agent in ["custom", "plan"] {
         let id = state
             .create_session_with(
@@ -369,7 +397,11 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
             .to_string(),
     )
     .unwrap();
-    let service = AppState::new(config.clone()).unwrap();
+    let service = AppState::new(
+        config.clone(),
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     let build = service.create_session(&env.ws, None, false).await.unwrap();
     assert_eq!(
         service.session_summary(build).await.unwrap().model,
@@ -417,7 +449,11 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
     );
     assert_eq!(meta.variant, None);
     service.close_session(overridden).await.unwrap();
-    let reopened = AppState::new(config).unwrap();
+    let reopened = AppState::new(
+        config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     reopened
         .create_or_resume_session(&env.ws, None, false, Some(overridden))
         .await

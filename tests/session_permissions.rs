@@ -167,7 +167,11 @@ async fn mcp_resource_read_is_decided_like_any_tool() {
     let mut settings = withnav::settings::load(&cfg.config_dir).unwrap();
     settings.set_dotted("mcp", json!({"fake":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"RESOURCES":"1"}}}));
     withnav::settings::save(&cfg.config_dir, &settings).unwrap();
-    let state = AppState::new(cfg).unwrap();
+    let state = AppState::new(
+        cfg,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     common::server::wait_for("MCP discovery", || {
         state
             .service()
@@ -217,7 +221,11 @@ async fn mcp_unknown_tool_asks_always_saves_global_rule_and_yolo_runs_directly()
         withnav::settings::save(&cfg.config_dir, &settings).unwrap();
         // The mock has no instinct assignment: the built-in permission flow applies the
         // rule on unavailable judgement, asking with no rule and allowing the saved rule.
-        let state = AppState::new(cfg).unwrap();
+        let state = AppState::new(
+            cfg,
+            std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+        )
+        .unwrap();
         common::server::wait_for("MCP discovery", || {
             state
                 .service()

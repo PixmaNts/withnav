@@ -358,6 +358,7 @@ pub struct Service {
     pub(super) unpublished_children: Arc<Mutex<std::collections::HashSet<SessionId>>>,
     pub(crate) child_operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
     catalog: crate::provider::catalog::ModelCatalog,
+    pub client_cache: Arc<crate::provider::openai::ClientCache>,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
     /// Test seam: parks a model switch after its store write and before its
@@ -508,8 +509,11 @@ impl Service {
 
     /// A service without any editor behaviour ([`NoHooks`]). Fails when
     /// the history database cannot be opened.
-    pub fn new(config: SessionConfig) -> Result<Self, ServerError> {
-        Self::with_hooks(config, Arc::new(NoHooks))
+    pub fn new(
+        config: SessionConfig,
+        client_cache: Arc<crate::provider::openai::ClientCache>,
+    ) -> Result<Self, ServerError> {
+        Self::with_hooks(config, Arc::new(NoHooks), client_cache)
     }
 
     /// [`Service::new`] with the host's editor policy and lifecycle
@@ -517,6 +521,7 @@ impl Service {
     pub fn with_hooks(
         config: SessionConfig,
         hooks: Arc<dyn SessionHooks>,
+        client_cache: Arc<crate::provider::openai::ClientCache>,
     ) -> Result<Self, ServerError> {
         // No fallback: a conversation that cannot be saved is not served.
         let mut history =
@@ -553,6 +558,7 @@ impl Service {
                 config.config_dir.clone(),
                 config.data_dir.clone(),
                 config.models_path.clone(),
+                client_cache.clone(),
             )),
             _instance: instance,
             sessions,
@@ -566,6 +572,7 @@ impl Service {
             unpublished_children: Arc::default(),
             child_operations: Arc::default(),
             catalog,
+            client_cache,
             #[cfg(test)]
             install_barrier: Arc::default(),
             #[cfg(test)]
@@ -2479,6 +2486,7 @@ impl Service {
                 allowed.clone(),
                 *read_only,
                 &mcp_registry,
+                self.client_cache.clone(),
             ),
             None => build_actor(
                 &workspace,
@@ -2487,6 +2495,7 @@ impl Service {
                 api_key,
                 session_cancel.child_token(),
                 &mcp_registry,
+                self.client_cache.clone(),
             ),
         };
         // A subagent hands its tools the secrets of the tree it works for.
@@ -2562,6 +2571,7 @@ impl Service {
             self.config.models_path.as_deref(),
             &workspace,
             &self.config.config_dir,
+            self.client_cache.clone(),
         );
         actor.compaction_catalog = Some(self.catalog.clone());
         actor.yolo = execution.yolo;
@@ -2652,7 +2662,7 @@ impl Service {
                         &self.catalog,
                         resolved,
                         &api_key,
-                        &crate::provider::openai::ClientCache::new(),
+                        &self.client_cache,
                     )
                     .await
                     .ok()?;
@@ -3446,14 +3456,11 @@ fn compaction_decision(
     models_path: Option<&std::path::Path>,
     workspace: &std::path::Path,
     config_dir: &std::path::Path,
+    cache: Arc<crate::provider::openai::ClientCache>,
 ) -> Option<Arc<dyn crate::provider::systemone::DecisionModel>> {
     let (models, _) = crate::provider::config::load_models(models_path, workspace, config_dir)
         .map_err(|error| tracing::warn!(%error, "compaction judge disabled: catalog unavailable"))
         .ok()?;
-    let client = crate::provider::layers::available_instinct(
-        &models,
-        config_dir,
-        Arc::new(crate::provider::openai::ClientCache::new()),
-    )?;
+    let client = crate::provider::layers::available_instinct(&models, config_dir, cache)?;
     Some(Arc::new(client))
 }

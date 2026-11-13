@@ -58,7 +58,11 @@ impl Fixture {
             .without_window();
         let (mut session, _) = cfg.config().split();
         session.data_dir = self.tmp.path().join(data);
-        Service::new(session).expect("service")
+        Service::new(
+            session,
+            std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+        )
+        .expect("service")
     }
 
     fn db(&self) -> rusqlite::Connection {
@@ -419,7 +423,11 @@ async fn a_zero_configured_input_limit_never_makes_a_session_unresumable() {
         serde_json::from_str(&std::fs::read_to_string(&models_path).unwrap()).unwrap();
     models["models"]["mock/mock-model"]["max_input_tokens"] = json!(0);
     std::fs::write(&models_path, models.to_string()).unwrap();
-    let service = Service::new(session).expect("service");
+    let service = Service::new(
+        session,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .expect("service");
 
     let id = create_then_stop(&service, &fx).await;
     let saved: Value = serde_json::from_str(&fx.saved(id).unwrap()).unwrap();

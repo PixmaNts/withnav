@@ -4,7 +4,7 @@ use crate::agent::context::Breakdown;
 use crate::agent::permissions::{PermissionDecision, PermissionError, PermissionRequest, Scope};
 use crate::agent::prompt::{assistant_history_message, build_request};
 use crate::agent::response::{HumanRequest, StepOutcome};
-use crate::error::{AgentError, ProviderError, ToolError};
+use crate::error::{AgentError, ProviderError};
 use crate::permission::decisions::Outcome;
 use crate::provider::client::ModelClient;
 use crate::provider::openai::{ChatMessage, ClientCache};
@@ -651,15 +651,7 @@ pub async fn resolve_permission_with_origin(
             if call.name == "skill" {
                 run_skill(actor, &call, observe, Some(note), None).await
             } else {
-                run_approved(
-                    actor,
-                    &call,
-                    destination.as_deref(),
-                    note,
-                    request.repeats,
-                    observe,
-                )
-                .await
+                run_approved(actor, &call, destination.as_deref(), note, observe).await
             }
         }
         PermissionDecision::Reject { message } => {
@@ -1231,10 +1223,6 @@ enum One {
     Interrupted,
 }
 
-/// How many times a call whose file moved under it is checked afresh before
-/// it is refused: a file that keeps changing is not one to write.
-const REGATE_LIMIT: usize = 3;
-
 /// Takes `call` through the one permission decision and runs it when it is
 /// allowed. Tool availability and the call's arguments are checked first; a
 /// skill goes through its validation instead; yolo checks nothing.
@@ -1274,69 +1262,47 @@ async fn run_decided(
             "task" | "steer_subagent" | "decide_subagent" | "intent" | "reveal"
         )
     {
-        return execute_and_settle(actor, call, None, None, observe)
-            .await
-            .unwrap_or(One::Settled);
+        return execute_and_settle(actor, call, None, None, observe).await;
     }
-    let mut previous = previous;
-    for _ in 0..REGATE_LIMIT {
-        let note = match authorize::authorize(actor, call, repeats, previous.take(), false).await {
-            Authorized::Run(note) => note,
-            Authorized::Denied { message, note } => {
-                deny_call(actor, call, message, note, observe);
-                return One::Settled;
-            }
-            Authorized::Ask(mut request) => {
-                request.repeats = repeats;
-                // The file the Captain is shown: an answer runs the call only
-                // if it still lands there.
-                return One::Ask(request, bind_destination(actor, call));
-            }
-            Authorized::Interrupted => return One::Interrupted,
-        };
-        if actor.cancel.is_cancelled() {
-            return One::Interrupted;
+    let note = match authorize::authorize(actor, call, repeats, previous, false).await {
+        Authorized::Run(note) => note,
+        Authorized::Denied { message, note } => {
+            deny_call(actor, call, message, note, observe);
+            return One::Settled;
         }
-        let destination = bind_destination(actor, call);
-        if let Some(outcome) =
-            execute_and_settle(actor, call, destination.as_deref(), Some(note), observe).await
-        {
-            return outcome;
+        Authorized::Ask(mut request) => {
+            request.repeats = repeats;
+            // The file the Captain is shown is the one an answer writes.
+            return One::Ask(request, decided_target(actor, call));
         }
+        Authorized::Interrupted => return One::Interrupted,
+    };
+    if actor.cancel.is_cancelled() {
+        return One::Interrupted;
     }
-    reject_call(
-        actor,
-        call,
-        "the target changed while the call was being checked; nothing was changed".to_string(),
-        observe,
-    );
-    One::Settled
+    let destination = decided_target(actor, call);
+    execute_and_settle(actor, call, destination.as_deref(), Some(note), observe).await
 }
 
-/// Runs a call the Captain allowed. A target that moved between the answer
-/// and the dispatch goes through the decision again.
+/// Runs a call the Captain allowed, on the target the request named.
 async fn run_approved(
     actor: &mut AgentActor,
     call: &ToolCall,
     destination: Option<&Path>,
     note: serde_json::Value,
-    repeats: usize,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
 ) -> One {
     if let Err(message) = preflight(actor, call) {
         reject_call(actor, call, message, observe);
         return One::Settled;
     }
-    if let Some(outcome) = execute_and_settle(actor, call, destination, Some(note), observe).await {
-        return outcome;
-    }
-    run_decided(actor, call, observe, repeats, None).await
+    execute_and_settle(actor, call, destination, Some(note), observe).await
 }
 
-/// The canonical file a file tool is bound to once it is allowed, so it opens
-/// exactly that file without following a link and without the tool's own
-/// root checks, which the decision replaced.
-fn bind_destination(actor: &AgentActor, call: &ToolCall) -> Option<PathBuf> {
+/// The canonical target an allowed file tool or search runs on: the decision
+/// replaced the tool's own root checks. Resolved once and not checked again at
+/// dispatch: ADR 0015 puts symlink races out of scope.
+fn decided_target(actor: &AgentActor, call: &ToolCall) -> Option<PathBuf> {
     match call.name.as_str() {
         "read" | "write" | "edit" => call
             .args
@@ -1410,71 +1376,32 @@ async fn run_yolo(
         reject_call(actor, call, message, observe);
         return One::Settled;
     }
-    for _ in 0..REGATE_LIMIT {
-        if actor.cancel.is_cancelled() {
-            return One::Interrupted;
-        }
-        // A file tool is bound to the canonical file it names, as after a
-        // Captain's approval, so it opens it without following a link.
-        let destination = match call.name.as_str() {
-            "read" | "write" | "edit" => call
-                .args
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .and_then(|path| {
-                    super::permissions::resolve_read_target(Path::new(path), &actor.tool_context)
-                        .ok()
-                })
-                .filter(|path| !path.is_dir()),
-            // Searches are bound too, so the host tells the tool the root is trusted.
-            "grep" | "glob" => {
-                let path = call
-                    .args
-                    .get("path")
-                    .and_then(serde_json::Value::as_str)
-                    .map(Path::new)
-                    .unwrap_or(&actor.tool_context.workspace);
-                super::permissions::resolve_read_target(path, &actor.tool_context).ok()
-            }
-            _ => None,
-        };
-        if let Some(outcome) = execute_and_settle(
-            actor,
-            call,
-            destination.as_deref(),
-            Some(yolo_approval()),
-            observe,
-        )
-        .await
-        {
-            return outcome;
-        }
+    if actor.cancel.is_cancelled() {
+        return One::Interrupted;
     }
-    reject_call(
+    // Searches get their target too, so the host tells the tool the root is trusted.
+    let destination = decided_target(actor, call);
+    execute_and_settle(
         actor,
         call,
-        "the target changed while the call was being checked; nothing was changed".to_string(),
+        destination.as_deref(),
+        Some(yolo_approval()),
         observe,
-    );
-    One::Settled
+    )
+    .await
 }
 
-/// A changed destination remains the caller's responsibility: retry the gate
-/// or ask for a fresh flow binding, without reusing the old approval.
+/// Dispatches `call` and appends its result to the transcript.
 async fn execute_and_settle(
     actor: &mut AgentActor,
     call: &ToolCall,
     destination: Option<&Path>,
     approval_note: Option<serde_json::Value>,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
-) -> Option<One> {
-    match execute_call(actor, call, destination, approval_note, observe).await {
-        DispatchOutcome::Settled(result) => {
-            append_tool_result(actor, &call.id, &result);
-            Some(One::Settled)
-        }
-        DispatchOutcome::DestinationChanged => None,
-    }
+) -> One {
+    let result = execute_call(actor, call, destination, approval_note, observe).await;
+    append_tool_result(actor, &call.id, &result);
+    One::Settled
 }
 
 /// Settles a call the gate refused: it is never dispatched, and the model
@@ -1508,33 +1435,23 @@ fn reject_call(
     append_tool_result(actor, &call.id, &result);
 }
 
-/// Dispatches `call`. With a `destination` (the canonical file the decision
-/// was made for) the tool opens exactly that file without following links;
-/// one replaced by a link or another kind of file is `DestinationChanged`,
-/// and the call is decided again.
-enum DispatchOutcome {
-    Settled(ToolResult),
-    DestinationChanged,
-}
-
+/// Dispatches `call`. With a `destination` (the canonical target the decision
+/// was made for) the tool runs on that target instead of checking its roots.
 async fn execute_call(
     actor: &AgentActor,
     call: &ToolCall,
     destination: Option<&Path>,
     note: Option<serde_json::Value>,
     observe: &mut (dyn for<'e> FnMut(AgentEvent<'e>) + Send),
-) -> DispatchOutcome {
-    // The seam tests use to move a file between the check and the dispatch.
-    #[cfg(test)]
-    tests::before_dispatch();
+) -> ToolResult {
     if let Some(role) = actor.role.as_deref().filter(|_| !actor.yolo)
         && let Err(message) =
             role.validate_write_scope(&call.name, &call.args, &actor.tool_context.workspace)
     {
-        return DispatchOutcome::Settled(ToolResult::error("agent_write_scope", message));
+        return ToolResult::error("agent_write_scope", message);
     }
     if actor.cancel.is_cancelled() {
-        return DispatchOutcome::Settled(ToolResult::not_started());
+        return ToolResult::not_started();
     }
     observe_pre_call(
         actor,
@@ -1554,16 +1471,6 @@ async fn execute_call(
     }
     cx.binding = destination.map(|destination| crate::tools::DispatchBinding {
         destination: destination.to_path_buf(),
-        // A scratch identity is a permission control (inode and mode): not in yolo.
-        scratch: if actor.yolo {
-            None
-        } else {
-            actor
-                .scratch_roots
-                .iter()
-                .find(|root| destination.starts_with(&root.path))
-                .cloned()
-        },
         yolo: actor.yolo,
     });
     let dispatched = actor
@@ -1571,29 +1478,6 @@ async fn execute_call(
         .dispatch(&call.name, args, actor.cancel.child_token(), &cx)
         .await;
     let mut result = match dispatched {
-        // The tool opened the reviewed file without following links and found
-        // one (or another kind of file) there: nothing was touched, and the
-        // call is checked again. The attempt stays visible, closed as an error.
-        Err(ToolError::DestinationChanged(path)) => {
-            let mut result = ToolResult::error(
-                "destination_changed",
-                format!(
-                    "{} changed after it was checked; nothing was written, the call is checked again",
-                    path.display()
-                ),
-            );
-            if let Some(note) = &note {
-                merge_approval_metadata(&mut result.metadata, note);
-            }
-            // The path is the one the model asked for, and may name a stored secret.
-            redact_result(actor, &mut result);
-            observe(AgentEvent::PostCall {
-                tool_call_id: &call.id,
-                name: &call.name,
-                result: &result,
-            });
-            return DispatchOutcome::DestinationChanged;
-        }
         Ok(result) => result,
         Err(e) => ToolResult::error("tool_error", e.to_string()),
     };
@@ -1612,7 +1496,7 @@ async fn execute_call(
         name: &call.name,
         result: &result,
     });
-    DispatchOutcome::Settled(result)
+    result
 }
 
 fn merge_approval_metadata(metadata: &mut serde_json::Value, note: &serde_json::Value) {
@@ -3319,24 +3203,6 @@ mod tests {
         assert!(bad.is_err() && !called);
     }
 
-    thread_local! {
-        static BEFORE_DISPATCH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
-            const { std::cell::RefCell::new(None) };
-    }
-
-    /// Called by `execute_call` just before it re-checks the target: lets a
-    /// test move a file in the gap between the gate and the dispatch.
-    pub(super) fn before_dispatch() {
-        if let Some(hook) = BEFORE_DISPATCH.with(|h| h.borrow_mut().take()) {
-            hook();
-        }
-    }
-
-    #[cfg(unix)]
-    pub(super) fn on_next_dispatch(hook: impl FnOnce() + 'static) {
-        BEFORE_DISPATCH.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
-    }
-
     #[tokio::test]
     async fn yolo_runs_review_and_hard_floor_calls_without_asking_anyone() {
         let mut actor = plan_actor("http://unused");
@@ -3518,60 +3384,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn yolo_ignores_scratch_identity_and_mode() {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-        let mut actor = plan_actor("http://unused");
-        actor.yolo = true;
-        actor
-            .registry
-            .register(Box::new(crate::tools::native::EditTool));
-        let root = actor.tool_context.workspace.join("scratch");
-        actor
-            .scratch_roots
-            .push(crate::agent::scratch::Identity::capture(&root).unwrap());
-        let write = |name: &str| ToolCall {
-            id: format!("w-{name}"),
-            name: "write".into(),
-            args: serde_json::json!({"path":root.join(name),"content":"one"}),
-            args_valid: true,
-        };
-        let edit = |name: &str| ToolCall {
-            id: format!("e-{name}"),
-            name: "edit".into(),
-            args: serde_json::json!({"path":root.join(name),"old_string":"one","new_string":"two"}),
-            args_valid: true,
-        };
-        // Widened mode: the identity would refuse it.
-        #[cfg(unix)]
-        {
-            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
-            assert!(!actor.scratch_roots[0].valid());
-        }
-        for call in [write("a"), edit("a")] {
-            assert_eq!(
-                yolo_run(&mut actor, &call).await,
-                (ToolStatus::Ok, serde_json::json!("yolo")),
-                "{}",
-                call.id
-            );
-        }
-        assert_eq!(std::fs::read_to_string(root.join("a")).unwrap(), "two");
-        // Replaced root: another inode at the same path.
-        std::fs::remove_dir_all(&root).unwrap();
-        std::fs::create_dir(&root).unwrap();
-        for call in [write("b"), edit("b")] {
-            assert_eq!(
-                yolo_run(&mut actor, &call).await,
-                (ToolStatus::Ok, serde_json::json!("yolo")),
-                "{}",
-                call.id
-            );
-        }
-        assert_eq!(std::fs::read_to_string(root.join("b")).unwrap(), "two");
-    }
-
-    #[tokio::test]
     async fn yolo_searches_a_sensitive_root_but_filters_its_credentials() {
         let mut actor = plan_actor("http://unused");
         let ssh = actor.tool_context.workspace.join(".ssh");
@@ -3675,9 +3487,13 @@ mod tests {
         ]
     }
 
+    // ADR 0015 puts symlink races out of scope: an approved write runs once on
+    // the target the request named, even when a link appeared there after the
+    // answer. The write replaces the link (tempfile + rename), it is not asked
+    // again and reports no "destination changed" error.
     #[cfg(unix)]
     #[tokio::test]
-    async fn an_approved_write_swapped_for_a_link_after_the_final_check_asks_again() {
+    async fn an_approved_write_runs_once_even_when_a_link_appears_after_the_answer() {
         let mut actor = make_actor(
             "http://127.0.0.1:1/v1".into(),
             registry_gated(),
@@ -3687,8 +3503,8 @@ mod tests {
         let ws = actor.tool_context.workspace.canonicalize().unwrap();
         actor.tool_context.workspace = ws.clone();
         actor.tool_context.writable_roots = vec![ws.clone()];
-        let (target, secret) = (ws.join("a.txt"), ws.join("secret.toml"));
-        std::fs::write(&secret, "keep").unwrap();
+        let (target, other) = (ws.join("a.txt"), ws.join("other.toml"));
+        std::fs::write(&other, "keep").unwrap();
         let server = spawn_mock(write_script(&target)).await;
         actor.provider.base_url = server.url.clone();
         actor.push_user("go");
@@ -3697,12 +3513,7 @@ mod tests {
         else {
             panic!("build asks first");
         };
-        {
-            let (target, secret) = (target.clone(), secret.clone());
-            crate::tools::nofollow::on_next_open(move || {
-                std::os::unix::fs::symlink(&secret, &target).unwrap();
-            });
-        }
+        std::os::unix::fs::symlink(&other, &target).unwrap();
         let outcome = resolve_permission(
             &mut actor,
             first.id,
@@ -3711,12 +3522,14 @@ mod tests {
         )
         .await
         .unwrap();
-        let RunOutcome::PermissionRequired(second) = outcome else {
-            panic!("the approval was for the old destination: {outcome:?}");
-        };
-        assert_ne!(first.id, second.id);
-        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "keep");
-        assert_eq!(tool_result_of(&actor, "w1"), None);
+        assert!(
+            !matches!(outcome, RunOutcome::PermissionRequired(_)),
+            "the answer is not asked again: {outcome:?}"
+        );
+        let result = tool_result_of(&actor, "w1").expect("the write ran");
+        assert!(!result.contains("destination_changed"), "{result}");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "keep");
     }
 
     #[tokio::test]
@@ -3740,11 +3553,7 @@ mod tests {
         let mut noop = |_e: AgentEvent| {};
         // No destination from the loop: the argument is stripped, the plain
         // tool path runs.
-        let DispatchOutcome::Settled(result) =
-            execute_call(&actor, &call, None, None, &mut noop).await
-        else {
-            panic!("unexpected dispatch outcome")
-        };
+        let result = execute_call(&actor, &call, None, None, &mut noop).await;
         assert_eq!(result.status, ToolStatus::Error);
         assert!(!target.exists());
     }
@@ -3914,57 +3723,6 @@ mod tests {
             &mut |event| shown.record(event),
         );
         assert_eq!((shown.pre.len(), shown.post.len()), (1, 1));
-        assert!(
-            shown.post[0].contains("[secret API_KEY]"),
-            "{}",
-            shown.post[0]
-        );
-        shown.assert_hidden(VALUE);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_changed_destination_hides_the_secret_in_the_path_it_reports() {
-        const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
-        let mut registry = Registry::new();
-        registry.register(Box::new(WriteTool));
-        let mut actor = make_actor(String::new(), registry, CancellationToken::new());
-        with_secret(&mut actor, VALUE);
-        let ws = actor.tool_context.workspace.canonicalize().unwrap();
-        let target = ws.join(format!("{VALUE}.txt"));
-        let elsewhere = ws.join("elsewhere.txt");
-        std::fs::write(&target, "old").unwrap();
-        std::fs::write(&elsewhere, "kept").unwrap();
-        on_next_dispatch({
-            let (target, elsewhere) = (target.clone(), elsewhere.clone());
-            move || {
-                std::fs::remove_file(&target).unwrap();
-                std::os::unix::fs::symlink(&elsewhere, &target).unwrap();
-            }
-        });
-        let call = ToolCall {
-            id: "w1".into(),
-            name: "write".into(),
-            args: serde_json::json!({"path": target, "content": "new"}),
-            args_valid: true,
-        };
-        let mut shown = Shown::default();
-        let outcome = execute_call(&actor, &call, Some(&target), None, &mut |event| {
-            shown.record(event)
-        })
-        .await;
-        assert!(
-            matches!(outcome, DispatchOutcome::DestinationChanged),
-            "{:?}",
-            shown.post
-        );
-        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "kept");
-        assert_eq!((shown.pre.len(), shown.post.len()), (1, 1));
-        assert!(
-            shown.post[0].contains("destination_changed"),
-            "{}",
-            shown.post[0]
-        );
         assert!(
             shown.post[0].contains("[secret API_KEY]"),
             "{}",

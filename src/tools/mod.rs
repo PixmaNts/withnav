@@ -19,12 +19,13 @@ pub mod fetch;
 pub mod glob;
 mod grep;
 pub mod native;
-pub mod nofollow;
 #[cfg(windows)]
 pub(crate) mod process_job;
 pub mod secret;
 pub mod steer_subagent;
 pub mod task;
+#[cfg(windows)]
+pub mod win_path;
 
 fn subagent_denied(code: &str, message: String) -> ToolError {
     ToolError::Denied {
@@ -252,7 +253,8 @@ impl ToolResult {
 
 #[derive(Clone)]
 pub struct ToolContext {
-    /// Host-only binding installed by the agent loop, never model arguments.
+    /// Host-only: the target the permission decision resolved, installed by
+    /// the agent loop, never from model arguments.
     pub binding: Option<DispatchBinding>,
     pub workspace: PathBuf,
     /// Where `write`, `edit` and `bash` may change files (and `read`/`grep`
@@ -268,8 +270,9 @@ pub struct ToolContext {
 
 #[derive(Clone)]
 pub struct DispatchBinding {
+    /// The file (or search root) the decision was made for; the tool uses it
+    /// with ordinary file operations, without checking it again.
     pub(crate) destination: PathBuf,
-    pub(crate) scratch: Option<crate::agent::scratch::Identity>,
     /// Set by the host in yolo, never from arguments: the call's root is
     /// trusted, so the tools skip their root-level sensitive-path denial.
     pub(crate) yolo: bool,
@@ -386,9 +389,9 @@ pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, Too
     } else {
         candidate.to_path_buf()
     };
-    let resolved = nofollow::path_identity(&anchored)?;
+    let resolved = win_path::path_identity(&anchored)?;
     if roots.iter().any(|root| {
-        nofollow::path_identity(root).is_ok_and(|root| nofollow::path_within(&resolved, &root))
+        win_path::path_identity(root).is_ok_and(|root| win_path::path_within(&resolved, &root))
     }) {
         Ok(resolved)
     } else {
@@ -400,7 +403,7 @@ pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, Too
 pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
     #[cfg(windows)]
     {
-        nofollow::path_identity(path).map_err(std::io::Error::other)
+        win_path::path_identity(path).map_err(std::io::Error::other)
     }
     #[cfg(unix)]
     {
@@ -458,7 +461,7 @@ pub(crate) fn relative_path_text(path: &Path) -> String {
 #[cfg(unix)]
 pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, ToolError> {
     #[cfg(windows)]
-    nofollow::validate_target(candidate)?;
+    win_path::validate_target(candidate)?;
     let anchored;
     let candidate = if candidate.is_relative() {
         let root = roots
@@ -474,7 +477,7 @@ pub fn validate_path(roots: &[PathBuf], candidate: &Path) -> Result<PathBuf, Too
         .canonicalize()
         .map_err(|_| ToolError::PathTraversal(candidate.to_path_buf()))?;
     #[cfg(windows)]
-    nofollow::validate_target(&canon_existing)?;
+    win_path::validate_target(&canon_existing)?;
 
     let tail = candidate
         .strip_prefix(&existing)
@@ -604,9 +607,9 @@ mod tests {
         std::fs::write(&f, "x").unwrap();
         let ok = validate_path(std::slice::from_ref(&root), &f).unwrap();
         #[cfg(windows)]
-        assert!(nofollow::path_within(
+        assert!(win_path::path_within(
             &ok,
-            &nofollow::path_identity(&root).unwrap()
+            &win_path::path_identity(&root).unwrap()
         ));
         #[cfg(unix)]
         assert!(ok.starts_with(root.canonicalize().unwrap()));
@@ -619,9 +622,9 @@ mod tests {
         let target = root.join("new/deep/file.txt");
         let resolved = validate_path(std::slice::from_ref(&root), &target).unwrap();
         #[cfg(windows)]
-        assert!(nofollow::path_within(
+        assert!(win_path::path_within(
             &resolved,
-            &nofollow::path_identity(&root).unwrap()
+            &win_path::path_identity(&root).unwrap()
         ));
         #[cfg(unix)]
         assert!(resolved.starts_with(root.canonicalize().unwrap()));
@@ -634,7 +637,7 @@ mod tests {
         let roots = vec![tmp.path().to_path_buf()];
         let relative = Path::new("new_dir/sub_dir/file.txt");
         #[cfg(windows)]
-        let expected = nofollow::path_identity(tmp.path()).unwrap().join(relative);
+        let expected = win_path::path_identity(tmp.path()).unwrap().join(relative);
         #[cfg(unix)]
         let expected = tmp.path().canonicalize().unwrap().join(relative);
         assert_eq!(validate_path(&roots, relative).unwrap(), expected);

@@ -553,8 +553,8 @@ fn destination_message(
     let roots: Vec<_> = actor
         .scratch_roots
         .iter()
-        .filter(|root| root.valid())
-        .map(|root| root.path.display().to_string())
+        .filter(|root| root.is_dir())
+        .map(|root| root.display().to_string())
         .collect();
     if roots.is_empty() {
         message

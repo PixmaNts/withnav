@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;
 use crate::tools::{
-    DEFAULT_MAX_OUTPUT_BYTES, Tool, ToolContext, ToolResult, bound_output, nofollow, validate_path,
+    DEFAULT_MAX_OUTPUT_BYTES, Tool, ToolContext, ToolResult, bound_output, validate_path,
 };
 
 fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
@@ -85,7 +85,7 @@ impl Tool for ReadTool {
             let bytes = {
                 use std::io::Read;
                 let mut bytes = Vec::new();
-                let mut file = nofollow::open_read(&resolved)?.take(16 * 1024 * 1024 + 1);
+                let mut file = std::fs::File::open(&resolved)?.take(16 * 1024 * 1024 + 1);
                 file.read_to_end(&mut bytes)?;
                 if bytes.len() > 16 * 1024 * 1024 {
                     return Err(std::io::Error::new(
@@ -212,23 +212,16 @@ impl Tool for WriteTool {
             let path = arg_str(&args, "path")?;
             let content = arg_str(&args, "content")?;
 
-            // A reviewed destination is opened without following any link.
-            if let Some(binding) = &cx.binding {
-                let destination = &binding.destination;
-                if let Some(identity) = &binding.scratch {
-                    nofollow::write_scratch(destination, content.as_bytes(), identity)?;
-                } else {
-                    nofollow::write_atomic(destination, content.as_bytes())?;
-                }
-                return Ok(ToolResult::ok(format!("wrote {} bytes", content.len())));
-            }
-
-            // Validate first: a refused path must leave nothing on disk, not
-            // even the folders leading to it.
-            let resolved = validate_path(
-                &cx.writable_roots,
-                &crate::agent::permissions::resolve_read_target(Path::new(path), cx)?,
-            )?;
+            // The target the permission decision resolved, else the path
+            // validated against the writable roots. Validate first: a refused
+            // path must leave nothing on disk, not even the folders leading to it.
+            let resolved = match &cx.binding {
+                Some(binding) => binding.destination.clone(),
+                None => validate_path(
+                    &cx.writable_roots,
+                    &crate::agent::permissions::resolve_read_target(Path::new(path), cx)?,
+                )?,
+            };
             if let Some(parent) = resolved.parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
@@ -324,36 +317,20 @@ impl Tool for EditTool {
                 .unwrap_or(false);
 
             let change = |content: String| apply_edit(&content, old, new, replace_all);
-            // A reviewed destination is read and written back without
-            // following any link.
-            if let Some(binding) = &cx.binding {
-                let destination = &binding.destination;
-                let report = if let Some(identity) = &binding.scratch {
-                    nofollow::edit_scratch(destination, identity, change)?
-                } else {
-                    nofollow::edit_atomic(destination, change)?
-                };
-                return Ok(ToolResult::ok(report));
-            }
-
-            let resolved = validate_path(
-                &cx.writable_roots,
-                &crate::agent::permissions::resolve_read_target(Path::new(path), cx)?,
-            )?;
+            let resolved = match &cx.binding {
+                Some(binding) => binding.destination.clone(),
+                None => validate_path(
+                    &cx.writable_roots,
+                    &crate::agent::permissions::resolve_read_target(Path::new(path), cx)?,
+                )?,
+            };
             if !resolved.is_file() {
                 return Err(ToolError::NotFound(resolved));
             }
-            #[cfg(windows)]
-            {
-                Ok(ToolResult::ok(nofollow::edit_atomic(&resolved, change)?))
-            }
-            #[cfg(unix)]
-            {
-                let content = tokio::fs::read_to_string(&resolved).await?;
-                let (updated, report) = change(content)?;
-                atomic_write(&resolved, updated.as_bytes())?;
-                Ok(ToolResult::ok(report))
-            }
+            let content = tokio::fs::read_to_string(&resolved).await?;
+            let (updated, report) = change(content)?;
+            atomic_write(&resolved, updated.as_bytes())?;
+            Ok(ToolResult::ok(report))
         })
     }
 }
@@ -881,7 +858,6 @@ mod tests {
         let destination = ssh.canonicalize().unwrap();
         cx.binding = Some(crate::tools::DispatchBinding {
             destination,
-            scratch: None,
             yolo: false,
         });
         assert!(

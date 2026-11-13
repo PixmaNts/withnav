@@ -79,7 +79,7 @@ pub fn dir() -> Option<PathBuf> {
 
 #[cfg(unix)]
 fn dir_in(runtime: Option<&Path>) -> Option<PathBuf> {
-    let runtime = runtime.filter(|path| crate::agent::scratch::private_runtime_usable(path))?;
+    let runtime = runtime.filter(|path| crate::settings::private_runtime_usable(path))?;
     Some(runtime.join(DIR_NAME))
 }
 

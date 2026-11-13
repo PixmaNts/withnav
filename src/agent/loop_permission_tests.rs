@@ -176,10 +176,12 @@ async fn run_observed(actor: &mut AgentActor) -> (RunOutcome, Vec<serde_json::Va
 }
 
 fn decisions(actor: &AgentActor) -> Vec<crate::permission::decisions::Decision> {
-    let mut rows = actor
-        .permission_store
-        .as_ref()
-        .unwrap()
+    let store = actor.permission_store.as_ref().unwrap();
+    // Decision rows are written off the call path, so wait for the writes in
+    // flight before reading the table: a rule denial is a decision and must
+    // be found here without polling.
+    store.settled();
+    let mut rows = store
         .list_decisions(&DecisionFilter::default(), 100)
         .unwrap();
     rows.reverse();
@@ -604,11 +606,9 @@ async fn yolo_skips_rules_flows_and_floor_and_says_so() {
     assert!(matches!(outcome, RunOutcome::Done(_)));
     assert_eq!(approved, [json!("yolo"), json!("yolo")]);
     assert_eq!((flows.asked(), flows.checked()), (0, 0));
-    assert!(
-        decisions(&actor)
-            .iter()
-            .all(|row| row.approved_by.as_deref() == Some("yolo"))
-    );
+    // Nothing was decided, so nothing is recorded: the call's own events carry
+    // the yolo evidence, and the table stays empty.
+    assert!(decisions(&actor).is_empty(), "{:?}", decisions(&actor));
 }
 
 #[tokio::test]
@@ -1314,7 +1314,7 @@ async fn rule_denied_skill_snapshot_is_released_at_turn_end() {
 }
 
 #[tokio::test]
-async fn yolo_skill_load_records_history() {
+async fn yolo_skill_load_is_not_a_decision() {
     let mut actor = actor_with_skill_and_flow("deny");
     actor.yolo = true;
     script(
@@ -1326,9 +1326,7 @@ async fn yolo_skill_load_records_history() {
     )
     .await;
     assert!(matches!(run(&mut actor).await, RunOutcome::Done(_)));
-    let rows = skill_rows(&actor);
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].approved_by.as_deref(), Some("yolo"));
+    assert!(skill_rows(&actor).is_empty(), "yolo decides nothing");
 }
 
 #[tokio::test]
@@ -1719,6 +1717,123 @@ fn a_locked_permission_database_does_not_stall_the_runtime() {
         );
         hold.assert_not_stalled(before).await;
         assert_eq!(decisions(&actor)[0].outcome, Outcome::Pending);
+    });
+}
+
+/// A read inside the project that no rule looked at was not decided by
+/// anything: it runs, it says `approved_by: rule`, and the decision table gets
+/// no row for it. A call a rule or the flow did answer keeps its row.
+#[tokio::test]
+async fn a_free_read_leaves_no_decision_row() {
+    let flows = Arc::new(FakeFlows::new("allow"));
+    let mut actor = actor_with(Some(flows.clone()));
+    let ws = actor.tool_context.workspace.clone();
+    let source = ws.join("src.txt");
+    std::fs::write(&source, "hello").unwrap();
+    script(
+        &mut actor,
+        vec![
+            owned(&[
+                (
+                    "r1".into(),
+                    "read".into(),
+                    json!({"path": source.to_str().unwrap()}),
+                ),
+                (
+                    "r2".into(),
+                    "grep".into(),
+                    json!({"pattern": "hello", "path": source.to_str().unwrap()}),
+                ),
+                bash("b1", "echo decided"),
+            ]),
+            done("ok"),
+        ],
+    )
+    .await;
+    let (outcome, approved) = run_observed(&mut actor).await;
+    assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+    // The two reads carry `approved_by: rule` without any rule having matched;
+    // the flow answered the `bash` call.
+    assert_eq!(approved, [json!("rule"), json!("rule"), json!("flow")]);
+    assert_eq!(flows.asked(), 1, "only the bash call reached the flow");
+    let rows = decisions(&actor);
+    assert_eq!(rows.len(), 1, "only the decided call keeps a row: {rows:?}");
+    assert_eq!(rows[0].tool, "bash");
+    assert_eq!(rows[0].outcome, Outcome::Allowed);
+    assert_eq!(rows[0].approved_by.as_deref(), Some("flow"));
+}
+
+/// A read a written rule does match is a decision, and it is recorded.
+#[tokio::test]
+async fn a_read_answered_by_a_rule_keeps_its_row() {
+    let mut actor = actor_with(Some(Arc::new(FakeFlows::new("apply"))));
+    // A path outside the project is also judged as an `external_directory`.
+    add_rule(&actor, "read", "*", Effect::Allow);
+    add_rule(&actor, "external_directory", "*", Effect::Allow);
+    let outside = std::env::temp_dir().join(format!("withnav-outside-{}.txt", std::process::id()));
+    std::fs::write(&outside, "hello").unwrap();
+    script(
+        &mut actor,
+        vec![
+            owned(&[(
+                "r1".into(),
+                "read".into(),
+                json!({"path": outside.to_str().unwrap()}),
+            )]),
+            done("ok"),
+        ],
+    )
+    .await;
+    let (outcome, _) = run_observed(&mut actor).await;
+    assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+    let rows = decisions(&actor);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].tool, "read");
+    assert_eq!(rows[0].outcome, Outcome::Allowed);
+}
+
+/// The row of a call that ran is written after the call starts, so a locked
+/// `withnav.db` never holds up dispatch: the tool runs, and its row lands once
+/// the lock is released.
+#[test]
+fn a_locked_permission_database_does_not_delay_an_allowed_call() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut actor = actor_with(Some(Arc::new(FakeFlows::new("allow"))));
+        let data = actor.permission_dirs.data.clone().unwrap();
+        actor.permission_store = Some(Arc::new(
+            crate::permission::store::PermissionStore::open(&data).unwrap(),
+        ));
+        add_rule(&actor, "bash", "echo *", Effect::Allow);
+        let marker = actor.tool_context.workspace.join("ran");
+        script(
+            &mut actor,
+            vec![owned(&[bash("b1", "touch ran")]), done("ok")],
+        )
+        .await;
+        let probe = crate::stall_probe::StallProbe::start();
+        let hold = probe.hold(data.join("withnav.db"), |db| {
+            db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        });
+        let before = hold.start();
+        // The call is decided by the rule and runs while the database is locked.
+        let outcome = run(&mut actor).await;
+        assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+        assert!(marker.exists(), "the tool ran");
+        hold.assert_not_stalled(before).await;
+        // The row follows once the lock is gone.
+        for _ in 0..200 {
+            if !decisions(&actor).is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let rows = decisions(&actor);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].tool, "bash");
     });
 }
 

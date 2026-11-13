@@ -127,12 +127,7 @@ pub fn inspect_valid(
     if !exists {
         return Ok(false);
     }
-    PermissionStore {
-        connection: std::sync::Mutex::new(connection),
-        #[cfg(test)]
-        fail_action: Default::default(),
-    }
-    .is_valid(kind, location, hash)
+    PermissionStore::with_connection(connection).is_valid(kind, location, hash)
 }
 
 #[cfg(test)]

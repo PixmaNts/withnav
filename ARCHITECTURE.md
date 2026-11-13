@@ -338,7 +338,11 @@ tool-event evidence still carries `policy_version: 2`) on `tool.pre_call` and
 Every decision is a row of `permission_decisions` in `withnav.db`, with the flow runs and scores
 behind it in `flow_trace` (`pending`, then `allowed`,
 `denied`, `cancelled` on a stop or new message, `expired` on resume), filed under the session and the
-turn. A question becomes a `PermissionRequest` with its reason, `requires_captain` (set unless a rule
+turn. The table keeps the decisions that were made, not a trace of every call: a read inside the
+readable roots that no rule looked at (`decide`'s `free_read`), and anything run under yolo, leave no
+row at all. A row for a call that ran is written off the call path (`PermissionStore::detach`), so
+dispatch never waits on the database; only a question's `pending` row is awaited, because its id is
+what the Captain's answer settles. A question becomes a `PermissionRequest` with its reason, `requires_captain` (set unless a rule
 `ask` or the flow raised it), the "Always" proposals and `always_label` (for example
 `Always (project): bash git push *`; project scope for `bash`, file tools, `fetch` and
 `external_directory`, global for the rest).
@@ -396,8 +400,8 @@ same gate from registration to the child's first prompt and commits the inherite
 checked) < bypass < normal. `Settings::yolo` is read at session start into
 `EffectiveExecution.yolo` (children inherit their parent's value; a model switch keeps it) and from there into `AgentActor::yolo` and `SessionSummary.yolo`. `run_decided`
 checks it right after `preflight`, so no rule, floor or `tool.pre_call` flow is consulted: `run_yolo`
-dispatches the call with `approved_by: yolo` (recorded as such in `permission_decisions`), and no
-Instinct request is made. Skill validation is skipped too. The role's write scope
+dispatches the call with `approved_by: yolo` (nothing is decided, so `permission_decisions` gets no
+row), and no Instinct request is made. Skill validation is skipped too. The role's write scope
 (`validate_write_scope`, Cartographe) is authorization and is not checked either. At dispatch the
 host sets `DispatchBinding::yolo` (never from arguments) and a `ToolContext` whose writable root is
 `/`: file tools are not confined to the session's roots, no scratch identity (inode, mode) is
@@ -598,7 +602,7 @@ as before; no supervision state is restored. The event catalog (`bus/event.rs`,
 | `<workspace>/.withnav/agents/*.md` | project agent definitions | the Captain |
 | `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills included in agent sessions | the Captain |
 | `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `app/tui.rs`, `withnav-provider`'s `catalog.rs` |
-| `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of every permission decision (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
+| `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of the permission decisions that were made — not of undecided calls (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
 | `~/.config/withnav/flows/`, `<workspace>/.withnav/flows/` | global and workspace flow definitions; they load only once validated at their current content | the Captain, the Studio |
 | `~/.config/withnav/config.json` key `mcp` | stdio and HTTP MCP server declarations | the Captain |
 | `$XDG_RUNTIME_DIR/withnav-servers/<key>-<instance>.json` | the port and bearer token of a running `nav lsp` server, mode 0600 (directory 0700), so `nav tui` can join it; removed when the LSP exits | `server/discovery.rs` (`nav lsp`; `nav tui` removes stale ones) |

@@ -40,8 +40,8 @@ expensive to maintain:
 
 1. **Yolo**: `"yolo": true` in `~/.config/withnav/config.json`. Nothing is checked: no rule, no
    flow, no Instinct request, no fixed floor, no role restriction beyond the tools an agent has.
-   Every call records `approved_by: yolo`, and every client shows that yolo is on. Only the
-   Captain's settings file turns it on; it is not a session toggle.
+   Every call carries `approved_by: yolo` on its tool events, and every client shows that yolo is on.
+   Only the Captain's settings file turns it on; it is not a session toggle.
 2. **Bypass**: the existing per-session switch (`/bypass on`, `nav run --yes`). `ask` rules and the
    flow are skipped and the call runs; a written `deny` rule and the fixed floor still apply.
 3. **Normal**: rules, then the permission flow, then the Captain.
@@ -65,9 +65,14 @@ Rules are rows in a new table of `~/.local/share/withnav/withnav.db`, not a list
   stricter effect (`deny`, then `ask`, then `allow`).
 - **No rule means `ask`.** WithNav ships with no default rule: on a new project the Captain
   answers often at first, and each "Always" makes the list of questions shorter.
-- **History is kept**: a rule is revoked, never deleted. A second table records every decision:
-  the call, the matching rule, the flow's verdict, the Captain's answer, the session. It measures
-  how many questions a day of work costs and shows which answers could become rules.
+- **History is kept**: a rule is revoked, never deleted. A second table records the decisions that
+  were made: the call, the matching rule, the flow's verdict, the Captain's answer, the session. It
+  measures how many questions a day of work costs and shows which answers could become rules. It is
+  not a log of every tool invocation: a call no rule, flow, floor, Captain or bypass looked at (a
+  read inside the project, a read-only listing) leaves no row, and neither does anything run under
+  yolo, where nothing is decided. The row of a call that did run is written asynchronously, off the
+  call path, so dispatch never waits on the database; a row can therefore be lost if the process
+  dies right after the call starts, which a decision history can afford.
 - **Managed with `nav permissions list | add | revoke | history`.** A web screen comes later.
 
 `grants.json`, `skill-grants.json` and `flows-trust.json` are replaced by tables of the same

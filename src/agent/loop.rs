@@ -609,7 +609,7 @@ pub async fn resolve_permission_with_origin(
 
     if actor.cancel.is_cancelled() {
         if let Some(id) = request.decision_id {
-            authorize::update(actor, id, Outcome::Cancelled, answer.as_ref(), None).await;
+            authorize::update(actor, id, Outcome::Cancelled, answer.as_ref(), None);
         }
         append_interrupted(actor, &call.id);
         for rest in &remaining_calls {
@@ -644,8 +644,7 @@ pub async fn resolve_permission_with_origin(
                 }
             }
             if let Some(id) = request.decision_id {
-                authorize::update(actor, id, Outcome::Allowed, Some(&answer), Some("captain"))
-                    .await;
+                authorize::update(actor, id, Outcome::Allowed, Some(&answer), Some("captain"));
             }
             let note = authorize::answered_approval(&request, "captain");
             if call.name == "skill" {
@@ -656,7 +655,7 @@ pub async fn resolve_permission_with_origin(
         }
         PermissionDecision::Reject { message } => {
             if let Some(id) = request.decision_id {
-                authorize::update(actor, id, Outcome::Denied, answer.as_ref(), None).await;
+                authorize::update(actor, id, Outcome::Denied, answer.as_ref(), None);
             }
             settle_rejected(actor, &call, &remaining_calls, message);
             return Ok(run_steps(actor, observe, steps_left).await?);
@@ -914,8 +913,7 @@ async fn skill_admission(
                     Outcome::Allowed,
                     Some(&serde_json::json!({"answer":"skill validation"})),
                     Some("captain"),
-                )
-                .await;
+                );
             }
             Admission::Run(authorize::answered_approval(&request, "captain"))
         }
@@ -1016,7 +1014,6 @@ async fn run_skill(
             // Validation proves which content the Captain trusted; the rules
             // still decide whether it may be loaded now.
             let approval = if actor.yolo {
-                authorize::record_yolo(actor, call).await;
                 yolo_approval()
             } else if let Some(note) = admitted {
                 note
@@ -1250,7 +1247,8 @@ async fn run_decided(
         return One::Settled;
     }
     if actor.yolo {
-        authorize::record_yolo(actor, call).await;
+        // Nothing was decided, so the decision table gets no row; the call's own
+        // events still say `approved_by: yolo`.
         return run_yolo(actor, call, observe).await;
     }
     // WithNav's own conversation controls act on this session and its

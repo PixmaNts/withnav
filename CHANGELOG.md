@@ -51,6 +51,12 @@ requests land in `develop`.
   is still live. A predecessor that hands the slot to a remark while keeping a live token can still
   clear a successor's marker: closing that one needs an explicit owner on the slot and is not part
   of this change.
+- Permissions: the decision table now records the decisions that were made instead of every tool
+  call. A read inside the readable roots that no rule touches, and anything run under yolo, no longer
+  insert a row; the row of a call that something did decide (a rule, the fixed floor, the permission
+  flow, the Captain, bypass) is written off the call path, so a tool no longer waits for SQLite
+  before it starts. A row can be lost if the process dies right after a call starts; `nav permissions
+  history` therefore lists permission evaluations and interventions, not every invocation.
 
 ## [0.8.3] - 2026-11-11
 

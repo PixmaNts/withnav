@@ -321,6 +321,7 @@ struct PreparedSession {
     save_late: bool,
     child_parent: Option<SessionId>,
     mcp_tools: crate::mcp::InstalledTools,
+    incarnation: Ulid,
 }
 
 /// The `GET /v1/sessions/:id` body, from the wire contract shared with clients.
@@ -2688,7 +2689,15 @@ impl Service {
                 .await;
             }
         }
-        self.hooks.configure_actor(editor, &mut actor);
+        let incarnation = Ulid::generate();
+        let actor_cx = super::hooks::StartedSession {
+            id: session_id,
+            workspace: workspace.clone(),
+            editor,
+            resumed: resumed.is_some(),
+            incarnation,
+        };
+        self.hooks.configure_session_actor(&actor_cx, &mut actor);
         if child_policy.is_some() {
             actor.max_steps = crate::agent::run_loop::max_steps();
         }
@@ -2730,6 +2739,7 @@ impl Service {
             save_late,
             child_parent,
             mcp_tools,
+            incarnation,
         })
     }
 
@@ -2783,6 +2793,7 @@ impl Service {
             save_late: _,
             child_parent,
             mcp_tools,
+            incarnation,
         } = prepared;
         let next_seq = resumed
             .as_ref()
@@ -3190,7 +3201,6 @@ impl Service {
             completion,
         ))));
 
-        let incarnation = Ulid::generate();
         status.watchdog.install_incarnation(incarnation);
         let handle = SessionHandle {
             flows,
@@ -3277,6 +3287,7 @@ impl Service {
                     editor,
                     workspace,
                     resumed: is_resume,
+                    incarnation,
                 },
                 sender,
                 subscription,

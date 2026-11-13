@@ -32,7 +32,9 @@ use std::sync::Arc;
 
 pub use config::NavigatorConfig;
 pub use conversation::{
-    ConversationEvent, ConversationFeed, NAVIGATOR_ACTOR_ID, SessionPost, WakeOutcome,
+    BindingError, ConversationEvent, ConversationFeed, ConversationTarget, DigestSnapshot,
+    EditorId, EditorRegistration, EditorSelectionError, NAVIGATOR_ACTOR_ID, SelectedEditor,
+    SessionPost, WakeOutcome, WorkspaceFeedRegistry,
 };
 pub use intent::{IntentRecord, read_intent};
 pub use log::new_ulid_string;
@@ -73,6 +75,8 @@ pub struct NavigatorDeps {
     /// `wake_cognition` action posts through. `None` keeps wakes logged as
     /// `cognition_unavailable` (no active conversation to wake).
     pub conversation: Option<ConversationFeed>,
+    pub registry: Option<WorkspaceFeedRegistry>,
+    pub flow_host: Option<Arc<crate::flows::host::Host>>,
     /// The workspace root (upgraded from `rootUri` at initialize when the
     /// client sends one).
     pub workspace: Option<PathBuf>,
@@ -100,6 +104,8 @@ impl NavigatorDeps {
             instinct_model: None,
             metacognition_model: None,
             conversation: None,
+            registry: None,
+            flow_host: None,
             workspace: None,
             user_dir: None,
             server_info: None,
@@ -117,6 +123,16 @@ impl NavigatorDeps {
 
     pub fn with_flows(mut self, factory: Arc<FlowFactory>) -> Self {
         self.flows = Some(factory);
+        self
+    }
+
+    pub fn with_host(mut self, host: Arc<crate::flows::host::Host>) -> Self {
+        self.flow_host = Some(host);
+        self
+    }
+
+    pub fn with_registry(mut self, registry: WorkspaceFeedRegistry) -> Self {
+        self.registry = Some(registry);
         self
     }
 

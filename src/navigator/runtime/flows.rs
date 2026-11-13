@@ -15,6 +15,10 @@ use tokio_util::sync::CancellationToken;
 
 struct EditorEffects {
     runtime: Weak<Runtime>,
+    root: std::path::PathBuf,
+    routing_generation: u64,
+    feed: Option<crate::navigator::ConversationFeed>,
+    target: Option<crate::navigator::ConversationTarget>,
     context: Mutex<Option<(TriggerContext, PendingTrigger)>>,
     delivered: AtomicBool,
 }
@@ -34,6 +38,15 @@ impl FlowEffects for EditorEffects {
                 .runtime
                 .upgrade()
                 .ok_or_else(|| ApplyError("editor closed".into()))?;
+            if runtime.connection_cancel.is_cancelled() {
+                return Err(ApplyError("editor connection cancelled".into()));
+            }
+            if runtime.routing_generation() != self.routing_generation {
+                return Err(ApplyError("routing generation changed".into()));
+            }
+            if !runtime.has_root(&self.root).await {
+                return Err(ApplyError("workspace root removed".into()));
+            }
             if !matches!(action.action.as_str(), "remark" | "wake" | "inject_note") {
                 return Err(ApplyError("unsupported editor effect".into()));
             }
@@ -43,6 +56,17 @@ impl FlowEffects for EditorEffects {
                 .await
                 .clone()
                 .ok_or_else(|| ApplyError("editor event already delivered".into()))?;
+            if cancel.is_cancelled()
+                || runtime.connection_cancel.is_cancelled()
+                || runtime.routing_generation() != self.routing_generation
+                || self.target.as_ref().is_some_and(|target| {
+                    !self.feed.as_ref().is_some_and(|feed| {
+                        feed.is_incarnation_available(target.session_id, target.incarnation)
+                    })
+                })
+            {
+                return Err(ApplyError("editor event no longer available".into()));
+            }
             let uri = ctx.uri.clone();
             if self.delivered.swap(true, Ordering::SeqCst) {
                 pending.trigger_id = crate::navigator::new_ulid_string();
@@ -55,8 +79,20 @@ impl FlowEffects for EditorEffects {
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| ApplyError("missing remark prompt".into()))?;
                     pending.requested_action = Some("remark");
+                    let workspace_buffers = ctx.open_buffers.clone();
                     runtime
-                        .deliver_remark(uri, ctx, pending, prompt.into(), cancel.clone())
+                        .deliver_remark(
+                            uri,
+                            ctx,
+                            pending,
+                            prompt.into(),
+                            cancel.clone(),
+                            self.root.clone(),
+                            self.routing_generation,
+                            self.target.clone(),
+                            self.feed.clone(),
+                            workspace_buffers,
+                        )
                         .await;
                 }
                 "wake" | "inject_note" => {
@@ -66,11 +102,21 @@ impl FlowEffects for EditorEffects {
                         .get(if wake { "note" } else { "text" })
                         .and_then(serde_json::Value::as_str)
                         .ok_or_else(|| ApplyError("missing flow text".into()))?;
-                    let result = runtime
-                        .conversation
+                    let feed = self
+                        .feed
                         .as_ref()
-                        .ok_or_else(|| ApplyError("no editor conversation".into()))?
-                        .post_flow_note(text.into(), flow.into(), run_id.into(), wake);
+                        .ok_or_else(|| ApplyError("no editor conversation".into()))?;
+                    let target = self
+                        .target
+                        .as_ref()
+                        .ok_or_else(|| ApplyError("no active conversation target".into()))?;
+                    let result = feed.post_targeted_flow_note(
+                        target,
+                        text.into(),
+                        flow.into(),
+                        run_id.into(),
+                        wake,
+                    );
                     if let Err(error) = result {
                         if error == "wake cooldown" {
                             pending.requested_action = Some(if wake {
@@ -87,9 +133,17 @@ impl FlowEffects for EditorEffects {
                         }
                         return Err(ApplyError(error));
                     }
-                    if wake && let Some(doc) = runtime.documents.lock().await.get_mut(&uri) {
-                        doc.last_wake = Some(tokio::time::Instant::now());
-                        doc.rebase_to(&ctx.text);
+                    if wake {
+                        let mut docs = runtime.documents.lock().await;
+                        if !cancel.is_cancelled()
+                            && !runtime.connection_cancel.is_cancelled()
+                            && runtime.routing_generation() == self.routing_generation
+                            && feed.is_incarnation_available(target.session_id, target.incarnation)
+                            && let Some(doc) = docs.get_mut(&uri)
+                        {
+                            doc.last_wake = Some(tokio::time::Instant::now());
+                            doc.rebase_to(&ctx.text);
+                        }
                     }
                     pending.requested_action = Some(if wake {
                         "wake_cognition"
@@ -124,15 +178,75 @@ fn owns(store: &crate::flows::store::FlowStore, event: TriggerKind) -> bool {
 impl Runtime {
     /// Returns true once an eligible flow owns the trigger, including skips/failures.
     pub(super) async fn evaluate_flows(self: &Arc<Self>, uri: &str, event: TriggerKind) -> bool {
-        let Some(factory) = &self.flows else {
+        self.evaluate_flows_targeted(uri, event, None).await
+    }
+
+    pub(super) async fn evaluate_flows_targeted(
+        self: &Arc<Self>,
+        uri: &str,
+        event: TriggerKind,
+        explicit_target: Option<crate::navigator::ConversationTarget>,
+    ) -> bool {
+        if self.connection_cancel.is_cancelled() {
+            return false;
+        }
+        let generation = self.routing_generation();
+        let Some(root) = self.resolve_document_root(uri).await else {
             return false;
         };
+        if self.routing_generation() != generation {
+            return false;
+        }
+        let feed = self.feed_for_workspace(&root);
+        let (target, conversation_digest) = if let Some(target) = explicit_target {
+            if let Some(feed) = &feed {
+                let snap = feed.snapshot_target(&target);
+                if !snap.available || snap.target.is_none() {
+                    return false;
+                }
+                (snap.target, snap.digest)
+            } else {
+                return false;
+            }
+        } else if let Some(feed) = &feed {
+            let snap = feed.snapshot_for_editor(self.editor_id);
+            if snap.available && snap.target.is_some() {
+                (snap.target, snap.digest)
+            } else {
+                (None, String::new())
+            }
+        } else {
+            (None, String::new())
+        };
+
         let effects = Arc::new(EditorEffects {
             runtime: Arc::downgrade(self),
+            root: root.clone(),
+            routing_generation: generation,
+            feed: feed.clone(),
+            target: target.clone(),
             context: Mutex::new(None),
             delivered: AtomicBool::new(false),
         });
-        let flows = factory(effects.clone());
+
+        let flows = if let Some(host) = &self.flow_host {
+            let rt = {
+                let (host, root_path) = (host.clone(), root.clone());
+                tokio::task::spawn_blocking(move || host.runtime(&root_path))
+                    .await
+                    .ok()
+                    .flatten()
+            };
+            rt.map(|r| r.with_effects_adapter(effects.clone()))
+        } else {
+            self.flows.as_ref().map(|factory| factory(effects.clone()))
+        };
+        let Some(flows) = flows else {
+            return false;
+        };
+        if self.connection_cancel.is_cancelled() || self.routing_generation() != generation {
+            return false;
+        }
         // A pending reload reads flow validations from the permission
         // database: on the blocking pool. Without one the check stays on this
         // thread, so the trigger is not overtaken by the edits that follow it.
@@ -147,16 +261,41 @@ impl Runtime {
         if !owned {
             return false;
         }
-        let Some(mut ctx) = self.gather(uri, event, tokio::time::Instant::now()).await else {
+        if self.connection_cancel.is_cancelled() || self.routing_generation() != generation {
+            return false;
+        }
+        let Some(mut ctx) = self
+            .gather_with_digest(
+                uri,
+                event,
+                tokio::time::Instant::now(),
+                &root,
+                conversation_digest,
+            )
+            .await
+        else {
             return true;
         };
+        if self.connection_cancel.is_cancelled() || self.routing_generation() != generation {
+            return false;
+        }
         ctx.event = event.as_str();
         if ctx.help_in_flight || ctx.remark_in_flight {
             return true;
         }
-        let cancel = CancellationToken::new();
+        let cancel = self.connection_cancel.child_token();
         {
             let mut docs = self.documents.lock().await;
+            if cancel.is_cancelled()
+                || self.routing_generation() != generation
+                || target.as_ref().is_some_and(|t| {
+                    !feed
+                        .as_ref()
+                        .is_some_and(|f| f.is_incarnation_available(t.session_id, t.incarnation))
+                })
+            {
+                return false;
+            }
             let Some(doc) = docs.get_mut(uri) else {
                 return true;
             };
@@ -166,10 +305,9 @@ impl Runtime {
             doc.in_flight_version = Some(ctx.version);
             doc.in_flight_cancel = Some(cancel.clone());
         }
-        let workspace = self.workspace.lock().await.clone();
         let mut pending = PendingTrigger::new(
             &self.run_id,
-            workspace.as_ref().map(|p| p.display().to_string()),
+            Some(root.display().to_string()),
             uri,
             ctx.version,
             ctx.event,
@@ -207,26 +345,20 @@ impl Runtime {
         *effects.context.lock().await = Some((ctx, pending));
         self.set_status("thinking", None).await;
         let mut context = ContextSnapshot {
-            workspace,
+            workspace: Some(root.clone()),
             ..Default::default()
         };
         let captured = effects.context.lock().await;
         if let Some((ctx, _)) = captured.as_ref() {
+            let open_files: Vec<_> = ctx
+                .open_buffers
+                .keys()
+                .map(|p| p.display().to_string())
+                .collect();
             for (name, value) in [
                 ("conversation.digest", json!(ctx.conversation_text)),
                 ("intent.record", json!(ctx.intent_text)),
-                (
-                    "editor.open_files",
-                    json!(
-                        self.documents
-                            .lock()
-                            .await
-                            .open_buffers()
-                            .keys()
-                            .map(|p| p.display().to_string())
-                            .collect::<Vec<_>>()
-                    ),
-                ),
+                ("editor.open_files", json!(open_files)),
             ] {
                 context.values.insert(
                     name.into(),
@@ -239,19 +371,27 @@ impl Runtime {
             }
         }
         drop(captured);
-        if let Some(session_id) = self
-            .conversation
-            .as_ref()
-            .and_then(|feed| feed.active_session())
-        {
+        if let Some(target) = &target {
             context.values.insert(
                 "session.id".into(),
                 instinct_flow::InputValue {
-                    value: Some(json!(session_id.to_string())),
+                    value: Some(json!(target.session_id.to_string())),
                     cut: false,
                     redacted: false,
                 },
             );
+        }
+        if cancel.is_cancelled()
+            || self.routing_generation() != generation
+            || target.as_ref().is_some_and(|t| {
+                !feed
+                    .as_ref()
+                    .is_some_and(|f| f.is_incarnation_available(t.session_id, t.incarnation))
+            })
+        {
+            self.clear_in_flight(uri, &cancel).await;
+            cancel.cancel();
+            return false;
         }
         let (_, handles) = flows
             .evaluate(
@@ -266,6 +406,9 @@ impl Runtime {
         let mut failed = false;
         let mut skipped = true;
         for handle in handles {
+            if self.connection_cancel.is_cancelled() {
+                cancel.cancel();
+            }
             match handle.await {
                 Ok(outcome) => {
                     failed |= matches!(outcome.result, instinct_flow::RunResult::Failure { .. });
@@ -289,7 +432,17 @@ impl Runtime {
             } else {
                 Some("silent")
             };
-            let outcome = if cancel.is_cancelled() {
+            let valid = || {
+                !cancel.is_cancelled()
+                    && !self.connection_cancel.is_cancelled()
+                    && self.routing_generation() == generation
+                    && target.as_ref().is_none_or(|t| {
+                        feed.as_ref().is_some_and(|f| {
+                            f.is_incarnation_available(t.session_id, t.incarnation)
+                        })
+                    })
+            };
+            let outcome = if !valid() {
                 crate::navigator::log::DeliveryOutcome::Cancelled { reason: None }
             } else if failed {
                 crate::navigator::log::DeliveryOutcome::ProviderError {
@@ -303,17 +456,17 @@ impl Runtime {
                 crate::navigator::log::DeliveryOutcome::Silent { reason: None }
             };
             pending.finish(&self.log, outcome);
-            if !failed
-                && !skipped
-                && !cancel.is_cancelled()
-                && event != TriggerKind::Conversation
-                && let Some(doc) = self.documents.lock().await.get_mut(uri)
-            {
-                doc.rebase();
+            if !failed && !skipped && valid() && event != TriggerKind::Conversation {
+                let mut docs = self.documents.lock().await;
+                if valid()
+                    && let Some(doc) = docs.get_mut(uri)
+                {
+                    doc.rebase();
+                }
             }
         }
         self.clear_in_flight(uri, &cancel).await;
-        if failed && !cancel.is_cancelled() {
+        if failed && !cancel.is_cancelled() && !self.connection_cancel.is_cancelled() {
             self.set_status("error", Some("editor flow failed".into()))
                 .await;
         } else {
@@ -492,13 +645,14 @@ mod tests {
                     Arc::new(Silent),
                     dir.path().join("log.jsonl"),
                 )
-                .with_conversation(feed)
+                .with_conversation(feed.clone())
                 .with_flows(factory),
             );
             runtime = Some(rt);
             Server
         });
         let runtime = runtime.unwrap();
+        runtime.register_after_initialize().await;
         let uri = "file:///workspace/test.rs";
         runtime
             .documents
@@ -512,6 +666,10 @@ mod tests {
         let pending = PendingTrigger::new("runtime", None, uri, 1, "save", ctx.prefilter_inputs());
         let effects = EditorEffects {
             runtime: Arc::downgrade(&runtime),
+            root: std::path::PathBuf::from("/workspace"),
+            routing_generation: 0,
+            feed: Some(feed.clone()),
+            target: feed.snapshot().target,
             context: Mutex::new(Some((ctx, pending))),
             delivered: AtomicBool::new(false),
         };
@@ -586,6 +744,10 @@ mod tests {
         let pending = PendingTrigger::new("runtime", None, uri, 3, "save", ctx.prefilter_inputs());
         let effects = EditorEffects {
             runtime: Arc::downgrade(&runtime),
+            root: std::path::PathBuf::from("/workspace"),
+            routing_generation: 0,
+            feed: Some(feed.clone()),
+            target: feed.snapshot().target,
             context: Mutex::new(Some((ctx, pending))),
             delivered: AtomicBool::new(false),
         };

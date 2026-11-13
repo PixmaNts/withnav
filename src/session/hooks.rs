@@ -5,13 +5,14 @@
 use std::path::PathBuf;
 
 use tokio_util::sync::CancellationToken;
+use ulid::Ulid;
 
 use super::sender::SessionSender;
 use super::service::SessionId;
 use super::subscription::Subscription;
 use crate::agent::actor::AgentActor;
 
-/// What a host learns about a session that just became routable.
+/// What a host learns about a session that just became routable or is being configured.
 #[derive(Debug, Clone)]
 pub struct StartedSession {
     pub id: SessionId,
@@ -20,7 +21,11 @@ pub struct StartedSession {
     /// Rebuilt from storage rather than freshly created: the subscription's
     /// replay then holds the past conversation.
     pub resumed: bool,
+    pub incarnation: Ulid,
 }
+
+/// Type alias for the internal actor setup context.
+pub type SessionActorContext = StartedSession;
 
 /// Editor-specific behaviour of a session, supplied at `Service`
 /// construction.
@@ -29,6 +34,12 @@ pub trait SessionHooks: Send + Sync + std::fmt::Debug {
     /// `actor.registry`) and repair of the restored `actor.transcript`.
     /// Runs after the transcript is restored and before the pending ask is.
     fn configure_actor(&self, editor: bool, actor: &mut AgentActor);
+
+    /// Extended actor configuration context carrying session ID, workspace,
+    /// editor policy, and session incarnation.
+    fn configure_session_actor(&self, cx: &SessionActorContext, actor: &mut AgentActor) {
+        self.configure_actor(cx.editor, actor);
+    }
 
     /// A session is live and routable. `subscription` replays the stored
     /// events (just `session.start` for a fresh session), then goes live;

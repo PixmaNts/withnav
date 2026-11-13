@@ -4,14 +4,16 @@
 //! is attached, a navigator session also registers with it and feeds it
 //! the session's events.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use crate::agent::actor::AgentActor;
-use crate::navigator::conversation::{ConversationFeed, NAVIGATOR_ACTOR_ID, SessionPost};
+use crate::navigator::conversation::{
+    ConversationFeed, ConversationTarget, NAVIGATOR_ACTOR_ID, SessionPost, WorkspaceFeedRegistry,
+};
 use crate::navigator::intent::IntentTool;
 use crate::navigator::reveal::RevealTool;
 use crate::provider::openai::ChatMessage;
@@ -24,7 +26,7 @@ pub const COGNITION_PROMPT: &str = include_str!("cognition.md");
 #[derive(Debug, Clone, Default)]
 pub struct NavigatorHooks {
     feed: Option<ConversationFeed>,
-    incarnations: Arc<Incarnations>,
+    registry: Option<WorkspaceFeedRegistry>,
 }
 
 impl NavigatorHooks {
@@ -33,46 +35,41 @@ impl NavigatorHooks {
         Self::default()
     }
 
-    /// Hooks that also attach navigator sessions to `feed`, so the language
-    /// server can read the digest and wake the cognition.
+    /// Hooks that attach navigator sessions to a single conversation `feed`.
     pub fn with_feed(feed: ConversationFeed) -> Self {
         Self {
             feed: Some(feed),
-            ..Self::default()
+            registry: None,
         }
     }
-}
 
-/// Which incarnation of a session id the feed currently watches. A resumed
-/// session reuses its id, so the old incarnation's cleanup must not drop the
-/// new one's registration.
-#[derive(Debug, Default)]
-struct Incarnations {
-    next: Mutex<(u64, HashMap<Ulid, u64>)>,
-}
-
-impl Incarnations {
-    fn lock(&self) -> std::sync::MutexGuard<'_, (u64, HashMap<Ulid, u64>)> {
-        self.next.lock().unwrap_or_else(|e| e.into_inner())
+    /// Hooks that select feeds through a workspace registry.
+    pub fn with_registry(registry: WorkspaceFeedRegistry) -> Self {
+        Self {
+            feed: None,
+            registry: Some(registry),
+        }
     }
 
-    /// A new incarnation of `id`; it supersedes any earlier one.
-    fn begin(&self, id: Ulid) -> u64 {
-        let mut guard = self.lock();
-        guard.0 += 1;
-        let incarnation = guard.0;
-        guard.1.insert(id, incarnation);
-        incarnation
+    /// Hooks with explicit feed and registry fallback.
+    pub fn with_feed_and_registry(
+        feed: Option<ConversationFeed>,
+        registry: Option<WorkspaceFeedRegistry>,
+    ) -> Self {
+        Self { feed, registry }
     }
 
-    /// Ends `incarnation`; true when it was still the current one.
-    fn end(&self, id: Ulid, incarnation: u64) -> bool {
-        let mut guard = self.lock();
-        if guard.1.get(&id) == Some(&incarnation) {
-            guard.1.remove(&id);
-            true
+    /// Returns the active registry if one was configured.
+    pub fn registry(&self) -> Option<&WorkspaceFeedRegistry> {
+        self.registry.as_ref()
+    }
+
+    /// Resolves the conversation feed for a given workspace path.
+    pub fn feed_for_workspace(&self, workspace: &Path) -> Option<ConversationFeed> {
+        if let Some(registry) = &self.registry {
+            Some(registry.get_or_create(workspace))
         } else {
-            false
+            self.feed.clone()
         }
     }
 }
@@ -95,25 +92,51 @@ fn wake_poster(sender: SessionSender, cancel: CancellationToken) -> SessionPost 
 }
 
 /// Feeds a session's events into the hub, until it is cancelled or its
-/// stream ends. Replay first (a resume rebuilds the digest and the active
-/// flag without announcing old turns), then live. A slow feed never slows
-/// the sequencer: the bus disconnects it and the digest simply stops
-/// growing at the tail.
-async fn watch(feed: ConversationFeed, subscription: Subscription, cancel: CancellationToken) {
-    if let crate::bus::ResumeOutcome::Replay(events) = subscription.replay {
-        for event in &events {
-            feed.observe_replayed(event).await;
+/// stream ends. Replay first (a resume rebuilds the digest without announcing
+/// old turns), then live. Disconnect, lag, or resync marks the incarnation unavailable.
+async fn watch(
+    feed: ConversationFeed,
+    session_id: Ulid,
+    incarnation: Ulid,
+    subscription: Subscription,
+    cancel: CancellationToken,
+) {
+    match subscription.replay {
+        crate::bus::ResumeOutcome::Replay(events) => {
+            for event in &events {
+                feed.observe_replayed_incarnation(incarnation, event).await;
+            }
+        }
+        crate::bus::ResumeOutcome::Resync | crate::bus::ResumeOutcome::InvalidCursor => {
+            feed.invalidate_session_incarnation(session_id, incarnation);
+            return;
         }
     }
     let Some(mut live) = subscription.live else {
+        feed.invalidate_session_incarnation(session_id, incarnation);
         return;
     };
+    if live.is_closed() {
+        feed.invalidate_session_incarnation(session_id, incarnation);
+        return;
+    }
+    feed.mark_incarnation_ready(session_id, incarnation);
     loop {
+        if live.is_closed() {
+            feed.invalidate_session_incarnation(session_id, incarnation);
+            break;
+        }
         tokio::select! {
-            _ = cancel.cancelled() => break,
+            _ = cancel.cancelled() => {
+                feed.invalidate_session_incarnation(session_id, incarnation);
+                break;
+            }
             event = live.recv() => match event {
-                Some(event) => feed.observe(&event).await,
-                None => break,
+                Some(event) => feed.observe_incarnation(incarnation, &event).await,
+                None => {
+                    feed.invalidate_session_incarnation(session_id, incarnation);
+                    break;
+                }
             }
         }
     }
@@ -145,6 +168,29 @@ impl SessionHooks for NavigatorHooks {
         }
     }
 
+    fn configure_session_actor(&self, cx: &StartedSession, actor: &mut AgentActor) {
+        if !cx.editor {
+            return;
+        }
+        actor.system_prompt = Some(COGNITION_PROMPT.to_string());
+        actor.registry.register(Box::new(IntentTool));
+        let feed = self.feed_for_workspace(&cx.workspace);
+        let target = ConversationTarget {
+            workspace: cx.workspace.clone(),
+            session_id: cx.id,
+            incarnation: cx.incarnation,
+        };
+        actor
+            .registry
+            .register(Box::new(RevealTool::for_session(feed, target)));
+        if matches!(
+            actor.transcript.first(),
+            Some(ChatMessage::System { content }) if content == COGNITION_PROMPT
+        ) {
+            actor.transcript.remove(0);
+        }
+    }
+
     fn started(
         &self,
         info: StartedSession,
@@ -152,27 +198,28 @@ impl SessionHooks for NavigatorHooks {
         subscription: Subscription,
         cancel: CancellationToken,
     ) {
-        let Some(feed) = self.feed.clone() else {
+        let Some(feed) = self.feed_for_workspace(&info.workspace) else {
             return;
         };
-        if !info.editor {
-            return;
-        }
         let id = info.id;
-        let incarnation = self.incarnations.begin(id);
-        feed.register_session(id, wake_poster(sender.clone(), cancel.clone()));
-        feed.register_flow_poster(
+        let incarnation = info.incarnation;
+        feed.register_session_incarnation(
             id,
+            incarnation,
+            wake_poster(sender.clone(), cancel.clone()),
+            false,
+        );
+        feed.register_flow_poster_incarnation(
+            id,
+            incarnation,
             Arc::new(move |text, flow, run_id, wake| {
                 sender.queue_flow_note_report(text, flow, run_id, wake)
             }),
         );
-        let incarnations = self.incarnations.clone();
         tokio::spawn(async move {
-            watch(feed.clone(), subscription, cancel).await;
-            if incarnations.end(id, incarnation) {
-                feed.forget_session(id);
-            }
+            watch(feed.clone(), id, incarnation, subscription, cancel).await;
+            feed.unbind_editor_incarnation(id, incarnation);
+            feed.forget_session_incarnation(id, incarnation);
         });
     }
 }
@@ -284,19 +331,229 @@ mod tests {
         assert_eq!(notes[1].2, "wake");
     }
 
-    // Given a session id watched twice (a resume replaced the first
-    // incarnation)
-    // When the OLD incarnation ends after the new one began
-    // Then it must not forget the registration; the new one's end does
+    #[tokio::test]
+    async fn terminal_root_session_is_registered_in_workspace_feed_without_actor_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("cfg");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.json"),
+            r#"{"agents":{"build":{"model":"mock/test"}}}"#,
+        )
+        .unwrap();
+        crate::provider::auth::set_key(&config_dir, "mock", "test").unwrap();
+        let models_path = dir.path().join("models.json");
+        std::fs::write(&models_path, r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/test":{"provider":"mock","model":"test","context_window":128000}}}"#).unwrap();
+        let registry = WorkspaceFeedRegistry::new();
+        let service = crate::session::Service::with_hooks(
+            crate::session::SessionConfig {
+                models_path: Some(models_path),
+                config_dir,
+                history_db: dir.path().join("history.db"),
+                data_dir: dir.path().join("data"),
+                rules_roots: Default::default(),
+            },
+            Arc::new(NavigatorHooks::with_registry(registry.clone())),
+            Arc::new(crate::provider::openai::ClientCache::new()),
+        )
+        .unwrap();
+
+        // Terminal session: editor = false
+        let id = service
+            .create_session(dir.path(), None, false)
+            .await
+            .unwrap();
+
+        let feed = registry
+            .get(dir.path())
+            .expect("feed must be registered for workspace");
+        tokio::task::yield_now().await;
+        feed.observe(&crate::bus::event::EventEnvelope::new(
+            id,
+            0,
+            crate::bus::event::EventKind::MessageReceived,
+            serde_json::json!({"source":"user:cli", "content":"terminal work"}),
+        ))
+        .await;
+
+        assert_eq!(feed.active_session(), Some(id));
+        assert!(feed.digest().contains("captain: terminal work"));
+
+        // Verify session was created and registered in workspace feed
+        let handle = service.handle(id).unwrap();
+        assert_eq!(handle.workspace, dir.path());
+
+        service.close_all().await;
+    }
+
     #[test]
     fn an_old_incarnation_does_not_forget_a_resumed_one() {
-        let incarnations = Incarnations::default();
+        let feed = ConversationFeed::new();
         let id = Ulid::generate();
-        let old = incarnations.begin(id);
-        let new = incarnations.begin(id);
-        assert!(!incarnations.end(id, old), "stale cleanup is a no-op");
-        assert!(incarnations.end(id, new), "the current one cleans up");
-        assert!(!incarnations.end(id, new), "and only once");
+        let old_inc = Ulid::generate();
+        let new_inc = Ulid::generate();
+
+        feed.register_session_incarnation(
+            id,
+            old_inc,
+            Arc::new(|_| Box::pin(async { Ok(()) })),
+            true,
+        );
+        feed.register_session_incarnation(
+            id,
+            new_inc,
+            Arc::new(|_| Box::pin(async { Ok(()) })),
+            true,
+        );
+
+        assert!(
+            !feed.forget_session_incarnation(id, old_inc),
+            "stale cleanup is a no-op"
+        );
+        assert!(
+            feed.is_incarnation_available(id, new_inc),
+            "new incarnation still present"
+        );
+        assert!(
+            feed.forget_session_incarnation(id, new_inc),
+            "current incarnation cleans up"
+        );
+        assert!(
+            !feed.forget_session_incarnation(id, new_inc),
+            "and only once"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_receiver_closure_or_resync_invalidates_incarnation() {
+        let feed = ConversationFeed::new();
+        let id = Ulid::generate();
+        let inc = Ulid::generate();
+        feed.register_session_incarnation(id, inc, Arc::new(|_| Box::pin(async { Ok(()) })), false);
+
+        // Case 1: Resync outcome invalidates immediately
+        let sub_resync = Subscription {
+            replay: crate::bus::ResumeOutcome::Resync,
+            live: None,
+        };
+        watch(feed.clone(), id, inc, sub_resync, CancellationToken::new()).await;
+        assert!(!feed.is_incarnation_available(id, inc));
+
+        // Re-register a fresh incarnation
+        let inc2 = Ulid::generate();
+        feed.register_session_incarnation(
+            id,
+            inc2,
+            Arc::new(|_| Box::pin(async { Ok(()) })),
+            false,
+        );
+
+        // Case 2: Live receiver closed with buffered events present
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        tx.send(crate::bus::event::EventEnvelope::new(
+            id,
+            1,
+            crate::bus::event::EventKind::MessageReceived,
+            serde_json::json!({"source":"user:test", "content":"buffered"}),
+        ))
+        .await
+        .unwrap();
+        drop(tx); // channel is closed, but has 1 buffered event
+        let sub_closed = Subscription {
+            replay: crate::bus::ResumeOutcome::Replay(Vec::new()),
+            live: Some(rx),
+        };
+        watch(feed.clone(), id, inc2, sub_closed, CancellationToken::new()).await;
+        assert!(
+            !feed.is_incarnation_available(id, inc2),
+            "closed receiver with buffered events must invalidate before ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_feed_actor_reveal_preserves_compatibility_with_workspace_target() {
+        use crate::tools::Tool;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target_file = dir.path().join("main.rs");
+        std::fs::write(&target_file, "fn main() {}\n").unwrap();
+
+        let config_dir = dir.path().join("cfg");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.json"),
+            r#"{"agents":{"build":{"model":"mock/test"}}}"#,
+        )
+        .unwrap();
+        crate::provider::auth::set_key(&config_dir, "mock", "test").unwrap();
+        let models_path = dir.path().join("models.json");
+        std::fs::write(
+            &models_path,
+            r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/test":{"provider":"mock","model":"test","context_window":128000}}}"#,
+        )
+        .unwrap();
+
+        // Feed constructed with empty workspace (standard NavigatorHooks::with_feed mode)
+        let feed = ConversationFeed::new();
+        feed.set_editor(Arc::new(|_params| {
+            Box::pin(async move {
+                Ok(crate::navigator::lsp::protocol::RevealResult {
+                    group: Some(1),
+                    symbol_found: Some(true),
+                    error: None,
+                })
+            })
+        }));
+
+        let service = crate::session::Service::with_hooks(
+            crate::session::SessionConfig {
+                models_path: Some(models_path),
+                config_dir,
+                history_db: dir.path().join("history.db"),
+                data_dir: dir.path().join("data"),
+                rules_roots: Default::default(),
+            },
+            Arc::new(NavigatorHooks::with_feed(feed.clone())),
+            Arc::new(crate::provider::openai::ClientCache::new()),
+        )
+        .unwrap();
+
+        // Editor session started in dir.path()
+        let id = service
+            .create_session(dir.path(), None, true)
+            .await
+            .unwrap();
+
+        let target = ConversationTarget {
+            workspace: dir.path().to_path_buf(),
+            session_id: id,
+            incarnation: service.handle(id).unwrap().incarnation,
+        };
+        let tool = RevealTool::for_session(Some(feed), target);
+        let cx = crate::tools::ToolContext {
+            secrets: None,
+            binding: None,
+            workspace: dir.path().to_path_buf(),
+            writable_roots: vec![dir.path().to_path_buf()],
+            readable_roots: Vec::new(),
+        };
+
+        // Wait for watch loop to process initial start event and mark incarnation ready
+        tokio::task::yield_now().await;
+
+        let result = tool
+            .call(
+                serde_json::json!({"path": "main.rs"}),
+                CancellationToken::new(),
+                &cx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.status, crate::tools::ToolStatus::Ok);
+        assert!(result.output.contains("revealed in the editor: main.rs"));
+
+        service.close_all().await;
     }
 
     #[test]

@@ -157,9 +157,9 @@ pub fn validate(
             return Err(invalid());
         }
         "tui.theme"
-            if !value.as_str().is_some_and(|v| {
-                ["ayu-dark", "ayu-light", "nord-dark", "nord-light"].contains(&v)
-            }) =>
+            if !value
+                .as_str()
+                .is_some_and(|v| withnav_client_api::settings::TUI_THEME_IDS.contains(&v)) =>
         {
             return Err(invalid());
         }
@@ -215,6 +215,27 @@ mod tests {
         assert_eq!(applies("agents.build"), "new_sessions");
         assert_eq!(applies("subagents.max_concurrent"), "new_sessions");
         assert_eq!(applies("tui.theme"), "live");
+    }
+    #[test]
+    fn tui_theme_accepts_every_terminal_theme_and_rejects_others() {
+        let catalog: ModelsConfig =
+            serde_json::from_value(json!({"providers":{},"models":{}})).unwrap();
+        let agents = Agents::load(
+            &crate::agent::definitions::AgentRoots {
+                home: None,
+                config_dir: None,
+            },
+            Path::new("/tmp/opencode"),
+        );
+        for id in withnav_client_api::settings::TUI_THEME_IDS {
+            assert_eq!(
+                validate("tui.theme", &json!(id), &catalog, &agents, &[]).unwrap(),
+                json!(id)
+            );
+        }
+        for bad in [json!("solarized"), json!(""), json!(42)] {
+            assert!(validate("tui.theme", &bad, &catalog, &agents, &[]).is_err());
+        }
     }
     #[test]
     fn assignment_edits_preserve_unknown_members() {

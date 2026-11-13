@@ -2,6 +2,20 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Every value `tui.theme` may hold in `config.json`, in the terminal client's picker order. The
+/// settings route validates against it and the terminal client's theme list must match it, so a
+/// theme offered on the settings screen is never refused by the server.
+pub const TUI_THEME_IDS: [&str; 8] = [
+    "ayu-dark",
+    "ayu-light",
+    "nord-dark",
+    "nord-light",
+    "tide-dark",
+    "tide-light",
+    "moss-dark",
+    "moss-light",
+];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettingField {
     pub key: String,

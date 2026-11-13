@@ -267,8 +267,13 @@ async fn pause_lifecycle(mode: u8) {
             .any(|e| e.payload["data"]["resolution"].is_string())
     );
     if mode == 2 {
-        let saved = service.history().load(id).await.unwrap().unwrap();
-        assert!(saved.transcript.iter().any(|message| matches!(message,withnav::provider::openai::ChatMessage::User {content,..} if content == "replacement instruction")));
+        // The turn-end transcript snapshot is saved just after the turn's
+        // terminal events are shown, so wait for it rather than read once.
+        common::deadline::eventually("the replacement in the stored transcript", || async {
+            let saved = service.history().load(id).await.unwrap().unwrap();
+            saved.transcript.iter().any(|message| matches!(message,withnav::provider::openai::ChatMessage::User {content,..} if content == "replacement instruction")).then_some(())
+        })
+        .await;
         assert!(
             events
                 .iter()

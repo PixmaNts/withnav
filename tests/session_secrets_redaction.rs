@@ -210,13 +210,21 @@ async fn provider_response_and_transcript_are_redacted() {
 
     // Conversation transcript in the history store contains "[secret API_KEY]" and not VALUE.
     let session_ulid = id.parse::<ulid::Ulid>().unwrap();
-    let loaded = state
-        .history()
-        .load(session_ulid)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .expect("loaded session");
+    // The turn-end transcript snapshot is saved just after the turn's
+    // terminal events are shown, so wait for it rather than read once.
+    let loaded = common::deadline::eventually("the turn's stored transcript", || async {
+        state
+            .history()
+            .load(session_ulid)
+            .await
+            .unwrap()
+            .filter(|loaded| {
+                serde_json::to_string(&loaded.transcript)
+                    .unwrap()
+                    .contains("[secret API_KEY]")
+            })
+    })
+    .await;
     let transcript_text = serde_json::to_string(&loaded.transcript).unwrap();
     assert!(
         transcript_text.contains("[secret API_KEY]"),
@@ -356,13 +364,21 @@ async fn fetch_metadata_and_tool_errors_are_redacted() {
 
     // Stored transcript tool result verification
     let session_ulid = id.parse::<ulid::Ulid>().unwrap();
-    let loaded = state
-        .history()
-        .load(session_ulid)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .expect("session loaded");
+    // The turn-end transcript snapshot is saved just after the turn's
+    // terminal events are shown, so wait for it rather than read once.
+    let loaded = common::deadline::eventually("the turn's stored transcript", || async {
+        state
+            .history()
+            .load(session_ulid)
+            .await
+            .unwrap()
+            .filter(|loaded| {
+                loaded.transcript.iter().any(
+                    |m| matches!(m, ChatMessage::Tool { tool_call_id, .. } if tool_call_id == "f2"),
+                )
+            })
+    })
+    .await;
 
     let f2_tool_msg = loaded
         .transcript
@@ -641,13 +657,21 @@ async fn short_values_flow_through_unredacted() {
     );
 
     // Stored transcript and events contain "SHORT7X" verbatim
-    let loaded = state
-        .history()
-        .load(session_ulid)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .expect("loaded session");
+    // The turn-end transcript snapshot is saved just after the turn's
+    // terminal events are shown, so wait for it rather than read once.
+    let loaded = common::deadline::eventually("the turn's stored transcript", || async {
+        state
+            .history()
+            .load(session_ulid)
+            .await
+            .unwrap()
+            .filter(|loaded| {
+                serde_json::to_string(&loaded.transcript)
+                    .unwrap()
+                    .contains("SHORT7X")
+            })
+    })
+    .await;
     let transcript_text = serde_json::to_string(&loaded.transcript).unwrap();
     assert!(
         transcript_text.contains("SHORT7X"),
@@ -702,13 +726,21 @@ async fn short_values_flow_through_unredacted() {
         bodies[3]
     );
 
-    let loaded = state
-        .history()
-        .load(session_ulid)
-        .bounded(file!(), line!())
-        .await
-        .unwrap()
-        .expect("loaded session");
+    // The turn-end transcript snapshot is saved just after the turn's
+    // terminal events are shown, so wait for it rather than read once.
+    let loaded = common::deadline::eventually("the turn's stored transcript", || async {
+        state
+            .history()
+            .load(session_ulid)
+            .await
+            .unwrap()
+            .filter(|loaded| {
+                serde_json::to_string(&loaded.transcript)
+                    .unwrap()
+                    .contains("[secret WIDE_KEY]")
+            })
+    })
+    .await;
     let transcript_text = serde_json::to_string(&loaded.transcript).unwrap();
     assert!(
         transcript_text.contains("[secret WIDE_KEY]"),

@@ -1,8 +1,8 @@
 //! Per-workspace evaluation; asynchronous effects never change an admitted event.
 use super::{catalogue::catalogue, store::FlowStore};
 pub use crate::agent::flow_hook::{
-    PermissionCallContext, PermissionFlowAnswer, PermissionVerdict, ProtectedCheck, RuleResult,
-    RunScores,
+    FlowAction, FlowVerdict, PermissionCallContext, PermissionFlowAnswer, PermissionVerdict,
+    ProtectedCheck, RuleResult, RunScores,
 };
 use instinct_flow::*;
 use serde_json::{Value, json};
@@ -13,18 +13,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
-
-impl From<VerdictLike> for crate::agent::flow_hook::FlowVerdict {
-    fn from(value: VerdictLike) -> Self {
-        match value {
-            VerdictLike::Allow => Self::Allow,
-            VerdictLike::Deny { note } => Self::Deny { note },
-            VerdictLike::AskCaptain { note, flow, run_id } => {
-                Self::AskCaptain { note, flow, run_id }
-            }
-        }
-    }
-}
 
 /// Keep complete Captain messages, newest last, including JSON framing in the budget.
 fn bounded_captain_messages(messages: Vec<String>) -> InputValue {
@@ -71,7 +59,7 @@ fn run_scores(outcome: &RunOutcome) -> RunScores {
 fn grants_protected(outcome: &RunOutcome, action: &ProposedAction) -> bool {
     matches!(outcome.result, RunResult::Success { .. })
         && action.node_id.as_deref() == Some("protected_allow")
-        && action.action == "allow"
+        && FlowAction::parse(&action.action) == Some(FlowAction::Allow)
         && action.params.get("protected_ok") == Some(&json!(true))
         && outcome
             .trace
@@ -86,14 +74,14 @@ fn resolve_permissions(
     protected: bool,
     protected_runs: &std::collections::BTreeSet<String>,
     host_passed: bool,
-) -> (VerdictLike, Vec<PermissionFlowAnswer>) {
+) -> (FlowVerdict, Vec<PermissionFlowAnswer>) {
     let rule_action = if rule == RuleResult::Allow {
-        "allow"
+        FlowAction::Allow
     } else {
-        "ask_captain"
+        FlowAction::AskCaptain
     };
     let mut answers = vec![];
-    let mut candidates = vec![];
+    let mut candidates: Vec<(FlowAction, String, String, String)> = vec![];
     let mut protected_ok = host_passed;
     for outcome in outcomes {
         let actions = match &outcome.result {
@@ -105,18 +93,43 @@ fn resolve_permissions(
         };
         let verdicts: Vec<_> = actions
             .iter()
-            .filter(|a| {
-                matches!(
-                    a.action.as_str(),
-                    "allow" | "ask_captain" | "deny" | "apply_rule"
-                )
-            })
+            .filter_map(|a| FlowAction::parse(&a.action).map(|action| (action, a)))
             .collect();
-        if verdicts.is_empty() {
+        // A run that proposed an action outside the declared verdict set fails
+        // safe: it can never widen the verdict to allow, so it asks the
+        // Captain. Effect actions (log, wake, …) are not verdicts and are
+        // ignored as before. Validated flow definitions reject unknown
+        // actions at load time, so this is defense in depth for a malformed
+        // runtime outcome.
+        let unrecognized = actions.iter().any(|a| {
+            FlowAction::parse(&a.action).is_none()
+                && !catalogue()
+                    .action(&a.action)
+                    .is_some_and(|spec| spec.kind == ActionKind::Effect)
+        });
+        if unrecognized {
+            let note = format!(
+                "Flow '{}' proposed an unrecognized action; the Captain decides.",
+                outcome.trace.flow_name
+            );
             answers.push(PermissionFlowAnswer {
                 flow: outcome.trace.flow_name.clone(),
                 run_id: outcome.trace.run_id.clone(),
-                action: rule_action.into(),
+                action: FlowAction::AskCaptain,
+                used_rule: false,
+                scores: run_scores(outcome).scores,
+            });
+            candidates.push((
+                FlowAction::AskCaptain,
+                note,
+                outcome.trace.flow_name.clone(),
+                outcome.trace.run_id.clone(),
+            ));
+        } else if verdicts.is_empty() {
+            answers.push(PermissionFlowAnswer {
+                flow: outcome.trace.flow_name.clone(),
+                run_id: outcome.trace.run_id.clone(),
+                action: rule_action,
                 used_rule: true,
                 scores: run_scores(outcome).scores,
             });
@@ -127,19 +140,15 @@ fn resolve_permissions(
                 outcome.trace.run_id.clone(),
             ));
         }
-        for action in verdicts {
+        for (parsed, action) in verdicts {
             protected_ok |=
                 protected_runs.contains(&outcome.trace.run_id) && grants_protected(outcome, action);
-            let used_rule = action.action == "apply_rule";
-            let resolved = if used_rule {
-                rule_action
-            } else {
-                action.action.as_str()
-            };
+            let used_rule = parsed == FlowAction::ApplyRule;
+            let resolved = if used_rule { rule_action } else { parsed };
             answers.push(PermissionFlowAnswer {
                 flow: outcome.trace.flow_name.clone(),
                 run_id: outcome.trace.run_id.clone(),
-                action: resolved.into(),
+                action: resolved,
                 used_rule,
                 scores: run_scores(outcome).scores,
             });
@@ -160,15 +169,13 @@ fn resolve_permissions(
         candidates.push((rule_action, String::new(), String::new(), String::new()));
     }
     if protected && !protected_ok {
-        candidates.push(("ask_captain", "Only the Captain can request changes to WithNav's configuration, permission rules or database.".into(), String::new(), String::new()));
+        candidates.push((FlowAction::AskCaptain, "Only the Captain can request changes to WithNav's configuration, permission rules or database.".into(), String::new(), String::new()));
     }
-    let priority = |action: &str| match action {
-        "deny" => 2,
-        "ask_captain" => 1,
-        _ => 0,
-    };
-    let strictest = candidates.iter().map(|c| priority(c.0)).max().unwrap_or(0);
-    candidates.retain(|c| priority(c.0) == strictest);
+    let strictest = candidates
+        .iter()
+        .map(|c| c.0)
+        .fold(FlowAction::Allow, FlowAction::strictest);
+    candidates.retain(|c| c.0 == strictest);
     candidates.sort_by(|a, b| a.2.cmp(&b.2));
     let note = candidates
         .iter()
@@ -176,14 +183,14 @@ fn resolve_permissions(
         .filter(|n| !n.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    let verdict = match candidates[0].0 {
-        "deny" => VerdictLike::Deny { note },
-        "ask_captain" => VerdictLike::AskCaptain {
+    let verdict = match strictest {
+        FlowAction::Deny => FlowVerdict::Deny { note },
+        FlowAction::AskCaptain => FlowVerdict::AskCaptain {
             note,
             flow: candidates[0].2.clone(),
             run_id: candidates[0].3.clone(),
         },
-        _ => VerdictLike::Allow,
+        FlowAction::Allow | FlowAction::ApplyRule => FlowVerdict::Allow,
     };
     (verdict, answers)
 }
@@ -319,7 +326,7 @@ mod tests {
                     CancellationToken::new()
                 )
                 .await,
-            VerdictLike::Allow
+            FlowVerdict::Allow
         );
         for (rule, allowed) in [
             (RuleResult::Allow, true),
@@ -382,7 +389,7 @@ mod tests {
                     CancellationToken::new()
                 )
                 .await,
-            VerdictLike::AskCaptain { .. }
+            FlowVerdict::AskCaptain { .. }
         ));
         store
             .save(
@@ -1151,7 +1158,7 @@ mod tests {
                 CancellationToken::new(),
             )
             .await;
-        assert_eq!(verdict, VerdictLike::Allow);
+        assert_eq!(verdict, FlowVerdict::Allow);
         assert_eq!(handles.len(), 1);
         let outcome = handles.into_iter().next().unwrap().await.unwrap();
         let RunResult::Failure {
@@ -1174,6 +1181,161 @@ mod tests {
         assert_eq!(failure.kind, FailureKind::Limit);
         assert_eq!(failure.message, message);
     }
+    /// One synthetic run outcome proposing `actions`, as a flow run would.
+    fn synthetic_outcome(flow: &str, actions: Vec<ProposedAction>) -> RunOutcome {
+        RunOutcome {
+            result: RunResult::Success { actions },
+            trace: RunRecord {
+                version: 1,
+                run_id: format!("run-{flow}"),
+                flow_name: flow.into(),
+                definition_digest: String::new(),
+                mode: "test".into(),
+                started_at: String::new(),
+                duration_ms: 0,
+                budget_ms: 100,
+                event: Event {
+                    trigger: "tool.pre_call".into(),
+                    payload: json!({}),
+                },
+                redacted_event_paths: vec![],
+                identity: ClientIdentity {
+                    model: "fake/test".into(),
+                    variant: None,
+                },
+                inputs: BTreeMap::new(),
+                nodes: vec![],
+                batches: vec![],
+                status: "success".into(),
+                failure: None,
+                actions: vec![],
+                fallback_actions: vec![],
+                usage: None,
+                cost_usd: None,
+                application: Default::default(),
+            },
+            provider_outage: false,
+        }
+    }
+
+    fn proposed(action: &str, note: &str) -> ProposedAction {
+        ProposedAction {
+            node_id: None,
+            action: action.into(),
+            params: BTreeMap::from([("note".into(), json!(note))]),
+        }
+    }
+
+    #[test]
+    fn flow_action_round_trips_and_stays_closed() {
+        // The wire spelling is the serialized spelling, and the parse covers
+        // exactly the declared verdict actions: anything else is `None`, so
+        // aggregation fails safe instead of allowing.
+        for action in [
+            FlowAction::Allow,
+            FlowAction::AskCaptain,
+            FlowAction::Deny,
+            FlowAction::ApplyRule,
+        ] {
+            assert_eq!(FlowAction::parse(action.as_str()), Some(action));
+            assert_eq!(
+                serde_json::to_value(action).unwrap(),
+                json!(action.as_str())
+            );
+        }
+        assert_eq!(FlowAction::parse("no_objection"), None);
+        assert_eq!(FlowAction::parse("ask_driver"), None);
+        assert_eq!(FlowAction::parse(""), None);
+        // Strictest wins: deny, then ask_captain, then allow.
+        assert_eq!(
+            FlowAction::Allow.strictest(FlowAction::AskCaptain),
+            FlowAction::AskCaptain
+        );
+        assert_eq!(
+            FlowAction::AskCaptain.strictest(FlowAction::Deny),
+            FlowAction::Deny
+        );
+        assert_eq!(
+            FlowAction::Deny.strictest(FlowAction::Allow),
+            FlowAction::Deny
+        );
+    }
+
+    #[test]
+    fn an_unrecognized_flow_action_fails_safe_to_ask_captain() {
+        let outcomes = vec![
+            synthetic_outcome("typo", vec![proposed("alow", "meant allow")]),
+            synthetic_outcome("good", vec![proposed("allow", "")]),
+        ];
+        let (verdict, answers) = resolve_permissions(
+            &outcomes,
+            RuleResult::None,
+            false,
+            &std::collections::BTreeSet::new(),
+            false,
+        );
+        assert!(
+            matches!(verdict, FlowVerdict::AskCaptain { .. }),
+            "an unrecognized action must never allow: {verdict:?}"
+        );
+        let FlowVerdict::AskCaptain { note, .. } = &verdict else {
+            unreachable!()
+        };
+        assert!(note.contains("unrecognized action"), "{note}");
+        assert!(
+            answers
+                .iter()
+                .any(|a| a.flow == "typo" && a.action == FlowAction::AskCaptain && !a.used_rule)
+        );
+    }
+
+    #[test]
+    fn apply_rule_resolves_to_the_rule_and_deny_still_wins() {
+        let outcomes = vec![
+            synthetic_outcome("b", vec![proposed("apply_rule", "")]),
+            synthetic_outcome("a", vec![proposed("deny", "no")]),
+        ];
+        let (verdict, answers) = resolve_permissions(
+            &outcomes,
+            RuleResult::Allow,
+            false,
+            &std::collections::BTreeSet::new(),
+            false,
+        );
+        assert!(matches!(verdict, FlowVerdict::Deny { .. }));
+        assert_eq!(
+            answers
+                .iter()
+                .find(|a| a.flow == "b")
+                .map(|a| (a.action, a.used_rule)),
+            Some((FlowAction::Allow, true))
+        );
+        // No flow verdict at all: the rule applies.
+        let (verdict, _) = resolve_permissions(
+            &[],
+            RuleResult::Ask,
+            false,
+            &std::collections::BTreeSet::new(),
+            false,
+        );
+        assert!(matches!(verdict, FlowVerdict::AskCaptain { .. }));
+    }
+
+    #[test]
+    fn permission_flow_answer_serializes_the_wire_spelling() {
+        let answer = PermissionFlowAnswer {
+            flow: "f".into(),
+            run_id: "r".into(),
+            action: FlowAction::AskCaptain,
+            used_rule: false,
+            scores: Default::default(),
+        };
+        assert_eq!(
+            serde_json::to_value(&answer).unwrap()["action"],
+            json!("ask_captain")
+        );
+    }
+
     struct Fake;
     impl DecisionClient for Fake {
         fn capabilities(&self) -> Capabilities {
@@ -1719,7 +1881,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(verdict, VerdictLike::Deny { .. }));
+        assert!(matches!(verdict, FlowVerdict::Deny { .. }));
         assert_eq!(handles.len(), 1);
         handles[0].abort();
     }
@@ -1861,7 +2023,7 @@ mod tests {
             runtime
                 .tool_pre_call(ctx.clone(), CancellationToken::new())
                 .await,
-            VerdictLike::Deny { .. }
+            FlowVerdict::Deny { .. }
         ));
         for name in ["ask", "deny"] {
             let d = store.get(name, Location::Global).unwrap();
@@ -1886,23 +2048,11 @@ mod tests {
                 runtime
                     .tool_pre_call(ctx.clone(), CancellationToken::new())
                     .await,
-                VerdictLike::AskCaptain { .. }
+                FlowVerdict::AskCaptain { .. }
             ));
         }
         assert_eq!(effects.0.load(Ordering::SeqCst), 1);
     }
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VerdictLike {
-    Allow,
-    Deny {
-        note: String,
-    },
-    AskCaptain {
-        note: String,
-        flow: String,
-        run_id: String,
-    },
 }
 pub trait FlowEffects: Send + Sync {
     fn effect<'a>(
@@ -2260,7 +2410,7 @@ impl FlowRuntime {
         event: Event,
         context: ContextSnapshot,
         cancel: CancellationToken,
-    ) -> (VerdictLike, Vec<tokio::task::JoinHandle<RunOutcome>>) {
+    ) -> (FlowVerdict, Vec<tokio::task::JoinHandle<RunOutcome>>) {
         let effects = self
             .effects
             .read()
@@ -2275,7 +2425,7 @@ impl FlowRuntime {
         context: ContextSnapshot,
         cancel: CancellationToken,
         effects: Arc<dyn FlowEffects>,
-    ) -> (VerdictLike, Vec<tokio::task::JoinHandle<RunOutcome>>) {
+    ) -> (FlowVerdict, Vec<tokio::task::JoinHandle<RunOutcome>>) {
         let (verdict, handles, _) = self
             .evaluate_inner(event, context, cancel, effects, None, None)
             .await;
@@ -2291,7 +2441,7 @@ impl FlowRuntime {
         permission: Option<(RuleResult, bool)>,
         host_check: Option<ProtectedCheck>,
     ) -> (
-        VerdictLike,
+        FlowVerdict,
         Vec<tokio::task::JoinHandle<RunOutcome>>,
         Vec<PermissionFlowAnswer>,
     ) {
@@ -2480,18 +2630,25 @@ impl FlowRuntime {
             })
             .unwrap_or((None, vec![]));
         let verdict = permission_verdict.unwrap_or_else(|| {
-            match combine_verdicts(&outcomes, &catalogue()).ok().flatten() {
-                None => VerdictLike::Allow,
-                Some(action) => {
+            // `combine_verdicts` reports unknown actions as an error; a failed
+            // or empty aggregation must not default to allow, so it asks.
+            let combined = combine_verdicts(&outcomes, &catalogue());
+            let parsed = combined
+                .as_ref()
+                .ok()
+                .and_then(|action| action.as_ref())
+                .and_then(|action| FlowAction::parse(&action.action));
+            match (combined, parsed) {
+                (Ok(Some(action)), Some(flow_action)) => {
                     let note = action
                         .params
                         .get("note")
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_owned();
-                    match action.action.as_str() {
-                        "deny" => VerdictLike::Deny { note },
-                        "ask_captain" => {
+                    match flow_action {
+                        FlowAction::Deny => FlowVerdict::Deny { note },
+                        FlowAction::AskCaptain => {
                             let origin = outcomes.iter().find(|o| {
                                 o.trace
                                     .actions
@@ -2499,7 +2656,7 @@ impl FlowRuntime {
                                     .chain(&o.trace.fallback_actions)
                                     .any(|a| a.action == "ask_captain")
                             });
-                            VerdictLike::AskCaptain {
+                            FlowVerdict::AskCaptain {
                                 note,
                                 flow: origin
                                     .map(|o| o.trace.flow_name.clone())
@@ -2507,9 +2664,20 @@ impl FlowRuntime {
                                 run_id: origin.map(|o| o.trace.run_id.clone()).unwrap_or_default(),
                             }
                         }
-                        _ => VerdictLike::Allow,
+                        FlowAction::Allow | FlowAction::ApplyRule => FlowVerdict::Allow,
                     }
                 }
+                (Ok(None), _) => FlowVerdict::Allow,
+                (Err(_), _) => FlowVerdict::AskCaptain {
+                    note: "A flow proposed an unrecognized action; the Captain decides.".into(),
+                    flow: String::new(),
+                    run_id: String::new(),
+                },
+                (Ok(Some(_)), None) => FlowVerdict::AskCaptain {
+                    note: "A flow proposed an unrecognized action; the Captain decides.".into(),
+                    flow: String::new(),
+                    run_id: String::new(),
+                },
             }
         });
         for outcome in &mut outcomes {
@@ -2654,10 +2822,7 @@ impl FlowRuntime {
                 host_check,
             )
             .await;
-        PermissionVerdict {
-            verdict: verdict.into(),
-            flows,
-        }
+        PermissionVerdict { verdict, flows }
     }
     /// Run only the compiled-in protected check, the one authority for a write
     /// to WithNav's own configuration or database. Flows on disk, their names
@@ -2796,7 +2961,7 @@ impl FlowRuntime {
         &self,
         ctx: ToolCallContextLike,
         cancel: CancellationToken,
-    ) -> VerdictLike {
+    ) -> FlowVerdict {
         let mut context = ContextSnapshot {
             workspace: Some(ctx.workspace.clone()),
             ..Default::default()

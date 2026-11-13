@@ -191,7 +191,7 @@ mod tests {
             templates: BTreeMap::new(),
         }
     }
-    async fn verdict(runtime: &FlowRuntime) -> super::super::runtime::VerdictLike {
+    async fn verdict(runtime: &FlowRuntime) -> super::super::runtime::FlowVerdict {
         runtime
             .tool_pre_call(
                 super::super::runtime::ToolCallContextLike {
@@ -208,7 +208,7 @@ mod tests {
     #[tokio::test]
     async fn independent_hosts_reload_on_next_event_and_keep_invalid_snapshot() {
         use super::super::{
-            runtime::VerdictLike,
+            runtime::FlowVerdict,
             store::{Content, Location},
         };
         let temp = tempfile::tempdir().unwrap();
@@ -229,10 +229,10 @@ mod tests {
         let doc = store
             .save("guard", Location::Global, None, content("deny"))
             .unwrap();
-        assert_eq!(verdict(&runtime).await, VerdictLike::Allow);
+        assert_eq!(verdict(&runtime).await, FlowVerdict::Allow);
         store.validate_test_documents();
         store.reload().unwrap();
-        assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
+        assert!(matches!(verdict(&runtime).await, FlowVerdict::Deny { .. }));
         let next = store
             .save(
                 "guard",
@@ -241,7 +241,7 @@ mod tests {
                 content("no_objection"),
             )
             .unwrap();
-        assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
+        assert!(matches!(verdict(&runtime).await, FlowVerdict::Deny { .. }));
         store.validate_test_documents();
         store.reload().unwrap();
         // A publishes a valid set; an external editor corrupts the file before B evaluates.
@@ -256,7 +256,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(verdict(&runtime).await, VerdictLike::Allow);
+        assert_eq!(verdict(&runtime).await, FlowVerdict::Allow);
         assert!(!b.diagnostics(temp.path()).is_empty());
         store.reload().unwrap();
         let dir =
@@ -281,7 +281,7 @@ mod tests {
     #[tokio::test]
     async fn independent_hosts_revoke_workspace_runs_even_when_reload_is_invalid() {
         use super::super::{
-            runtime::VerdictLike,
+            runtime::FlowVerdict,
             store::{Content, Location},
         };
         let temp = tempfile::tempdir().unwrap();
@@ -304,7 +304,7 @@ mod tests {
             .unwrap();
         store.validate_test_documents();
         store.reload().unwrap();
-        assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
+        assert!(matches!(verdict(&runtime).await, FlowVerdict::Deny { .. }));
         store
             .save(
                 "broken",
@@ -321,7 +321,7 @@ mod tests {
             permissions.revoke_validation(approval.id).unwrap();
         }
         store.reload().unwrap();
-        assert_eq!(verdict(&runtime).await, VerdictLike::Allow);
+        assert_eq!(verdict(&runtime).await, FlowVerdict::Allow);
         assert!(!runtime.store.reload_diagnostics().is_empty());
     }
     #[test]
@@ -420,7 +420,7 @@ mod tests {
             .await;
         assert!(matches!(
             verdict,
-            super::super::runtime::VerdictLike::Deny { .. }
+            super::super::runtime::FlowVerdict::Deny { .. }
         ));
         assert_eq!(
             runtime

@@ -142,7 +142,6 @@ async fn resume_keeps_the_variant_and_a_missing_one_is_an_error() {
         .await
         .unwrap();
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
 
     state
         .create_or_resume_session(&ws, None, false, Some(id))
@@ -153,7 +152,6 @@ async fn resume_keeps_the_variant_and_a_missing_one_is_an_error() {
         Some("low")
     );
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
 
     // The alias stops offering "low".
     TestServerConfig::mock(tmp.path(), "http://127.0.0.1:1/v1")
@@ -535,7 +533,6 @@ async fn stopped_generated(
         .await
         .expect("create");
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
     (state, id)
 }
 
@@ -577,7 +574,6 @@ async fn resume_with_a_stale_list_and_the_provider_down_keeps_the_variant() {
         .await
         .expect("stale list names it");
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
 
     // An old list that does not name it proves nothing either.
     std::fs::remove_dir_all(tmp.path().join("data/model-catalog")).unwrap();
@@ -761,7 +757,6 @@ async fn variant_errors_name_the_models_file_that_was_loaded() {
         .await
         .unwrap();
     service.close_session(id).await.unwrap();
-    service.history().flush().await.unwrap();
 
     std::fs::write(
         ws.join("models.json"),
@@ -819,7 +814,6 @@ async fn an_unknown_offer_resumes_with_the_saved_override() {
         .await
         .unwrap();
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
 
     // The explicit map is gone; the provider reports nothing.
     TestServerConfig::mock(tmp.path(), &url)

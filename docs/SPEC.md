@@ -1430,8 +1430,8 @@ If the co-agent rewrites a user prompt:
 
 ### 17.1 Model
 
-- One database per user: `<data dir>/withnav.db` (`~/.local/share/withnav/withnav.db` on Linux). WAL mode. One dedicated writer thread owns the connection and is fed by a channel; reads open their own connection. The sequencer never waits on SQLite.
-- Every write is one transaction: an event insert and the `last_seq` bump commit together or not at all. A failed write is remembered until `flush`, which is also a barrier.
+- One database per user: `<data dir>/withnav.db` (`~/.local/share/withnav/withnav.db` on Linux). WAL mode. One dedicated writer thread owns the connection and is fed by a channel; reads open their own connection. Every durable event is stored before it is shown to clients: the sequencer awaits its write, then emits it.
+- Every write is one transaction: an event insert and the `last_seq` bump commit together or not at all. Every write is acknowledged and reports its own failure. A failed event write ends only its own session, with a `session.end` whose reason names the failure; the stream keeps no gap.
 - The events table is the log clients replay. The `transcript` column holds the model-facing messages. A resume rebuilds the actor from the transcript (and the checkpoint) and replays the events to the client. The transcript is not rebuilt from events.
 
 Tables:

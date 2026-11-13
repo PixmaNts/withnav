@@ -1495,7 +1495,6 @@ impl Service {
                 "archive marking requires an offline session with no retained runtime".into(),
             ));
         }
-        self.history.flush().await.map_err(ServerError::History)?;
         self.history
             .mark_archive(id, reason)
             .await
@@ -1924,7 +1923,6 @@ impl Service {
             // A resume waits for any stop or delete of this id to finish,
             // and holds the gate until the new runtime is registered.
             let _gate = self.lifecycle_gate().await;
-            self.history.flush().await.map_err(ServerError::History)?;
             if let Some(reason) = self
                 .history
                 .meta(id)
@@ -1945,12 +1943,10 @@ impl Service {
                 return Ok((id, true));
             }
             // Stopped, or only on disk: rebuild under the same id from the
-            // stored row.
+            // stored row. Store-first ordering makes the closing session's last
+            // events (`session.end` included) durable before the fence, so the
+            // load below already sees the full stored sequence.
             let store = &self.history;
-            // The closing session's last events (`session.end` included) may
-            // still be queued: the load must see them, or the resumed
-            // sequence could restart below a seq a client already saw.
-            store.flush().await.map_err(ServerError::History)?;
             let Some((meta, transcript, compaction)) = store
                 .load_for_resume(id)
                 .await
@@ -3152,7 +3148,11 @@ impl Service {
         let saver_history = history.clone();
         let on_turn_end: Option<crate::bus::runtime::TurnEndHook> =
             Some(Box::new(move |transcript: &[ChatMessage]| {
-                history.save_transcript(session_id, transcript.to_vec());
+                let history = history.clone();
+                let transcript = transcript.to_vec();
+                Box::pin(async move {
+                    let _ = history.save_transcript(session_id, transcript).await;
+                })
             }));
         let completion: Option<crate::bus::runtime::CompletionHook> =
             if let Some(parent) = child_parent {
@@ -3231,7 +3231,6 @@ impl Service {
             status.install_captain_commit(Arc::new(move |transcript| {
                 let (history, sequencer) = (history.clone(), captain_sequencer.clone());
                 Box::pin(async move {
-                    history.flush().await?;
                     let candidate = Candidate::new(EventKind::CommandResult, serde_json::json!({
                         "name":"watchdog","ok":true,"operation_id":Ulid::generate(),
                         "data":{"captain_committed":true,"message":"Fresh captain instruction checkpointed"}
@@ -3285,7 +3284,6 @@ impl Service {
                 #[cfg(debug_assertions)]
                 let failure_countdown = failure_countdown.clone();
                 Box::pin(async move {
-                    history.flush().await?;
                     let mut notices = history.unconsumed_completions(session_id).await?;
                     notices.retain(|(_, payload, _)| !mid_turn || payload["delivery"] == "steer");
                     if notices.is_empty() {

@@ -56,7 +56,6 @@ async fn pending_fresh_root_cannot_be_archived_before_publication() {
     barrier.release.notify_one();
     assert_eq!(creating.await.unwrap().unwrap(), id);
     assert!(state.session_has_runtime(id));
-    state.history().flush().await.unwrap();
     assert!(!state.history().meta(id).await.unwrap().unwrap().read_only());
     assert!(
         !state
@@ -128,7 +127,6 @@ async fn service_marking_requires_offline_and_raw_live_marker_refuses_all_admiss
     let state = TestServerConfig::unreachable(tmp.path()).state();
     let id = state.create_session(&ws, None, false).await.unwrap();
     let store = state.history();
-    store.flush().await.unwrap();
     let before = store.load(id).await.unwrap().unwrap();
     assert!(state.mark_archive(id, REASON).await.is_err());
     let after = store.load(id).await.unwrap().unwrap();
@@ -214,7 +212,6 @@ async fn service_marking_requires_offline_and_raw_live_marker_refuses_all_admiss
         state.subscribe(id, None).await.is_ok(),
         "event reads remain allowed"
     );
-    store.flush().await.unwrap();
     let after = store.load(id).await.unwrap().unwrap();
     assert_eq!(after.meta.last_seq, before.meta.last_seq);
     assert_eq!(after.meta.updated_at, before.meta.updated_at);
@@ -295,15 +292,14 @@ async fn archive_marker_is_explicit_validated_and_preserves_store_history() {
         provenance: Default::default(),
         images: Vec::new(),
     }];
-    store.save_transcript(id, transcript.clone());
+    store.save_transcript(id, transcript.clone()).await.unwrap();
     let event = EventEnvelope::new(
         id,
         0,
         EventKind::MessageReceived,
         json!({"content":"original event", "source":"user:http"}),
     );
-    store.append_event(id, event.clone());
-    store.flush().await.unwrap();
+    store.append_event_acked(id, event.clone()).await.unwrap();
     let before = store.load(id).await.unwrap().unwrap();
     for reason in [
         "",
@@ -388,21 +384,24 @@ async fn archived_legacy_http_reads_work_and_resume_and_mutations_refuse() {
             .await
             .unwrap();
     }
-    store.save_transcript(
-        id,
-        vec![ChatMessage::User {
-            content: "historic transcript".into(),
-            provenance: Default::default(),
-            images: Vec::new(),
-        }],
-    );
+    store
+        .save_transcript(
+            id,
+            vec![ChatMessage::User {
+                content: "historic transcript".into(),
+                provenance: Default::default(),
+                images: Vec::new(),
+            }],
+        )
+        .await
+        .unwrap();
     let event = EventEnvelope::new(
         id,
         0,
         EventKind::MessageReceived,
         json!({"content":"historic event", "source":"user:http"}),
     );
-    store.append_event(id, event.clone());
+    store.append_event_acked(id, event.clone()).await.unwrap();
     state.mark_archive(id, REASON).await.unwrap();
     let before = store.load(id).await.unwrap().unwrap();
     // Neither catalog nor auth can be loaded: the refusal must precede preparation.

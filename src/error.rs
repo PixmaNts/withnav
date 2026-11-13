@@ -57,6 +57,8 @@ pub enum BusError {
     SessionNotFound(String),
     #[error("session event sequence space exhausted")]
     SeqSpaceExhausted,
+    #[error("history write failed: {0}")]
+    History(String),
     #[error("actor inbox is full; command rejected")]
     InboxFull,
 }

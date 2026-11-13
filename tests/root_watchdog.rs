@@ -101,7 +101,6 @@ async fn pause_lifecycle(mode: u8) {
         serde_json::from_value(pause.payload.clone()).unwrap();
     assert!(typed.question.contains("alt+c"));
     let token = serde_json::from_value(typed.details.unwrap()["pause_token"].clone()).unwrap();
-    service.history().flush().await.unwrap();
     let loaded = service.history().load(id).await.unwrap().unwrap();
     assert!(loaded.transcript.iter().any(|m| matches!(m, withnav::provider::openai::ChatMessage::Tool { tool_call_id, .. } if tool_call_id == "glob")));
     assert!(provider.requests.try_recv().is_err());
@@ -132,7 +131,6 @@ async fn pause_lifecycle(mode: u8) {
             .await
             .unwrap();
         // Admission is durable, but the crash precedes consumption into the transcript.
-        service.history().flush().await.unwrap();
         let saved = service.history().load(id).await.unwrap().unwrap();
         let admitted = withnav::bus::event::EventEnvelope::new(
             id,
@@ -147,8 +145,11 @@ async fn pause_lifecycle(mode: u8) {
         let saved = service.history().load(id).await.unwrap().unwrap();
         let mut admitted = admitted;
         admitted.seq = saved.meta.last_seq + 1;
-        service.history().append_event(id, admitted);
-        service.history().flush().await.unwrap();
+        service
+            .history()
+            .append_event_acked(id, admitted)
+            .await
+            .unwrap();
         service
             .create_or_resume_session(&ws, None, false, Some(id))
             .await
@@ -168,7 +169,6 @@ async fn pause_lifecycle(mode: u8) {
                 .await
                 .unwrap();
         }
-        service.history().flush().await.unwrap();
         assert!(
             provider.requests.try_recv().is_err(),
             "recovery must await a real captain"
@@ -267,7 +267,6 @@ async fn pause_lifecycle(mode: u8) {
             .any(|e| e.payload["data"]["resolution"].is_string())
     );
     if mode == 2 {
-        service.history().flush().await.unwrap();
         let saved = service.history().load(id).await.unwrap().unwrap();
         assert!(saved.transcript.iter().any(|message| matches!(message,withnav::provider::openai::ChatMessage::User {content,..} if content == "replacement instruction")));
         assert!(
@@ -399,7 +398,6 @@ async fn watchdog_off_uses_fallback_and_autonomous_results_cannot_renew_it() {
             .await
             .unwrap();
     }
-    service.history().flush().await.unwrap();
     assert_eq!(provider.bodies().len(), 501);
     command.command_id = ulid::Ulid::generate();
     command.source_actor_id = "user:http".into();

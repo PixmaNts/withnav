@@ -53,7 +53,6 @@ async fn bypass_is_ephemeral_isolated_and_idempotently_sequenced() {
         .unwrap();
     assert!(!disabled.enabled && disabled.changed);
     assert!(disabled.bypass_seq > enabled.bypass_seq);
-    state.history().flush().await.unwrap();
     let sub = state.subscribe(first, None).await.unwrap();
     let withnav::bus::ResumeOutcome::Replay(events) = sub.replay else {
         panic!("expected replay");
@@ -94,7 +93,6 @@ async fn resume_resets_bypass_off_with_an_event_first() {
     assert_eq!(resumed, id);
     let summary = state.session_summary(id).await.unwrap();
     assert!(!summary.bypass);
-    state.history().flush().await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
     let withnav::bus::ResumeOutcome::Replay(events) = sub.replay else {
         panic!("expected replay");
@@ -124,7 +122,6 @@ async fn resume_resets_bypass_off_with_an_event_first() {
 }
 
 async fn results(state: &AppState, id: ulid::Ulid) -> Vec<EventEnvelope> {
-    state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
         withnav::bus::ResumeOutcome::Replay(events) => events
@@ -300,7 +297,6 @@ async fn a_session_that_cannot_take_commands_is_an_error() {
         .await
         .expect("create");
     state.close_session(id).await.expect("close");
-    state.history().flush().await.expect("flush");
     let err = state.run_command(id, "help", "").await.unwrap_err();
     assert!(matches!(err, withnav::error::ServerError::ResumeRequired));
 }

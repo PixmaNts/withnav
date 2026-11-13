@@ -92,7 +92,6 @@ async fn successful_switch_fallback_warning_is_durable_and_replayed() {
             .unwrap()
             .contains("mock/missing")
     );
-    state.history().flush().await.unwrap();
     let loaded = state.history().load(id).await.unwrap().unwrap();
     let event = loaded
         .envelopes
@@ -155,7 +154,6 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
         )
         .await
         .unwrap();
-    state.history().flush().await.unwrap();
     let loaded = state.history().load(id).await.unwrap().unwrap();
     assert!(loaded.envelopes.iter().any(|e| {
         e.kind == "command.result"
@@ -511,7 +509,6 @@ fn sent(provider: &CapturingProvider, n: usize) -> Vec<(String, String)> {
 }
 
 async fn stored_agent(state: &AppState, id: ulid::Ulid) -> Option<String> {
-    state.history().flush().await.expect("flush");
     state
         .history()
         .meta(id)

@@ -138,9 +138,11 @@ async fn seeded(state: &AppState, ws: &Path, turns: usize, reasoning: bool) -> u
 async fn seeded_with(state: &AppState, ws: &Path, transcript: Vec<ChatMessage>) -> ulid::Ulid {
     let id = state.create_session(ws, None, false).await.expect("create");
     state.close_session(id).await.expect("close");
-    state.history().flush().await.expect("flush");
-    state.history().save_transcript(id, transcript);
-    state.history().flush().await.expect("flush");
+    state
+        .history()
+        .save_transcript(id, transcript)
+        .await
+        .unwrap();
     state
         .create_or_resume_session(ws, None, false, Some(id))
         .await
@@ -149,7 +151,6 @@ async fn seeded_with(state: &AppState, ws: &Path, transcript: Vec<ChatMessage>) 
 }
 
 async fn stored(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelope> {
-    state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
         withnav::bus::ResumeOutcome::Replay(events) => {
@@ -448,7 +449,6 @@ async fn a_resume_after_a_switch_uses_the_new_model() {
     let out = state.run_command(id, "model", "b/model-b").await.unwrap();
     assert!(out.ok, "{out:?}");
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
 
     let (resumed, was_resumed) = state
         .create_or_resume_session(&env.ws, None, false, Some(id))
@@ -574,7 +574,6 @@ async fn a_resume_keeps_the_reasoning_boundary_of_the_switch() {
     assert_projection_without_reasoning(&body(&b, 0));
 
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
     state
         .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
@@ -586,7 +585,6 @@ async fn a_resume_keeps_the_reasoning_boundary_of_the_switch() {
 
     // The transcript keeps what the first model thought.
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
     let stored = state.history().load(id).await.unwrap().unwrap().transcript;
     assert!(stored.iter().any(|m| matches!(
         m,
@@ -605,7 +603,6 @@ async fn a_switch_whose_event_cannot_be_stored_changes_nothing() {
     let b = spawn_capturing_provider(vec![]).await;
     let state = state(&env, &a, &b, 128_000, 128_000);
     let id = seeded(&state, &env.ws, 2, true).await;
-    state.history().flush().await.unwrap();
     // Reject only the selection event, leaving ordinary refusal events writable.
     let conn = rusqlite::Connection::open(env.root.join("history.db")).unwrap();
     conn.execute_batch(
@@ -721,7 +718,6 @@ async fn deferred_controls_are_cancelled_in_order_before_session_end() {
     let switch = state.run_command(id, "model", "b/model-b").await.unwrap();
 
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
 
     let all = results(&state, id).await;
     let cancelled: Vec<&(String, bool, String)> = all.iter().filter(|(_, ok, _)| !*ok).collect();

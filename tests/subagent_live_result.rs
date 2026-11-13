@@ -100,7 +100,6 @@ async fn failed_second_steer_commit_preserves_the_acknowledged_prefix_after_rest
     drop(parent_stream);
     async {
         loop {
-            service.history().flush().await.unwrap();
             let events = service
                 .history()
                 .replay(parent, None, u64::MAX)
@@ -154,12 +153,6 @@ async fn failed_second_steer_commit_preserves_the_acknowledged_prefix_after_rest
         .unwrap();
     assert!(request.contains("first committed finding"));
     assert!(request.contains("second pending finding"));
-    service
-        .history()
-        .flush()
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
     let events = service
         .history()
         .replay(parent, None, u64::MAX)
@@ -242,12 +235,6 @@ async fn delivered_result_is_live_and_replayed_once_before_the_woken_turn() {
     let (_, parent_stream) = provider
         .requests
         .recv()
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
-    service
-        .history()
-        .flush()
         .bounded(file!(), line!())
         .await
         .unwrap();

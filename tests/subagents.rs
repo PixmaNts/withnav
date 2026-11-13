@@ -796,12 +796,6 @@ async fn a_writable_childs_unruled_call_asks_and_is_routed_to_its_parent() {
 }
 
 async fn events(fx: &Fx, id: ulid::Ulid) -> Vec<withnav::bus::event::EventEnvelope> {
-    fx.state
-        .history()
-        .flush()
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
     match fx
         .state
         .subscribe(id, None)
@@ -2071,7 +2065,7 @@ async fn failed_durable_toggle_enables_nothing_in_the_tree() {
 }
 
 #[tokio::test]
-async fn a_bypass_commit_reports_its_own_append_not_an_earlier_poisoned_write() {
+async fn a_bypass_commit_reports_its_own_append_not_an_earlier_failed_write() {
     let provider = common::sse::spawn_streaming_provider()
         .bounded(file!(), line!())
         .await;
@@ -2082,18 +2076,24 @@ async fn a_bypass_commit_reports_its_own_append_not_an_earlier_poisoned_write() 
         .bounded(file!(), line!())
         .await
         .unwrap();
-    // An earlier fire-and-forget write for an unknown session poisons flush.
+    // An earlier write for an unknown session fails on its own and must not
+    // affect any later write of the store.
     let stray = ulid::Ulid::generate();
-    fx.state.history().append_event(
-        stray,
-        withnav::bus::event::EventEnvelope::new(
-            stray,
-            0,
-            withnav::bus::event::EventKind::SessionStart,
-            json!({}),
-        ),
+    assert!(
+        fx.state
+            .history()
+            .append_event_acked(
+                stray,
+                withnav::bus::event::EventEnvelope::new(
+                    stray,
+                    0,
+                    withnav::bus::event::EventKind::SessionStart,
+                    json!({}),
+                ),
+            )
+            .await
+            .is_err()
     );
-    assert!(fx.state.history().flush().await.is_err());
     let first = fx
         .state
         .set_bypass(id, true, withnav::bus::runtime::bypass::BypassOrigin::Http)

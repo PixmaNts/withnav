@@ -304,9 +304,6 @@ impl Service {
         {
             tracing::error!(session_id = %id, "sequencer did not close in time; dropping it");
         }
-        if let Err(err) = self.history().flush().await {
-            tracing::error!(session_id = %id, error = %err, "flushing history at close failed");
-        }
         self.lock_sessions().remove(&id);
     }
 

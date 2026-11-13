@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! The session's model variant: chosen at creation (or the alias default),
 //! saved with the session, checked on resume, changed with `/variant` at the
 //! next turn boundary, and merged into the chat request body.

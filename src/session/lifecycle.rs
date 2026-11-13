@@ -19,18 +19,9 @@ const TEARDOWN_AWAIT_CAP: Duration = Duration::from_secs(10);
 impl Service {
     /// Ownership inspection and lifecycle claim share admission; waits always retry.
     async fn claim_lifecycle_stop(&self, id: SessionId) -> Option<SessionHandle> {
-        #[cfg(debug_assertions)]
-        {
-            let barrier = self
-                .lifecycle_claim_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
-            if let Some(barrier) = barrier {
-                barrier.reached.notify_one();
-                barrier.release.notified().await;
-            }
-        }
+        self.test_points
+            .park(crate::session::test_points::ParkPoint::LifecycleClaim)
+            .await;
         loop {
             let pending = {
                 let _admission = self.admission_gate.lock().await;
@@ -193,18 +184,9 @@ impl Service {
                     .collect()
             };
             drop(admission);
-            #[cfg(debug_assertions)]
-            {
-                let barrier = self
-                    .shutdown_snapshot_barrier
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take();
-                if let Some(barrier) = barrier {
-                    barrier.reached.notify_one();
-                    barrier.release.notified().await;
-                }
-            }
+            self.test_points
+                .park(crate::session::test_points::ParkPoint::ShutdownSnapshot)
+                .await;
             if targets.is_empty() && owned.is_empty() {
                 let _admission = self.admission_gate.lock().await;
                 if self.lock_sessions().is_empty()

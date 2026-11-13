@@ -24,7 +24,7 @@ pub use delivery::PendingNotice;
 pub use watchdog::PauseToken;
 pub use watchdog::TerminalOwner;
 pub(crate) mod model;
-#[cfg(debug_assertions)]
+#[cfg(any(test, feature = "test-support"))]
 pub use model::observe_selection_install;
 
 use std::sync::{Arc, Mutex};
@@ -127,7 +127,7 @@ pub struct RuntimeStatus {
     /// child created while the setting changes reads one value or the other
     /// and is then given every later change.
     pub bypass_gate: tokio::sync::Mutex<()>,
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) captain_task_probe: Mutex<Option<String>>,
     #[cfg(test)]
     policy_pin_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
@@ -151,7 +151,7 @@ pub struct RuntimeStatus {
     /// reaches the session without passing through the actor (steering, flow notes, host
     /// messages) is hidden with it before it is queued or published.
     secrets: std::sync::OnceLock<crate::secrets::SecretAccess>,
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     negative_eligibility_barrier:
         Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     #[cfg(test)]
@@ -329,7 +329,7 @@ impl RuntimeStatus {
             && !self.selection.ask_pending()
             && self.selection.is_running()
     }
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn pause_negative_eligibility(
         &self,
         reached: Arc<tokio::sync::Notify>,
@@ -797,7 +797,7 @@ impl RuntimeStatus {
     /// The turn is over: an agent or variant change may apply.
     fn end_turn(&self, actor: &AgentActor) {
         self.update_question(actor);
-        #[cfg(debug_assertions)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             *self
                 .captain_task_probe
@@ -891,7 +891,7 @@ impl RuntimeStatus {
     /// Records that the session starts with `actor`'s unanswered `ask`, if any.
     pub fn init_ask(&self, actor: &AgentActor) {
         self.update_question(actor);
-        #[cfg(debug_assertions)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             *self
                 .captain_task_probe
@@ -1182,7 +1182,7 @@ async fn runtime_loop(
                         .store(true, std::sync::atomic::Ordering::Release);
                     return Ok(BoundaryResult::Interrupted);
                 }
-                #[cfg(debug_assertions)]
+                #[cfg(any(test, feature = "test-support"))]
                 {
                     let barrier = status
                         .negative_eligibility_barrier

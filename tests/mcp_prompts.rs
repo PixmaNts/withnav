@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! A server's prompts become the Captain's `/<server>:<prompt>` commands: listed with the
 //! built-ins, their arguments checked before anything is asked, and their messages sent to
 //! the agent as bounded, redacted, untrusted data inside the Captain's message.

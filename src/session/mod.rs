@@ -22,9 +22,10 @@ mod run_command;
 mod secrets;
 mod sender;
 pub(crate) mod service;
-#[cfg(debug_assertions)]
+pub(crate) mod test_points;
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-pub use service::ChildPreparationBarrier;
+pub use test_points::ChildPreparationBarrier;
 pub mod store;
 pub mod subagents;
 mod subscription;

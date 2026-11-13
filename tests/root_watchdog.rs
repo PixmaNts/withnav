@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;

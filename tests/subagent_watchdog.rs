@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};

@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! Configured MCP secrets never reach the provider, the event store or doctor output, in
 //! any of the representations a server can emit them in.
 use serde_json::json;

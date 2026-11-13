@@ -102,22 +102,8 @@ impl Service {
             link.agent,
             serde_json::to_string(&evidence).map_err(|e| ServerError::History(e.to_string()))?,
         );
-        #[cfg(debug_assertions)]
-        let barrier = self
-            .budget_notice_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
-        #[cfg(debug_assertions)]
-        if let Some(barrier) = &barrier {
-            barrier.reached.notify_one();
-            barrier.release.notified().await;
-        }
-        #[cfg(debug_assertions)]
-        if self
-            .budget_notice_failure
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
-        {
+        let seam = self.test_points.budget_notice_seam();
+        if seam.park().await {
             return Err(ServerError::History(
                 "injected budget notice failure".into(),
             ));
@@ -135,10 +121,7 @@ impl Service {
             .await
             .map_err(ServerError::History);
         // The paused test learns the attempt is over, whether it committed or not.
-        #[cfg(debug_assertions)]
-        if let Some(barrier) = &barrier {
-            barrier.reached.notify_one();
-        }
+        seam.renotify();
         if !committed? {
             return Ok(());
         }

@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! MCP apps served as documents: `POST /v1/mcp/{server}/app` parks one, `GET /mcp-app/{token}`
 //! serves it once under its own Content-Security-Policy, and a real browser runs it in a
 //! sandboxed iframe the way the VS Code panel does.

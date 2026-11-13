@@ -128,14 +128,14 @@ pub(crate) struct RootWatchdog {
     reviewer: Option<Arc<dyn ProgressReviewer>>,
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone)]
 pub(crate) struct TestRootWatchdog {
     pub clock: Arc<dyn Clock>,
     pub judge: Arc<dyn DecisionModel>,
     pub reviewer: Option<Arc<dyn ProgressReviewer>>,
 }
-#[cfg(debug_assertions)]
+#[cfg(any(test, feature = "test-support"))]
 impl std::fmt::Debug for TestRootWatchdog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("TestRootWatchdog")
@@ -143,7 +143,7 @@ impl std::fmt::Debug for TestRootWatchdog {
 }
 
 impl Service {
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn install_root_watchdog_test(
         &self,
@@ -151,14 +151,8 @@ impl Service {
         judge: Arc<dyn DecisionModel>,
         reviewer: Option<Arc<dyn ProgressReviewer>>,
     ) {
-        *self
-            .root_watchdog_test
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(TestRootWatchdog {
-            clock,
-            judge,
-            reviewer,
-        });
+        self.test_points
+            .install_root_watchdog_test(clock, judge, reviewer);
     }
     pub(crate) fn prepare_root_watchdog(
         &self,
@@ -229,13 +223,8 @@ impl Service {
             }) as Arc<dyn ProgressReviewer>)
         });
         let clock: Arc<dyn Clock> = Arc::new(RealClock);
-        #[cfg(debug_assertions)]
-        let (clock, judge, reviewer) = match self
-            .root_watchdog_test
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-        {
+        #[cfg(any(test, feature = "test-support"))]
+        let (clock, judge, reviewer) = match self.test_points.root_watchdog_test() {
             Some(test) => (test.clock, Some(test.judge), test.reviewer),
             None => (clock, judge, reviewer),
         };

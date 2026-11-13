@@ -28,10 +28,10 @@ Every tool call goes through the same steps, in this order:
    their files there.
 4. **Your rules**: a `deny` rule stops the call, whatever comes after.
 5. **Bypass** (if on for this session): the call runs.
-6. **The permission flow**, except for a call an **allow** rule covers: Instinct judges whether
-   you, or a skill you validated, asked for the call (including a parent agent's delegation to a
-   subagent), whether it only reads, or whether it is a recoverable change: files in the project,
-   its scratch folders or the temp folder, or building, testing, formatting or linting the
+6. **The permission flow**, except for a non-shell call an **allow** rule covers: Instinct judges
+   whether you, or a skill you validated, asked for the call (including a parent agent's delegation
+   to a subagent), whether it only reads, or whether it is a recoverable change: files in the
+   project, its scratch folders or the temp folder, or building, testing, formatting or linting the
    project. It can let the call run, or ask you.
    On any tool but `bash`, an **allow** rule is your answer to that question: the call runs at
    once, with no judgement, so a saved **Always** on a file, search, `fetch` or MCP tool takes
@@ -39,8 +39,9 @@ Every tool call goes through the same steps, in this order:
    line, so the flow still judges the line it runs; under an `allow` rule it asks only whether this
    exact call is dangerous (destructive, irreversible, publishing or touching credentials); a
    dangerous call still runs if you asked for it, and asks you otherwise. So an **Always** on a
-   shell command never makes a dangerous call run unasked, and never stops one you explicitly
-   asked for.
+   shell command does not make a dangerous call run unasked, and never stops one you explicitly
+   asked for. If Instinct cannot answer at all, your rule stands and a dangerous command under it
+   runs too.
 
 The permission flow reads all your messages and the last four messages of the conversation, yours
 and the agent's, up to your last message. A short answer such as "yes, go" therefore accepts the

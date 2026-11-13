@@ -445,10 +445,11 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
     }
 
     // 6. An `allow` rule runs a call the Captain already approved without an
-    // Instinct evaluation. `bash` is the exception: a rule on a shell prefix
-    // cannot foresee the line that will run, so the flow keeps judging a
-    // destructive one. A rule-less `allow` is a validated skill (`lookup`); it
-    // is a different provenance from a written rule, hence the separate label.
+    // Instinct evaluation, by the Captain's decision of 2026-11-10 (ADR 0015).
+    // `bash` is the exception: a rule on a shell prefix cannot foresee the line
+    // that will run, so the flow keeps judging a destructive one. A rule-less
+    // `allow` is a validated skill (`lookup`); it is a different provenance from
+    // a written rule, hence the separate label.
     if rules.result == RuleResult::Allow && input.call.name != "bash" {
         return run(
             if rules.rule.is_none() {
@@ -1517,9 +1518,9 @@ mod tests {
     }
 
     /// The calls an `allow` rule covers without a flow: reads, searches, writes
-    /// and edits the rule matches outside the free roots, and a fetch. A call
-    /// inside the readable roots or the temp directory is already free before the
-    /// rule is read, so it would not exercise the rule's early exit.
+    /// and edits the rule matches outside the free roots, and a fetch. Reads
+    /// inside the readable roots and eligible temp writes already return before
+    /// this exit, so they would not exercise it.
     #[test]
     fn an_allow_rule_runs_a_native_call_without_the_flow() {
         let f = fixture();
@@ -1580,7 +1581,7 @@ mod tests {
         let f = fixture();
         f.add("write", "*", Effect::Allow);
         let write = file("write", &f.cx.workspace.join("a.rs").display().to_string());
-        // Three identical calls in a turn ask before the rule is reached.
+        // Three identical calls in a turn ask before the allow-rule early return.
         let (decision, asked) = f.decide_with(
             Control::Normal,
             &write,
@@ -1617,6 +1618,16 @@ mod tests {
         let decision = f.decide_validated(Control::Normal, &skill, &flows);
         assert_eq!(run_by(&decision), Some(ApprovedBy::Validation));
         assert_eq!((flows.flow_calls.get(), decision.trace.rule_id), (0, None));
+        // An explicit `allow` rule is a written rule, not the validation.
+        let allow = f.add("skill", "release", Effect::Allow);
+        let flows = Script::new(FlowAnswer::Deny, ProtectedCheck::Unavailable);
+        let decision = f.decide_validated(Control::Normal, &skill, &flows);
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
+        assert_eq!(
+            (decision.trace.rule_id, flows.flow_calls.get()),
+            (Some(allow.id), 0)
+        );
+        f.store.revoke(allow.id).unwrap();
         // An `ask` rule still asks; the validation does not resolve it.
         let ask = f.add("skill", "release", Effect::Ask);
         let flows = Script::new(FlowAnswer::ApplyRule, ProtectedCheck::Unavailable);
@@ -2082,11 +2093,12 @@ mod tests {
                 scope: RuleScope::Global,
             }]
         );
+        // An MCP tool is decided like any other: the allow rule runs it without
+        // the flow, whose contradicting answer would deny it.
         f.add("mcp__github__create_issue", "*", Effect::Allow);
-        assert_eq!(
-            run_by(&f.decide(Control::Normal, &tool)),
-            Some(ApprovedBy::Rule)
-        );
+        let (decision, asked) = f.decide_with(Control::Normal, &tool, 1, FlowAnswer::Deny);
+        assert_eq!(run_by(&decision), Some(ApprovedBy::Rule));
+        assert_eq!(asked, 0);
     }
 
     #[test]

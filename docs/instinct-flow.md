@@ -293,9 +293,9 @@ agent/model or starts a session.
 
 ### Permission hook
 
-The agent loop decides every tool call in the order of ADR 0015: yolo, the fixed
-floor, free reads, rules (a `deny` stops the call), bypass, then the permission
-flows, then the Captain. The embedded `permission-default` flow is enabled. Each
+The agent loop decides every tool call in the order of ADR 0015: yolo, the fixed floor, free reads,
+rules (a `deny` stops the call), bypass, an `allow` rule on a call other than `bash` (the call runs),
+then the permission flows, then the Captain. The embedded `permission-default` flow is enabled. Each
 blocking flow's `apply_rule` (or lack of a verdict) resolves using the rule;
 then `deny` > `ask_captain` > `allow` wins. Zero answering flows also applies
 the rule. The return value includes flow names, run ids, resolved actions and
@@ -340,14 +340,16 @@ yes at ≥ 0.8 and reach `protected_allow` with `protected_ok = true`. The host
 evaluates this check itself from the binary's embedded definition and state
 template, independently of loader overrides. No disk flow, even a same-name
 override or exact clone, can supply protected authority. Other flows can only
-tighten the protected verdict. A skipped/failed/missing check or cut Captain
-evidence asks even under an allow rule. Ordinary validated workspace allows
-remain unrestricted for non-protected calls.
+tighten the protected verdict, and only for a call that still reaches them: a
+non-`bash` call an `allow` rule covers runs once the compiled check passed. A
+skipped/failed/missing check or cut Captain evidence asks even under an allow
+rule. Ordinary validated workspace allows remain unrestricted for non-protected
+calls.
 Otherwise the built-in asks whether the Captain asked for the action or accepted
 an agent proposal to do it (≥ 0.6), then whether the call only reads or lists
 (≥ 0.6), then whether it is a recoverable change: files in the project, its
 scratch directories or the temp directory, or building, testing, formatting or
-linting (≥ 0.7). For an allow rule it first asks about destruction,
+linting (≥ 0.7). For an `allow` rule on a `bash` line it first asks about destruction,
 irreversibility, publication and credentials (≥ 0.5); a yes goes to the same
 `requested` question, and an unrequested dangerous call asks.
 Its state explicitly treats everything except Captain messages and the validated

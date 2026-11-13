@@ -29,7 +29,7 @@ expensive to maintain:
 | Threat | Stance |
 |---|---|
 | The model acting against the Captain | Not defended against. The model works for the Captain. |
-| An honest but destructive mistake (`rm -rf`, force push, overwrite outside the project) | Judged by Instinct; the Captain decides when Instinct objects. |
+| An honest but destructive mistake (`rm -rf`, force push, overwrite outside the project) | Judged by Instinct, except a non-`bash` call the Captain has already covered by an `allow` rule; the Captain decides when Instinct objects. |
 | A tool, MCP server, skill or flow the Captain installed doing what it is meant to do | The Captain's responsibility. Validated once, then trusted. |
 | **Prompt injection**: instructions hidden in a skill, a fetched page, an MCP result, a repository file | **The main threat.** Untrusted text never authorises anything (see "What counts as the Captain's request"). |
 | Local tricks: a fake `cargo` in `PATH`, symlink races, shell expansion games | Out of scope. They need an attacker who already controls the machine or the repository. WithNav is not a sandbox. |
@@ -132,8 +132,8 @@ The built-in flow starts with three questions:
     `git push *`).
   - Otherwise: `allow`.
 
-A call other than `bash` never reaches these questions: its `allow` rule runs it (decision order,
-step 6).
+A non-`bash` call with an effective `allow` result never reaches these questions: the rule runs it
+(decision order, step 6).
 
 The thresholds are flow constants. The decision table is what tunes them.
 
@@ -247,8 +247,9 @@ Decisions taken while implementing this ADR that refine it:
 - **Protected writes.** A write to `config.json`, `withnav.db` or the global flows directory runs
   automatically only when the protected check compiled into the binary answers that the Captain
   asked for it, or explicitly accepted an agent proposal to do it. Otherwise the Captain is asked and can approve once. A flow on disk,
-  even a copy of the built-in one, can make that answer stricter but never grant it. The check is
-  asked once per call and its answer is passed to the flows.
+  even a copy of the built-in one, can make that answer stricter but never grant it — for a call
+  that still reaches the ordinary flows, which a non-`bash` call an `allow` rule covers does not.
+  The check is asked once per call and its answer is passed to the flows.
 - **General protected check for bash.** The floor no longer guesses whether a program that names a
   protected file writes it (the `sqlite3 -readonly` exception and the "`sqlite3` or opaque line
   naming `withnav.db`" fallback are gone). It keeps as protected writes only certain ones:
@@ -334,10 +335,10 @@ Decisions taken while implementing this ADR that refine it:
   editing files inside the project, its scratch directories or the system temp directory, or
   building, testing, formatting or linting the project?" (≥ 0.7; the question also says that
   deleting, discarding uncommitted work, rewriting or pushing history, publishing or changing
-  anything elsewhere is not). Under an `allow` rule, a call judged dangerous now goes to the same
-  `requested` question: an explicitly requested `rm` runs under `bash rm *` as it would with no
-  rule, and an unrequested one asks. The thresholds were checked by replaying the Captain's test
-  session against the live model.
+  anything elsewhere is not). Under an `allow` rule on a `bash` call, a call judged dangerous now goes
+  to the same `requested` question: an explicitly requested `rm` runs under `bash rm *` as it would
+  with no rule, and an unrequested one asks. The thresholds were checked by replaying the Captain's
+  test session against the live model.
 - **Recent exchanges.** The permission flow and the protected check both receive
   `conversation.recent`: the last 4 messages between the Captain and the agent, in order, each
   labelled `captain` or `agent`, Captain text stripped of attachments like the Captain's messages,

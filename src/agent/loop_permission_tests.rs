@@ -897,10 +897,11 @@ impl instinct_flow::DecisionClient for SlowInstinct {
     }
 }
 
-/// The time an Instinct round trip costs a native call under an `allow` rule,
-/// measured through the production path (`run_agent` -> `authorize` ->
-/// `permission::decide` -> dispatch) with a controlled endpoint rather than a
-/// live model: it is a synthetic dispatch measurement of the same quantity.
+/// The wait an Instinct round trip adds between the model's tool call and the
+/// tool's start, measured through the production path (`run_agent` ->
+/// `authorize` -> `permission::decide` -> dispatch). The endpoint is a
+/// controlled in-process client that answers after a fixed delay, not a live
+/// model: a synthetic dispatch measurement of the same quantity.
 #[tokio::test]
 async fn an_allowed_native_call_starts_without_waiting_for_instinct() {
     const FLOW_DELAY: std::time::Duration = std::time::Duration::from_millis(800);
@@ -929,20 +930,27 @@ async fn an_allowed_native_call_starts_without_waiting_for_instinct() {
         ],
     )
     .await;
-    let started = std::time::Instant::now();
-    let mut dispatch = None;
-    let outcome = run_agent(&mut actor, &mut |event| {
-        if let AgentEvent::PreCall { .. } = event {
-            dispatch.get_or_insert(started.elapsed());
+    // The response carries the call; the next `PreCall` is that call starting,
+    // so the two stamps bracket the decision and nothing else.
+    let mut asked_at = None;
+    let mut started_at = None;
+    let outcome = run_agent(&mut actor, &mut |event| match event {
+        AgentEvent::Response(_) if started_at.is_none() => {
+            asked_at = Some(std::time::Instant::now());
         }
+        AgentEvent::PreCall { .. } => {
+            started_at.get_or_insert(std::time::Instant::now());
+        }
+        _ => {}
     })
     .await
     .unwrap();
     assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
-    let waited = dispatch.expect("the allowed call was dispatched");
+    let waited = started_at.expect("the allowed call was dispatched")
+        - asked_at.expect("the model's response carried the call");
     assert!(
         waited < FLOW_DELAY / 2,
-        "an allowed native call waited {waited:?} before starting"
+        "an allowed native call waited {waited:?} between the model's call and its start"
     );
 }
 

@@ -3,6 +3,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use withnav::provider::openai::ChatMessage;
 use withnav::server::AppState;
+use withnav_provider::openai::ClientCache;
 
 mod common;
 use common::deadline::{Deadline, WAIT};
@@ -934,7 +935,7 @@ async fn abandoned_mirrored_permission_is_expired_on_resume() {
     );
     store.flush().bounded(file!(), line!()).await.unwrap();
     drop(store);
-    let state = AppState::new(config).unwrap();
+    let state = AppState::new(config, std::sync::Arc::new(ClientCache::new())).unwrap();
     state
         .create_or_resume_session(&ws, None, false, Some(parent))
         .bounded(file!(), line!())
@@ -966,7 +967,7 @@ async fn recovery_leaves_live_instance_children_and_recovers_stale_owner() {
     let config = TestServerConfig::unreachable(tmp.path())
         .chat_tools(128_000)
         .config();
-    let first = AppState::new(config.clone()).unwrap();
+    let first = AppState::new(config.clone(), std::sync::Arc::new(ClientCache::new())).unwrap();
     let parent = ulid::Ulid::generate();
     let child = ulid::Ulid::generate();
     first
@@ -1008,7 +1009,7 @@ async fn recovery_leaves_live_instance_children_and_recovers_stale_owner() {
     #[cfg(windows)]
     let alias = config.history_db.clone();
     other_config.history_db = alias;
-    let second = AppState::new(other_config).unwrap();
+    let second = AppState::new(other_config, std::sync::Arc::new(ClientCache::new())).unwrap();
     assert_eq!(
         second
             .child_metadata(child)
@@ -1029,7 +1030,7 @@ async fn recovery_leaves_live_instance_children_and_recovers_stale_owner() {
             .is_empty()
     );
     drop(first);
-    let third = AppState::new(config).unwrap();
+    let third = AppState::new(config, std::sync::Arc::new(ClientCache::new())).unwrap();
     let link = third
         .child_metadata(child)
         .bounded(file!(), line!())
@@ -1302,7 +1303,7 @@ async fn unconsumed_notice_survives_child_delete_and_service_recreation() {
     let config = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(128_000)
         .config();
-    let state = AppState::new(config.clone()).unwrap();
+    let state = AppState::new(config.clone(), std::sync::Arc::new(ClientCache::new())).unwrap();
     let (parent, child) = spawn_linked_child(&state, &ws, "vigie", "inspect").await;
     let (_, stream) = provider
         .requests
@@ -1321,7 +1322,7 @@ async fn unconsumed_notice_survives_child_delete_and_service_recreation() {
         .bounded(file!(), line!())
         .await;
     drop(state);
-    let state = AppState::new(config).unwrap();
+    let state = AppState::new(config, std::sync::Arc::new(ClientCache::new())).unwrap();
     state
         .create_or_resume_session(&ws, None, false, Some(parent))
         .bounded(file!(), line!())
@@ -1438,7 +1439,7 @@ async fn recovery_terminalizes_unfinished_child_without_tool_replay() {
         .await
         .unwrap();
     drop(history);
-    let state = AppState::new(config).unwrap();
+    let state = AppState::new(config, std::sync::Arc::new(ClientCache::new())).unwrap();
     let link = state
         .child_metadata(child)
         .bounded(file!(), line!())

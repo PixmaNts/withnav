@@ -565,7 +565,12 @@ async fn failed_routing_after_storage_preserves_secret() {
         let config = TestServerConfig::mock(tmp.path(), &provider.url)
             .allow_everything()
             .config();
-        let state = AppState::with_hooks(config, hooks).unwrap();
+        let state = AppState::with_hooks(
+            config,
+            hooks,
+            Arc::new(withnav_provider::openai::ClientCache::new()),
+        )
+        .unwrap();
 
         let id = state.create_session(&ws, None, false).await.unwrap();
         let session_cancel = cancel_rx.await.unwrap();

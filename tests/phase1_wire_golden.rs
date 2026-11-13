@@ -61,6 +61,7 @@ async fn make_actor(base_url: String, registry: Registry) -> TestActor {
         ReasoningHistory::Preserve,
         Some(256),
         CancellationToken::new(),
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
     );
     // The wire is the subject here, not permissions: every call may run.
     actor

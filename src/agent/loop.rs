@@ -1796,6 +1796,7 @@ mod tests {
     #[cfg(unix)]
     use crate::agent::permissions::Scope;
     use crate::provider::config::{ProviderConfig, ReasoningHistory};
+    use crate::provider::openai::ClientCache;
     use crate::provider::test_support::{http_sse, sse_body};
 
     #[tokio::test]
@@ -1962,6 +1963,192 @@ mod tests {
         }
     }
 
+    pub(super) struct KeepAliveMockServer {
+        pub(super) url: String,
+        pub(super) requests: Arc<Mutex<Vec<String>>>,
+        pub(super) accept_count: Arc<std::sync::atomic::AtomicUsize>,
+        shutdown: CancellationToken,
+        server_handle: tokio::task::JoinHandle<()>,
+    }
+
+    impl KeepAliveMockServer {
+        pub(super) async fn stop(self) {
+            self.shutdown.cancel();
+            let _ = self.server_handle.await;
+        }
+    }
+
+    pub(super) async fn spawn_keep_alive_mock(responses: Vec<String>) -> KeepAliveMockServer {
+        use std::collections::VecDeque;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let accept_count = Arc::new(AtomicUsize::new(0));
+        let shutdown = CancellationToken::new();
+
+        let req_clone = requests.clone();
+        let acc_clone = accept_count.clone();
+        let shut_clone = shutdown.clone();
+        let resp_queue = Arc::new(Mutex::new(VecDeque::from(responses)));
+
+        let server_handle = tokio::spawn(async move {
+            let mut tasks = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    _ = shut_clone.cancelled() => break,
+                    accepted = listener.accept() => {
+                        let Ok((mut sock, _)) = accepted else { break; };
+                        acc_clone.fetch_add(1, Ordering::SeqCst);
+                        let req_inner = req_clone.clone();
+                        let resp_inner = resp_queue.clone();
+                        let shut_conn = shut_clone.clone();
+                        tasks.spawn(async move {
+                            let mut buf = Vec::new();
+                            let mut tmp = [0u8; 4096];
+                            loop {
+                                let (req_str, body_end) = loop {
+                                    if let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                        let header = String::from_utf8_lossy(&buf[..idx]);
+                                        let content_len = header
+                                            .lines()
+                                            .find_map(|l| {
+                                                l.to_lowercase()
+                                                    .strip_prefix("content-length:")
+                                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                                            })
+                                            .unwrap_or(0);
+                                        let body_start = idx + 4;
+                                        if buf.len() >= body_start + content_len {
+                                            break (
+                                                String::from_utf8_lossy(&buf[..body_start + content_len]).into_owned(),
+                                                body_start + content_len,
+                                            );
+                                        }
+                                    }
+                                    tokio::select! {
+                                        _ = shut_conn.cancelled() => return,
+                                        read_res = sock.read(&mut tmp) => {
+                                            match read_res {
+                                                Ok(0) | Err(_) => return,
+                                                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                                            }
+                                        }
+                                    }
+                                };
+                                buf.drain(..body_end);
+                                req_inner.lock().await.push(req_str);
+
+                                let next_body = {
+                                    let mut q = resp_inner.lock().await;
+                                    q.pop_front()
+                                };
+                                if let Some(body) = next_body {
+                                    let header = format!(
+                                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
+                                        body.len()
+                                    );
+                                    // Write head and body as one buffer: two
+                                    // write_all calls make the second small
+                                    // segment wait on Nagle for the peer's
+                                    // delayed ACK on a reused connection,
+                                    // adding a steady ~40 ms to every turn
+                                    // after the first (measured 2026-11-13 on
+                                    // loopback) and masking the pooling gain
+                                    // this test exists to demonstrate.
+                                    let mut response = header.into_bytes();
+                                    response.extend_from_slice(body.as_bytes());
+                                    if sock.write_all(&response).await.is_err()
+                                        || sock.flush().await.is_err()
+                                    {
+                                        return;
+                                    }
+                                } else {
+                                    return;
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+            tasks.abort_all();
+        });
+
+        KeepAliveMockServer {
+            url: format!("http://{addr}/v1"),
+            requests,
+            accept_count,
+            shutdown,
+            server_handle,
+        }
+    }
+
+    #[tokio::test]
+    async fn sequential_agent_turns_share_one_keepalive_connection() {
+        use std::sync::atomic::Ordering;
+        use std::time::{Duration, Instant};
+
+        let turn1_body = sse_body(&[
+            r#"{"choices":[{"index":0,"delta":{"content":"first turn answer"},"finish_reason":"stop"}]}"#,
+        ]);
+        let turn2_body = sse_body(&[
+            r#"{"choices":[{"index":0,"delta":{"content":"second turn answer"},"finish_reason":"stop"}]}"#,
+        ]);
+
+        let server = spawn_keep_alive_mock(vec![turn1_body, turn2_body]).await;
+        let cancel = CancellationToken::new();
+        let mut actor = make_actor(server.url.clone(), registry_all(), cancel);
+
+        // Turn 1
+        actor.push_user("first question");
+        let start1 = Instant::now();
+        let mut ttfb1 = None;
+        let mut observe1 = |e: AgentEvent| {
+            if ttfb1.is_none() && matches!(e, AgentEvent::Delta(_) | AgentEvent::Response(_)) {
+                ttfb1 = Some(start1.elapsed());
+            }
+        };
+        let outcome1 =
+            tokio::time::timeout(Duration::from_secs(5), run_agent(&mut actor, &mut observe1))
+                .await
+                .expect("turn 1 timed out")
+                .expect("turn 1 failed");
+        assert!(matches!(outcome1, RunOutcome::Done(m) if m.text == "first turn answer"));
+
+        // Turn 2
+        actor.push_user("second question");
+        let start2 = Instant::now();
+        let mut ttfb2 = None;
+        let mut observe2 = |e: AgentEvent| {
+            if ttfb2.is_none() && matches!(e, AgentEvent::Delta(_) | AgentEvent::Response(_)) {
+                ttfb2 = Some(start2.elapsed());
+            }
+        };
+        let outcome2 =
+            tokio::time::timeout(Duration::from_secs(5), run_agent(&mut actor, &mut observe2))
+                .await
+                .expect("turn 2 timed out")
+                .expect("turn 2 failed");
+        assert!(matches!(outcome2, RunOutcome::Done(m) if m.text == "second turn answer"));
+
+        let requests = server.requests.lock().await;
+        assert_eq!(requests.len(), 2);
+        drop(requests);
+
+        let accepts = server.accept_count.load(Ordering::SeqCst);
+        println!("turn 1 TTFB: {:?}", ttfb1);
+        println!("turn 2 TTFB: {:?}", ttfb2);
+        println!("total accepted connections: {accepts}");
+
+        assert_eq!(
+            accepts, 1,
+            "both turns should reuse the single keep-alive connection"
+        );
+
+        server.stop().await;
+    }
+
     pub(super) fn make_actor(
         base_url: String,
         registry: Registry,
@@ -1992,6 +2179,7 @@ mod tests {
             ReasoningHistory::Preserve,
             Some(256),
             cancel,
+            Arc::new(ClientCache::new()),
         );
         // The test workspaces live in the system temp directory, where writes
         // would need no permission: these tests judge them like project writes.

@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use withnav::bus::ResumeOutcome;
 use withnav::session::Service;
+use withnav_provider::openai::ClientCache;
 
 mod common;
 use common::server::TestServerConfig;
@@ -18,8 +19,11 @@ async fn service_create_without_http_emits_start_zero() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
-        .expect("service");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(ClientCache::new()),
+    )
+    .expect("service");
 
     let id = service
         .create_session(&ws, None, false)
@@ -53,8 +57,11 @@ async fn service_send_rejects_invalid_content_without_event() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
-        .expect("service");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(ClientCache::new()),
+    )
+    .expect("service");
     let id = service
         .create_session(&ws, None, false)
         .await
@@ -213,7 +220,7 @@ async fn service_delete_removes_listing_and_routing() {
         .config()
         .split()
         .0;
-    let service = Service::new(config).expect("service");
+    let service = Service::new(config, std::sync::Arc::new(ClientCache::new())).expect("service");
     let ws_str = ws.display().to_string();
 
     let id = service
@@ -271,7 +278,7 @@ async fn service_construction_fails_on_an_unopenable_history_db() {
         .split()
         .0;
 
-    let result = Service::new(config);
+    let result = Service::new(config, std::sync::Arc::new(ClientCache::new()));
     assert!(matches!(result, Err(ServerError::History(_))));
 }
 
@@ -327,6 +334,7 @@ async fn concurrent_resume_stop_delete_never_creates_two_runtimes() {
     let service = Service::with_hooks(
         TestServerConfig::unreachable(tmp.path()).config().split().0,
         std::sync::Arc::new(hooks.clone()),
+        std::sync::Arc::new(ClientCache::new()),
     )
     .expect("service");
 
@@ -449,8 +457,11 @@ async fn service_send_refuses_a_foreign_session_image_before_sequencing() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
-        .expect("service");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(ClientCache::new()),
+    )
+    .expect("service");
 
     let a = service.create_session(&ws, None, false).await.expect("A");
     let b = service.create_session(&ws, None, false).await.expect("B");
@@ -509,8 +520,11 @@ async fn service_send_refuses_an_unknown_attachment_id_before_sequencing() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
-        .expect("service");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(ClientCache::new()),
+    )
+    .expect("service");
 
     let a = service.create_session(&ws, None, false).await.expect("A");
 

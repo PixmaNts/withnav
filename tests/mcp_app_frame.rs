@@ -33,7 +33,11 @@ async fn app_server(
     }
     let cfg = config.config();
     with_mcp(&cfg, env);
-    let state = AppState::new(cfg).unwrap();
+    let state = AppState::new(
+        cfg,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     wait_for("MCP discovery", || {
         state
             .service()

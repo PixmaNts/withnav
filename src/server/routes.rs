@@ -1527,17 +1527,20 @@ mod tests {
 
     fn test_state() -> (tempfile::TempDir, AppState) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let state = AppState::new(ServerConfig {
-            bind: "127.0.0.1:0".parse().expect("loopback bind"),
-            models_path: None,
-            config_dir: dir.path().join("cfg"),
-            allow_non_loopback: false,
-            bearer_token: None,
-            history_db: dir.path().join("history.db"),
-            data_dir: dir.path().join("data"),
-            rules_roots: Default::default(),
-            web: None,
-        })
+        let state = AppState::new(
+            ServerConfig {
+                bind: "127.0.0.1:0".parse().expect("loopback bind"),
+                models_path: None,
+                config_dir: dir.path().join("cfg"),
+                allow_non_loopback: false,
+                bearer_token: None,
+                history_db: dir.path().join("history.db"),
+                data_dir: dir.path().join("data"),
+                rules_roots: Default::default(),
+                web: None,
+            },
+            Arc::new(ClientCache::new()),
+        )
         .expect("state over a temp database");
         (dir, state)
     }

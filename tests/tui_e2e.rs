@@ -1115,7 +1115,11 @@ async fn two_provider_env(root: tempfile::TempDir, a_url: &str, b_url: &str) -> 
     )
     .expect("auth.json");
     write_test_config(&config.config_dir.join("config.json"), "build", "a/model-a");
-    let state = withnav::server::session::AppState::new(config).expect("state");
+    let state = withnav::server::session::AppState::new(
+        config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .expect("state");
     let (addr, task) = spawn_server(state).await;
     let ws = workspace_of(&root);
     std::fs::create_dir_all(&ws).expect("workspace dir");

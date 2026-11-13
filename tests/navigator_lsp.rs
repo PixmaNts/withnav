@@ -25,7 +25,12 @@ async fn failed_legacy_conversion_is_warned_once_after_initialized() {
         let source = ws.join(".withnav");
         std::fs::create_dir_all(&source).unwrap();
         std::fs::write(source.join("pipeline.toml"), "unsupported = true").unwrap();
-        let host = withnav::flows::host::Host::new(ws.join("config"), ws.join("data"), None);
+        let host = withnav::flows::host::Host::new(
+            ws.join("config"),
+            ws.join("data"),
+            None,
+            std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+        );
         let store = host.store(ws.into());
         let errors = store.migration_diagnostics();
         assert_eq!(errors.len(), 1);

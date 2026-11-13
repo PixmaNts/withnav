@@ -51,7 +51,11 @@ async fn shutdown_stops_sessions_before_mcp_so_a_queued_call_never_runs() {
         json!({"command":[common::python(),FIXTURE],"env":{"SLOW_SECONDS":"5"}}),
         true,
     );
-    let state = AppState::new(cfg).unwrap();
+    let state = AppState::new(
+        cfg,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     ready(&state).await;
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     state
@@ -118,7 +122,11 @@ async fn subagents_receive_mcp_tools_within_parent_and_definition_limits() {
             .rules_home(&env.home)
             .config();
         with_mcp(&cfg, json!({"command":[common::python(),FIXTURE]}), false);
-        let state = AppState::new(cfg).unwrap();
+        let state = AppState::new(
+            cfg,
+            std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+        )
+        .unwrap();
         ready(&state).await;
         let parent = state
             .create_session_as(&env.ws, None, false, Some(parent_agent))
@@ -220,7 +228,11 @@ async fn a_child_keeps_the_tools_it_was_created_with_and_a_later_one_gets_the_pa
         json!({"command":[common::python(),FIXTURE],"env":{"INIT_DELAY_SECONDS":"1"}}),
         false,
     );
-    let state = AppState::new(cfg).unwrap();
+    let state = AppState::new(
+        cfg,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     // The parent starts before the server is ready, and so does the first child.
     let parent = state.create_session(&env.ws, None, false).await.unwrap();
     let sub = state.subscribe(parent, None).await.unwrap();
@@ -276,7 +288,11 @@ async fn the_mcp_app_call_route_refuses_oversized_and_deep_arguments() {
         .rules_home(&env.home)
         .config();
     with_mcp(&cfg, json!({"command":[common::python(),FIXTURE]}), false);
-    let state = AppState::new(cfg).unwrap();
+    let state = AppState::new(
+        cfg,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     ready(&state).await;
     let router = withnav::server::app(state.clone());
     let call = |arguments: Value| {
@@ -351,7 +367,11 @@ async fn tools_list_changed_reaches_an_idle_session_only_between_turns() {
         json!({"command":[common::python(),FIXTURE],"env":{"TOOLS_FILE":file}}),
         false,
     );
-    let state = AppState::new(cfg).unwrap();
+    let state = AppState::new(
+        cfg,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     ready(&state).await;
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     state
@@ -430,7 +450,11 @@ async fn a_live_session_hears_the_mcp_status_and_the_route_returns_the_same_snap
         json!({"command":[common::python(),FIXTURE],"env":{"INIT_GATE":gate},"startup_timeout_ms":30000}),
         false,
     );
-    let state = AppState::new(cfg).unwrap();
+    let state = AppState::new(
+        cfg,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
     std::fs::write(&gate, "").unwrap();
@@ -510,7 +534,11 @@ async fn mcp_app_routes_map_each_failure_class_and_bound_server_errors() {
         }),
     );
     withnav::settings::save(&cfg.config_dir, &settings).unwrap();
-    let state = AppState::new(cfg).unwrap();
+    let state = AppState::new(
+        cfg,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     wait_for("MCP discovery", || {
         let statuses = state.service().mcp_statuses();
         ["fake", "slow", "crashy"].iter().all(|id| {

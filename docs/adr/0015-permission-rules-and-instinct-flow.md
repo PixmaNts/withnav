@@ -107,9 +107,12 @@ For each tool call:
    flow.
 4. **Rules**: a `deny` stops the call. Nothing later can change it, not the flow, not a skill.
 5. **Bypass**: run.
-6. **Permission flow** with the rule's result (`allow`, `ask`, or no rule). It answers `allow`,
-   `ask_captain` or `deny`.
-7. **Captain**: Once, Always or Reject.
+6. **`allow` rule on a call other than `bash`**: run. The Captain wrote the rule, and a native file,
+   search, `fetch` or MCP call is not a shell line whose effect the rule cannot foresee; no Instinct
+   evaluation is made. Under `bash` the rule is a prefix only, so the line still goes to the flow.
+7. **Permission flow** with the rule's result (`allow`, `ask`, or no rule). It answers `allow`,
+   `ask_captain` or `deny`. Only `bash` reaches it under an `allow` rule.
+8. **Captain**: Once, Always or Reject.
 
 ### The permission flow
 
@@ -123,11 +126,14 @@ The built-in flow starts with three questions:
   - "Did the Captain, or the validated skill in use, ask for this action?" Yes ≥ 0.6: `allow`.
   - Otherwise, "Is it a read, or a recoverable change inside the project?" Yes ≥ 0.7: `allow`.
   - Otherwise: `ask_captain`.
-- Rule `allow`:
+- Rule `allow` on `bash`:
   - "Is this exact call destructive, irreversible, does it publish something, or touch
     credentials?" Yes ≥ 0.5: `ask_captain` (a `git push --force origin main` under a saved
     `git push *`).
   - Otherwise: `allow`.
+
+A call other than `bash` never reaches these questions: its `allow` rule runs it (decision order,
+step 6).
 
 The thresholds are flow constants. The decision table is what tunes them.
 
@@ -279,14 +285,25 @@ Decisions taken while implementing this ADR that refine it:
   Yolo remains unchecked.
 - **Skills.** Validation proves which content the Captain trusted; it does not override rules.
   Loading a validated skill is decided with action `skill` and the skill's name: a `deny` rule
-  refuses it. With no matching rule it gets an effective allow, but the permission flow still runs
-  and can ask or deny; `approved_by: validation` is recorded when that default applies. An `ask`
-  rule can also be allowed by the flow. A skill the Captain selects counts as the Captain's request.
+  refuses it. With no matching rule it gets an effective allow and runs without the permission
+  flow, recorded as `approved_by: validation`: the Captain's validation of that exact content is the
+  decision, so only a written `deny` or `ask` rule on the skill stands in its way. An `ask` rule can
+  also be allowed by the flow when the Captain's request covers it. A skill the Captain selects
+  counts as the Captain's request.
 - **Subagents.** A child's permission flow sees its parent's Captain messages, captured when the
   child is created and refreshed when the parent steers it. The delegated prompt and the steering
   text are supplied separately as `conversation.delegation`, with attachments removed and a 16 KiB
   whole-message budget. The ordinary permission flow may treat delegation as a request; the
   protected check never reads delegation.
+- **`allow` rules and the flow.** A call other than `bash` that an `allow` rule covers runs without
+  the permission flow, recorded as `approved_by: rule` (or `validation` for a validated skill no
+  rule covers). The Captain's rule is the answer to the same question the flow would put, and a
+  native file, search, `fetch` or MCP call does what its arguments name; asking Instinct again on
+  every call the Captain already allowed is a wait paid for nothing. `bash` is kept apart: a rule is
+  a command prefix, not the line, so a destructive command under it still meets the flow's danger
+  question. Every step above is untouched, so a written `deny` is still final, the fixed floor still
+  asks, a protected write still needs the compiled-in check, the doom-loop check still runs, and
+  bypass still records its own provenance.
 - **Temporary writes.** A native `write` or `edit` whose resolved file is inside the system
   temporary directory (`std::env::temp_dir()`, plus `/tmp` on Unix) or a scratch directory runs
   without the flow, recorded as `approved_by: rule`, next to free reads. The fixed floor, a written

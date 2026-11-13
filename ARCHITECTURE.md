@@ -294,7 +294,9 @@ status line shows the active tab's.
 credentials ask, WithNav's `config.json`, `withnav.db` and global flows directory need the protected
 check, an unresolvable path asks), free reads inside the readable roots, the rules
 (`permission/rules.rs`, the most precise match wins; a `deny` stops the call), the doom-loop check
-(`DoomTracker`, reset at each `run_agent`), bypass, the permission flows, then the Captain. No rule
+(`DoomTracker`, reset at each `run_agent`), bypass, an `allow` rule on a call other than `bash` (the
+call runs, `approved_by: rule`, without an Instinct evaluation; `bash` keeps the flow's judgement of
+the line the prefix rule cannot foresee), the permission flows, then the Captain. No rule
 means ask; there are no default rules, and a tool the decision does not know (an MCP tool, a role-less
 actor's call) is judged like any other: no rule, ask. `bash` lines are split into commands
 (`permission/shell.rs`) and each command's `rule_text` is matched; an opaque command matches no

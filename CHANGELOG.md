@@ -6,6 +6,16 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- Permissions: a call other than `bash` that an `allow` rule covers runs at once, without asking the
+  permission flow. The rule is the Captain's own answer to the question Instinct would put, so a
+  saved **Always** on a file, search, `fetch` or MCP tool no longer waits for a model evaluation on
+  every call. `bash` keeps the flow, which judges the line a prefix rule cannot foresee. Everything
+  above stays: a written `deny` is still final, the fixed floor still asks, and a protected write
+  still needs the compiled-in check. A validated skill with no matching rule now runs as
+  `validation` without the flow too.
+
 ## [0.8.3] - 2026-11-11
 
 ### Added

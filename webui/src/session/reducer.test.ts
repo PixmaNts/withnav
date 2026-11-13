@@ -7,7 +7,7 @@ import { emptyView, openPermissions, reduce, reduceAll, type Turn } from "./redu
 
 /** A recorded 0.5.0 server stream: build lists files, then writes one. */
 function fixture(name: string): Envelope[] {
-  const raw = readFileSync(new URL(`./__fixtures__/${name}`, import.meta.url), "utf8");
+  const raw = readFileSync(new URL(`../../../tests/fixtures/events/${name}`, import.meta.url), "utf8");
   return new SseDecoder().push(raw).map((frame) => JSON.parse(frame.data) as Envelope);
 }
 

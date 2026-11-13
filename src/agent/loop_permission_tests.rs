@@ -168,6 +168,10 @@ async fn run_observed(actor: &mut AgentActor) -> (RunOutcome, Vec<serde_json::Va
 
 fn decisions(actor: &AgentActor) -> Vec<crate::permission::decisions::Decision> {
     let store = actor.permission_store.as_ref().unwrap();
+    // Decision rows are written off the call path, so wait for the writes in
+    // flight before reading the table: a rule denial is a decision and must
+    // be found here without polling.
+    store.settled();
     let mut rows = store
         .list_decisions(&DecisionFilter::default(), 100)
         .unwrap();

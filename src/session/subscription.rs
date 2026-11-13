@@ -8,8 +8,11 @@
 //!   from an earlier stop of a resumed conversation are hidden. A failing
 //!   history read falls back to the bus ring, which is a bounded,
 //!   non-authoritative cache (after a resume it holds only the events since).
-//! - A conversation with no registry entry (stopped, or only stored) replays its stored history through
-//!   `last_seq`, then ends, with the same cursor rules as a live session.
+//! - A conversation with no registry entry (stopped, or only stored) replays
+//!   its stored history through `last_seq`, then ends, with the same cursor
+//!   rules as a live session. Stale `session.end` envelopes are hidden there
+//!   too; the replay ends with the conversation's final `session.end` so an
+//!   offline client still receives its terminal signal.
 //! - An unknown id is [`ServerError::SessionNotFound`].
 
 use tokio::sync::mpsc;
@@ -54,6 +57,11 @@ impl Service {
                             error = %err,
                             "history replay failed; falling back to the ring"
                         );
+                        // The ring starts empty on resume, so it cannot hold
+                        // a stale `session.end` from an earlier stop: the
+                        // only end it can hold is the one this stop just
+                        // published, which is this subscriber's correct
+                        // terminal signal. Replay it unchanged.
                         Ok(match handle.sequencer.subscribe_since(cursor).await {
                             Ok(reply) => Subscription {
                                 replay: reply.replay,
@@ -93,7 +101,7 @@ impl Service {
             .await
             .map_err(ServerError::History)?;
         Ok(Subscription {
-            replay: ResumeOutcome::Replay(events),
+            replay: ResumeOutcome::Replay(replay_history(events, true)),
             live: None,
         })
     }
@@ -150,19 +158,47 @@ impl Service {
         }
         .await;
         match stored {
-            Ok(mut events) => {
-                events.retain(|event| event.kind != "session.end");
-                Ok(Subscription {
-                    replay: ResumeOutcome::Replay(events),
-                    live: Some(receiver),
-                })
-            }
+            Ok(events) => Ok(Subscription {
+                replay: ResumeOutcome::Replay(replay_history(events, false)),
+                live: Some(receiver),
+            }),
             Err(err) => {
                 drop(receiver);
                 Err(err)
             }
         }
     }
+}
+
+/// Filters a stored replay so a client that treats `session.end` as terminal
+/// sees each conversation once, from its first event to its last. A resume
+/// continues the same sequence space, so every stop of a conversation left a
+/// `session.end` mid-history in the store; those stale ends would otherwise
+/// truncate the replay at the first one (`webui/src/api/sse.ts` and
+/// `crates/withnav-client/src/stream.rs` both stop reading on `session.end`).
+///
+/// A live session keeps none: stopping it later emits a fresh end on the live
+/// stream. A stopped conversation keeps one, only when the replay's last
+/// event already is one, so an offline client still receives its terminal
+/// signal after the whole history. The store keeps every envelope; this
+/// filter applies at subscription time only.
+fn replay_history(events: Vec<EventEnvelope>, offline: bool) -> Vec<EventEnvelope> {
+    let terminal = if offline {
+        events
+            .last()
+            .filter(|event| event.kind == "session.end")
+            .cloned()
+    } else {
+        None
+    };
+    let mut events: Vec<EventEnvelope> = events
+        .into_iter()
+        .filter(|event| event.kind != "session.end")
+        .collect();
+    if let Some(end) = terminal {
+        events.push(end);
+    }
+    events
 }
 
 impl Subscription {
@@ -172,5 +208,88 @@ impl Subscription {
             replay: ResumeOutcome::Replay(Vec::new()),
             live: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::event::EventKind;
+    use serde_json::json;
+    use ulid::Ulid;
+
+    fn envelope(seq: u64, kind: EventKind) -> EventEnvelope {
+        EventEnvelope::new(Ulid::generate(), seq, kind, json!({}))
+    }
+
+    fn kinds(events: &[EventEnvelope]) -> Vec<&str> {
+        events.iter().map(|event| event.kind.as_str()).collect()
+    }
+
+    // A live replay drops every `session.end`: a resumed session's stale ends
+    // never reach a client, and the fresh one arrives on the live stream.
+    #[test]
+    fn live_replay_drops_every_session_end() {
+        let events = vec![
+            envelope(1, EventKind::SessionStart),
+            envelope(2, EventKind::MessageReceived),
+            envelope(3, EventKind::SessionEnd),
+            envelope(4, EventKind::MessageReceived),
+            envelope(5, EventKind::TurnEnd),
+        ];
+        assert_eq!(
+            kinds(&replay_history(events, false)),
+            [
+                "session.start",
+                "message.received",
+                "message.received",
+                "turn.end"
+            ]
+        );
+    }
+
+    // A stopped conversation keeps exactly one end, in last position, after
+    // the full history: clients end playback at the conversation's final
+    // event, not at its first stop.
+    #[test]
+    fn stored_replay_keeps_only_the_trailing_session_end() {
+        let events = vec![
+            envelope(1, EventKind::SessionStart),
+            envelope(2, EventKind::MessageReceived),
+            envelope(3, EventKind::SessionEnd),
+            envelope(4, EventKind::MessageReceived),
+            envelope(5, EventKind::SessionEnd),
+        ];
+        assert_eq!(
+            kinds(&replay_history(events, true)),
+            [
+                "session.start",
+                "message.received",
+                "message.received",
+                "session.end"
+            ]
+        );
+    }
+
+    // A stored replay whose last event is not an end invents none: the
+    // conversation ends on its last stored event (e.g. the process died
+    // mid-turn after an earlier stop).
+    #[test]
+    fn stored_replay_without_a_trailing_end_invents_none() {
+        let events = vec![
+            envelope(1, EventKind::SessionStart),
+            envelope(2, EventKind::SessionEnd),
+            envelope(3, EventKind::MessageReceived),
+        ];
+        assert_eq!(
+            kinds(&replay_history(events, true)),
+            ["session.start", "message.received"]
+        );
+    }
+
+    #[test]
+    fn empty_replay_stays_empty() {
+        assert!(replay_history(Vec::new(), true).is_empty());
+        assert!(replay_history(Vec::new(), false).is_empty());
     }
 }

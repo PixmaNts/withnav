@@ -1284,7 +1284,7 @@ async fn a_stop_after_selection_commit_completes_the_new_identity_before_teardow
         .await
         .unwrap();
     let live = state.session_summary(id).await.unwrap();
-    assert_eq!(live.agent, "scribe");
+    assert_eq!(live.agent.as_deref(), Some("scribe"));
     assert_eq!(live.model, "b/model-b");
     assert_eq!(live.variant.as_deref(), Some("high"));
     let sub = state.subscribe(id, None).await.unwrap();

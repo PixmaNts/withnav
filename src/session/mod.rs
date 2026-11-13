@@ -36,6 +36,6 @@ pub use hooks::{NoHooks, SessionHooks, StartedSession};
 pub use message::MessageAccepted;
 pub use sender::SessionSender;
 pub use service::{
-    CLEAR_WORD, Service, SessionId, SessionSummary, SkillEntry, SkillsBody, VariantChoice,
+    CLEAR_WORD, Service, SessionId, SessionMetadata, SkillEntry, SkillsBody, VariantChoice,
 };
 pub use subscription::Subscription;

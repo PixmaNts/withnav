@@ -41,6 +41,16 @@ requests land in `develop`.
   above stays: a written `deny` is still final, the fixed floor still asks, and a protected write
   still needs the compiled-in check. A validated skill with no matching rule now runs as
   `validation` without the flow too.
+### Fixed
+
+- Navigator: a cancelled editor flow evaluation no longer erases the in-flight marker of the
+  evaluation that took its place. An edit cancels the running evaluation and frees its slot
+  immediately, so the cancelled trigger's own cleanup used to wipe the marker a successor had just
+  registered; a third evaluation could then start while the successor still ran, and the next edit
+  had no handle left to cancel it. A trigger now clears the slot only if its own cancellation token
+  is still live. A predecessor that hands the slot to a remark while keeping a live token can still
+  clear a successor's marker: closing that one needs an explicit owner on the slot and is not part
+  of this change.
 
 ## [0.8.3] - 2026-11-11
 

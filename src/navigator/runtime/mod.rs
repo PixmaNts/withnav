@@ -315,9 +315,19 @@ impl Runtime {
         }
     }
 
-    async fn clear_in_flight(&self, uri: &str) {
+    /// Releases the document's in-flight instinct slot, unless the evaluation
+    /// that took it was cancelled: an edit cancels the running trigger and
+    /// clears the marker at once (`DocumentState::cancel_instinct`), so a
+    /// cancelled trigger that unwinds afterwards must not erase the marker a
+    /// successor registered in the vacant slot in the meantime. Without this
+    /// guard the document loses the successor's handle: a third evaluation can
+    /// start while the successor still runs, and the next edit has nothing to
+    /// cancel.
+    async fn clear_in_flight(&self, uri: &str, cancel: &CancellationToken) {
         let mut state = self.documents.lock().await;
-        if let Some(doc) = state.get_mut(uri) {
+        if let Some(doc) = state.get_mut(uri)
+            && !cancel.is_cancelled()
+        {
             doc.in_flight_cancel = None;
             doc.in_flight_version = None;
         }

@@ -312,7 +312,7 @@ impl Runtime {
                 doc.rebase();
             }
         }
-        self.clear_in_flight(uri).await;
+        self.clear_in_flight(uri, &cancel).await;
         if failed && !cancel.is_cancelled() {
             self.set_status("error", Some("editor flow failed".into()))
                 .await;
@@ -683,5 +683,115 @@ mod tests {
         }
         store.reload().unwrap();
         assert!(!owns("save"));
+    }
+
+    /// A runtime no test remark ever reaches: the marker tests only need the
+    /// document state and a `Client`.
+    struct NoRemark;
+
+    impl crate::navigator::Metacognition for NoRemark {
+        fn remark<'a>(
+            &'a self,
+            _: &'a crate::navigator::metacognition::RemarkContext,
+            _: &'a CancellationToken,
+        ) -> futures::future::BoxFuture<
+            'a,
+            Result<Option<crate::navigator::Remark>, crate::navigator::ModelError>,
+        > {
+            Box::pin(async { panic!("the marker tests must not run a remark") })
+        }
+    }
+
+    struct NoServer;
+
+    impl tower_lsp_server::LanguageServer for NoServer {
+        async fn initialize(
+            &self,
+            _: tower_lsp_server::ls_types::InitializeParams,
+        ) -> tower_lsp_server::jsonrpc::Result<tower_lsp_server::ls_types::InitializeResult>
+        {
+            Ok(Default::default())
+        }
+
+        async fn shutdown(&self) -> tower_lsp_server::jsonrpc::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A runtime with no flows, whose documents the test drives directly (no
+    /// idle timer is started: nothing schedules a trigger on its own).
+    fn bare_runtime(root: &std::path::Path) -> Arc<Runtime> {
+        let mut runtime = None;
+        let (_service, _socket) = tower_lsp_server::LspService::new(|client| {
+            let rt = Runtime::new(
+                client,
+                crate::navigator::NavigatorDeps::new(Arc::new(NoRemark), root.join("log.jsonl")),
+            );
+            runtime = Some(rt);
+            NoServer
+        });
+        runtime.unwrap()
+    }
+
+    /// An edit cancels the running evaluation and vacates its slot before the
+    /// cancelled trigger unwinds; the trigger that took the vacant slot must
+    /// keep its marker when that predecessor finishes.
+    #[tokio::test]
+    async fn a_cancelled_trigger_does_not_clear_its_successors_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = bare_runtime(dir.path());
+        let uri = "file:///workspace/test.rs";
+        runtime
+            .documents
+            .lock()
+            .await
+            .open(uri, "rust".into(), "fn main() {}".into(), 1);
+
+        // The first evaluation takes the slot with its own token.
+        let first = CancellationToken::new();
+        {
+            let mut documents = runtime.documents.lock().await;
+            let doc = documents.get_mut(uri).unwrap();
+            doc.in_flight_version = Some(1);
+            doc.in_flight_cancel = Some(first.clone());
+        }
+        // An edit cancels it and clears the marker at once, without waiting
+        // for it to unwind.
+        {
+            let mut documents = runtime.documents.lock().await;
+            documents.get_mut(uri).unwrap().cancel_instinct();
+        }
+        assert!(first.is_cancelled(), "the edit cancels the running trigger");
+        // A second evaluation takes the vacant slot before the first unwinds.
+        let second = CancellationToken::new();
+        {
+            let mut documents = runtime.documents.lock().await;
+            let doc = documents.get_mut(uri).unwrap();
+            doc.in_flight_version = Some(2);
+            doc.in_flight_cancel = Some(second.clone());
+        }
+
+        // The cancelled first evaluation now finishes unwinding.
+        runtime.clear_in_flight(uri, &first).await;
+        {
+            let documents = runtime.documents.lock().await;
+            let doc = documents.get(uri).unwrap();
+            assert_eq!(
+                doc.in_flight_version,
+                Some(2),
+                "the cancelled trigger must leave the successor's version"
+            );
+            assert!(
+                doc.in_flight_cancel.is_some(),
+                "the cancelled trigger must leave the successor's cancel handle"
+            );
+        }
+
+        // The evaluation that owns the slot still releases it.
+        runtime.clear_in_flight(uri, &second).await;
+        let documents = runtime.documents.lock().await;
+        let doc = documents.get(uri).unwrap();
+        assert_eq!(doc.in_flight_version, None);
+        assert!(doc.in_flight_cancel.is_none());
     }
 }

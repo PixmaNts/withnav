@@ -9,26 +9,32 @@ asks you when they do not cover it, so you stay in control.
 
 ## How a call is decided
 
-Every tool call goes through the same steps, in this order:
+Every tool call goes through the same steps, in this order (the same order ADR 0015 "Decision
+order" states for the code, which is the single authoritative statement):
 
 1. **Yolo** (if you turned it on): the call runs, nothing is checked.
-2. **Fixed checks**: a call that touches credentials (keys, `auth.json`, `.env` files) always asks
+2. **Your `deny` rules**: a `deny` rule stops the call, whatever comes after — it is checked before
+   the fixed checks below.
+3. **Fixed checks**: a call that touches credentials (keys, `auth.json`, `.env` files) always asks
    you. A write to WithNav's own `config.json`, database or global flows folder runs only if you
    explicitly asked for it, or explicitly accepted the agent's proposal to do it; otherwise it asks
    you. A command that merely names one of these files (`sqlite3 …/withnav.db "SELECT …"`, a script
    given the path) is judged by the same question, which also lets a pure read run: a query that
    reads your rules runs, one that deletes them asks.
-3. **Reads inside the project** (`read`, `grep`, `glob`) run without asking. So do **writes to a
-   temporary folder**: a `write` or `edit` whose file is in the system temp directory (such as
-   `/tmp`) or a scratch folder, unless a rule of yours denies or asks about it. A `bash` command
-   that writes there is still judged by the permission flow: anything inside WithNav's scratch
-   folders (`/tmp/withnav`, `$XDG_RUNTIME_DIR/withnav`, or your `permissions.scratch_dirs`),
-   deleting included, is recoverable; in the rest of the temp directory, creating a new file is
-   recoverable, but deleting or overwriting an existing one is not, since other programs keep
-   their files there.
-4. **Your rules**: a `deny` rule stops the call, whatever comes after.
-5. **Bypass** (if on for this session): the call runs.
-6. **The permission flow**, except for a non-shell call an **allow** rule covers: Instinct judges
+4. **Loop check**: from the third identical call in a row, the call asks, unless a rule about loops
+   allows or denies it.
+5. **Reads inside the project** (`read`, `grep`, `glob`) run without asking — today, before your
+   rules are read for them; a decision of 2026-11-10 will make your written rules apply to these
+   reads too. So do **writes to a temporary folder**: a `write` or `edit` whose file is in the
+   system temp directory (such as `/tmp`) or a scratch folder, unless a rule of yours asks about it.
+   A `bash` command that writes there is still judged by the permission flow: anything inside
+   WithNav's scratch folders (`/tmp/withnav`, `$XDG_RUNTIME_DIR/withnav`, or your
+   `permissions.scratch_dirs`), deleting included, is recoverable; in the rest of the temp
+   directory, creating a new file is recoverable, but deleting or overwriting an existing one is
+   not, since other programs keep their files there.
+6. **Bypass** (if on for this session): the call runs.
+7. **Your `allow` rules** on a call other than `bash`: the call runs at once.
+8. **The permission flow**, except for a non-shell call an **allow** rule covers: Instinct judges
    whether you, or a skill you validated, asked for the call (including a parent agent's delegation
    to a subagent), whether it only reads, or whether it is a recoverable change: files in the
    project, its scratch folders or the temp folder, or building, testing, formatting or linting the
@@ -50,7 +56,7 @@ configuration. A message from the agent alone never counts, whatever it says you
 the agent wrote after your last message (reading a file, reasoning, announcing the command it is
 about to run) is not read at all: if you ask it to "apply" a file, a command found in that file
 is not your request until you have seen it and said yes.
-7. **You**: Once, Always or Reject.
+9. **You**: Once, Always or Reject.
 
 There are no default rules: on a new project you answer more often at first, and each **Always**
 makes the list of questions shorter.

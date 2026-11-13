@@ -104,20 +104,39 @@ spaces removed), and a line that cannot be parsed is checked as one opaque comma
 
 ### Decision order
 
-For each tool call:
+This section is the single authoritative statement of the order in which a tool call is decided —
+the one `src/permission/decide.rs` executes. The step comments in `decide_with`/`run`, the summary
+in `ARCHITECTURE.md` and the permissions page of the book describe the same order and point back
+here.
 
-1. **Yolo**: run.
-2. **Fixed floor** (below): handled as described there.
-3. **Reads inside the project** (`read`, `grep`, `glob` within readable roots): run. No rule, no
-   flow.
-4. **Rules**: a `deny` stops the call. Nothing later can change it, not the flow, not a skill.
-5. **Bypass**: run.
-6. **`allow` rule on a call other than `bash`**: run. The Captain wrote the rule, and a native file,
+For each tool call, in this order:
+
+1. **Yolo**: run. Nothing is checked.
+2. **Written `deny` rule**: stop the call. It is checked before the floor, so a `deny` on a
+   credential path denies it; nothing later can change the verdict, not the floor, not the flow,
+   not a skill.
+3. **Fixed floor** (below): a credential, or a path that cannot be resolved the way execution
+   would resolve it, asks and nothing can allow it.
+4. **Protected check**: a write to WithNav's own `config.json`, database or global flows folder,
+   or a command that names them, runs only if the compiled-in protected check answers that the
+   Captain explicitly asked for it; otherwise it asks. Rules, bypass and a generic flow `allow`
+   never stand in for it.
+5. **Loop check**: from the third identical call in a row, the call asks, unless a doom-loop rule
+   allows or denies it, or the session is in bypass with a permission store.
+6. **Free read or temporary write**: a `read`, `grep` or `glob` inside the readable roots, or a
+   native `write`/`edit` inside a temporary directory, runs without the flow. Today the rules are
+   not read for a free read, so a written rule does not apply to it yet; a decision of 2026-11-10
+   will make written rules apply to reads inside the project as well, which will move this check
+   after the rules.
+7. **Bypass**: run (with a permission store; a written `deny`, the floor and the loop check above
+   still applied).
+8. **`allow` rule on a call other than `bash`**: run. The Captain wrote the rule, and a native file,
    search, `fetch` or MCP call is not a shell line whose effect the rule cannot foresee; no Instinct
    evaluation is made. Under `bash` the rule is a prefix only, so the line still goes to the flow.
-7. **Permission flow** with the rule's result (`allow`, `ask`, or no rule). It answers `allow`,
-   `ask_captain` or `deny`. Only `bash` reaches it under an `allow` rule.
-8. **Captain**: Once, Always or Reject.
+   A validated skill with no matching rule also runs here, recorded as `approved_by: validation`.
+9. **Permission flow, then the Captain**: the flow answers with the rule's result (`allow`, `ask`,
+   or no rule): `allow`, `ask_captain` or `deny`. Only `bash` reaches it under an `allow` rule.
+   When the flow does not decide, the Captain answers Once, Always or Reject.
 
 ### The permission flow
 
@@ -138,7 +157,7 @@ The built-in flow starts with three questions:
   - Otherwise: `allow`.
 
 A non-`bash` call with an effective `allow` result never reaches these questions: the rule runs it
-(decision order, step 6).
+(decision order, step 8).
 
 The thresholds are flow constants. The decision table is what tunes them.
 

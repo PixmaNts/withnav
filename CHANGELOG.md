@@ -8,6 +8,11 @@ requests land in `develop`.
 
 ### Changed
 
+- The permission decision order is now stated once, in ADR 0015 ("Decision order"), and the code
+  comments of `src/permission/decide.rs`, `ARCHITECTURE.md` and the book's permissions page all
+  describe that same order — the one the code applies: yolo, a written `deny` rule, the fixed
+  floor, the protected check, the loop check, free reads and temporary writes, bypass, an `allow`
+  rule on a call other than `bash`, then the permission flow and the Captain.
 - A conversation whose stop is slow (a tool that ignores cancellation) no longer holds up the
   others: slash commands, stop, resume, delete and archive of a conversation wait only for its own
   tree (the conversation and its subagents), not for every conversation of the server.

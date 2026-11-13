@@ -169,7 +169,7 @@ impl Service {
         let interval = settings
             .agent_watchdog_interval_secs()
             .map_err(crate::error::ServerError::History)?;
-        let cache = Arc::new(ClientCache::new());
+        let cache = self.client_cache.clone();
         let models = load_models(
             self.config.models_path.as_deref(),
             workspace,

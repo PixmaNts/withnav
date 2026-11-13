@@ -302,7 +302,11 @@ async fn result_interrupt_replacement_uses_accepted_deferred_model() {
     models["models"]["mock/replacement-model"] = models["models"]["mock/mock-model"].clone();
     models["models"]["mock/replacement-model"]["model"] = json!("replacement-model");
     std::fs::write(path, models.to_string()).unwrap();
-    let state = AppState::new(config).unwrap();
+    let state = AppState::new(
+        config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     let parent = state
         .create_session(&ws, None, false)
         .bounded(file!(), line!())

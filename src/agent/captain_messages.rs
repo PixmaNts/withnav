@@ -567,6 +567,7 @@ mod tests {
             crate::provider::config::ReasoningHistory::Preserve,
             None,
             tokio_util::sync::CancellationToken::new(),
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
         );
         actor.transcript.push(ask.clone());
         actor.pending = Some(crate::agent::actor::PendingInteraction::Ask {

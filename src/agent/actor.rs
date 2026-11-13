@@ -175,6 +175,7 @@ pub struct AgentActor {
     /// from the stored `message.received` events (the newest from the Captain),
     /// so it is `None` only when the Captain never spoke.
     pub captain_task: Option<String>,
+    pub client_cache: Arc<crate::provider::openai::ClientCache>,
 }
 
 impl AgentActor {
@@ -243,8 +244,10 @@ impl AgentActor {
         reasoning_history: ReasoningHistory,
         max_tokens: Option<u64>,
         cancel: CancellationToken,
+        client_cache: Arc<crate::provider::openai::ClientCache>,
     ) -> Self {
         Self {
+            client_cache,
             compaction_writer: None,
             compaction_catalog: None,
             compaction_max_message_tokens: None,

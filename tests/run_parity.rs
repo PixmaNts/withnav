@@ -356,6 +356,7 @@ fn make_actor(base_url: String, ws: std::path::PathBuf) -> AgentActor {
         ReasoningHistory::Preserve,
         Some(256),
         cancel_placeholder(),
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
     )
 }
 

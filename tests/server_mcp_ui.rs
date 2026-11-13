@@ -34,7 +34,11 @@ fn fixture_state(tmp: &Path, bearer_token: Option<&str>) -> AppState {
         }),
     );
     withnav::settings::save(&cfg.config_dir, &settings).expect("save settings");
-    AppState::new(cfg).expect("state")
+    AppState::new(
+        cfg,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .expect("state")
 }
 
 async fn wait_for_mcp_ready(state: &AppState) {

@@ -339,8 +339,14 @@ mod tests {
             root.path().join("config"),
             root.path().join("data"),
             None,
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
         );
-        let b = crate::flows::host::Host::new(a.config.clone(), a.data.clone(), None);
+        let b = crate::flows::host::Host::new(
+            a.config.clone(),
+            a.data.clone(),
+            None,
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
+        );
         let writer = a.store(root.path().into());
         let editor = b.store(root.path().into());
         assert!(!owns_trigger(&editor, TriggerKind::Diagnostics));

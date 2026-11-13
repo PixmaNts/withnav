@@ -25,11 +25,11 @@ pub async fn test_gateway(
     name: &str,
     provider: &super::config::ProviderConfig,
     key: String,
+    clients: &ClientCache,
 ) -> serde_json::Value {
     let start = Instant::now();
-    let clients = ClientCache::default();
     let result = async {
-        let client = ModelClient::for_catalog(name, provider, key, &clients)?;
+        let client = ModelClient::for_catalog(name, provider, key, clients)?;
         client
             .get_json(
                 "models",

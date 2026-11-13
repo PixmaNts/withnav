@@ -55,8 +55,16 @@ impl EmbeddedServer {
         let primary = workspaces
             .first()
             .context("at least one workspace is required")?;
+        let client_cache = Arc::new(crate::provider::openai::ClientCache::new());
         for workspace in workspaces {
-            crate::session::preflight::check(&config_dir, models, workspace, &rules_roots).await?;
+            crate::session::preflight::check(
+                &config_dir,
+                models,
+                workspace,
+                &rules_roots,
+                client_cache.clone(),
+            )
+            .await?;
         }
         let token = bearer_token();
         let config = ServerConfig {
@@ -72,8 +80,12 @@ impl EmbeddedServer {
             web,
         };
         let config_bind = config.bind;
-        let state = AppState::with_hooks(config, Arc::new(crate::navigator::NavigatorHooks::new()))
-            .context("cannot start the embedded server")?;
+        let state = AppState::with_hooks(
+            config,
+            Arc::new(crate::navigator::NavigatorHooks::new()),
+            client_cache,
+        )
+        .context("cannot start the embedded server")?;
         let listener = tokio::net::TcpListener::bind(config_bind)
             .await
             .context("cannot bind a loopback port for the embedded server")?;

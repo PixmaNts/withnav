@@ -695,6 +695,7 @@ fn fixture_at(provider_url: &str) -> Fx {
         TestServerConfig::mock(&root, provider_url)
             .chat_tools(128_000)
             .config(),
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
     )
     .unwrap();
     Fx {

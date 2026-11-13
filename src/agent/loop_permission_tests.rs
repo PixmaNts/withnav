@@ -1957,3 +1957,225 @@ async fn a_folder_that_is_not_a_worktree_of_the_repository_still_asks() {
     let _ = std::fs::remove_dir_all(&other);
     let _ = std::fs::remove_dir_all(&other_worktree);
 }
+
+/// A conversation of `turns` Captain messages, each answered by a long agent text.
+fn long_transcript(turns: usize) -> Vec<crate::provider::openai::ChatMessage> {
+    (0..turns)
+        .flat_map(|turn| {
+            [
+                crate::provider::openai::ChatMessage::User {
+                    provenance: crate::provider::openai::UserProvenance::Captain,
+                    content: format!("Step {turn}: edit the notes and keep the tests green."),
+                    images: Vec::new(),
+                },
+                crate::provider::openai::ChatMessage::Assistant {
+                    content: Some(format!("Done with step {turn}. {}", "detail ".repeat(300))),
+                    reasoning_content: None,
+                    tool_calls: vec![],
+                    opaque: None,
+                },
+            ]
+        })
+        .collect()
+}
+
+/// The time `authorize` takes for a write a written `allow` rule decides, on a
+/// conversation of 300 turns (600 messages). Run by hand to compare revisions:
+/// `cargo test -p withnav --release authorize_time_on_a_long_conversation -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "timing measurement, run by hand"]
+async fn authorize_time_on_a_long_conversation() {
+    const ROUNDS: u32 = 300;
+    let flows = Arc::new(FakeFlows::new("allow"));
+    let mut actor = actor_with(Some(flows.clone()));
+    add_rule(&actor, "write", "*", Effect::Allow);
+    actor.transcript = long_transcript(300);
+    let call = crate::provider::ToolCall {
+        id: "w1".into(),
+        name: "write".into(),
+        args: json!({"path": actor.tool_context.workspace.join("notes.txt"), "content": "x"}),
+        args_valid: true,
+    };
+    let started = std::time::Instant::now();
+    for _ in 0..ROUNDS {
+        let authorized = crate::agent::authorize::authorize(&actor, &call, 1, None, false).await;
+        assert!(matches!(
+            authorized,
+            crate::agent::authorize::Authorized::Run(_)
+        ));
+    }
+    assert_eq!(flows.asked(), 0, "a rule-allowed write never asks the flow");
+    println!(
+        "authorize, rule-allowed write, 600 messages: {:?} per call",
+        started.elapsed() / ROUNDS
+    );
+}
+
+fn evidence_reads() -> usize {
+    crate::agent::authorize::EVIDENCE_READS.with(std::cell::Cell::get)
+}
+
+#[tokio::test]
+async fn a_call_decided_without_the_flow_never_reads_the_conversation() {
+    let flows = Arc::new(FakeFlows::new("ask"));
+    let mut actor = actor_with(Some(flows.clone()));
+    actor.transcript = long_transcript(50);
+    let ws = actor.tool_context.workspace.clone();
+    std::fs::write(ws.join("notes.txt"), "x").unwrap();
+    add_rule(&actor, "write", "*", Effect::Allow);
+    add_rule(&actor, "webfetch", "*", Effect::Deny);
+    let call = |name: &str, args| crate::provider::ToolCall {
+        id: "c1".into(),
+        name: name.into(),
+        args,
+        args_valid: true,
+    };
+    let cases = [
+        (
+            "allow rule",
+            call(
+                "write",
+                json!({"path": ws.join("notes.txt"), "content": "y"}),
+            ),
+            false,
+        ),
+        (
+            "free read",
+            call("read", json!({"path": ws.join("notes.txt")})),
+            false,
+        ),
+        (
+            "deny rule",
+            call("webfetch", json!({"url": "https://example.com"})),
+            false,
+        ),
+        ("bypass", call("bash", json!({"command": "echo hi"})), true),
+    ];
+    for (case, call, bypass) in cases {
+        actor.bypass.lock().unwrap().enabled = bypass;
+        let before = evidence_reads();
+        let authorized = crate::agent::authorize::authorize(&actor, &call, 1, None, false).await;
+        assert!(
+            !matches!(authorized, crate::agent::authorize::Authorized::Ask(_)),
+            "{case}"
+        );
+        assert_eq!(evidence_reads(), before, "{case}");
+    }
+    assert_eq!((flows.asked(), flows.checked()), (0, 0));
+}
+
+/// Keeps the context of every question the flows are asked.
+#[derive(Debug, Default)]
+struct RecordingFlows {
+    asked: std::sync::Mutex<Vec<PermissionCallContext>>,
+    checked: std::sync::Mutex<Vec<PermissionCallContext>>,
+}
+
+impl ToolCallFlows for RecordingFlows {
+    fn permission_pre_call<'a>(
+        &'a self,
+        ctx: PermissionCallContext,
+        _: RuleResult,
+        _: &'a CancellationToken,
+    ) -> futures::future::BoxFuture<'a, PermissionVerdict> {
+        self.asked.lock().unwrap().push(ctx);
+        Box::pin(async {
+            PermissionVerdict {
+                verdict: FlowVerdict::Allow,
+                flows: vec![crate::agent::flow_hook::PermissionFlowAnswer {
+                    flow: "test".into(),
+                    run_id: "run".into(),
+                    action: FlowAction::Allow,
+                    used_rule: false,
+                    scores: Default::default(),
+                }],
+            }
+        })
+    }
+
+    fn protected_check<'a>(
+        &'a self,
+        ctx: PermissionCallContext,
+        _: &'a CancellationToken,
+    ) -> futures::future::BoxFuture<'a, ProtectedCheck> {
+        self.checked.lock().unwrap().push(ctx);
+        Box::pin(async { ProtectedCheck::Passed })
+    }
+}
+
+type Conversation = (
+    Vec<String>,
+    bool,
+    Vec<String>,
+    bool,
+    Vec<crate::agent::flow_hook::RecentMessage>,
+    bool,
+);
+
+fn conversation(ctx: &PermissionCallContext) -> Conversation {
+    (
+        ctx.captain_messages.clone(),
+        ctx.captain_messages_cut,
+        ctx.delegation.clone(),
+        ctx.delegation_cut,
+        ctx.recent.clone(),
+        ctx.recent_cut,
+    )
+}
+
+#[tokio::test]
+async fn the_flows_and_the_protected_check_read_the_whole_conversation() {
+    let flows = Arc::new(RecordingFlows::default());
+    let mut actor = actor_with(None);
+    actor.tool_flows = Some(flows.clone());
+    actor.transcript = long_transcript(50);
+    *actor.parent_captain.lock().unwrap() =
+        Some((vec!["Parent: change the config.".into()], false));
+    // What the decision read from the conversation before it was read on demand.
+    let (captain, captain_cut) =
+        crate::agent::flow_hook::captain_messages_with_cut(&actor.transcript);
+    let (delegation, delegation_cut) =
+        crate::agent::flow_hook::delegation_with_cut(&actor.transcript);
+    let (recent, recent_cut) = crate::agent::flow_hook::recent_with_cut(&actor.transcript);
+    let expected = (
+        std::iter::once("Parent: change the config.".to_owned())
+            .chain(captain)
+            .collect(),
+        captain_cut,
+        delegation,
+        delegation_cut,
+        recent,
+        recent_cut,
+    );
+    let ws = actor.tool_context.workspace.clone();
+    let config = actor
+        .permission_dirs
+        .config
+        .clone()
+        .unwrap()
+        .join("config.json");
+    // A protected write is asked the protected check, then the flow (no rule).
+    // A write inside the project with no rule is asked the flow alone.
+    for path in [config, ws.join("notes.txt")] {
+        let call = crate::provider::ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            args: json!({"path": path, "content": "{}"}),
+            args_valid: true,
+        };
+        let before = evidence_reads();
+        let authorized = crate::agent::authorize::authorize(&actor, &call, 1, None, false).await;
+        assert!(
+            matches!(authorized, crate::agent::authorize::Authorized::Run(_)),
+            "{path:?}"
+        );
+        assert_eq!(evidence_reads(), before + 1, "read once per call: {path:?}");
+    }
+    let checked = flows.checked.lock().unwrap();
+    let asked = flows.asked.lock().unwrap();
+    assert_eq!(checked.len(), 1);
+    assert_eq!(asked.len(), 2);
+    for ctx in checked.iter().chain(asked.iter()) {
+        assert_eq!(conversation(ctx), expected);
+    }
+}

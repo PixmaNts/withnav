@@ -7,7 +7,7 @@ import { emptyView, openPermissions, reduce, reduceAll, type Turn } from "./redu
 
 /** A recorded 0.5.0 server stream: build lists files, then writes one. */
 function fixture(name: string): Envelope[] {
-  const raw = readFileSync(new URL(`./__fixtures__/${name}`, import.meta.url), "utf8");
+  const raw = readFileSync(new URL(`../../../tests/fixtures/events/${name}`, import.meta.url), "utf8");
   return new SseDecoder().push(raw).map((frame) => JSON.parse(frame.data) as Envelope);
 }
 
@@ -73,6 +73,35 @@ describe("transcript projection", () => {
     const once = reduceAll(emptyView(), events);
     const twice = reduceAll(once, events.slice(5));
     expect(twice).toBe(once);
+  });
+
+  it("replaces streamed text with final response text across a reconnection gap", () => {
+    const events = fixture("reconnect-gap.sse");
+    const view = reduceAll(emptyView(), events);
+    const [turn] = turns(view.items);
+    expect(turn!.parts).toEqual([
+      { type: "text", stepId: "01M48RGAPSTEP0000000000000", text: "Paris is the capital of France and its largest city." },
+    ]);
+    expect(turn!.status).toBe("done");
+    expect(view.activity).toBe("idle");
+  });
+
+  it("settles running turns and tool calls on session.end", () => {
+    const events = fixture("session-end-interrupted.sse");
+    const view = reduceAll(emptyView(), events);
+    const [turn] = turns(view.items);
+    expect(turn!.status).toBe("interrupted");
+    expect(view.tools["toolu_01longtaskcall000000001"]?.status).toBe("interrupted");
+    expect(view.activity).toBe("stopped");
+  });
+
+  it("projects turn failures and preserves error details", () => {
+    const events = fixture("turn-error.sse");
+    const view = reduceAll(emptyView(), events);
+    const [turn] = turns(view.items);
+    expect(turn!.status).toBe("error");
+    expect(turn!.error).toBe("Prompt exceeds maximum context length");
+    expect(view.activity).toBe("idle");
   });
 
   it("streams text deltas into one block, then the response replaces it", () => {

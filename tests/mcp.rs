@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 use serde_json::json;
 mod common;
 #[cfg(windows)]

@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! Background child session ownership, tool policy and durable notices.
 
 use std::path::{Path, PathBuf};

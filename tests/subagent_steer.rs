@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 use serde_json::{Value, json};
 use withnav::server::AppState;
 mod common;

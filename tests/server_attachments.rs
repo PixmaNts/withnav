@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! Integration tests: the attachment-upload route follows the conversation's
 //! state. An active or stopped conversation accepts an upload; an archived one
 //! is refused with the same `session_archived` error the message route uses and

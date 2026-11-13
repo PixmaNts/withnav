@@ -123,16 +123,16 @@ pub struct ModelSwitch {
 /// The shared form of [`ModelSwitch`].
 pub type ModelSwitcher = Arc<ModelSwitch>;
 
-#[cfg(debug_assertions)]
+#[cfg(any(test, feature = "test-support"))]
 type SwitchObserver = Box<dyn FnOnce(&AgentActor) + Send>;
-#[cfg(debug_assertions)]
+#[cfg(any(test, feature = "test-support"))]
 static SWITCH_OBSERVERS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<Ulid, SwitchObserver>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 /// Debug-only, one-shot observation of the actual actor after a successful
 /// switch, before its completion is returned (not the service projection).
-#[cfg(debug_assertions)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn observe_selection_install(
     operation: Ulid,
     observer: impl FnOnce(&AgentActor) + Send + 'static,
@@ -401,7 +401,7 @@ pub(super) async fn run(
     actor.max_tokens = target.max_tokens;
     actor.compaction_max_message_tokens = target.max_message_tokens;
     actor.variant = target.variant.clone().map(|(_, variant)| variant);
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         let observer = SWITCH_OBSERVERS.lock().unwrap().remove(&operation_id);
         if let Some(observer) = observer {

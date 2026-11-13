@@ -95,18 +95,9 @@ impl Service {
         child: SessionId,
         generation: Option<u64>,
     ) -> Result<(), ServerError> {
-        #[cfg(debug_assertions)]
-        {
-            let barrier = self
-                .watchdog_ownership_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
-            if let Some(barrier) = barrier {
-                barrier.reached.notify_one();
-                barrier.release.notified().await;
-            }
-        }
+        self.test_points
+            .park(crate::session::test_points::ParkPoint::WatchdogOwnership)
+            .await;
         let Some(handle) = self.handle(child) else {
             return Err(ServerError::ChildNotParked);
         };
@@ -142,20 +133,10 @@ impl Service {
             self.own_child_operation(child)
         };
         let claim = async {
-            #[cfg(debug_assertions)]
-            {
-                let barrier = self
-                    .watchdog_claim_write_barrier
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take();
-                if let Some(barrier) = barrier {
-                    barrier.reached.notify_one();
-                    barrier.release.notified().await;
-                }
-            }
-            #[cfg(debug_assertions)]
-            if self.watchdog_stop_failure.swap(false, Ordering::AcqRel) {
+            self.test_points
+                .park(crate::session::test_points::ParkPoint::WatchdogClaimWrite)
+                .await;
+            if self.test_points.take_watchdog_stop_failure() {
                 return Err("injected watchdog terminal write failure".into());
             }
             self.history().claim_watchdog_stop(child).await
@@ -206,18 +187,9 @@ impl Service {
             .partial_output
             .clone();
         target.session_cancel.cancel();
-        #[cfg(debug_assertions)]
-        {
-            let barrier = self
-                .watchdog_teardown_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
-            if let Some(barrier) = barrier {
-                barrier.reached.notify_one();
-                barrier.release.notified().await;
-            }
-        }
+        self.test_points
+            .park(crate::session::test_points::ParkPoint::WatchdogTeardown)
+            .await;
         self.fence_and_remove(child, target, "watchdog").await;
         self.finish_child(
             parent,

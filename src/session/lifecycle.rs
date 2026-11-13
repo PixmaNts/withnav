@@ -77,6 +77,12 @@ impl Service {
     /// [`Service::close_session`] for a caller that already holds the
     /// lifecycle gate.
     pub(super) async fn close_session_gated(&self, id: SessionId) -> Result<(), ServerError> {
+        self.close_tree_gated(id, "stop requested").await
+    }
+
+    /// Closes `id` and its children with `reason` on `session.end`. The
+    /// caller holds the lifecycle gate.
+    async fn close_tree_gated(&self, id: SessionId, reason: &str) -> Result<(), ServerError> {
         let target = self.claim_lifecycle_stop(id).await;
         let claimed_children = {
             let _admission = self.admission_gate.lock().await;
@@ -104,7 +110,7 @@ impl Service {
             claimed
         };
         if let Some(handle) = target {
-            self.fence_and_remove(id, handle, "stop requested").await;
+            self.fence_and_remove(id, handle, reason).await;
             self.close_children(id, claimed_children).await?;
             return Ok(());
         }
@@ -149,6 +155,55 @@ impl Service {
             .await?;
         }
         Ok(())
+    }
+
+    /// Watches one incarnation of a root session for an end nobody asked
+    /// for: its runtime returning (a failed delivery or checkpoint, a failed
+    /// publish, a panic) or its sequencer closing on a failed store write.
+    /// Such a session is closed like a stop, `session.end` naming the cause,
+    /// and leaves the registry, so a message to it asks for a resume instead
+    /// of failing as "stopping" for good. A stop or shutdown cancels the
+    /// session first and closes it itself: the watcher then does nothing.
+    pub(super) fn supervise_runtime(&self, id: SessionId, handle: &SessionHandle) {
+        let service = self.clone();
+        let incarnation = handle.incarnation;
+        let status = handle.status.clone();
+        let sequencer = handle.sequencer.clone();
+        let cancel = handle.session_cancel.clone();
+        tokio::spawn(async move {
+            let unexplained = tokio::select! {
+                _ = status.ended.cancelled() => "the runtime stopped unexpectedly",
+                _ = sequencer.closed() => "the event stream closed",
+                _ = cancel.cancelled() => return,
+            };
+            if cancel.is_cancelled() {
+                return;
+            }
+            let cause = status.exit_cause().unwrap_or_else(|| unexplained.into());
+            service
+                .end_runtime(id, incarnation, &format!("runtime ended: {cause}"))
+                .await;
+        });
+    }
+
+    /// Closes the incarnation `incarnation` of `id` with `reason`, through
+    /// the same gated path as a stop. A newer incarnation (the conversation
+    /// was resumed meanwhile) or a session already stopping is left alone.
+    async fn end_runtime(&self, id: SessionId, incarnation: ulid::Ulid, reason: &str) {
+        let Ok(_gate) = self.lifecycle_gate(id).await else {
+            return;
+        };
+        let current = self
+            .handle(id)
+            .is_some_and(|h| h.incarnation == incarnation && h.lifecycle == Lifecycle::Active);
+        if !current {
+            return;
+        }
+        tracing::warn!(session_id = %id, reason, "session runtime ended on its own; closing it");
+        if let Err(error) = self.close_tree_gated(id, reason).await {
+            tracing::error!(session_id = %id, %error, "closing an ended session failed");
+        }
+        self.secrets.end_session(id);
     }
 
     /// Graceful shutdown: stop every active session (each one's fence emits
@@ -223,13 +278,14 @@ impl Service {
     }
 
     /// Teardown order. The RUNTIME owns the terminal tail: the session-token
-    /// cancel interrupts the actor, the runtime's natural outcome path emits
-    /// `turn.end{interrupted}` then `agent.state{Idle}`, and its `teardown()`
-    /// fires the CloseSession fence itself. The manager (1) cancels and
-    /// awaits the runtime JoinHandle (bounded; on breach the task is ABORTED
-    /// because a dropped JoinHandle would only DETACH it), (2) fires the
-    /// fence (an already-closed sequencer ignores it: never a second
-    /// `session.end`), (3) waits for the sequencer to finish, so
+    /// cancel interrupts the actor and the runtime's natural outcome path
+    /// emits `turn.end{interrupted}` then `agent.state{Idle}` before it
+    /// returns. The manager (1) cancels and awaits the runtime JoinHandle
+    /// (bounded; on breach the task is ABORTED because a dropped JoinHandle
+    /// would only DETACH it), (2) fires the fence with `reason`, the only
+    /// `session.end` of a running session (a sequencer already closed by a
+    /// failed store write ignores it: never a second `session.end`), (3)
+    /// waits for the sequencer to finish, so
     /// `session.end` has been emitted and queued to the store writer, (4)
     /// flushes the store, and (5) removes the registry entry. No lock is held
     /// across any await.

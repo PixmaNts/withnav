@@ -6,8 +6,10 @@
 //! tool.post_call (interleaved as the step produces them) -> terminal
 //! turn-end events -> back to the inbox wait. `task.done` fires exactly once
 //! per task, on [`RunOutcome::Done`] only. A natural turn end returns to the
-//! inbox wait; `session.end` is sequenced ONLY at teardown via
-//! [`Sequencer::close_session`] — never on a natural turn end.
+//! inbox wait. The runtime never sequences `session.end`: when it returns,
+//! for a stop or on its own, the session's owner closes the session through
+//! [`Sequencer::close_session`] with the reason it ended
+//! ([`RuntimeStatus::exit_cause`]).
 
 pub mod bypass;
 mod compact;
@@ -90,10 +92,6 @@ pub enum BudgetTopupError {
     LimitReached,
 }
 
-/// Cancel reason recorded on `session.end` when the session token fires.
-const CANCEL_REASON: &str = "cancel";
-/// Cancel reason recorded on `session.end` when the inbox senders all drop.
-const END_OF_STREAM_REASON: &str = "inbox_closed";
 /// Wire cap for `turn.end{error}.message` (bounded, no secrets).
 const ERROR_SUMMARY_CAP: usize = 256;
 
@@ -189,9 +187,24 @@ pub struct RuntimeStatus {
     pub selection: crate::agent::selection::AgentSelection,
     /// Compaction requests to the runtime, and how it saves their result.
     controls: compact::Controls,
+    /// Fires once the runtime task has returned or unwound from a panic.
+    pub ended: CancellationToken,
+    /// Why the runtime returned without a stop request; `None` after a stop.
+    exit_cause: Mutex<Option<String>>,
 }
 
 impl RuntimeStatus {
+    /// Why the runtime returned on its own, once [`Self::ended`] fired.
+    /// `None` when it returned for a stop, or panicked.
+    pub fn exit_cause(&self) -> Option<String> {
+        self.exit_cause
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+    fn record_exit(&self, cause: impl Into<String>) {
+        *self.exit_cause.lock().unwrap_or_else(|e| e.into_inner()) = Some(cause.into());
+    }
     fn update_question(&self, actor: &AgentActor) {
         let question = match &actor.pending {
             Some(crate::agent::actor::PendingInteraction::Ask { tool_call_id }) => {
@@ -1166,6 +1179,9 @@ async fn runtime_loop(
     status: Arc<RuntimeStatus>,
     completion: Option<CompletionHook>,
 ) -> AgentActor {
+    // Fires on every way out of this task, a panic included, so the session's
+    // owner always learns that the runtime is gone.
+    let _ended = status.ended.clone().drop_guard();
     let on_turn_end: SharedHook = Arc::new(Mutex::new(on_turn_end));
     let mut active_task_id: Option<Ulid> = None;
     let mut control = status.controls.take_receiver();
@@ -1358,13 +1374,18 @@ async fn runtime_loop(
                 match delivery::apply(&mut actor, &status, &sequencer).await {
                     Ok(true) => Some(Inbound::Completion),
                     Ok(false) => continue,
-                    Err(error) => { tracing::error!(%error, "subagent wake delivery failed"); break; }
+                    Err(error) => {
+                        tracing::error!(%error, "subagent wake delivery failed");
+                        status.record_exit(format!("subagent wake delivery failed: {error}"));
+                        break;
+                    }
                 }
             }
 
         };
 
         let Some(inbound) = inbound else {
+            status.record_exit("inbox closed");
             break;
         };
         // Parked progress never pins policy for autonomous-only input. Captain skill
@@ -1431,6 +1452,7 @@ async fn runtime_loop(
                     if let Err(error) = status.commit_captain(actor.transcript.clone()).await {
                         tracing::error!(%error, "captain checkpoint commit failed");
                         status.release_pin(&actor);
+                        status.record_exit(format!("captain checkpoint commit failed: {error}"));
                         break;
                     }
                 }
@@ -1530,6 +1552,7 @@ async fn runtime_loop(
         if let Err(error) = delivery::apply(&mut actor, &status, &sequencer).await {
             tracing::error!(%error, "subagent transcript delivery failed");
             status.end_turn(&actor);
+            status.record_exit(format!("subagent transcript delivery failed: {error}"));
             break;
         }
         status
@@ -1755,6 +1778,7 @@ async fn runtime_loop(
             emit_agent_state(&mut turn, "idle");
             snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript).await;
             deferred::report_cancelled(&sequencer, &deferred, compact::CANCELLED);
+            status.record_exit(format!("event publish failed: {err}"));
             break;
         }
 
@@ -1972,6 +1996,9 @@ async fn runtime_loop(
             // The stop wins: a `/compact` accepted during this turn is told
             // it will not happen, before `session.end`.
             deferred::report_cancelled(&sequencer, &deferred, compact::CANCELLED);
+            if !session_cancel.is_cancelled() {
+                status.record_exit("turn cancelled");
+            }
             break;
         }
 
@@ -2002,7 +2029,7 @@ async fn runtime_loop(
     if let Some(hold) = status.watchdog.take_root_on_exit() {
         publish_pause_resolution(&sequencer, hold.token, "expired");
     }
-    teardown(&mut actor, &sequencer);
+    actor.state = AgentState::Stopped;
     status.watchdog.supervisor_cancel.cancel();
     let supervisor = status
         .root_supervisor
@@ -2263,19 +2290,6 @@ fn error_code(err: &AgentError) -> String {
         AgentError::Server(_) => "server".to_string(),
         AgentError::Compaction(_) => "compaction".to_string(),
     }
-}
-
-/// Session teardown — the ONLY path that fires `session.end`. Permanent by
-/// construction: the sequencer task exits behind the fence and the runtime
-/// loop returns, so this session never drives the actor again.
-fn teardown(actor: &mut AgentActor, sequencer: &Sequencer) {
-    actor.state = AgentState::Stopped;
-    let reason = if actor.cancel.is_cancelled() {
-        CANCEL_REASON
-    } else {
-        END_OF_STREAM_REASON
-    };
-    let _ = sequencer.close_session(reason);
 }
 
 #[cfg(test)]
@@ -3213,6 +3227,8 @@ mod tests {
         task.await.unwrap();
         assert!(finished.load(std::sync::atomic::Ordering::Acquire));
         assert!(status.root_supervisor.lock().unwrap().is_none());
+        assert!(status.ended.is_cancelled());
+        assert_eq!(status.exit_cause().as_deref(), Some("inbox closed"));
     }
 
     #[tokio::test]
@@ -4205,23 +4221,22 @@ mod tests {
         all.extend(drain_ready(&mut h.live));
         let kinds = assert_monotonic(&all);
         assert!(
-            kinds.contains(&"turn.end")
-                && kinds.contains(&"agent.state")
-                && kinds.contains(&"session.end"),
+            kinds.contains(&"turn.end") && kinds.contains(&"agent.state"),
             "ordered terminal events after cancel: {kinds:?}"
         );
-        let end = all
-            .iter()
-            .find(|e| kind_of(e) == "session.end")
-            .expect("session.end sequenced by teardown");
-        assert_eq!(end.seq, all.iter().map(|e| e.seq).max().unwrap());
-        assert_eq!(end.payload["reason"], "cancel");
+        assert!(
+            !kinds.contains(&"session.end"),
+            "the session's owner closes it, never the runtime: {kinds:?}"
+        );
 
         // Clone the sender BEFORE take_actor consumes the harness, so the
         // late send below really targets the torn-down session.
         let late_tx = h.inbox_tx.clone();
+        let status = h.status.clone();
         let actor = h.take_actor().await;
         assert_eq!(actor.state, AgentState::Stopped);
+        assert!(status.ended.is_cancelled(), "the runtime reports its end");
+        assert_eq!(status.exit_cause(), None, "a stop is not a failure");
 
         // PERMANENT teardown: a later try_send fails Closed — NOT "still
         // accepts".

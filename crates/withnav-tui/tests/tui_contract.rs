@@ -5,23 +5,35 @@ use withnav_tui::{
 
 #[test]
 fn http_dtos_roundtrip_server_shapes() {
+    // An older server's payload (no capability or catalog fields) still decodes.
     let models = serde_json::json!({"models":[{"name":"gateway/vendor/model","gateway":"gateway","api":"chat","provider_group":"vendor","upstream_id":"vendor/model","context_window":128000}],"default_agent":"build"});
-    let dto: ModelsBody = serde_json::from_value(models.clone()).unwrap();
-    assert_eq!(serde_json::to_value(dto).unwrap(), models);
-    // An older server's payload (no catalog fields) parses and is written back as it was.
-    // A newer one, with every catalog field, round-trips too.
+    let dto: ModelsBody = serde_json::from_value(models).unwrap();
+    assert!(!dto.models[0].supports_tools);
+    assert_eq!(dto.models[0].supports_parallel_tool_calls, None);
+    // The current server shape, with every catalog field, round-trips unchanged.
     let full = serde_json::json!({"models":[{
-        "name":"gateway/vendor/model","gateway":"gateway","api":"chat","provider_group":"vendor","upstream_id":"vendor/model","context_window":1000000,"enabled":true,
+        "name":"gateway/vendor/model","gateway":"gateway","api":"chat","provider_group":"vendor","upstream_id":"vendor/model",
+        "supports_tools":true,"supports_parallel_tool_calls":null,"context_window":1000000,"enabled":true,
         "window_source":"discovered.context_length","stale":true,"stale_age_secs":259200,
         "refresh_error":"provider API error (HTTP 503)","reported_output":128000,
         "max_input_tokens":900000,"discrepancy":{"configured":200000,"discovered":1000000}
-    },{"name":"gateway/m","gateway":"gateway","api":"chat","provider_group":"gateway","upstream_id":"m","context_window":null,"enabled":false,"disabled_reason":"no window"}],"default_agent":null});
+    },{"name":"gateway/m","gateway":"gateway","api":"chat","provider_group":"gateway","upstream_id":"m","supports_tools":false,"supports_parallel_tool_calls":false,"context_window":null,"enabled":false,"disabled_reason":"no window","default_variant_unavailable":"max"}],"default_agent":null});
     let dto: ModelsBody = serde_json::from_value(full.clone()).unwrap();
     assert_eq!(serde_json::to_value(dto).unwrap(), full);
     // Fields this build does not know yet are ignored, not an error.
     let future = serde_json::json!({"models":[{"name":"gateway/m","gateway":"gateway","api":"chat","provider_group":"gateway","upstream_id":"m","context_window":1,"next_field":{"x":1}}],"default_agent":"build"});
     assert!(serde_json::from_value::<ModelsBody>(future).is_ok());
-    let sessions = serde_json::json!({"sessions":[{"id":"01ABC","title":null,"created_at":"now","updated_at":"now","message_count":0,"live":false}]});
+    // A sparse row from an older server decodes; the current row round-trips unchanged.
+    let sparse = serde_json::json!({"sessions":[{"id":"01ABC","title":null,"created_at":"now","updated_at":"now","message_count":0,"live":false}]});
+    let dto: SessionListBody = serde_json::from_value(sparse).unwrap();
+    assert!(dto.sessions[0].promptable);
+    assert_eq!(dto.sessions[0].source, None);
+    let sessions = serde_json::json!({"sessions":[{
+        "yolo":false,"permissions_unavailable":null,"bypass":false,"bypass_seq":0,"incarnation":null,"editor":false,
+        "read_only":false,"resume_disabled_reason":null,"id":"01ABC","title":null,"created_at":"now","updated_at":"now",
+        "message_count":0,"agent":"build","model":"gateway/m","variant":null,"source":null,"variant_source":null,
+        "gateway":"gateway","upstream_id":"m","current_seq":4,"live":false
+    }]});
     let dto: SessionListBody = serde_json::from_value(sessions.clone()).unwrap();
     assert_eq!(serde_json::to_value(dto).unwrap(), sessions);
     let request = CreateSessionRequest {

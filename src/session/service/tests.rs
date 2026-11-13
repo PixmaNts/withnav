@@ -167,7 +167,10 @@ async fn preparation_uses_captured_assignment_catalog_and_variant_generation() {
     assert_eq!(meta.model, "mock/old");
     assert_eq!(meta.variant, None);
     assert!(meta.model_resolution.unwrap().contains("127.0.0.1:1"));
-    assert_eq!(service.session_summary(id).await.unwrap().agent, "build");
+    assert_eq!(
+        service.session_summary(id).await.unwrap().agent.as_deref(),
+        Some("build")
+    );
 }
 
 /// A service over its own temporary history database; keep the directory
@@ -465,4 +468,36 @@ async fn service_settings_wiring_discovers_configured_skills() {
         crate::agent::skills::Resolution::Found(_)
     ));
     assert!(handle.skills.catalog().unwrap().contains("my-skill"));
+}
+
+// The server and its clients read the session body through one shared type: a summary the
+// service builds must survive serialisation and decode back unchanged, live and once stopped.
+#[tokio::test]
+async fn session_summary_round_trips_through_the_client_wire_type() {
+    let (dir, service) = test_service();
+    std::fs::create_dir_all(dir.path().join("cfg")).unwrap();
+    std::fs::write(
+        dir.path().join("cfg/config.json"),
+        r#"{"agents":{"build":{"model":"mock/old"}}}"#,
+    )
+    .unwrap();
+    crate::provider::auth::set_key(&service.config.config_dir, "mock", "test").unwrap();
+    std::fs::write(dir.path().join("models.json"), r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/old":{"provider":"mock","model":"old","context_window":128000}}}"#).unwrap();
+    let id = service
+        .create_session(dir.path(), None, false)
+        .await
+        .unwrap();
+    let live = service.session_summary(id).await.unwrap();
+    service.close_session(id).await.unwrap();
+    let stored = service.session_summary(id).await.unwrap();
+    assert_eq!(stored.actor_state, "stopped");
+    for summary in [live, stored] {
+        let wire = serde_json::to_value(&summary).unwrap();
+        let decoded: withnav_client_api::protocol::SessionMetadata =
+            serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(decoded, summary);
+        assert_eq!(decoded.source.as_deref(), Some("config"));
+        assert_eq!(decoded.agent.as_deref(), Some("build"));
+        assert_eq!(wire["gateway"], "mock");
+    }
 }

@@ -22,7 +22,10 @@ async fn legacy_ids_resolve_at_creation_delegation_task_and_resume() {
             .create_session_as(&env.ws, None, false, Some(old))
             .await
             .unwrap();
-        assert_eq!(state.session_summary(id).await.unwrap().agent, "lux");
+        assert_eq!(
+            state.session_summary(id).await.unwrap().agent.as_deref(),
+            Some("lux")
+        );
         state
             .history()
             .set_primary_agent(id, Some(old))
@@ -34,7 +37,10 @@ async fn legacy_ids_resolve_at_creation_delegation_task_and_resume() {
             .create_or_resume_session(&env.ws, None, false, Some(id))
             .await
             .unwrap();
-        assert_eq!(resumed.session_summary(id).await.unwrap().agent, "lux");
+        assert_eq!(
+            resumed.session_summary(id).await.unwrap().agent.as_deref(),
+            Some("lux")
+        );
         resumed.close_session(id).await.unwrap();
     }
     let parent = state.create_session(&env.ws, None, false).await.unwrap();
@@ -43,7 +49,10 @@ async fn legacy_ids_resolve_at_creation_delegation_task_and_resume() {
             .create_child_session(parent, old, "inspect")
             .await
             .unwrap();
-        assert_eq!(state.session_summary(child).await.unwrap().agent, *new);
+        assert_eq!(
+            state.session_summary(child).await.unwrap().agent.as_deref(),
+            Some(*new)
+        );
         state.close_session(child).await.unwrap();
     }
     let task = withnav::tools::task::TaskTool::new(state.service(), parent);
@@ -211,11 +220,11 @@ async fn live_agent_switch_restores_model_and_off_override_after_restart() {
     assert!(state.run_command(id, "variant", "off").await.unwrap().ok);
     assert!(state.run_command(id, "agent", "plan").await.unwrap().ok);
     let plan = state.session_summary(id).await.unwrap();
-    assert_eq!(plan.agent, "plan");
+    assert_eq!(plan.agent.as_deref(), Some("plan"));
     assert_eq!(plan.variant.as_deref(), Some("low"));
     assert!(state.run_command(id, "agent", "build").await.unwrap().ok);
     let build = state.session_summary(id).await.unwrap();
-    assert_eq!(build.agent, "build");
+    assert_eq!(build.agent.as_deref(), Some("build"));
     assert_eq!(build.model, "mock/plan-model");
     assert_eq!(build.variant, None);
     state.close_session(id).await.unwrap();
@@ -225,7 +234,7 @@ async fn live_agent_switch_restores_model_and_off_override_after_restart() {
         .await
         .unwrap();
     let restored = reopened.session_summary(id).await.unwrap();
-    assert_eq!(restored.agent, "build");
+    assert_eq!(restored.agent.as_deref(), Some("build"));
     assert_eq!(restored.model, "mock/plan-model");
     assert_eq!(restored.variant, None);
     let provenance = reopened
@@ -538,7 +547,10 @@ async fn a_session_runs_as_build_by_default() {
         ["system", "system", "user"],
         "Nav adds its build role"
     );
-    assert_eq!(state.session_summary(id).await.unwrap().agent, "build");
+    assert_eq!(
+        state.session_summary(id).await.unwrap().agent.as_deref(),
+        Some("build")
+    );
     assert_eq!(stored_agent(&state, id).await, None);
     let listed = state.list(&env.ws.display().to_string()).await.unwrap();
     assert_eq!(listed[0].agent, "build");
@@ -571,7 +583,15 @@ async fn a_plan_session_sends_its_role_and_keeps_it_across_a_resume() {
         .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
-    assert_eq!(second.session_summary(resumed).await.unwrap().agent, "plan");
+    assert_eq!(
+        second
+            .session_summary(resumed)
+            .await
+            .unwrap()
+            .agent
+            .as_deref(),
+        Some("plan")
+    );
     converse(&second, id, "two").await;
     assert!(sent(&provider, 1)[1].1.contains("plan mode"));
 }
@@ -683,7 +703,15 @@ async fn a_legacy_row_resumes_as_build() {
         .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
-    assert_eq!(state.session_summary(resumed).await.unwrap().agent, "build");
+    assert_eq!(
+        state
+            .session_summary(resumed)
+            .await
+            .unwrap()
+            .agent
+            .as_deref(),
+        Some("build")
+    );
 }
 
 // Given a conversation on build
@@ -710,7 +738,10 @@ async fn switching_changes_the_next_request_and_nothing_in_the_transcript() {
         changed[0].payload,
         json!({ "agent": "plan", "previous": "build" })
     );
-    assert_eq!(state.session_summary(id).await.unwrap().agent, "plan");
+    assert_eq!(
+        state.session_summary(id).await.unwrap().agent.as_deref(),
+        Some("plan")
+    );
 
     converse(&state, id, "second").await;
     // The estimate counts the role message the request carries.
@@ -818,7 +849,10 @@ async fn a_switch_during_a_pending_ask_is_refused() {
     let out = state.run_command(id, "agent", "plan").await.unwrap();
     assert!(!out.ok);
     assert!(out.error.unwrap().contains("waiting for an answer"));
-    assert_eq!(state.session_summary(id).await.unwrap().agent, "build");
+    assert_eq!(
+        state.session_summary(id).await.unwrap().agent.as_deref(),
+        Some("build")
+    );
     assert_eq!(stored_agent(&state, id).await, None);
 }
 

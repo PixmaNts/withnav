@@ -1,0 +1,16 @@
+id: 0
+data: {"schema_version":1,"event_id":"01M48ERR00000000000000000","seq":0,"session_id":"01M48ERRSESS0000000000000","actor_id":"agent:main","kind":"session.start","occurred_at":"2026-10-06T17:00:00.000Z","causation_id":null,"correlation_id":null,"payload":{"root_actor_id":"agent:main","workspace":"/tmp/opencode/navai-err-ws"}}
+
+id: 1
+data: {"schema_version":1,"event_id":"01M48ERR00000000000000001","seq":1,"session_id":"01M48ERRSESS0000000000000","actor_id":"agent:main","kind":"message.received","occurred_at":"2026-10-06T17:00:01.000Z","causation_id":"01M48ERRTASK0000000000000","correlation_id":null,"payload":{"command_id":"01M48ERRTASK0000000000000","content":"Trigger an error","mode":"next-turn","source":"user:http","target":"agent:main"}}
+
+id: 2
+data: {"schema_version":1,"event_id":"01M48ERR00000000000000002","seq":2,"session_id":"01M48ERRSESS0000000000000","actor_id":"agent:main","kind":"turn.start","occurred_at":"2026-10-06T17:00:01.100Z","causation_id":null,"correlation_id":"01M48ERRTASK0000000000000","payload":{"actor_id":"agent:main","task_id":"01M48ERRTASK0000000000000","turn_id":"01M48ERRTURN0000000000000"}}
+
+id: 3
+data: {"schema_version":1,"event_id":"01M48ERR00000000000000003","seq":3,"session_id":"01M48ERRSESS0000000000000","actor_id":"agent:main","kind":"turn.end","occurred_at":"2026-10-06T17:00:02.000Z","causation_id":null,"correlation_id":"01M48ERRTASK0000000000000","payload":{"actor_id":"agent:main","duration_ms":900,"error":{"code":"context_length_exceeded","message":"Prompt exceeds maximum context length"},"outcome":"error","turn_id":"01M48ERRTURN0000000000000"}}
+
+id: 4
+data: {"schema_version":1,"event_id":"01M48ERR00000000000000004","seq":4,"session_id":"01M48ERRSESS0000000000000","actor_id":"agent:main","kind":"agent.state","occurred_at":"2026-10-06T17:00:02.000Z","causation_id":null,"correlation_id":"01M48ERRTASK0000000000000","payload":{"actor_id":"agent:main","from":"running","to":"idle"}}
+
+

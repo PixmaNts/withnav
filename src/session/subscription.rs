@@ -6,8 +6,10 @@
 //!   replays the stored history through that head, then follows live events
 //!   (each one above the head, exactly once). Stale `session.end` envelopes
 //!   from an earlier stop of a resumed conversation are hidden. A failing
-//!   history read falls back to the bus ring, which is a bounded,
-//!   non-authoritative cache (after a resume it holds only the events since).
+//!   history read falls back to the bus ring, a bounded, non-authoritative
+//!   cache: a resumed session's ring holds only the events since, and its
+//!   floor (the stored `last_seq` at resume) makes it refuse with `Resync`
+//!   any cursor it cannot serve gaplessly — the whole history included.
 //! - A conversation with no registry entry (stopped, or only stored) replays
 //!   its stored history through `last_seq`, then ends, with the same cursor
 //!   rules as a live session. Stale `session.end` envelopes are hidden there
@@ -57,11 +59,18 @@ impl Service {
                             error = %err,
                             "history replay failed; falling back to the ring"
                         );
-                        // The ring starts empty on resume, so it cannot hold
-                        // a stale `session.end` from an earlier stop: the
-                        // only end it can hold is the one this stop just
-                        // published, which is this subscriber's correct
-                        // terminal signal. Replay it unchanged.
+                        // The ring of a resumed session starts with the
+                        // stored `last_seq` as its floor, so a cursor it
+                        // cannot serve gaplessly (the whole history, or
+                        // anything below the floor) is refused with
+                        // `Resync`: the client reloads instead of receiving
+                        // the post-resume tail dressed as the full
+                        // conversation. A fresh session's ring has no
+                        // floor and replays what it holds. A ring that
+                        // starts empty cannot hold a stale `session.end`
+                        // from an earlier stop: the only end it can hold is
+                        // the one this stop just published, which is this
+                        // subscriber's correct terminal signal.
                         Ok(match handle.sequencer.subscribe_since(cursor).await {
                             Ok(reply) => Subscription {
                                 replay: reply.replay,

@@ -10,7 +10,10 @@
 //! replays via [`Sequencer::subscribe_since`], or reads the store up to the
 //! [`LiveSubscription`] high-water mark). The in-memory [`EventRing`]
 //! retains every durable kind and tracks `last_evicted_durable_seq`, the
-//! resume floor for the [`ResumeOutcome`] contract.
+//! resume floor for the [`ResumeOutcome`] contract. A resumed session's ring
+//! is born with the stored `last_seq` as that floor, so it answers `Resync`
+//! to any cursor it cannot serve gaplessly — a cursor-less full-history
+//! request included.
 pub mod command;
 pub mod event;
 pub mod inbox;
@@ -83,6 +86,18 @@ pub struct EventRing {
 }
 
 impl EventRing {
+    /// A ring whose replay floor starts at `last_stored_seq`: a resumed
+    /// conversation's past (everything at or below that seq) lives only in
+    /// the store, so the ring must never present its contents as the whole
+    /// history. The floor only ever rises, through eviction or a later
+    /// resume.
+    fn starting_after(last_stored_seq: u64) -> Self {
+        Self {
+            events: std::collections::VecDeque::new(),
+            last_evicted_durable_seq: Some(last_stored_seq),
+        }
+    }
+
     /// Appends an envelope; durable kinds are retained (bounded, evict
     /// oldest), `llm.delta` is ignored.
     fn append(&mut self, envelope: &EventEnvelope) {
@@ -127,6 +142,23 @@ pub struct SessionBus {
 }
 
 impl SessionBus {
+    /// A bus for a fresh session: the ring starts empty with no floor, so
+    /// it can serve a cursor-less full-history replay.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A bus for a session resumed at `last_stored_seq`: the ring starts
+    /// empty with the stored seq as its floor, so a subscription it cannot
+    /// answer gaplessly (the whole history, or anything at or below the
+    /// floor) is refused with `Resync` instead of a partial replay.
+    pub fn starting_after(last_stored_seq: u64) -> Self {
+        Self {
+            ring: EventRing::starting_after(last_stored_seq),
+            subscribers: Vec::new(),
+        }
+    }
+
     /// The evicted-durable watermark (the resume floor), `None` while every
     /// durable event is still retained.
     pub fn last_evicted_durable_seq(&self) -> Option<u64> {
@@ -137,9 +169,19 @@ impl SessionBus {
     /// session head (`next_seq`), then registers a new bounded live queue in
     /// the SAME synchronous step — so replay ∪ live is exactly-once. A
     /// rejected cursor (`Resync`/`InvalidCursor`) gets no live stream.
+    ///
+    /// With a floor watermark set (a resumed session, or one that evicted),
+    /// a cursor the ring cannot serve gaplessly is refused with `Resync`:
+    /// no cursor (`None` = the whole history) and any cursor below the
+    /// watermark. The ring then answers only for the events it witnessed.
     fn subscribe_since(&mut self, cursor: Option<u64>, next_seq: u64) -> SubscribeReply {
         let replay = match cursor {
-            None => ResumeOutcome::Replay(self.ring.replay_from(None)),
+            None => match self.ring.last_evicted_durable_seq {
+                // The ring holds every durable event of the session.
+                None => ResumeOutcome::Replay(self.ring.replay_from(None)),
+                // The ring lacks everything at or below the floor.
+                Some(_) => ResumeOutcome::Resync,
+            },
             Some(k) if k >= next_seq => ResumeOutcome::InvalidCursor,
             Some(k) => {
                 match self.ring.last_evicted_durable_seq {
@@ -278,6 +320,71 @@ mod tests {
         assert!(ring.replay_from(Some(2)).is_empty());
         let all: Vec<u64> = ring.replay_from(None).iter().map(|e| e.seq).collect();
         assert_eq!(all, vec![0, 2]);
+    }
+
+    /// The ring of a session resumed at seq 100 (the stored `last_seq` is
+    /// its floor): it holds only the events since, and refuses with `Resync`
+    /// every cursor it cannot serve gaplessly — a cursor-less whole-history
+    /// request and any cursor below the floor — while a cursor at or above
+    /// the floor still replays the retained events and follows live.
+    #[test]
+    fn a_floor_ring_refuses_what_it_cannot_replay() {
+        let mut bus = SessionBus::starting_after(100);
+        bus.emit(durable_envelope(101));
+        bus.emit(durable_envelope(102));
+        let next: u64 = 103;
+
+        assert_eq!(bus.last_evicted_durable_seq(), Some(100));
+
+        // No cursor = the whole conversation: the ring holds only the tail.
+        let reply = subscribe(&mut bus, None, next);
+        assert!(matches!(reply.replay, ResumeOutcome::Resync));
+        assert!(reply.live.is_none(), "a refused cursor gets no live stream");
+
+        // Below the floor: events the ring never witnessed.
+        let reply = subscribe(&mut bus, Some(50), next);
+        assert!(matches!(reply.replay, ResumeOutcome::Resync));
+        assert!(reply.live.is_none());
+
+        // At the floor: every durable event after it is retained.
+        let reply = subscribe(&mut bus, Some(100), next);
+        assert_eq!(replay_seqs(&reply.replay), vec![101, 102]);
+        assert!(reply.live.is_some(), "an accepted cursor follows live");
+
+        // Above the floor, below the head: the retained tail.
+        let reply = subscribe(&mut bus, Some(101), next);
+        assert_eq!(replay_seqs(&reply.replay), vec![102]);
+        assert!(reply.live.is_some());
+
+        // A cursor ahead of the session head stays invalid, never "caught up".
+        let reply = subscribe(&mut bus, Some(103), next);
+        assert!(matches!(reply.replay, ResumeOutcome::InvalidCursor));
+        assert!(reply.live.is_none());
+    }
+
+    /// The floor rises only through eviction: a floor ring that overflows
+    /// keeps refusing cursors below the ORIGINAL floor and the evicted
+    /// prefix, while a fresh ring that evicts keeps serving cursors at or
+    /// above its watermark.
+    #[test]
+    fn a_floor_ring_keeps_its_floor_when_it_evicts() {
+        let floor = 10u64;
+        let mut bus = SessionBus::starting_after(floor);
+        for seq in (floor + 1)..=(floor + RING_CAP as u64 + 5) {
+            bus.emit(durable_envelope(seq));
+        }
+        // Eviction moved the watermark past the resume floor.
+        assert!(bus.last_evicted_durable_seq().unwrap() > floor);
+
+        let next = floor + RING_CAP as u64 + 6;
+        let reply = subscribe(&mut bus, Some(floor), next);
+        assert!(matches!(reply.replay, ResumeOutcome::Resync));
+        let reply = subscribe(&mut bus, None, next);
+        assert!(matches!(reply.replay, ResumeOutcome::Resync));
+        // At the (evicted) watermark the ring is gapless again.
+        let watermark = bus.last_evicted_durable_seq().unwrap();
+        let reply = subscribe(&mut bus, Some(watermark), next);
+        assert_eq!(replay_seqs(&reply.replay).len(), RING_CAP);
     }
 
     /// (e) cursor == oldest_retained - 1 replays GAPLESSLY because the

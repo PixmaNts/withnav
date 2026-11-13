@@ -18,6 +18,17 @@ requests land in `develop`.
   tree (the conversation and its subagents), not for every conversation of the server.
 ### Fixed
 
+- A resumed conversation no longer presents its tail as the whole history when
+  the stored history cannot be read. Before, the in-memory ring of a resumed
+  session answered any subscription cursor (including "everything, from the
+  start") because it was born empty with no floor, so a client received only
+  the events since the resume, labelled as the full conversation, with no
+  error. Now the ring is born with the conversation's stored head as its
+  floor: a request it cannot serve gaplessly — the whole history, or any
+  cursor at or below that floor — is refused with a `resync` signal, so the
+  client reloads instead of silently missing every turn from before the
+  resume. A client already at the conversation's head keeps replaying the
+  events since and following live.
 - Every durable event is stored before any client sees it. Before, events were written in the
   background after being shown, and one failed history write (a deleted session, a busy database
   past its timeout, a full disk) was remembered for the whole process: every conversation then

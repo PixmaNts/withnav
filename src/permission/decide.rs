@@ -1,5 +1,8 @@
 //! The order in which yolo, the fixed floor, rules, bypass and the permission flow decide a tool call.
 //!
+//! ADR 0015 ("Decision order") states this order authoritatively; the step comments in `run` follow
+//! the execution order and point back to it, as do `ARCHITECTURE.md` and the book's permissions page.
+//!
 //! [`decide`] reads rules and asks the permission flows through
 //! [`PermissionFlows`]; it runs no tool and writes no decision. The flows are
 //! a trait so that the caller wires in the real flow runtime and this module
@@ -309,24 +312,17 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
         trace,
     };
 
+    // The order of the steps below is the one ADR 0015 ("Decision order") states; this comment block
+    // only numbers the branches as `run` executes them.
     // 1. Yolo checks nothing.
     if input.control == Control::Yolo {
         return run(ApprovedBy::Yolo, trace);
     }
 
-    // 2. The fixed floor (`floor`): a credential, or a path that cannot be
-    // resolved the way execution would resolve it, asks and nothing can allow it.
-    // 3. Reads inside the readable roots (`free_read`) need no rule and no
-    // flow. They still go through the loop check below, so a model re-reading
-    // the same file forever is stopped. A native write inside a temporary
-    // directory (`temp_write`) needs no flow either: what it changes is
-    // temporary by definition. A written `deny` or `ask` rule still applies.
-    // 4. Rules (`rules`), read by `lookup`.
+    // 2. A written `deny` rule stops the call before anything can ask about it.
     trace.command_matches = rules.matches.clone();
     trace.rule_id = rules.rule.as_ref().map(|rule| rule.id);
     trace.effect = rules.rule.as_ref().map(|rule| rule.effect);
-
-    // A written deny stops the call before anything can ask about it.
     if let Some(rule) = rules.deny {
         trace.rule_id = Some(rule.id);
         trace.effect = Some(Effect::Deny);
@@ -343,6 +339,8 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
         };
     }
 
+    // 3. The fixed floor (`floor`): a credential, or a path that cannot be
+    // resolved the way execution would resolve it, asks and nothing can allow it.
     match &floor {
         Floor::Credential(target) => {
             trace.floor = Some(format!("credential: {target}"));
@@ -365,9 +363,10 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
         Floor::None => {}
     }
 
-    // A protected write needs the protected check, and only it: rules, bypass
-    // and a generic flow allow never stand in for it, and it is never saved as
-    // a rule. It is asked after the deny above and before anything can run it.
+    // 4. The protected check: a write to WithNav's own configuration, database or
+    // global flows folder needs it, and only it: rules, bypass and a generic
+    // flow allow never stand in for it, and it is never saved as a rule. It is
+    // asked after the deny and the floor above and before anything can run it.
     // A command that only names a protected file goes through the same check:
     // its question also accepts a call that only reads WithNav's files.
     if let Floor::Protected(target) | Floor::NamesProtected(target) = &floor {
@@ -396,8 +395,8 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
         }
     }
 
-    // A loop is checked after the rules so that a `deny` is never hidden by a
-    // question; bypass skips it.
+    // 5. The loop check: a loop is checked after the deny, the floor and the
+    // protected check so that none is hidden by a question; bypass skips it.
     if input.repeats >= DOOM_LOOP_THRESHOLD {
         trace.doom_loop = true;
         let doom = match doom {
@@ -435,16 +434,21 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
         }
     }
 
+    // 6. A free read inside the readable roots (`free_read`) runs with no rule and no
+    // flow — today `lookup` reads no rule for it, so a written rule does not apply to it
+    // yet — and a native write inside a temporary directory (`temp_write`) runs the
+    // same way unless a written `ask` rule covers it. Both still went through the
+    // loop check above, so a model re-reading the same file forever is stopped.
     if free_read || (temp_write && rules.result != RuleResult::Ask) {
         return run(ApprovedBy::Rule, trace);
     }
 
-    // 5. Bypass.
+    // 7. Bypass.
     if input.control == Control::Bypass && input.store.is_some() {
         return run(ApprovedBy::Bypass, trace);
     }
 
-    // 6. An `allow` rule runs a call the Captain already approved without an
+    // 8. An `allow` rule runs a call the Captain already approved without an
     // Instinct evaluation, by the Captain's decision of 2026-11-10 (ADR 0015).
     // `bash` is the exception: a rule on a shell prefix cannot foresee the line
     // that will run, so the flow keeps judging a destructive one. A rule-less
@@ -461,7 +465,7 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
         );
     }
 
-    // 7. The permission flow, with the rules' result.
+    // 9. The permission flow, with the rules' result; when it does not decide, the Captain does.
     let answer = flows
         .flow(&FlowQuery {
             rule: rules.result,
@@ -496,7 +500,7 @@ async fn run(input: &Input<'_>, lookup: Lookup, flows: &dyn PermissionFlows) -> 
             proposals,
             trace,
         ),
-        // 8. The Captain.
+        // The Captain: Once, Always or Reject.
         FlowAnswer::ApplyRule if rules.result == RuleResult::Allow && rules.rule.is_none() => {
             run(ApprovedBy::Validation, trace)
         }

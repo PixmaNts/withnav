@@ -290,13 +290,14 @@ status line shows the active tab's.
 **Permission request to answer.** Before each tool call of an assistant message, `run_loop`
 (`run_decided`) checks tool availability for the session and role and the call's arguments
 (`preflight`), then makes ONE decision through `agent/authorize.rs`, which calls
-`permission::decide` (ADR 0015). The order is fixed: yolo, the fixed floor (`permission/floor.rs`:
-credentials ask, WithNav's `config.json`, `withnav.db` and global flows directory need the protected
-check, an unresolvable path asks), free reads inside the readable roots, the rules
-(`permission/rules.rs`, the most precise match wins; a `deny` stops the call), the doom-loop check
-(`DoomTracker`, reset at each `run_agent`), bypass, an `allow` rule on a call other than `bash` (the
+`permission::decide`. The order is fixed and stated once, authoritatively, in ADR 0015 ("Decision
+order"): yolo, a written `deny` rule, the fixed floor (`permission/floor.rs`: credentials ask, an
+unresolvable path asks), the protected check (WithNav's `config.json`, `withnav.db` and global flows
+directory), the doom-loop check (`DoomTracker`, reset at each `run_agent`), free reads inside the
+readable roots and temporary writes, bypass, an `allow` rule on a call other than `bash` (the
 call runs, `approved_by: rule`, without an Instinct evaluation; `bash` keeps the flow's judgement of
-the line the prefix rule cannot foresee), the permission flows, then the Captain. No rule
+the line the prefix rule cannot foresee), then the permission flows and the Captain. The step
+comments in `decide.rs` number the branches in this same order. No rule
 means ask; there are no default rules, and a tool the decision does not know (an MCP tool, a role-less
 actor's call) is judged like any other: no rule, ask. `bash` lines are split into commands
 (`permission/shell.rs`) and each command's `rule_text` is matched; an opaque command matches no

@@ -676,8 +676,11 @@ async fn a_failed_history_write_ends_only_its_own_session() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
-        .expect("service");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(ClientCache::new()),
+    )
+    .expect("service");
     let broken = service
         .create_session(&ws, None, false)
         .await

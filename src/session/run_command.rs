@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use ulid::Ulid;
 
 use super::commands::{self, CommandOutcome, CommandSpec};
+use super::gate::LifecycleGuard;
 use super::service::{CLEAR_WORD, Service, SessionHandle, SessionId, VariantChoice, exact_variant};
 use crate::agent::selection::SwitchError;
 use crate::bus::event::{CommandResult, EventKind, SessionAgentChanged};
@@ -74,7 +75,7 @@ impl Service {
         name: &str,
         arguments: &str,
     ) -> Result<CommandOutcome, ServerError> {
-        let mut gate = Some(self.lifecycle_gate().await);
+        let mut gate = Some(self.lifecycle_gate(session_id).await?);
         let handle = self.routable_handle(session_id).await?;
         if handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
@@ -149,8 +150,12 @@ impl Service {
             .await
             .is_err()
         {
+            // The conversation `/new` created is its own tree: close it under
+            // that tree's gate, after letting go of this one (a task never
+            // holds two tree gates).
+            drop(gate.take());
             if let Some(id) = created
-                && let Err(err) = self.close_session_gated(id).await
+                && let Err(err) = self.close_session(id).await
             {
                 tracing::warn!(session_id = %id, error = %err, "closing the session of a failed /new");
             }
@@ -175,7 +180,7 @@ impl Service {
         spec: &'static CommandSpec,
         arguments: &str,
         operation_id: Ulid,
-        gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
+        gate: &mut Option<LifecycleGuard>,
     ) -> Result<Done, CommandFailure> {
         // A waiting permission request also reads as a waiting actor; `/stop`
         // goes through it and cancels the request.
@@ -273,7 +278,7 @@ impl Service {
         handle: &SessionHandle,
         arguments: &str,
         operation_id: Ulid,
-        gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
+        gate: &mut Option<LifecycleGuard>,
     ) -> Result<Done, CommandFailure> {
         if handle.status.selection.switching() {
             return Err(CommandFailure::Refused(SWITCHING_ERROR.to_string()));
@@ -310,7 +315,7 @@ impl Service {
         handle: &SessionHandle,
         arguments: &str,
         operation_id: Ulid,
-        gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
+        gate: &mut Option<LifecycleGuard>,
     ) -> Result<Done, CommandFailure> {
         let mut words = arguments.split_whitespace();
         let (Some(alias), None) = (words.next(), words.next()) else {
@@ -671,7 +676,7 @@ impl Service {
         command: &str,
         arguments: &str,
         operation_id: Ulid,
-        gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
+        gate: &mut Option<LifecycleGuard>,
     ) -> Result<Done, CommandFailure> {
         if arguments.split_whitespace().count() != 1 {
             return Err(CommandFailure::Refused(format!("usage: /{command} <name>")));

@@ -61,7 +61,7 @@ impl Service {
     /// THEN drop the registry entry. Idempotent: a conversation that is
     /// already closed (or only stored) is a no-op; unknown is a 404.
     pub async fn close_session(&self, id: SessionId) -> Result<(), ServerError> {
-        let _gate = self.lifecycle_gate().await;
+        let _gate = self.lifecycle_gate(id).await?;
         self.ensure_not_archived(id).await?;
         self.wait_child_operation(id).await;
         let parent = self.handle(id).and_then(|h| h.parent_session_id);
@@ -172,7 +172,7 @@ impl Service {
     }
 
     async fn stop_all_sessions(&self) {
-        let _gate = self.lifecycle_gate().await;
+        let _shutdown = self.gates.shutdown().await;
         loop {
             let admission = self.admission_gate.lock().await;
             let owned = self
@@ -490,6 +490,95 @@ mod tests {
 
         assert_eq!(collect_session_end_seq(observer).await, 2);
         assert!(state.handle(id).is_none());
+    }
+
+    /// Spawns `close_session(a)` on a wedged runtime and returns once its
+    /// teardown is under way: `a` is `Stopping` and its tree gate is held
+    /// for the teardown cap (10 s) by a runtime that never exits.
+    async fn wedged_teardown(state: &Service, a: SessionId) -> tokio::task::JoinHandle<()> {
+        state.lock_sessions().insert(a, wedged_runtime_handle());
+        let closing = state.clone();
+        let task = tokio::spawn(async move {
+            let _ = closing.close_session(a).await;
+        });
+        while state
+            .handle(a)
+            .is_some_and(|h| h.lifecycle == Lifecycle::Active)
+        {
+            tokio::task::yield_now().await;
+        }
+        task
+    }
+
+    // Given conversation A stuck in a degraded teardown (its runtime ignores
+    // cancellation, so the stop holds A's gate for the 10 s cap)
+    // When the Captain runs a slash command on, and resumes, an unrelated B
+    // Then both answer at once, while A is still stopping
+    #[tokio::test]
+    async fn an_unrelated_tree_does_not_wait_for_a_degraded_teardown() {
+        let (_dir, state) = test_service();
+        let (a, b) = (Ulid::generate(), Ulid::generate());
+        let b_handle = wedged_runtime_handle();
+        b_handle
+            .sequencer
+            .publish(start_candidate(Path::new("/w")))
+            .expect("start");
+        state.lock_sessions().insert(b, b_handle);
+        let teardown = wedged_teardown(&state, a).await;
+
+        let started = std::time::Instant::now();
+        let outcome =
+            tokio::time::timeout(Duration::from_secs(2), state.run_command(b, "help", ""))
+                .await
+                .expect("a command on B never waits for A's teardown")
+                .expect("command");
+        assert!(outcome.ok);
+        let (resumed, existed) = tokio::time::timeout(
+            Duration::from_secs(2),
+            state.create_or_resume_session(Path::new("/w"), None, false, Some(b)),
+        )
+        .await
+        .expect("a resume of B never waits for A's teardown")
+        .expect("resume");
+        assert_eq!((resumed, existed), (b, true));
+        assert!(started.elapsed() < TEARDOWN_AWAIT_CAP);
+        assert!(
+            state
+                .handle(a)
+                .is_some_and(|h| h.lifecycle == Lifecycle::Stopping),
+            "A's teardown is still running"
+        );
+        teardown.abort();
+    }
+
+    // Given conversation A stuck in a degraded teardown
+    // When its subagent is stopped
+    // Then the subagent's stop waits for A's tree gate
+    #[tokio::test]
+    async fn a_subagent_waits_for_its_parent_trees_gate() {
+        let (_dir, state) = test_service();
+        let (a, child) = (Ulid::generate(), Ulid::generate());
+        let mut child_handle = wedged_runtime_handle();
+        child_handle.parent_session_id = Some(a);
+        state.lock_sessions().insert(child, child_handle);
+        let teardown = wedged_teardown(&state, a).await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), state.lifecycle_gate(child))
+                .await
+                .is_err(),
+            "the child shares its root's gate"
+        );
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(200),
+                state.lifecycle_gate(Ulid::generate())
+            )
+            .await
+            .is_ok(),
+            "an unrelated root does not"
+        );
+        teardown.abort();
     }
 
     /// Drains an observer probe (replay + live) until session.end lands and

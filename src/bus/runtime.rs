@@ -1512,7 +1512,12 @@ async fn runtime_loop(
         // A request that would not fit this budget is compacted first.
         actor.input_budget = status.context_snapshot().map(|s| s.input_budget);
 
-        let task_id = active_task_id.unwrap_or_default();
+        // A turn woken with no task of its own (steer, replacement, restart
+        // after a done task) still needs an identity: mint one and keep it as
+        // the active task id so its parks resume under the same id and the
+        // final Done clears it. Parked turns that already have an id are
+        // untouched.
+        let task_id = *active_task_id.get_or_insert_with(Ulid::generate);
         let turn_id = Ulid::generate();
         let mut turn = TurnPublisher::new(sequencer.clone(), status.clone(), turn_id, task_id);
         if status
@@ -3477,6 +3482,9 @@ mod tests {
         session_cancel: CancellationToken,
         session_id: Ulid,
         live: mpsc::Receiver<EventEnvelope>,
+        /// The runtime status, kept so tests can steer or top up the parked
+        /// session the way the session service does.
+        status: Arc<RuntimeStatus>,
         handle: tokio::task::JoinHandle<AgentActor>,
     }
 
@@ -3496,19 +3504,22 @@ mod tests {
         let session_id = Ulid::generate();
         let sequencer = Sequencer::spawn(session_id, crate::bus::SessionBus::default(), 0);
         let live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
-        let handle = spawn(
+        let status = Arc::new(RuntimeStatus::default());
+        let handle = spawn_with_status(
             session_id,
             actor,
             inbox,
             sequencer,
             session_cancel.clone(),
             None,
+            Arc::clone(&status),
         );
         Harness {
             inbox_tx,
             session_cancel,
             session_id,
             live,
+            status,
             handle,
         }
     }
@@ -3615,6 +3626,259 @@ mod tests {
         for env in &envelopes {
             assert_eq!(env.correlation_id, Some(task_id));
         }
+        h.take_actor().await;
+    }
+
+    // ---- (a2) Every woken turn carries a task id, never the nil one (#249) ----
+
+    /// An idle session (previous task done) woken by a steer starts a turn
+    /// with a FRESH task id: turn.start and task.done share it, and it differs
+    /// from the previous task's id.
+    #[tokio::test]
+    async fn steer_wake_after_done_starts_a_turn_with_a_fresh_task_id() {
+        let done1 =
+            r#"{"choices":[{"index":0,"delta":{"content":"first done"},"finish_reason":"stop"}]}"#;
+        let done2 = r#"{"choices":[{"index":0,"delta":{"content":"steered done"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[done1])),
+            http_sse(&sse_body(&[done2])),
+        ])
+        .await;
+        let mut h = harness(server.url.clone()).await;
+        h.send("first task");
+
+        let first = drain_until(&mut h.live, |e| {
+            kind_of(e) == "agent.state" && e.payload["to"] == "idle"
+        })
+        .await;
+        let first_id = first
+            .iter()
+            .find(|e| kind_of(e) == "task.done")
+            .expect("the first task ends in task.done")
+            .correlation_id
+            .unwrap();
+        assert_ne!(first_id, Ulid::nil());
+
+        assert!(
+            h.status.steer("pivot".into(), false),
+            "the steer is admitted"
+        );
+        let second = drain_until(&mut h.live, |e| kind_of(e) == "task.done").await;
+        let second_start = second
+            .iter()
+            .find(|e| kind_of(e) == "turn.start")
+            .expect("the steered turn starts");
+        let second_id = second
+            .iter()
+            .find(|e| kind_of(e) == "task.done")
+            .expect("the steered turn ends in task.done")
+            .correlation_id
+            .unwrap();
+        assert_ne!(
+            second_id,
+            Ulid::nil(),
+            "a steered turn never carries the nil task id"
+        );
+        assert_ne!(
+            second_id, first_id,
+            "a steered turn after a done task gets a FRESH task id"
+        );
+        assert_eq!(
+            second_start.correlation_id,
+            Some(second_id),
+            "turn.start and task.done share the steered turn's task id"
+        );
+        h.take_actor().await;
+    }
+
+    /// Same, but the wake is a replacement (interrupt): the claimed
+    /// replacement drives the next turn, which also carries a fresh task id.
+    #[tokio::test]
+    async fn replacement_wake_after_done_starts_a_turn_with_a_fresh_task_id() {
+        let done1 =
+            r#"{"choices":[{"index":0,"delta":{"content":"first done"},"finish_reason":"stop"}]}"#;
+        let done2 = r#"{"choices":[{"index":0,"delta":{"content":"replacement done"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[done1])),
+            http_sse(&sse_body(&[done2])),
+        ])
+        .await;
+        let mut h = harness(server.url.clone()).await;
+        h.send("first task");
+
+        let first = drain_until(&mut h.live, |e| {
+            kind_of(e) == "agent.state" && e.payload["to"] == "idle"
+        })
+        .await;
+        let first_id = first
+            .iter()
+            .find(|e| kind_of(e) == "task.done")
+            .expect("the first task ends in task.done")
+            .correlation_id
+            .unwrap();
+        assert_ne!(first_id, Ulid::nil());
+
+        assert!(
+            h.status.steer("replacement instruction".into(), true),
+            "the replacement is admitted"
+        );
+        let second = drain_until(&mut h.live, |e| kind_of(e) == "task.done").await;
+        let second_start = second
+            .iter()
+            .find(|e| kind_of(e) == "turn.start")
+            .expect("the replacement turn starts");
+        let second_id = second
+            .iter()
+            .find(|e| kind_of(e) == "task.done")
+            .expect("the replacement turn ends in task.done")
+            .correlation_id
+            .unwrap();
+        assert_ne!(
+            second_id,
+            Ulid::nil(),
+            "a replacement turn never carries the nil task id"
+        );
+        assert_ne!(
+            second_id, first_id,
+            "a replacement turn after a done task gets a FRESH task id"
+        );
+        assert_eq!(
+            second_start.correlation_id,
+            Some(second_id),
+            "turn.start and task.done share the replacement turn's task id"
+        );
+        h.take_actor().await;
+    }
+
+    /// A budget park keeps its task id: the top-up (a `Control::Continue`
+    /// sender) resumes the SAME task, whose resumed turn.start and task.done
+    /// keep that id.
+    #[tokio::test]
+    async fn budget_topup_resumes_with_the_same_task_id() {
+        let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"bash","arguments":"{\"command\":\"true\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let done =
+            r#"{"choices":[{"index":0,"delta":{"content":"park done"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[toolcall])),
+            http_sse(&sse_body(&[done])),
+        ])
+        .await;
+        let mut h = harness_with_steps(server.url.clone(), Some(1)).await;
+        h.send("loop then stop");
+
+        let parked = drain_until(&mut h.live, |e| {
+            kind_of(e) == "agent.state" && e.payload["to"] == "yielded"
+        })
+        .await;
+        let parked_id = parked
+            .iter()
+            .find(|e| kind_of(e) == "turn.start")
+            .expect("the parked turn starts")
+            .correlation_id
+            .expect("the parked turn carries a task id");
+        assert_ne!(parked_id, Ulid::nil());
+        let budget_yield = parked
+            .iter()
+            .find(|e| kind_of(e) == "agent.yield")
+            .expect("the budget outcome yields");
+        assert_eq!(budget_yield.payload["kind"], "budget");
+        assert!(
+            parked.iter().all(|e| e.correlation_id == Some(parked_id)),
+            "every parked-turn event carries the task id"
+        );
+
+        assert_eq!(
+            h.status.topup_budget(),
+            Ok(1),
+            "the park is claimed and one top-up is granted"
+        );
+        let resumed = drain_until(&mut h.live, |e| kind_of(e) == "task.done").await;
+        let resumed_start = resumed
+            .iter()
+            .find(|e| kind_of(e) == "turn.start")
+            .expect("the resumed turn starts");
+        let done_id = resumed
+            .iter()
+            .find(|e| kind_of(e) == "task.done")
+            .expect("the resumed task ends in task.done")
+            .correlation_id
+            .unwrap();
+        assert_eq!(
+            resumed_start.correlation_id,
+            Some(parked_id),
+            "the resumed turn keeps the parked turn's task id"
+        );
+        assert_eq!(
+            done_id, parked_id,
+            "task_id STABLE across a budget park and its top-up"
+        );
+        h.take_actor().await;
+    }
+
+    /// A park entered by a turn that had NO task id of its own (a steer-woken
+    /// turn that yields an ask) keeps the steer-minted id across the resume:
+    /// the user's next command does not adopt a new id, and task.done carries
+    /// the same one.
+    #[tokio::test]
+    async fn steer_woken_turn_keeps_its_task_id_across_an_ask_resume() {
+        let done1 =
+            r#"{"choices":[{"index":0,"delta":{"content":"first done"},"finish_reason":"stop"}]}"#;
+        let ask = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask_1","function":{"name":"ask","arguments":"{\"question\":\"insert SD card\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let done2 = r#"{"choices":[{"index":0,"delta":{"content":"resumed after steer"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[done1])),
+            http_sse(&sse_body(&[ask])),
+            http_sse(&sse_body(&[done2])),
+        ])
+        .await;
+        let mut h = harness(server.url.clone()).await;
+        h.send("first task");
+        let _ = drain_until(&mut h.live, |e| {
+            kind_of(e) == "agent.state" && e.payload["to"] == "idle"
+        })
+        .await;
+
+        assert!(
+            h.status.steer("change of plan".into(), false),
+            "the steer is admitted"
+        );
+        let asked = drain_until(&mut h.live, |e| {
+            kind_of(e) == "agent.state" && e.payload["to"] == "yielded"
+        })
+        .await;
+        let steered_id = asked
+            .iter()
+            .find(|e| kind_of(e) == "turn.start")
+            .expect("the steered turn starts")
+            .correlation_id
+            .expect("the steered turn carries a task id");
+        assert_ne!(
+            steered_id,
+            Ulid::nil(),
+            "the steered turn never carries the nil task id"
+        );
+
+        h.send("the answer");
+        let resumed = drain_until(&mut h.live, |e| kind_of(e) == "task.done").await;
+        let resumed_start = resumed
+            .iter()
+            .find(|e| kind_of(e) == "turn.start")
+            .expect("the resumed turn starts");
+        let done_id = resumed
+            .iter()
+            .find(|e| kind_of(e) == "task.done")
+            .expect("the resumed task ends in task.done")
+            .correlation_id
+            .unwrap();
+        assert_eq!(
+            resumed_start.correlation_id,
+            Some(steered_id),
+            "the resumed turn keeps the steer-minted task id"
+        );
+        assert_eq!(
+            done_id, steered_id,
+            "task_id STABLE across a steer-woken ask and its answer"
+        );
         h.take_actor().await;
     }
 

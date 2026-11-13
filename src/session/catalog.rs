@@ -77,7 +77,7 @@ impl Service {
     /// store. [`ServerError::SessionNotFound`] only when the id is neither
     /// in memory nor on disk.
     pub async fn delete(&self, id: SessionId) -> Result<(), ServerError> {
-        let _gate = self.lifecycle_gate().await;
+        let _gate = self.lifecycle_gate(id).await?;
         self.wait_child_operation(id).await;
         // A live session is closed; a stored one is a no-op; an id the store
         // does not know is a 404.

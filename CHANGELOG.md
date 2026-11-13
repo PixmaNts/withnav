@@ -6,6 +6,12 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- A conversation whose stop is slow (a tool that ignores cancellation) no longer holds up the
+  others: slash commands, stop, resume, delete and archive of a conversation wait only for its own
+  tree (the conversation and its subagents), not for every conversation of the server.
+
 ## [0.8.3] - 2026-11-11
 
 ### Added

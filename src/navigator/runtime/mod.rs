@@ -458,10 +458,7 @@ impl Runtime {
         }
         let primary = self.primary_models_path.as_deref()?;
         let config_dir = self.config_dir.as_deref()?;
-        let Some(secondary) = crate::provider::config::resolve_models_path(None, root, config_dir)
-        else {
-            return None;
-        };
+        let secondary = crate::provider::config::resolve_models_path(None, root, config_dir)?;
         let differs = {
             let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
             canonical(primary) != canonical(&secondary)

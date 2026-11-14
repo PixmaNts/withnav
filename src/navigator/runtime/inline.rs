@@ -42,11 +42,11 @@ impl Runtime {
         if self.connection_cancel.is_cancelled() || self.routing_generation() != generation {
             return InlineCompletionResult::default();
         }
-        if let Some(root) = &root {
-            if !self.layers_available_for_root(root).await {
-                self.report_secondary_catalogue_disabled(root).await;
-                return InlineCompletionResult::default();
-            }
+        if let Some(root) = &root
+            && !self.layers_available_for_root(root).await
+        {
+            self.report_secondary_catalogue_disabled(root).await;
+            return InlineCompletionResult::default();
         }
         let feed = root.as_deref().and_then(|r| self.feed_for_workspace(r));
         let editor_snapshot = feed.as_ref().map(|f| f.snapshot_for_editor(self.editor_id));

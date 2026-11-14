@@ -234,7 +234,9 @@ async fn two_editors_share_owner_and_one_closing_does_not_stop_the_other() {
                 }
                 let value: serde_json::Value = serde_json::from_str(&data).unwrap();
                 if value["kind"] == "message.received"
-                    && value["payload"].to_string().contains("live message from second client")
+                    && value["payload"]
+                        .to_string()
+                        .contains("live message from second client")
                 {
                     return value;
                 }

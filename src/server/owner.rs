@@ -142,10 +142,10 @@ impl std::fmt::Debug for OwnerLock {
 impl OwnerLock {
     /// Attempts to acquire an exclusive lock on `<database>.owner.lock`.
     /// The file is opened with `O_CLOEXEC` to prevent child tools from inheriting it.
+    ///
+    /// Never creates the data directory: an owner whose directory was deleted must not bring it
+    /// back by probing its own lock, and the starting owner creates it before anything else.
     pub fn try_acquire(paths: &OwnerPaths) -> io::Result<Option<Self>> {
-        if let Some(parent) = paths.lock.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
         #[cfg(unix)]

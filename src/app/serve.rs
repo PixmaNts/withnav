@@ -184,14 +184,18 @@ async fn serve_status() -> anyhow::Result<i32> {
 
 /// The owner lock, retried for a short while: a client checking whether an owner runs takes the
 /// same lock for an instant, and a starting owner that met that probe must not conclude another
-/// owner exists and exit, leaving nobody to serve. A lock still taken after the retries belongs
-/// to a live owner.
+/// owner exists and exit, leaving nobody to serve. A published record next to a taken lock means
+/// a live owner already serves: stop at once rather than linger and take over later. A lock still
+/// taken after the retries belongs to an owner that is starting.
 async fn acquire_patiently(
     paths: &crate::server::owner::OwnerPaths,
 ) -> std::io::Result<Option<OwnerLock>> {
     for _ in 0..40 {
         if let Some(lock) = OwnerLock::try_acquire(paths)? {
             return Ok(Some(lock));
+        }
+        if paths.record.exists() {
+            return Ok(None);
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }

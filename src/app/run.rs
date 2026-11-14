@@ -13,8 +13,8 @@ use crate::app::connect::{Wanted, ensure_server};
 /// open event stream -> wait for Connected -> post prompt/command -> render-until-terminal -> exit.
 pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
     let workspace = match args.workspace {
-        Some(w) => w,
-        None => std::env::current_dir()?,
+        Some(w) => embedded::resolve_workspace(&w)?,
+        None => embedded::resolve_workspace(&std::env::current_dir()?)?,
     };
     let cfg_dir = config_dir()?;
     let rules_roots = RulesRoots::from_user_home();

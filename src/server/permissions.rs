@@ -42,6 +42,15 @@ async fn list_rules(
     State(state): State<AppState>,
     Query(query): Query<ListRulesQuery>,
 ) -> Response {
+    if let Some(ref p) = query.project {
+        if !p.is_absolute() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "project path must be absolute" })),
+            )
+                .into_response();
+        }
+    }
     let data_dir = state.config.data_dir.clone();
     let filter = RuleFilter {
         include_revoked: query.all,
@@ -83,6 +92,15 @@ pub struct AddRuleBody {
 }
 
 async fn add_rule(State(state): State<AppState>, Json(body): Json<AddRuleBody>) -> Response {
+    if let RuleScope::Project(ref p) = body.scope {
+        if !p.is_absolute() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "project path must be absolute" })),
+            )
+                .into_response();
+        }
+    }
     let data_dir = state.config.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let store = PermissionStore::open(&data_dir).map_err(|e| e.to_string())?;
@@ -199,6 +217,15 @@ async fn revoke_validation(
     Path(id): Path<i64>,
     Query(query): Query<RevokeValidationQuery>,
 ) -> Response {
+    if let Some(ref w) = query.workspace {
+        if !w.is_absolute() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "workspace path must be absolute" })),
+            )
+                .into_response();
+        }
+    }
     let data_dir = state.config.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let store = PermissionStore::open(&data_dir).map_err(|e| e.to_string())?;
@@ -247,6 +274,16 @@ async fn validate_flow(
             Json(json!({ "error": "skill admission is not available yet" })),
         )
             .into_response();
+    }
+
+    if let Some(ref w) = body.workspace {
+        if !w.is_absolute() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "workspace path must be absolute" })),
+            )
+                .into_response();
+        }
     }
 
     let workspace = body

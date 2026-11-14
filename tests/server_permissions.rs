@@ -234,3 +234,73 @@ async fn validations_and_flow_validation_routes() {
         resp.status()
     );
 }
+
+#[tokio::test]
+async fn server_permissions_rejects_relative_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let token = "test-token";
+    let cfg = TestServerConfig::mock(tmp.path(), UNREACHABLE_PROVIDER_URL).bearer_token(token);
+    let state = cfg.state();
+    let auth_header = format!("Bearer {token}");
+
+    // 1. GET /v1/permissions/rules?project=. -> 400
+    let app = withnav::server::routes::app(state.clone());
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/permissions/rules?project=.")
+        .header("authorization", &auth_header)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // 2. POST /v1/permissions/rules with relative project scope -> 400
+    let app = withnav::server::routes::app(state.clone());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/permissions/rules")
+        .header("authorization", &auth_header)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "action": "bash",
+                "resource": "*",
+                "effect": "allow",
+                "scope": {"project": "relative/path"},
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // 3. DELETE /v1/permissions/validations/1?workspace=. -> 400
+    let app = withnav::server::routes::app(state.clone());
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/v1/permissions/validations/1?workspace=.")
+        .header("authorization", &auth_header)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // 4. POST /v1/permissions/validate with relative workspace -> 400
+    let app = withnav::server::routes::app(state.clone());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/permissions/validate")
+        .header("authorization", &auth_header)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "kind": "flow",
+                "name": "any_flow",
+                "workspace": "relative/workspace",
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

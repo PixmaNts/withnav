@@ -43,6 +43,18 @@ pub fn check_private(path: &Path) -> Result<(), ProviderError> {
     windows::check_perms_or_fail(path)
 }
 
+/// Replaces the DACL of `path` with a protected one granting the current user alone.
+#[cfg(windows)]
+pub fn protect_owner_only(path: &Path) -> Result<(), ProviderError> {
+    windows::protect_owner_only(path)
+}
+
+/// Fails unless every ACE on `path` grants the current user alone.
+#[cfg(windows)]
+pub fn check_owner_only(path: &Path) -> Result<(), ProviderError> {
+    windows::check_owner_only(path)
+}
+
 fn auth_path(config_dir: &Path) -> PathBuf {
     config_dir.join("auth.json")
 }

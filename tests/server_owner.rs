@@ -1,5 +1,9 @@
 //! Integration tests for the database owner process lifecycle, record publishing,
 //! security checks, hello proof verification, and client connectivity.
+//!
+//! Unix only: they kill owners with signals, check file modes and build symbolic links. The
+//! Windows owner (file lock, owner-only access list, detached start) has no runtime test here.
+#![cfg(unix)]
 use std::path::PathBuf;
 
 use withnav::app::connect::{Wanted, ensure_server, find_server};
@@ -116,7 +120,12 @@ async fn stale_record_from_sigkilled_owner_and_concurrent_ensure_server() {
             .status();
     }
 
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while OwnerLock::is_held(&paths).unwrap_or(false) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the killed owner still holds the lock after 15 s"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 

@@ -17,13 +17,13 @@ pub(super) async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
     }
 
     let history_db = history_db_path()?;
-    if let Ok(meta) = std::fs::symlink_metadata(&history_db) {
-        if meta.file_type().is_symlink() {
-            anyhow::bail!(
-                "history database {} is a symlink; point the data directory instead",
-                history_db.display()
-            );
-        }
+    if let Ok(meta) = std::fs::symlink_metadata(&history_db)
+        && meta.file_type().is_symlink()
+    {
+        anyhow::bail!(
+            "history database {} is a symlink; point the data directory instead",
+            history_db.display()
+        );
     }
     let paths = OwnerPaths::resolve(&history_db)?;
     paths.ensure_dir()?;

@@ -32,13 +32,13 @@ impl OwnerPaths {
     /// Resolves the canonical paths for the database owner.
     /// Follows symlinks to canonicalize `withnav.db`; if absent, canonicalizes the parent directory.
     pub fn resolve(history_db: &Path) -> anyhow::Result<Self> {
-        if let Ok(meta) = std::fs::symlink_metadata(history_db) {
-            if meta.file_type().is_symlink() {
-                anyhow::bail!(
-                    "history database {} is a symlink; point the data directory instead",
-                    history_db.display()
-                );
-            }
+        if let Ok(meta) = std::fs::symlink_metadata(history_db)
+            && meta.file_type().is_symlink()
+        {
+            anyhow::bail!(
+                "history database {} is a symlink; point the data directory instead",
+                history_db.display()
+            );
         }
 
         let database = if history_db.exists() {
@@ -124,9 +124,9 @@ impl OwnerPaths {
         }
         #[cfg(windows)]
         {
-            withnav_provider::auth::protect_private(&self.dir)
+            withnav_provider::auth::protect_owner_only(&self.dir)
                 .map_err(|e| anyhow::anyhow!("cannot protect server directory: {e}"))?;
-            withnav_provider::auth::check_private(&self.dir)
+            withnav_provider::auth::check_owner_only(&self.dir)
                 .map_err(|e| anyhow::anyhow!("server directory ACL check failed: {e}"))?;
         }
 
@@ -255,7 +255,7 @@ impl Record {
         }
         #[cfg(windows)]
         {
-            withnav_provider::auth::protect_private(&temp_path)
+            withnav_provider::auth::protect_owner_only(&temp_path)
                 .map_err(|e| anyhow::anyhow!("cannot protect owner record: {e}"))?;
         }
         std::fs::rename(&temp_path, &paths.record)?;
@@ -296,7 +296,7 @@ impl Record {
             if meta.len() > 4096 {
                 anyhow::bail!("owner record {:?} exceeds 4 KiB size limit", paths.record);
             }
-            withnav_provider::auth::check_private(&paths.record).map_err(|e| {
+            withnav_provider::auth::check_owner_only(&paths.record).map_err(|e| {
                 anyhow::anyhow!("owner record {:?} ACL check failed: {e}", paths.record)
             })?;
         }

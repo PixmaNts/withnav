@@ -128,8 +128,11 @@ fn spawn_detached(wanted: &Wanted, paths: &OwnerPaths) -> anyhow::Result<()> {
 
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x00000008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
-    cmd.creation_flags(DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB);
+    // A new process group keeps a Ctrl-C or Ctrl-Break sent to the starting console from
+    // reaching the owner, which outlives the client that started it.
+    cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
 
     match cmd.spawn() {
         Ok(_) => Ok(()),

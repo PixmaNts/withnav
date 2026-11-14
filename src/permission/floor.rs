@@ -439,15 +439,15 @@ fn server_credential(word: &str, cx: &FloorContext) -> bool {
         }
     };
 
-    if let Some(resolved) = resolve_path(word, cx) {
-        if is_in(&resolved) {
-            return true;
-        }
+    if let Some(resolved) = resolve_path(word, cx)
+        && is_in(&resolved)
+    {
+        return true;
     }
-    if let Some(requested) = resolve(word, cx, false) {
-        if is_in(&requested) {
-            return true;
-        }
+    if let Some(requested) = resolve(word, cx, false)
+        && is_in(&requested)
+    {
+        return true;
     }
     false
 }

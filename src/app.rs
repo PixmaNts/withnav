@@ -229,19 +229,33 @@ pub struct WebArgs {
     pub no_open: bool,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Default)]
 pub struct ServeArgs {
-    /// Bind address; loopback-only unless `--allow-non-loopback` is also set.
-    #[arg(long, default_value = "127.0.0.1:7310")]
-    pub bind: String,
-
-    /// Permit a non-loopback bind (still NO auth/TLS this slice — operator's
-    /// reverse-proxy / private-network responsibility).
-    #[arg(long)]
-    pub allow_non_loopback: bool,
+    /// Loopback port to listen on; 0 picks a free one.
+    #[arg(long, default_value_t = 0)]
+    pub port: u16,
 
     #[arg(long)]
     pub models: Option<PathBuf>,
+
+    /// Run the server detached in the background.
+    #[arg(long, hide = true)]
+    pub detach: bool,
+
+    #[command(subcommand)]
+    pub command: Option<ServeSubcommand>,
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum ServeSubcommand {
+    /// Stop the running owner server.
+    Stop {
+        /// Force stop even if turns are running.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Print the status of the owner server.
+    Status,
 }
 
 #[derive(Args, Debug)]

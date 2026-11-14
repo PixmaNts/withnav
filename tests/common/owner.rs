@@ -20,7 +20,9 @@ impl OwnerGuard {
     pub fn pid(&self) -> Option<u32> {
         let bytes = std::fs::read(&self.record).ok()?;
         let record: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-        record["pid"].as_u64().and_then(|pid| u32::try_from(pid).ok())
+        record["pid"]
+            .as_u64()
+            .and_then(|pid| u32::try_from(pid).ok())
     }
 }
 

@@ -156,10 +156,11 @@ pub struct PostMessageRequest {
 /// The Axum router for this slice's routes. Tests mount it directly via
 /// `tower::ServiceExt::oneshot`.
 pub fn app(state: AppState) -> Router {
-    let token = state.http.bearer_token.clone();
     let web = state.http.web.is_some();
     let router = Router::new()
         .route("/v1/health", get(health))
+        .route("/v1/hello", get(hello))
+        .route("/v1/shutdown", post(shutdown))
         .merge(super::flows::router())
         .merge(super::lsp_route::router())
         .merge(super::pairing::router())
@@ -220,32 +221,91 @@ pub fn app(state: AppState) -> Router {
             "/v1/sessions/{id}/events",
             get(crate::server::sse::get_events),
         )
-        .with_state(state);
+        .with_state(state.clone());
     let router = if web {
         router.fallback(crate::server::web::serve_asset)
     } else {
         router
     };
+    let app_state = state.clone();
     router.layer(axum::middleware::from_fn(
         move |request: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
-            let token = token.clone();
+            let app_state = app_state.clone();
             async move {
+                let bound_port = app_state.http.bind.port();
+
+                // 1. Host check: when present, must equal 127.0.0.1:<bound port> or localhost:<bound port>; else 421/403.
+                if let Some(host) = request
+                    .headers()
+                    .get(axum::http::header::HOST)
+                    .and_then(|v| v.to_str().ok())
+                {
+                    let host = host.trim();
+                    let valid = if bound_port > 0 {
+                        host == format!("127.0.0.1:{bound_port}")
+                            || host == format!("localhost:{bound_port}")
+                    } else {
+                        host.starts_with("127.0.0.1") || host.starts_with("localhost")
+                    };
+                    if !valid {
+                        return StatusCode::FORBIDDEN.into_response();
+                    }
+                }
+
+                // 2. Origin check: when present, must equal http://127.0.0.1:<port> or http://localhost:<port>; null and anything else -> 403.
+                if let Some(origin) = request
+                    .headers()
+                    .get(axum::http::header::ORIGIN)
+                    .and_then(|v| v.to_str().ok())
+                {
+                    let origin = origin.trim();
+                    if origin == "null" {
+                        return StatusCode::FORBIDDEN.into_response();
+                    }
+                    let valid = if bound_port > 0 {
+                        origin == format!("http://127.0.0.1:{bound_port}")
+                            || origin == format!("http://localhost:{bound_port}")
+                    } else {
+                        origin.starts_with("http://127.0.0.1")
+                            || origin.starts_with("http://localhost")
+                    };
+                    if !valid {
+                        return StatusCode::FORBIDDEN.into_response();
+                    }
+                }
+
+                // 3. Auth check
                 let path = request.uri().path();
                 let public = path == "/v1/health"
+                    || path == "/v1/hello"
+                    || path == "/v1/pair/exchange"
                     || (web && crate::server::web::is_public_asset_path(path))
                     || super::mcp_app::is_app_load(request.method(), path);
-                if !public && let Some(token) = token {
+
+                if !public && let Some(owner_token) = app_state.http.bearer_token.as_deref() {
                     use axum::http::header::AUTHORIZATION;
-                    let expected = format!("Bearer {token}");
-                    if request
+                    let bearer = request
                         .headers()
                         .get(AUTHORIZATION)
                         .and_then(|v| v.to_str().ok())
-                        != Some(&expected)
-                    {
+                        .and_then(|h| h.strip_prefix("Bearer ").map(str::trim));
+
+                    let Some(bearer) = bearer else {
+                        return StatusCode::UNAUTHORIZED.into_response();
+                    };
+
+                    let is_owner_only =
+                        path == "/v1/shutdown" || path == "/v1/pair" || path == "/v1/lsp";
+
+                    if is_owner_only {
+                        if bearer != owner_token {
+                            return StatusCode::UNAUTHORIZED.into_response();
+                        }
+                    } else if bearer != owner_token && !app_state.pairing.accepts(bearer) {
                         return StatusCode::UNAUTHORIZED.into_response();
                     }
                 }
+
                 next.run(request).await
             }
         },
@@ -341,10 +401,12 @@ async fn shutdown_signal(state: AppState) {
     };
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
+    let shutdown_requested = state.shutdown_notified();
 
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+        _ = shutdown_requested => {},
     }
     state.close_all().await;
 }
@@ -353,6 +415,49 @@ async fn health() -> Json<HealthBody> {
     Json(HealthBody {
         status: "ok".into(),
     })
+}
+
+#[derive(Deserialize)]
+struct HelloQuery {
+    nonce: String,
+}
+
+async fn hello(
+    State(state): State<AppState>,
+    Query(query): Query<HelloQuery>,
+) -> Json<crate::server::owner::Hello> {
+    let token = state.http.bearer_token.as_deref().unwrap_or("");
+    let proof = crate::server::owner::hello_proof(token, &query.nonce, state.instance());
+    Json(crate::server::owner::Hello {
+        protocol: crate::server::owner::PROTOCOL,
+        build: env!("WITHNAV_VERSION").to_string(),
+        instance: state.instance().to_string(),
+        proof,
+    })
+}
+
+async fn shutdown(
+    State(state): State<AppState>,
+    body: Option<Json<crate::server::owner::ShutdownRequest>>,
+) -> Response {
+    let req = body.map(|b| b.0).unwrap_or_default();
+    if !req.force && state.is_turn_running() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "reason": "busy"
+            })),
+        )
+            .into_response();
+    }
+    state.trigger_shutdown();
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "status": "shutting down"
+        })),
+    )
+        .into_response()
 }
 
 /// `GET /v1/mcp`: the MCP servers' status, for a client that connects after the last
@@ -809,25 +914,11 @@ struct PostBypassRequest {
     enabled: bool,
 }
 
-fn bypass_auth_required() -> Response {
-    (
-        StatusCode::FORBIDDEN,
-        Json(json!({
-            "reason": "auth_required",
-            "error": "bypass can only be changed by an authenticated client",
-        })),
-    )
-        .into_response()
-}
-
 async fn post_bypass(
     State(state): State<AppState>,
     Path(id): Path<String>,
     body: Result<Json<PostBypassRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    if state.http.bearer_token.is_none() {
-        return bypass_auth_required();
-    }
     let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
         Err(err) => return error_response(err),
@@ -870,17 +961,6 @@ async fn post_command(
         Ok(parsed) => parsed,
         Err(err) => return error_response(err),
     };
-    if state.http.bearer_token.is_none()
-        && request
-            .name
-            .trim()
-            .strip_prefix('/')
-            .unwrap_or(request.name.trim())
-            == "bypass"
-        && matches!(request.arguments.trim(), "on" | "off")
-    {
-        return bypass_auth_required();
-    }
     json_result(
         state
             .run_command(parsed, &request.name, &request.arguments)

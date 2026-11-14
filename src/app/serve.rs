@@ -1,5 +1,7 @@
 //! `nav serve`: the session server alone.
 use super::*;
+use crate::server::owner::{OwnerLock, OwnerPaths, PROTOCOL, Record, generate_token};
+use std::sync::Arc;
 
 /// The shared conversation database, in WithNav's data dir.
 pub(super) fn history_db_path() -> anyhow::Result<std::path::PathBuf> {
@@ -7,40 +9,173 @@ pub(super) fn history_db_path() -> anyhow::Result<std::path::PathBuf> {
 }
 
 pub(super) async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
-    use crate::server::session::ServerConfig;
+    if let Some(cmd) = args.command {
+        return match cmd {
+            ServeSubcommand::Stop { force } => serve_stop(force).await,
+            ServeSubcommand::Status => serve_status().await,
+        };
+    }
 
-    let bind: std::net::SocketAddr = args
-        .bind
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid --bind address {:?}: {e}", args.bind))?;
+    let history_db = history_db_path()?;
+    let paths = OwnerPaths::resolve(&history_db)?;
+    paths.ensure_dir()?;
+
+    let lock = match OwnerLock::try_acquire(&paths)? {
+        Some(l) => l,
+        None => {
+            if args.detach {
+                return Ok(EXIT_DONE);
+            }
+            anyhow::bail!(
+                "a WithNav server already owns {}; `nav serve status`",
+                paths.database.display()
+            );
+        }
+    };
+
+    crate::session::Service::check_legacy_instances(&paths.database)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let token = generate_token()?;
+    let client_cache = std::sync::Arc::new(crate::provider::openai::ClientCache::new());
+    let shared = crate::navigator::bootstrap::Shared::new(client_cache.clone());
+
     let cfg_dir = config_dir()?;
     let rules_roots = RulesRoots::from_user_home();
-    let client_cache = std::sync::Arc::new(crate::provider::openai::ClientCache::new());
-    crate::session::preflight::check(
-        &cfg_dir,
-        args.models.as_deref(),
-        &std::env::current_dir()?,
-        &rules_roots,
-        client_cache.clone(),
-    )
-    .await?;
-    let config = ServerConfig {
-        bind,
-        models_path: args.models,
-        config_dir: cfg_dir,
-        allow_non_loopback: args.allow_non_loopback,
-        bearer_token: None,
-        history_db: history_db_path()?,
-        data_dir: crate::paths::data_dir()
-            .ok_or_else(|| anyhow::anyhow!("cannot resolve data dir"))?,
+    let bind_addr = std::net::SocketAddr::from(([127, 0, 0, 1], args.port));
+
+    let config = crate::server::session::ServerConfig {
+        bind: bind_addr,
+        models_path: args.models.clone(),
+        config_dir: cfg_dir.clone(),
+        allow_non_loopback: false,
+        bearer_token: Some(token.clone()),
+        history_db: paths.database.clone(),
+        data_dir: paths
+            .database
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("database has no parent directory"))?
+            .to_path_buf(),
         rules_roots,
-        web: None,
+        web: Some(crate::server::config::WebConfig::default()),
     };
-    crate::server::routes::serve(
-        config,
-        std::sync::Arc::new(crate::navigator::NavigatorHooks::new()),
-        client_cache,
-    )
-    .await?;
+
+    config.validate()?;
+    let listener = tokio::net::TcpListener::bind(config.bind).await?;
+    let bound_addr = listener.local_addr()?;
+    let bound_port = bound_addr.port();
+
+    let mut state =
+        crate::server::session::AppState::with_hooks(config, shared.hooks(), client_cache)?
+            .with_navigator(shared.clone());
+    Arc::make_mut(&mut state.http).bind = bound_addr;
+
+    let record = Record {
+        protocol: PROTOCOL,
+        build: env!("WITHNAV_VERSION").to_string(),
+        instance: state.instance().to_string(),
+        pid: std::process::id(),
+        port: bound_port,
+        token,
+        config_dir: cfg_dir,
+        models_path: args.models,
+        started_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default(),
+    };
+    record.write_to(&paths)?;
+
+    let serve_res = crate::server::routes::serve_state_on(state.clone(), listener).await;
+
+    shared.shutdown().await;
+    state.close_all().await;
+    let flows = state.flows.clone();
+    let _ = tokio::task::spawn_blocking(move || flows.shutdown()).await;
+    let _ = Record::remove(&paths);
+    drop(lock);
+
+    serve_res?;
+    Ok(EXIT_DONE)
+}
+
+async fn serve_stop(force: bool) -> anyhow::Result<i32> {
+    let history_db = history_db_path()?;
+    let paths = OwnerPaths::resolve(&history_db)?;
+
+    if !OwnerLock::is_held(&paths)? {
+        println!(
+            "no WithNav server is running for {}",
+            paths.database.display()
+        );
+        return Ok(EXIT_DONE);
+    }
+
+    let record = Record::read_from(&paths)?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+
+    let url = format!("http://127.0.0.1:{}/v1/shutdown", record.port);
+    let req = crate::server::owner::ShutdownRequest { force };
+    let resp = client
+        .post(&url)
+        .bearer_auth(&record.token)
+        .json(&req)
+        .send()
+        .await?;
+
+    if resp.status() == reqwest::StatusCode::CONFLICT {
+        anyhow::bail!("server is busy with active sessions; use --force to stop anyway");
+    }
+    if resp.status() != reqwest::StatusCode::ACCEPTED {
+        anyhow::bail!(
+            "server rejected shutdown request with status {}",
+            resp.status()
+        );
+    }
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        if !OwnerLock::is_held(&paths)? {
+            println!("stopped WithNav server (pid {})", record.pid);
+            return Ok(EXIT_DONE);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    println!(
+        "shutdown signal delivered to WithNav server (pid {})",
+        record.pid
+    );
+    Ok(EXIT_DONE)
+}
+
+async fn serve_status() -> anyhow::Result<i32> {
+    let history_db = history_db_path()?;
+    let paths = OwnerPaths::resolve(&history_db)?;
+
+    if !OwnerLock::is_held(&paths)? {
+        println!(
+            "no WithNav server is running for {}",
+            paths.database.display()
+        );
+        return Ok(EXIT_DONE);
+    }
+
+    match Record::read_from(&paths) {
+        Ok(rec) => {
+            println!(
+                "WithNav server running: pid {}, port {}, url http://127.0.0.1:{}, build {}, started at {}",
+                rec.pid, rec.port, rec.port, rec.build, rec.started_at
+            );
+        }
+        Err(e) => {
+            println!(
+                "WithNav server lock is held for {} but record cannot be read: {e}",
+                paths.database.display()
+            );
+        }
+    }
     Ok(EXIT_DONE)
 }

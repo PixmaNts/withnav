@@ -1,21 +1,40 @@
 // Bearer-token HTTP access to `/v1/*`.
 //
-// `nav web` opens `http://127.0.0.1:<port>/#token=<token>`. The token is read
-// from the hash once, kept in sessionStorage (so a reload in the same tab keeps
-// working, a new tab does not inherit it) and stripped from the address bar so
-// it never lands in history or a screenshot. In dev there is no token.
+// `nav web` opens `http://127.0.0.1:<port>/#pair=<code>`. The single-use pairing
+// code is read from the hash, stripped from the address bar immediately with
+// `history.replaceState`, and exchanged via `POST /v1/pair/exchange` for an
+// expiring browser credential. The credential is kept in sessionStorage (so a
+// reload in the same tab keeps working, a new tab does not inherit it). In dev
+// there is no token.
 
 import { migratedValue } from "../lib/storage";
 const TOKEN_KEY = "withnav.token";
 
-export function adoptTokenFromHash(): void {
-  // The server's token is two lowercase ULIDs (Crockford base32), not hex:
-  // take everything up to the next `&` rather than guessing an alphabet.
-  const match = /(?:^#|&)token=([^&]+)/.exec(window.location.hash);
+export async function pairFromHash(): Promise<void> {
+  const match = /(?:^#|&)pair=([^&]+)/.exec(window.location.hash);
   if (!match?.[1]) return;
-  sessionStorage.setItem(TOKEN_KEY, decodeURIComponent(match[1]));
   history.replaceState(null, "", window.location.pathname + window.location.search);
+  const code = decodeURIComponent(match[1]);
+  try {
+    const response = await fetch("/v1/pair/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    if (response.ok) {
+      const data = await response.json();
+      if (typeof data?.credential === "string") {
+        sessionStorage.setItem(TOKEN_KEY, data.credential);
+      }
+    } else {
+      reportUnauthorized();
+    }
+  } catch {
+    // Unreachable server will be reported on first API query
+  }
 }
+
+export const adoptTokenFromHash = pairFromHash;
 
 export function token(): string | null {
   return migratedValue(sessionStorage, TOKEN_KEY, "navai.token");

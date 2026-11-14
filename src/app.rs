@@ -218,10 +218,10 @@ pub struct WebArgs {
     /// directory.
     #[arg(long = "workspace", value_name = "PATH")]
     pub workspaces: Vec<PathBuf>,
-    /// Path of the models file for the embedded server.
+    /// Path of the models file to require from the background server.
     #[arg(long)]
     pub models: Option<PathBuf>,
-    /// Loopback port to listen on; 0 picks a free one.
+    /// Refused: the background server picks its port (`nav serve --port` sets it).
     #[arg(long, default_value_t = 0)]
     pub port: u16,
     /// Print the address without opening the browser.

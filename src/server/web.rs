@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use include_dir::{Dir, include_dir};
 use serde::Serialize;
@@ -106,9 +106,10 @@ struct WorkspaceEntry {
     dirty: Option<usize>,
 }
 
-/// `GET /v1/workspaces`: the workspaces `nav web` was launched with, then the others the
-/// history knows that still exist on disk, most recently active first.
-pub(super) async fn list_workspaces(State(state): State<AppState>) -> Response {
+/// `GET /v1/workspaces`: the workspaces the caller's browser credential was launched with, then
+/// the others the history knows that still exist on disk, most recently active first. Callers using
+/// the owner token receive no launch workspaces list.
+pub(super) async fn list_workspaces(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let stored = match state.history().workspaces().await {
         Ok(rows) => rows,
         Err(error) => return error_response(ServerError::History(error)),
@@ -117,11 +118,12 @@ pub(super) async fn list_workspaces(State(state): State<AppState>) -> Response {
         Ok(paths) => paths,
         Err(error) => return error_response(ServerError::History(error)),
     };
-    let launch: Vec<PathBuf> = state
-        .http
-        .web
-        .as_ref()
-        .map(|web| web.launch_workspaces.clone())
+    let caller_token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "));
+    let launch: Vec<PathBuf> = caller_token
+        .map(|token| state.pairing.launch_workspaces(token))
         .unwrap_or_default();
 
     // The history records a workspace as the client wrote it; fold the spellings of one
@@ -227,19 +229,32 @@ pub(super) async fn unhide_workspace(
 /// Hide a folder, optionally stopping and deleting its root session trees first.
 pub(super) async fn hide_workspace(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     let path = match workspace_path(&params) {
         Ok(path) => path,
         Err(error) => return error_response(error),
     };
-    if state.http.web.as_ref().is_some_and(|web| {
+    let caller_token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "));
+    let caller_launch = caller_token
+        .map(|token| state.pairing.launch_workspaces(token))
+        .unwrap_or_default();
+    let is_launched = caller_launch.iter().any(|launch| {
+        std::fs::canonicalize(launch).is_ok_and(|launch| {
+            crate::tools::resolved_path_key(&launch) == crate::tools::resolved_path_key(&path)
+        })
+    }) || state.http.web.as_ref().is_some_and(|web| {
         web.launch_workspaces.iter().any(|launch| {
             std::fs::canonicalize(launch).is_ok_and(|launch| {
                 crate::tools::resolved_path_key(&launch) == crate::tools::resolved_path_key(&path)
             })
         })
-    }) {
+    });
+    if is_launched {
         return (StatusCode::CONFLICT, Json(json!({
             "reason": "launched",
             "error": "this workspace was opened by nav web on the command line and cannot be hidden"

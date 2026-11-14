@@ -39,10 +39,10 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
 
     // A session that cannot start (no window, unknown alias, no key) ends the
     // run the way a failed turn does: the `error:` line, exit 1.
-    let variant = match args.variant.as_deref() {
-        None | Some("inherit") => None,
-        Some("none") => Some(None),
-        Some(name) => Some(Some(name.to_string())),
+    let variant = match crate::session::VariantChoice::from_word(args.variant.as_deref()) {
+        crate::session::VariantChoice::Default => None,
+        crate::session::VariantChoice::Clear => Some(None),
+        crate::session::VariantChoice::Exact(name) => Some(Some(name)),
     };
     let session = match client
         .create(withnav_client_api::protocol::CreateSessionRequest {

@@ -47,6 +47,7 @@ pub(super) struct TriggerContext {
     pub(super) diagnostics_payload: serde_json::Value,
     pub(super) conversation_text: String,
     pub(super) live_state_text: String,
+    pub(super) open_buffers: std::collections::BTreeMap<std::path::PathBuf, String>,
 }
 
 impl TriggerContext {
@@ -93,13 +94,57 @@ impl TriggerContext {
 
 impl Runtime {
     /// Gathers everything one trigger needs from the document state.
+    #[allow(dead_code)]
     pub(super) async fn gather(
         &self,
         uri: &str,
         event: TriggerKind,
         now: Instant,
     ) -> Option<TriggerContext> {
-        let snapshot = self.documents.lock().await.snapshot(uri, event, now)?;
+        let root = match self.resolve_document_root(uri).await {
+            Some(r) => r,
+            None => self
+                .workspace
+                .lock()
+                .await
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from(".")),
+        };
+        let feed = self.feed_for_workspace(&root);
+        let digest = feed.as_ref().map(|f| f.digest()).unwrap_or_default();
+        self.gather_with_digest(uri, event, now, &root, digest)
+            .await
+    }
+
+    /// Gathers trigger context using a pre-captured atomic conversation digest and pinned root.
+    pub(super) async fn gather_with_digest(
+        &self,
+        uri: &str,
+        event: TriggerKind,
+        now: Instant,
+        root: &std::path::Path,
+        conversation_digest: String,
+    ) -> Option<TriggerContext> {
+        let canonical_root =
+            crate::navigator::conversation::WorkspaceFeedRegistry::canonical_key(root);
+
+        let active_folders = self.folders.lock().await.clone();
+        let folders_empty = active_folders.is_empty();
+        let canonical_root_filter = canonical_root.clone();
+        let uri_filter = |doc_uri: &str| {
+            if let Some(doc_root) = super::resolve_root_for_uri(doc_uri, &active_folders) {
+                crate::navigator::conversation::WorkspaceFeedRegistry::canonical_key(&doc_root)
+                    == canonical_root_filter
+            } else {
+                folders_empty
+            }
+        };
+
+        let snapshot =
+            self.documents
+                .lock()
+                .await
+                .snapshot_scoped(uri, event, now, Some(&uri_filter))?;
         let has_errors = snapshot.diagnostics.iter().any(|d| d.severity == "error");
         let diagnostics_text = snapshot
             .diagnostics
@@ -108,7 +153,7 @@ impl Runtime {
             .collect::<Vec<_>>()
             .join("\n");
         let diagnostics_payload = serde_json::json!(snapshot.diagnostics.iter().map(|d| serde_json::json!({"message":d.message,"severity": match d.severity.as_str() { "error" => 1, "warning" => 2, "information" => 3, _ => 4 }, "range":{"start":{"line":d.line,"character":0},"end":{"line":d.line,"character":0}}})).collect::<Vec<_>>());
-        let (intent_text, has_intent) = self.current_intent().await;
+        let (intent_text, has_intent) = self.intent_for_workspace(Some(root)).await;
         // Reuse the prototype's diff/excerpt builders for the {{diff}} and
         // {{context}} template variables.
         let mut ctx = RemarkContext::build(
@@ -130,16 +175,25 @@ impl Runtime {
                 CONVERSATION_CONTEXT_LINES,
             );
         }
-        ctx.workspace = self.workspace.lock().await.clone();
-        ctx.open_buffers = snapshot.open_buffers;
+        ctx.workspace = Some(root.to_path_buf());
+        let mut workspace_buffers = std::collections::BTreeMap::new();
+        for (path, buf) in snapshot.open_buffers {
+            if let Some(doc_root) = super::resolve_root_for_path(&path, &active_folders) {
+                if crate::navigator::conversation::WorkspaceFeedRegistry::canonical_key(&doc_root)
+                    == canonical_root
+                {
+                    workspace_buffers.insert(path, buf);
+                }
+            } else if folders_empty {
+                workspace_buffers.insert(path, buf);
+            }
+        }
+        ctx.open_buffers = workspace_buffers.clone();
         // The conversation digest the fast layers judge against: the feed's
         // bounded view of what the Captain and the cognition last agreed.
-        let conversation_text = self
-            .conversation
-            .as_ref()
-            .map(|f| f.digest())
-            .unwrap_or_default();
+        let conversation_text = conversation_digest;
         let has_conversation = !conversation_text.trim().is_empty();
+
         // A conversation turn changed nothing in the file; a call already
         // answered (or being answered) is not a new one.
         let called_for_help = !snapshot.help_calls.is_empty();
@@ -166,11 +220,15 @@ impl Runtime {
             diagnostics_payload,
             conversation_text,
             live_state_text: snapshot.live_state,
+            open_buffers: workspace_buffers,
         })
     }
 
     /// Editor triggers are exclusively owned by enabled flows.
     pub(super) async fn evaluate(self: &Arc<Self>, uri: String, event: TriggerKind) {
+        if self.connection_cancel.is_cancelled() {
+            return;
+        }
         if self.config.lock().await.enabled {
             self.evaluate_flows(&uri, event).await;
         }

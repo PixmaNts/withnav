@@ -283,9 +283,35 @@ impl ReflexService {
         reflex_context: &str,
         language_id: &str,
     ) -> Result<Suggestion, SuggestOutcome> {
+        self.suggest_with_cancel(
+            uri,
+            doc_text,
+            version,
+            position,
+            reflex_context,
+            language_id,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn suggest_with_cancel(
+        &self,
+        uri: &str,
+        doc_text: &str,
+        version: i32,
+        position: Position,
+        reflex_context: &str,
+        language_id: &str,
+        parent_cancel: Option<&CancellationToken>,
+    ) -> Result<Suggestion, SuggestOutcome> {
         let line = position.line;
         let character = position.character;
         let position = Position { line, character };
+        if parent_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return Err(SuggestOutcome::Superseded);
+        }
         // Register as the latest request for this document; whichever
         // request is superseded sees its token cancelled.
         let cancel = {
@@ -294,7 +320,10 @@ impl ReflexService {
             if let Some(old) = entry.cancel.take() {
                 old.cancel();
             }
-            let token = CancellationToken::new();
+            let token = match parent_cancel {
+                Some(p) => p.child_token(),
+                None => CancellationToken::new(),
+            };
             entry.cancel = Some(token.clone());
             entry.pending = Some((version, position));
             token
@@ -307,6 +336,9 @@ impl ReflexService {
             _ = cancel.cancelled() => return Err(SuggestOutcome::Debounced),
             _ = tokio::time::sleep(Duration::from_millis(DEBOUNCE_MS)) => {}
         }
+        if cancel.is_cancelled() || parent_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return Err(SuggestOutcome::Debounced);
+        }
 
         let Some(offset) = utf16_position_to_offset(doc_text, line, character) else {
             return Err(SuggestOutcome::OutOfRange);
@@ -317,6 +349,9 @@ impl ReflexService {
             _ = cancel.cancelled() => return Err(SuggestOutcome::Superseded),
             a = self.model.complete(request, &cancel) => a,
         };
+        if cancel.is_cancelled() || parent_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return Err(SuggestOutcome::Superseded);
+        }
         let answer = match answer {
             Ok(a) if !a.text.is_empty() => a,
             _ => return Err(SuggestOutcome::ModelSilent),
@@ -376,6 +411,7 @@ const REFLEX_EXCERPT_RADIUS: usize = 20;
 #[derive(Default)]
 struct ReflexContextCache {
     text: Option<String>,
+    target: Option<crate::navigator::ConversationTarget>,
     /// Hash of (intent summary, conversation digest, active file uri) the
     /// current text was computed from.
     inputs: Option<u64>,
@@ -395,6 +431,7 @@ struct ReflexContextCache {
 pub(crate) struct RefreshClaim {
     inputs: u64,
     line: u32,
+    target: Option<crate::navigator::ConversationTarget>,
 }
 
 /// The refreshed reflex context and its background refresh. Never waits on
@@ -430,13 +467,28 @@ impl ReflexContext {
     }
 
     /// The metacognition's refreshed text, once one exists.
+    #[allow(dead_code)]
     pub(crate) async fn text(&self) -> Option<String> {
         self.cache.lock().await.text.clone()
     }
 
+    /// The metacognition's refreshed text for a specific conversation target.
+    /// Returns None if the current cache was computed for a different conversation or incarnation.
+    pub(crate) async fn text_for_target(
+        &self,
+        target: &Option<crate::navigator::ConversationTarget>,
+    ) -> Option<String> {
+        let cache = self.cache.lock().await;
+        if cache.target.as_ref() == target.as_ref() {
+            cache.text.clone()
+        } else {
+            None
+        }
+    }
+
     /// Decides whether a refresh is due: not already running, the latest
     /// attempt older than a minute, and the inputs (intent summary,
-    /// conversation digest, active file) changed since the current text was
+    /// conversation digest, active file, conversation target) changed since the current text was
     /// computed. A granted claim marks the refresh as running; settle it with
     /// [`spawn_refresh`](Self::spawn_refresh) or [`release`](Self::release).
     pub(crate) async fn claim(
@@ -445,11 +497,12 @@ impl ReflexContext {
         cursor_line: Option<u32>,
         intent: &str,
         conversation: &str,
+        target: Option<&crate::navigator::ConversationTarget>,
     ) -> Option<RefreshClaim> {
         let inputs = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            (intent, conversation, uri).hash(&mut hasher);
+            (intent, conversation, uri, target).hash(&mut hasher);
             hasher.finish()
         };
         let now = Instant::now();
@@ -458,7 +511,7 @@ impl ReflexContext {
             cache.cursor = Some((uri.to_string(), line));
         }
         if cache.refreshing
-            || cache.inputs == Some(inputs)
+            || (cache.inputs == Some(inputs) && cache.target.as_ref() == target)
             || cache
                 .last_attempt
                 .is_some_and(|t| now.duration_since(t) < REFLEX_CONTEXT_MIN_INTERVAL)
@@ -472,7 +525,11 @@ impl ReflexContext {
             .as_ref()
             .filter(|(u, _)| u == uri)
             .map_or(0, |(_, l)| *l);
-        Some(RefreshClaim { inputs, line })
+        Some(RefreshClaim {
+            inputs,
+            line,
+            target: target.cloned(),
+        })
     }
 
     /// Gives a claim back without calling the model (the document to excerpt
@@ -482,6 +539,7 @@ impl ReflexContext {
     }
 
     /// Runs the refresh in the background and stores the answer.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn_refresh(
         self: &Arc<Self>,
         claim: RefreshClaim,
@@ -490,6 +548,7 @@ impl ReflexContext {
         conversation: String,
         language_id: String,
         text: &str,
+        cancel: Option<CancellationToken>,
     ) {
         let Some(model) = self.model.clone() else {
             return;
@@ -505,7 +564,27 @@ impl ReflexContext {
         let uri = uri.to_string();
         tokio::spawn(async move {
             let started = Instant::now();
-            let result = model.refresh(&request).await;
+            if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                this.cache.lock().await.refreshing = false;
+                return;
+            }
+            let result = match &cancel {
+                Some(token) => {
+                    tokio::select! {
+                        biased;
+                        _ = token.cancelled() => {
+                            this.cache.lock().await.refreshing = false;
+                            return;
+                        }
+                        res = model.refresh(&request) => res,
+                    }
+                }
+                None => model.refresh(&request).await,
+            };
+            if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                this.cache.lock().await.refreshing = false;
+                return;
+            }
             this.log.append(&LogRecord::Call {
                 layer: "metacognition",
                 model: this.metacognition_model.as_deref().unwrap_or("unknown"),
@@ -520,6 +599,7 @@ impl ReflexContext {
             match result {
                 Ok(text) if !text.trim().is_empty() => {
                     cache.text = Some(excerpt(text.trim(), REFLEX_CONTEXT_MAX_CHARS));
+                    cache.target = claim.target.clone();
                     cache.inputs = Some(claim.inputs);
                 }
                 // An empty answer keeps the previous text. It is logged once

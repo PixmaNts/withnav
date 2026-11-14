@@ -98,10 +98,11 @@ async fn a_change_under_the_pipelines_size_limit_never_triggers() {
         with_min_changed_lines(d, ws, 3)
     })
     .await;
-    client.open_base().await;
+    let uri = format!("file://{}/src/main.rs", client.tmp.path().display());
+    client.did_open(&uri, &base_text(), 1).await;
     // only one line changed
     client
-        .did_change(URI, "fn main() {\n    println!(\"hi\");\n}", 2)
+        .did_change(&uri, "fn main() {\n    println!(\"hi\");\n}", 2)
         .await;
 
     tokio::time::sleep(Duration::from_millis(10_000)).await;
@@ -119,14 +120,15 @@ async fn skips_logs_light_or_not_at_all() {
         |d, ws| with_min_changed_lines(d, ws, 3),
     )
     .await;
-    client.open_base().await;
+    let uri = format!("file://{}/src/main.rs", client.tmp.path().display());
+    client.did_open(&uri, &base_text(), 1).await;
     client
-        .notify("withnav/diagnostics", json!({"uri": URI, "items": []}))
+        .notify("withnav/diagnostics", json!({"uri": uri, "items": []}))
         .await;
     client
-        .did_change(URI, "fn main() {\n    println!(\"hi\");\n}", 2)
+        .did_change(&uri, "fn main() {\n    println!(\"hi\");\n}", 2)
         .await;
-    client.did_save(URI).await;
+    client.did_save(&uri).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let records = client.log_text();

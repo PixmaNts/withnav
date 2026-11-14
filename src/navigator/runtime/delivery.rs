@@ -3,6 +3,7 @@
 //! the active conversation through the feed. Each writes the completed
 //! trigger record.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::time::Instant;
@@ -21,6 +22,7 @@ use super::trigger::TriggerContext;
 impl Runtime {
     /// Delivers a `remark` branch: calls the metacognition with the rendered
     /// branch prompt and writes the completed trigger record.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn deliver_remark(
         self: &Arc<Self>,
         uri: String,
@@ -28,6 +30,11 @@ impl Runtime {
         pending: PendingTrigger,
         prompt: String,
         instinct_cancel: CancellationToken,
+        workspace_root: std::path::PathBuf,
+        pinned_generation: u64,
+        target: Option<crate::navigator::ConversationTarget>,
+        feed: Option<crate::navigator::ConversationFeed>,
+        workspace_buffers: std::collections::BTreeMap<PathBuf, String>,
     ) {
         // The instinct stage is over. Typing during it cancelled it (its
         // answer was about text that is gone); from here typing no longer
@@ -39,13 +46,29 @@ impl Runtime {
                 &instinct_cancel,
                 &ctx.help_calls,
                 ctx.event == TriggerKind::Conversation.as_str(),
+                pinned_generation,
+                target.as_ref(),
+                feed.as_ref(),
             )
             .await
         else {
             pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
             return;
         };
-        let extra_roots = self.extra_roots().await;
+        if self.connection_cancel.is_cancelled()
+            || cancel.is_cancelled()
+            || instinct_cancel.is_cancelled()
+            || self.routing_generation() != pinned_generation
+            || target.as_ref().is_some_and(|target| {
+                !feed.as_ref().is_some_and(|feed| {
+                    feed.is_incarnation_available(target.session_id, target.incarnation)
+                })
+            })
+        {
+            self.end_remark(&uri, &cancel).await;
+            pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
+            return;
+        }
         let remark_ctx = RemarkContext {
             uri: ctx.uri.clone(),
             language_id: ctx.language_id.clone(),
@@ -58,9 +81,9 @@ impl Runtime {
                 Some(ctx.intent_text.clone())
             },
             prompt: Some(prompt),
-            workspace: self.workspace.lock().await.clone(),
-            extra_roots,
-            open_buffers: self.documents.lock().await.open_buffers(),
+            workspace: Some(workspace_root.clone()),
+            extra_roots: Vec::new(),
+            open_buffers: workspace_buffers,
             tool_rounds: if ctx.called_for_help {
                 HELP_TOOL_ROUNDS
             } else {
@@ -70,6 +93,7 @@ impl Runtime {
         let started = Instant::now();
         let result = tokio::select! {
             biased;
+            _ = self.connection_cancel.cancelled() => None,
             _ = cancel.cancelled() => None, // superseded, or the document closed
             r = self.metacognition.remark(&remark_ctx, &cancel) => Some(r),
         };
@@ -80,6 +104,22 @@ impl Runtime {
             pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
             return;
         };
+
+        let valid = || {
+            !self.connection_cancel.is_cancelled()
+                && !cancel.is_cancelled()
+                && !instinct_cancel.is_cancelled()
+                && self.routing_generation() == pinned_generation
+                && target.as_ref().is_none_or(|target| {
+                    feed.as_ref().is_some_and(|feed| {
+                        feed.is_incarnation_available(target.session_id, target.incarnation)
+                    })
+                })
+        };
+        if !valid() || !self.has_root(&workspace_root).await || !valid() {
+            pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
+            return;
+        }
 
         let model = self
             .metacognition_model
@@ -93,6 +133,10 @@ impl Runtime {
                 // changed or removed has nothing left to talk about.
                 let line = {
                     let mut state = self.documents.lock().await;
+                    if !valid() {
+                        pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
+                        return;
+                    }
                     let anchored = state.get_mut(&uri).and_then(|doc| {
                         let line = if doc.version == ctx.version {
                             Some(remark.line)
@@ -119,6 +163,10 @@ impl Runtime {
                     };
                     line
                 };
+                if !valid() {
+                    pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
+                    return;
+                }
                 let id = crate::navigator::new_ulid_string();
                 let latency = started.elapsed().as_millis();
                 self.log.append(&LogRecord::Call {
@@ -138,6 +186,10 @@ impl Runtime {
                     model: &model,
                     latency_ms: latency,
                 });
+                if !valid() {
+                    pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
+                    return;
+                }
                 self.client
                     .send_notification::<RemarkNotification>(RemarkParams {
                         id: id.clone(),
@@ -150,6 +202,22 @@ impl Runtime {
                 self.set_status("idle", None).await;
             }
             Ok(None) => {
+                let mut state = self.documents.lock().await;
+                if !valid() {
+                    pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
+                    return;
+                }
+                if let Some(doc) = state.get_mut(&uri) {
+                    if ctx.event != TriggerKind::Conversation.as_str() {
+                        doc.rebase_to(&ctx.text);
+                    }
+                    doc.help.answer(&ctx.help_calls);
+                }
+                drop(state);
+                if !valid() {
+                    pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
+                    return;
+                }
                 self.log.append(&LogRecord::Call {
                     layer: "metacognition",
                     model: &model,
@@ -164,20 +232,6 @@ impl Runtime {
                     model: &model,
                     latency_ms: started.elapsed().as_millis(),
                 });
-                // Silence rebases onto the text that was judged: this diff was
-                // considered and found fine; later edits stay in the next one.
-                // A conversation trigger considered no diff.
-                if ctx.event != TriggerKind::Conversation.as_str() {
-                    let mut state = self.documents.lock().await;
-                    if let Some(doc) = state.get_mut(&uri) {
-                        doc.rebase_to(&ctx.text);
-                    }
-                }
-                // The model judged the call and had nothing to say: asking
-                // again about the same comment would get the same silence.
-                if let Some(doc) = self.documents.lock().await.get_mut(&uri) {
-                    doc.help.answer(&ctx.help_calls);
-                }
                 pending.finish(&self.log, DeliveryOutcome::Silent { reason: None });
                 self.set_status("idle", None).await;
             }

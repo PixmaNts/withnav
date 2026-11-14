@@ -301,9 +301,11 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
     // The SAME conversation hub goes to the session server (sessions
     // register themselves there) and to the navigator deps (wakes post
     // through it): one process, two channels, one conversation.
-    let conversation = ConversationFeed::new();
+    let registry = crate::navigator::conversation::WorkspaceFeedRegistry::new();
+    let conversation = registry.get_or_create(&root);
     let http = match spawn_cognition_server(
         preflight.models_path(),
+        registry.clone(),
         conversation.clone(),
         clients.clone(),
     )
@@ -352,7 +354,9 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
 
     let mut deps = NavigatorDeps::new(layers.metacognition(), log_path)
         .with_dirs(workspace, user_dir)
+        .with_registry(registry.clone())
         .with_conversation(conversation)
+        .with_host(flow_host.clone())
         .with_model_ids(
             layers.reflex_model.clone(),
             layers.instinct_model.clone(),
@@ -484,6 +488,7 @@ struct CognitionHttp {
 /// [`AppState`]: crate::server::session::AppState
 async fn spawn_cognition_server(
     models_path: &Path,
+    registry: crate::navigator::conversation::WorkspaceFeedRegistry,
     conversation: ConversationFeed,
     client_cache: Arc<ClientCache>,
 ) -> anyhow::Result<CognitionHttp> {
@@ -509,7 +514,10 @@ async fn spawn_cognition_server(
     };
     let state = AppState::with_hooks(
         config,
-        Arc::new(navigator::NavigatorHooks::with_feed(conversation)),
+        Arc::new(navigator::NavigatorHooks::with_feed_and_registry(
+            Some(conversation),
+            Some(registry),
+        )),
         client_cache,
     )?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

@@ -285,6 +285,17 @@ impl Documents {
         event: TriggerKind,
         now: Instant,
     ) -> Option<DocumentSnapshot> {
+        self.snapshot_scoped(uri, event, now, None)
+    }
+
+    /// Gathers document snapshot filtering live state to the permitted URIs.
+    pub fn snapshot_scoped(
+        &mut self,
+        uri: &str,
+        event: TriggerKind,
+        now: Instant,
+        uri_filter: Option<&dyn Fn(&str) -> bool>,
+    ) -> Option<DocumentSnapshot> {
         let (help_calls, help_in_flight) = match self.open.get_mut(uri) {
             Some(doc) if event != TriggerKind::Conversation => {
                 let state = &doc.state;
@@ -356,17 +367,23 @@ impl Documents {
                 doc.edits.pop_front();
             }
         }
-        snapshot.live_state = self.render_live_state();
+        snapshot.live_state = self.render_live_state_scoped(uri_filter);
         Some(snapshot)
     }
 
     /// Renders the live state as plain text: the newest edits first, then
     /// the latest error/warning diagnostics, capped in lines and characters.
-    fn render_live_state(&self) -> String {
+    pub fn render_live_state(&self) -> String {
+        self.render_live_state_scoped(None)
+    }
+
+    /// Renders live state scoped to URIs matching the filter.
+    pub fn render_live_state_scoped(&self, uri_filter: Option<&dyn Fn(&str) -> bool>) -> String {
         let mut edits: Vec<&EditSummary> = self
             .open
-            .values()
-            .flat_map(|doc| doc.edits.iter())
+            .iter()
+            .filter(|(u, _)| uri_filter.is_none_or(|f| f(u)))
+            .flat_map(|(_, doc)| doc.edits.iter())
             .collect();
         edits.sort_by(|a, b| b.ts.cmp(&a.ts));
         let mut out = String::new();
@@ -377,8 +394,15 @@ impl Documents {
                 e.ts, e.file, e.version, e.changed_lines, e.first_line, e.excerpt
             );
         }
-        let open = self.open.iter().map(|(uri, d)| (uri, &d.diagnostics));
-        let unopened = self.unopened_diagnostics.iter();
+        let open = self
+            .open
+            .iter()
+            .filter(|(u, _)| uri_filter.is_none_or(|f| f(u)))
+            .map(|(uri, d)| (uri, &d.diagnostics));
+        let unopened = self
+            .unopened_diagnostics
+            .iter()
+            .filter(|(u, _)| uri_filter.is_none_or(|f| f(u)));
         let mut diags: Vec<String> = Vec::new();
         'collect: for (uri, items) in open.chain(unopened) {
             for d in items {

@@ -479,6 +479,13 @@ pub struct LspClient {
 }
 
 impl LspClient {
+    pub fn from_streams(writer: DuplexStream, reader: DuplexStream) -> Self {
+        Self {
+            writer,
+            reader,
+            buf: Vec::new(),
+        }
+    }
     fn frame(msg: &Value) -> String {
         let body = serde_json::to_string(msg).unwrap();
         format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
@@ -720,14 +727,22 @@ pub fn spawn_server(deps: NavigatorDeps) -> LspClient {
 /// [`spawn_server`] without adding an instinct: the deps decide which
 /// layers exist.
 pub fn spawn_server_as_is(deps: NavigatorDeps) -> LspClient {
+    spawn_server_with_handle(deps).0
+}
+
+/// Spawns the server returning the client side and the server's join handle.
+pub fn spawn_server_with_handle(deps: NavigatorDeps) -> (LspClient, tokio::task::JoinHandle<()>) {
     let (server_input, client_write) = tokio::io::duplex(64 * 1024);
     let (client_read, server_output) = tokio::io::duplex(64 * 1024);
-    tokio::spawn(navigator::serve(server_input, server_output, deps));
-    LspClient {
-        writer: client_write,
-        reader: client_read,
-        buf: Vec::new(),
-    }
+    let handle = tokio::spawn(navigator::serve(server_input, server_output, deps));
+    (
+        LspClient {
+            writer: client_write,
+            reader: client_read,
+            buf: Vec::new(),
+        },
+        handle,
+    )
 }
 
 // ---------- shared scenario setup ----------

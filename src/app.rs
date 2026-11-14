@@ -165,7 +165,7 @@ use run::read_prompt;
 use run::render_until_terminal;
 use run::run_command;
 pub use run::{event_to_ui, exit_code_for, terminal_stderr_line};
-use serve::{history_db_path, serve_command};
+use serve::serve_command;
 pub mod logging;
 pub mod lsp;
 pub mod tui;

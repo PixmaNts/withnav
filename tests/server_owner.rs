@@ -344,6 +344,53 @@ async fn data_dir_reached_through_symlink_alias_shares_owner() {
 }
 
 #[tokio::test]
+async fn symlinked_database_file_is_refused() {
+    let env = common::TestEnv::new();
+    let data_dir = env.root.join("data/withnav");
+    let config_dir = env.root.join("config/withnav");
+    std::fs::create_dir_all(&data_dir).expect("create data");
+
+    let real_db = env.root.join("real.db");
+    std::fs::write(&real_db, []).expect("create real db");
+    let symlink_db = data_dir.join("withnav.db");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&real_db, &symlink_db).expect("create symlink");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+        .arg("serve")
+        .env("WITHNAV_DATA_DIR", &data_dir)
+        .env("WITHNAV_CONFIG_DIR", &config_dir)
+        .output()
+        .expect("serve run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is a symlink; point the data directory instead"),
+        "expected symlink refusal, got: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(&symlink_db);
+    let dangling_target = env.root.join("nonexistent.db");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&dangling_target, &symlink_db).expect("create dangling symlink");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+        .arg("serve")
+        .env("WITHNAV_DATA_DIR", &data_dir)
+        .env("WITHNAV_CONFIG_DIR", &config_dir)
+        .output()
+        .expect("serve run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is a symlink; point the data directory instead"),
+        "expected dangling symlink refusal, got: {stderr}"
+    );
+}
+
+#[tokio::test]
 async fn legacy_instances_lock_held_nav_serve_refuses() {
     let env = common::TestEnv::new();
     let data_dir = env.root.join("data/withnav");

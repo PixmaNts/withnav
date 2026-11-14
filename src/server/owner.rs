@@ -32,6 +32,15 @@ impl OwnerPaths {
     /// Resolves the canonical paths for the database owner.
     /// Follows symlinks to canonicalize `withnav.db`; if absent, canonicalizes the parent directory.
     pub fn resolve(history_db: &Path) -> anyhow::Result<Self> {
+        if let Ok(meta) = std::fs::symlink_metadata(history_db) {
+            if meta.file_type().is_symlink() {
+                anyhow::bail!(
+                    "history database {} is a symlink; point the data directory instead",
+                    history_db.display()
+                );
+            }
+        }
+
         let database = if history_db.exists() {
             std::fs::canonicalize(history_db)?
         } else {

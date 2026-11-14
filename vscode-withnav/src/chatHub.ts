@@ -186,7 +186,9 @@ export class ChatHub implements ChatTabs {
         tab.title = title;
         this.changed();
       }
-      if (tab.id === this.activeId && sessionId) {
+      // Also for a new, still empty conversation: the server must drop the binding of the
+      // conversation this tab showed before.
+      if (tab.id === this.activeId) {
         this.bindActive();
       }
     }

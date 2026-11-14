@@ -1211,3 +1211,19 @@ test("tab strip: a keyboard activation never lingers, and a tab activated elsewh
   assert.equal(d.activeElement, d.querySelector(".tab-view:not([hidden]) .prompt"));
   dom.window.close();
 });
+
+test("hub: a new conversation started in the same tab drops the binding of the conversation it replaced", () => {
+  const bindings = [];
+  const saved = { sessions: ["S1"], active: 0 };
+  const { hub } = makeHub(saved, params => bindings.push({ ...params }));
+  const [tab] = hub.tabs();
+  assert.deepEqual(bindings, [{ sessionId: "S1", focus: true }]);
+  // The backend's own "new conversation" clears its id and announces an empty conversation.
+  const backend = hub.backend(tab.id);
+  backend.currentConversationId = () => undefined;
+  backend.emit({ type: "conversationOpened", id: undefined, title: "" });
+  assert.deepEqual(bindings, [
+    { sessionId: "S1", focus: true },
+    { sessionId: "S1", focus: false },
+  ]);
+});

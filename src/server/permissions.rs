@@ -21,11 +21,56 @@ pub(super) fn router() -> Router<AppState> {
         .route("/v1/permissions/rules/{id}", delete(revoke_rule))
         .route("/v1/permissions/history", get(list_history))
         .route("/v1/permissions/validations", get(list_validations))
+        .route("/v1/permissions/validation/check", get(check_validation))
         .route(
             "/v1/permissions/validations/{id}",
             delete(revoke_validation),
         )
         .route("/v1/permissions/validate", post(validate_flow))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CheckValidationQuery {
+    pub kind: ValidationKind,
+    pub location: String,
+    pub hash: String,
+}
+
+async fn check_validation(
+    State(state): State<AppState>,
+    Query(query): Query<CheckValidationQuery>,
+) -> Response {
+    let location = query.location;
+    let hash = query.hash;
+    let kind = query.kind;
+    let validation_db = state.config.data_dir.join("withnav.db");
+    let result = tokio::task::spawn_blocking(move || {
+        if !validation_db.exists() {
+            return Ok(false);
+        }
+        let connection = rusqlite::Connection::open_with_flags(
+            validation_db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let store = PermissionStore::with_connection(connection);
+        store
+            .is_valid(kind, &location, &hash)
+            .map_err(anyhow::Error::from)
+    })
+    .await;
+    match result {
+        Ok(Ok(valid)) => (StatusCode::OK, Json(json!({"valid": valid}))).into_response(),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +87,15 @@ async fn list_rules(
     State(state): State<AppState>,
     Query(query): Query<ListRulesQuery>,
 ) -> Response {
+    if let Some(ref p) = query.project {
+        if !p.is_absolute() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "project path must be absolute" })),
+            )
+                .into_response();
+        }
+    }
     let data_dir = state.config.data_dir.clone();
     let filter = RuleFilter {
         include_revoked: query.all,
@@ -83,6 +137,15 @@ pub struct AddRuleBody {
 }
 
 async fn add_rule(State(state): State<AppState>, Json(body): Json<AddRuleBody>) -> Response {
+    if let RuleScope::Project(ref p) = body.scope {
+        if !p.is_absolute() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "project path must be absolute" })),
+            )
+                .into_response();
+        }
+    }
     let data_dir = state.config.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let store = PermissionStore::open(&data_dir).map_err(|e| e.to_string())?;
@@ -199,6 +262,15 @@ async fn revoke_validation(
     Path(id): Path<i64>,
     Query(query): Query<RevokeValidationQuery>,
 ) -> Response {
+    if let Some(ref w) = query.workspace {
+        if !w.is_absolute() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "workspace path must be absolute" })),
+            )
+                .into_response();
+        }
+    }
     let data_dir = state.config.data_dir.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let store = PermissionStore::open(&data_dir).map_err(|e| e.to_string())?;
@@ -247,6 +319,16 @@ async fn validate_flow(
             Json(json!({ "error": "skill admission is not available yet" })),
         )
             .into_response();
+    }
+
+    if let Some(ref w) = body.workspace {
+        if !w.is_absolute() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "workspace path must be absolute" })),
+            )
+                .into_response();
+        }
     }
 
     let workspace = body

@@ -1,19 +1,27 @@
 //! `nav permissions`: rules, validations and decision history via the background owner.
+use anyhow::Context as _;
+
 use super::*;
 use crate::app::connect::{Wanted, ensure_server};
 use crate::permission::decisions::Decision;
 use crate::permission::rules::{Rule, RuleScope};
 use crate::permission::validation::Validation;
 
+fn resolve_project_path(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    let resolved = std::fs::canonicalize(path)
+        .with_context(|| format!("project {} is not accessible", path.display()))?;
+    let resolved = crate::tools::canonical_path(&resolved)?;
+    Ok(resolved)
+}
+
 pub(super) async fn permissions_command(command: PermissionCommand) -> anyhow::Result<i32> {
     let wanted = Wanted::from_env(None)?;
     let owner = ensure_server(&wanted).await?;
 
-    let mut builder = reqwest::Client::builder();
-    if withnav_client::client::is_loopback(&owner.url) {
-        builder = builder.no_proxy();
-    }
-    let client = builder.build()?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
     let auth_header = format!("Bearer {}", owner.token);
 
     match command {
@@ -26,7 +34,7 @@ pub(super) async fn permissions_command(command: PermissionCommand) -> anyhow::R
                 anyhow::bail!("skill admission is not available yet");
             }
             let url = format!("{}/v1/permissions/validate", owner.url);
-            let workspace = std::env::current_dir()?;
+            let workspace = resolve_project_path(&std::env::current_dir()?)?;
             let response = client
                 .post(&url)
                 .header(reqwest::header::AUTHORIZATION, &auth_header)
@@ -85,7 +93,7 @@ pub(super) async fn permissions_command(command: PermissionCommand) -> anyhow::R
             }
         }
         PermissionCommand::RevokeValidation { id } => {
-            let workspace = std::env::current_dir()?;
+            let workspace = resolve_project_path(&std::env::current_dir()?)?;
             let url = format!("{}/v1/permissions/validations/{}", owner.url, id);
             let response = client
                 .delete(&url)
@@ -117,7 +125,8 @@ pub(super) async fn permissions_command(command: PermissionCommand) -> anyhow::R
                     req = req.query(&[("global", "true")]);
                 }
                 Some(RuleScope::Project(p)) => {
-                    req = req.query(&[("project", p.to_str().unwrap_or_default())]);
+                    let canonical = resolve_project_path(&p)?;
+                    req = req.query(&[("project", canonical.to_str().unwrap_or_default())]);
                 }
                 Some(RuleScope::Agent(a)) => {
                     req = req.query(&[("agent", a.as_str())]);
@@ -160,8 +169,9 @@ pub(super) async fn permissions_command(command: PermissionCommand) -> anyhow::R
             scope,
         } => {
             let scope = match scope.scope() {
+                Some(RuleScope::Project(p)) => RuleScope::Project(resolve_project_path(&p)?),
                 Some(scope) => scope,
-                None => RuleScope::Project(std::env::current_dir()?),
+                None => RuleScope::Project(resolve_project_path(&std::env::current_dir()?)?),
             };
             let url = format!("{}/v1/permissions/rules", owner.url);
             let response = client

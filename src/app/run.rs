@@ -13,8 +13,8 @@ use crate::app::connect::{Wanted, ensure_server};
 /// open event stream -> wait for Connected -> post prompt/command -> render-until-terminal -> exit.
 pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
     let workspace = match args.workspace {
-        Some(w) => w,
-        None => std::env::current_dir()?,
+        Some(w) => embedded::resolve_workspace(&w)?,
+        None => embedded::resolve_workspace(&std::env::current_dir()?)?,
     };
     let cfg_dir = config_dir()?;
     let rules_roots = RulesRoots::from_user_home();
@@ -39,10 +39,10 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
 
     // A session that cannot start (no window, unknown alias, no key) ends the
     // run the way a failed turn does: the `error:` line, exit 1.
-    let variant = match args.variant.as_deref() {
-        None | Some("inherit") => None,
-        Some("none") => Some(None),
-        Some(name) => Some(Some(name.to_string())),
+    let variant = match crate::session::VariantChoice::from_word(args.variant.as_deref()) {
+        crate::session::VariantChoice::Default => None,
+        crate::session::VariantChoice::Clear => Some(None),
+        crate::session::VariantChoice::Exact(name) => Some(Some(name)),
     };
     let session = match client
         .create(withnav_client_api::protocol::CreateSessionRequest {
@@ -67,7 +67,7 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         && let Err(e) = client.set_bypass(&session_id, true).await
     {
         eprintln!("\nerror: cannot enable bypass: {e}");
-        let _ = client.delete_session(&session_id).await;
+        let _ = client.stop(&session_id).await;
         return Ok(EXIT_ERROR);
     }
 
@@ -89,7 +89,7 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
             _ = &mut connect_timeout => {
                 eprintln!("\nerror: timed out waiting for event stream connection");
                 stream_cancel.cancel();
-                let _ = client.delete_session(&session_id).await;
+                let _ = client.stop(&session_id).await;
                 return Ok(EXIT_ERROR);
             }
             event = stream.next() => match event {
@@ -97,13 +97,13 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
                 Some(StreamEvent::Disconnected) | Some(StreamEvent::ProtocolError(_)) => {
                     eprintln!("\nerror: event stream disconnected before connection established");
                     stream_cancel.cancel();
-                    let _ = client.delete_session(&session_id).await;
+                    let _ = client.stop(&session_id).await;
                     return Ok(EXIT_ERROR);
                 }
                 None => {
                     eprintln!("\nerror: event stream ended prematurely");
                     stream_cancel.cancel();
-                    let _ = client.delete_session(&session_id).await;
+                    let _ = client.stop(&session_id).await;
                     return Ok(EXIT_ERROR);
                 }
                 _ => {}
@@ -147,7 +147,7 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
                 }
             };
             stream_cancel.cancel();
-            let _ = client.delete_session(&session_id).await;
+            let _ = client.stop(&session_id).await;
             return Ok(exit);
         }
         crate::session::Routed::Message(text) => text,
@@ -167,7 +167,7 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
     {
         eprintln!("\nerror: post failed: {e}");
         stream_cancel.cancel();
-        let _ = client.delete_session(&session_id).await;
+        let _ = client.stop(&session_id).await;
         return Ok(EXIT_ERROR);
     }
 
@@ -196,7 +196,7 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
 
     sigint_task.abort();
     stream_cancel.cancel();
-    let _ = client.delete_session(&session_id).await;
+    let _ = client.stop(&session_id).await;
     Ok(exit)
 }
 

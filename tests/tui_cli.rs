@@ -7,8 +7,8 @@ mod common;
 
 struct Run {
     out: Output,
-    dirs: TempDir,
     _guard: common::owner::OwnerGuard,
+    dirs: TempDir,
 }
 
 fn tui(args: &[&str]) -> Run {
@@ -21,8 +21,8 @@ fn tui_with(args: &[&str], env: &[(&str, &str)]) -> Run {
     let out = command.output().expect("run the binary");
     Run {
         out,
-        dirs,
         _guard: guard,
+        dirs,
     }
 }
 
@@ -86,8 +86,8 @@ async fn tui_unavailable(server: &wiremock::MockServer, env: &[(&str, &str)]) ->
     .expect("run the binary");
     Run {
         out,
-        dirs,
         _guard: guard,
+        dirs,
     }
 }
 

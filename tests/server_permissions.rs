@@ -33,6 +33,11 @@ async fn permission_routes_require_authentication() {
         ("DELETE", "/v1/permissions/rules/1", Body::empty()),
         ("GET", "/v1/permissions/history", Body::empty()),
         ("GET", "/v1/permissions/validations", Body::empty()),
+        (
+            "GET",
+            "/v1/permissions/validation/check?kind=flow&location=%2Fflow&hash=sha256%3Aabc",
+            Body::empty(),
+        ),
         ("DELETE", "/v1/permissions/validations/1", Body::empty()),
         (
             "POST",
@@ -61,6 +66,30 @@ async fn permission_routes_require_authentication() {
             "route {method} {path} must require bearer token"
         );
     }
+}
+
+#[tokio::test]
+async fn validation_check_reads_without_migrating_database() {
+    let tmp = tempfile::tempdir().unwrap();
+    let token = "read-only-token";
+    let cfg = TestServerConfig::mock(tmp.path(), UNREACHABLE_PROVIDER_URL).bearer_token(token);
+    let state = cfg.state();
+    let db = tmp.path().join("data/withnav.db");
+    let before = std::fs::read(&db).ok();
+    let app = withnav::server::routes::app(state);
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/permissions/validation/check?kind=flow&location=%2Fflow&hash=sha256%3Aabc")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(std::fs::read(&db).ok(), before);
+    assert!(
+        !db.exists(),
+        "read-only validation lookup must not create the database"
+    );
 }
 
 #[tokio::test]
@@ -233,4 +262,74 @@ async fn validations_and_flow_validation_routes() {
         "validating non-existent flow should fail, got status {}",
         resp.status()
     );
+}
+
+#[tokio::test]
+async fn server_permissions_rejects_relative_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let token = "test-token";
+    let cfg = TestServerConfig::mock(tmp.path(), UNREACHABLE_PROVIDER_URL).bearer_token(token);
+    let state = cfg.state();
+    let auth_header = format!("Bearer {token}");
+
+    // 1. GET /v1/permissions/rules?project=. -> 400
+    let app = withnav::server::routes::app(state.clone());
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/permissions/rules?project=.")
+        .header("authorization", &auth_header)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // 2. POST /v1/permissions/rules with relative project scope -> 400
+    let app = withnav::server::routes::app(state.clone());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/permissions/rules")
+        .header("authorization", &auth_header)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "action": "bash",
+                "resource": "*",
+                "effect": "allow",
+                "scope": {"project": "relative/path"},
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // 3. DELETE /v1/permissions/validations/1?workspace=. -> 400
+    let app = withnav::server::routes::app(state.clone());
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/v1/permissions/validations/1?workspace=.")
+        .header("authorization", &auth_header)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // 4. POST /v1/permissions/validate with relative workspace -> 400
+    let app = withnav::server::routes::app(state.clone());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/permissions/validate")
+        .header("authorization", &auth_header)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "kind": "flow",
+                "name": "any_flow",
+                "workspace": "relative/workspace",
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }

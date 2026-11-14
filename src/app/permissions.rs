@@ -18,11 +18,10 @@ pub(super) async fn permissions_command(command: PermissionCommand) -> anyhow::R
     let wanted = Wanted::from_env(None)?;
     let owner = ensure_server(&wanted).await?;
 
-    let mut builder = reqwest::Client::builder();
-    if withnav_client::client::is_loopback(&owner.url) {
-        builder = builder.no_proxy();
-    }
-    let client = builder.build()?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
     let auth_header = format!("Bearer {}", owner.token);
 
     match command {

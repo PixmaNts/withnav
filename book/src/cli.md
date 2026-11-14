@@ -28,15 +28,13 @@ nav [tui] [--workspace <dir>] [--model <gateway/id> | --session <id>] [--models 
 | `--workspace <dir>` | Folder the conversation works in. Default: the current directory. |
 | `--model <gateway/id>` | Model for a new conversation. Cannot be combined with `--session`. |
 | `--session <id>` | Resume a past conversation. Cannot be combined with `--model`. |
-| `--models <file>` | Start a private embedded server with this `models.json`, even when an editor runs one for the workspace. Cannot be combined with `--url`. |
-| `--url <server>` | Connect to a running server instead of joining the editor's or starting one. If it needs a bearer token, set `WITHNAV_SERVER_TOKEN`. Cannot be combined with `--models`. |
+| `--models <file>` | The `models.json` the WithNav server must use. If a server is already running with another one, `nav tui` stops with a message telling you to run `nav serve stop`. Cannot be combined with `--url`. |
+| `--url <server>` | Connect to that server instead of the shared one. If it needs a bearer token, set `WITHNAV_SERVER_TOKEN`. Cannot be combined with `--models`. |
 
-When an editor already runs `nav lsp` for the same workspace, `nav tui` joins that editor's
-server: a conversation started in the editor is listed and usable in the terminal, and the
-reverse. Otherwise it starts its own server, which stops when you quit. Quitting a joined server
-only disconnects; closing the editor stops its server and disconnects the terminal client. The
-editor's server is found through an owner-only file in `$XDG_RUNTIME_DIR/withnav-servers/`;
-without a private `$XDG_RUNTIME_DIR` (and on Windows) the terminal client always starts its own.
+`nav tui` connects to the WithNav server (see [`nav serve`](#nav-serve)), starting it in the
+background if none runs. Every client of your user (VS Code, the browser client, `nav run`, other
+terminals) uses that same server, so a conversation started in one is listed and usable in the
+others. Quitting `nav tui` only disconnects; the server keeps running.
 
 The terminal client writes its log to `~/.local/share/withnav/tui.log`, never to the screen.
 
@@ -49,9 +47,15 @@ nav web [--workspace <path>]... [--models <file>] [--port <n>] [--no-open]
 | Flag | Meaning |
 | --- | --- |
 | `--workspace <path>` | A workspace to offer in the browser. Repeat for several. Default: the current directory. |
-| `--models <file>` | Use this `models.json` for the embedded server. |
-| `--port <n>` | Loopback port to listen on. Default `0`, which picks a free one. |
+| `--models <file>` | The `models.json` the WithNav server must use (as for `nav tui`). |
+| `--port <n>` | Refused unless `0`: the shared server picks its port; set it with `nav serve --port`. |
 | `--no-open` | Print the address without opening the browser. |
+
+`nav web` starts the WithNav server if needed, asks it for a pairing code, opens
+`http://127.0.0.1:<port>/#pair=<code>` and exits. The page trades the code once, within 60
+seconds, for its own browser credential (valid 12 hours, kept for that tab only); the server's own
+token never appears in the address. Run `nav web` again to open another tab or after the
+credential expires.
 
 ## `nav run`
 
@@ -86,20 +90,41 @@ Exit codes:
 ## `nav serve`
 
 ```sh
-nav serve [--bind <addr>] [--allow-non-loopback] [--models <file>]
+nav serve [--port <n>] [--models <file>]
+nav serve status
+nav serve stop [--force]
 ```
 
-Runs the session server alone, with no client: an HTTP API with Server-Sent Events.
+The WithNav server: the one process that owns your conversation database
+(`~/.local/share/withnav/withnav.db`) and serves every client: the editor's language server,
+`nav tui`, `nav web` and `nav run`. You rarely start it yourself: the first client starts it in
+the background and the others connect to it. It keeps running when clients leave; stop it with
+`nav serve stop`.
 
 | Flag | Meaning |
 | --- | --- |
-| `--bind <addr>` | Address to listen on. Default `127.0.0.1:7310`. |
-| `--allow-non-loopback` | Allow an address that is not loopback. |
-| `--models <file>` | Use this `models.json`. |
+| `--port <n>` | Loopback port to listen on. Default `0`, which picks a free one. |
+| `--models <file>` | Use this `models.json` instead of the workspace's or the config dir's. |
 
-The server has **no authentication and no TLS**. Keep it on loopback. If you open it to a
-network with `--allow-non-loopback`, protecting it is your job: use a private network or a
-reverse proxy.
+| Subcommand | Meaning |
+| --- | --- |
+| `status` | Whether a server runs, its process id, version and port. |
+| `stop` | Stops the server once no turn is running; `--force` stops the running turns too. Works with a server of another WithNav version. |
+
+The server listens on `127.0.0.1` only and always requires a token. It writes its port and token
+to `~/.local/share/withnav/server/owner.json`, readable by you only (mode `0600` in a `0700`
+directory); clients read it there and check, before sending the token, that the server answering
+is the one that wrote the file. Requests through `HTTP_PROXY`/`ALL_PROXY` and requests with a
+foreign `Host` or `Origin` header are refused. Only one server runs per database: a second one
+stops with a message. The server also refuses to start while an older WithNav (an embedded
+terminal or editor server from before this version) still has the database open; quit it first.
+If the data directory is deleted, the server stops on its own.
+
+Its log is `~/.local/share/withnav/server/server.log`.
+
+On Windows the server and its clients use the same design; the token file is protected by an
+access list limited to you, SYSTEM and Administrators. If Windows forbids starting it in the
+background (a job object without breakaway), the client says so: start `nav serve` yourself.
 
 ## `nav auth`
 
@@ -154,7 +179,10 @@ nav lsp replay [--log <file>] [--json]
 ```
 
 The language server for editors. The VS Code extension launches it for you over stdio, so you
-rarely run it yourself. `nav lsp replay` replays the built-in editor flows offline against a
+rarely run it yourself. It runs inside the WithNav server: `nav lsp` connects to it (starting it
+if needed) and passes the editor's messages through, so several editors share the server and its
+conversations, and closing an editor leaves the server running. If the server stops, `nav lsp`
+exits and the editor restarts it. `nav lsp replay` replays the built-in editor flows offline against a
 decision log (default `~/.local/share/withnav/withnav.jsonl`) and prints a summary, or a JSON
 report with `--json`.
 
@@ -162,7 +190,7 @@ report with `--json`.
 
 | Variable | Meaning |
 | --- | --- |
-| `WITHNAV_SERVER_TOKEN` | Bearer token for `nav tui --url`. |
+| `WITHNAV_SERVER_TOKEN` | Bearer token for `nav tui --url` (not needed for the shared server). |
 | `WITHNAV_MAX_STEPS` | Cap on the steps of one turn. Unset: no cap for the main agent (a watchdog supervises it) and 50 for subagents. A value that is not a non-negative integer logs a warning and caps the turn at 500 steps (50 for subagents). |
 | API key variables | The names you give in `api_key_env` in `models.json`, for example `OPENAI_API_KEY`. |
 

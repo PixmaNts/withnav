@@ -1610,12 +1610,12 @@ Version 0.1 is a personal local service.
 Defaults:
 
 ```text
-bind = 127.0.0.1:7310        (nav serve --bind)
+bind = 127.0.0.1:<port>      (nav serve --port, default any free port)
 ```
 
-A non-loopback bind is refused unless `--allow-non-loopback` is given, and even then there is no TLS. Operators exposing it remotely are responsible for an authenticated reverse proxy or private network.
+A non-loopback bind is refused.
 
-When the server is started with a bearer token, every route except `GET /v1/health` needs `Authorization: Bearer <token>`. `nav tui` starts a private server with a random per-process token, and `nav lsp` does the same for the editor. A client reaches a running server with `nav tui --url`, and gives the token in `WITHNAV_SERVER_TOKEN`. `nav serve` itself starts without a token.
+`nav serve` is the one owner of the database and always has a token, written with its port to an owner-only `<data dir>/server/owner.json`. Every route except the public ones (health, `GET /v1/hello`, the pairing exchange, the web assets) needs `Authorization: Bearer <token>` or a browser credential. Clients (`nav lsp`, `nav tui`, `nav web`, `nav run`) start or find that owner and read the token from the record after checking the owner's proof; `nav tui --url` reaches another server with the token in `WITHNAV_SERVER_TOKEN`.
 
 ### 20.2 HTTP API
 

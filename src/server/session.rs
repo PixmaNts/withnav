@@ -29,6 +29,9 @@ pub struct AppState {
     pub(crate) instance: Arc<String>,
     /// Shutdown trigger for graceful server termination via `/v1/shutdown`.
     pub(crate) shutdown_notify: Arc<tokio::sync::Notify>,
+    /// True once shutdown latched: set by `/v1/shutdown` under the same lock as its busy check,
+    /// or by a signal; every later request except health and hello is refused.
+    pub(crate) admission: Arc<tokio::sync::Mutex<bool>>,
 }
 
 impl AppState {
@@ -62,6 +65,7 @@ impl AppState {
             navigator: None,
             instance: Arc::new(instance),
             shutdown_notify: Arc::default(),
+            admission: Arc::default(),
         })
     }
 

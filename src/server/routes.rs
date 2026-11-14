@@ -316,6 +316,13 @@ pub fn app(state: AppState) -> Router {
                     }
                 }
 
+                // After shutdown latched, only liveness answers: new work would start in a
+                // server that is draining its sessions.
+                if *app_state.admission.lock().await && !matches!(path, "/v1/health" | "/v1/hello")
+                {
+                    return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                }
+
                 next.run(request).await
             }
         },
@@ -418,6 +425,13 @@ async fn shutdown_signal(state: AppState) {
         _ = terminate => {},
         _ = shutdown_requested => {},
     }
+    // Close admission first (a signal arrives without the shutdown route's latch), then end
+    // the editors' connections, so neither a new request nor an editor event can start work
+    // in a session that is being drained.
+    *state.admission.lock().await = true;
+    if let Some(navigator) = &state.navigator {
+        navigator.shutdown().await;
+    }
     state.close_all().await;
 }
 
@@ -451,6 +465,7 @@ async fn shutdown(
     body: Option<Json<crate::server::owner::ShutdownRequest>>,
 ) -> Response {
     let req = body.map(|b| b.0).unwrap_or_default();
+    let mut admission = state.admission.lock().await;
     if !req.force && state.is_turn_running() {
         return (
             StatusCode::CONFLICT,
@@ -460,6 +475,7 @@ async fn shutdown(
         )
             .into_response();
     }
+    *admission = true;
     state.trigger_shutdown();
     (
         StatusCode::ACCEPTED,

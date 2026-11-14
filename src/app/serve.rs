@@ -115,10 +115,17 @@ pub(super) async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
     let serve_res = crate::server::routes::serve_state_on(state.clone(), listener).await;
     watcher.abort();
 
+    // The shutdown signal already latched admission, ended the editors' connections and
+    // drained the sessions; repeating both is harmless and covers a serve error. Decision
+    // writes still on the blocking pool must land before another owner may open the database.
     shared.shutdown().await;
     state.close_all().await;
     let flows = state.flows.clone();
     let _ = tokio::task::spawn_blocking(move || flows.shutdown()).await;
+    if !crate::permission::store::wait_for_detached_writes(std::time::Duration::from_secs(10)).await
+    {
+        tracing::warn!("permission decisions were still being written after 10 s");
+    }
     let _ = Record::remove(&paths);
     drop(lock);
 

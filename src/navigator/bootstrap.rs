@@ -253,6 +253,37 @@ impl Layers {
     }
 }
 
+/// What every editor connection served by the owner shares: the per-workspace conversation
+/// feeds the session hooks publish into and the model clients.
+///
+/// Interface agreed between the owner and the editor connections; filled by the editor
+/// connection implementation.
+#[derive(Debug)]
+pub struct Shared {
+    pub registry: crate::navigator::conversation::WorkspaceFeedRegistry,
+    pub clients: Arc<ClientCache>,
+}
+
+impl Shared {
+    pub fn new(clients: Arc<ClientCache>) -> Arc<Self> {
+        Arc::new(Self {
+            registry: crate::navigator::conversation::WorkspaceFeedRegistry::new(),
+            clients,
+        })
+    }
+
+    /// The session hooks the owner's service is built with.
+    pub fn hooks(&self) -> Arc<dyn crate::session::SessionHooks> {
+        Arc::new(navigator::NavigatorHooks::with_feed_and_registry(
+            None,
+            Some(self.registry.clone()),
+        ))
+    }
+
+    /// Owner shutdown: cancels and joins every editor connection.
+    pub async fn shutdown(&self) {}
+}
+
 /// Builds the layers, starts the cognition chat server and serves the
 /// navigator over stdio until the client exits.
 pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {

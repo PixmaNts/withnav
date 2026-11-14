@@ -20,6 +20,11 @@ pub struct AppState {
     pub(super) settings_write: Arc<tokio::sync::Mutex<()>>,
     pub(super) flows: Arc<crate::flows::host::Host>,
     pub(super) mcp_apps: Arc<super::mcp_app::McpAppStore>,
+    /// Browser pairing codes and credentials.
+    pub(crate) pairing: Arc<super::pairing::Store>,
+    /// The navigator the editors' `/v1/lsp` connections run in; `None` in a server built
+    /// without one (tests).
+    pub(crate) navigator: Option<Arc<crate::navigator::bootstrap::Shared>>,
 }
 
 impl AppState {
@@ -47,7 +52,15 @@ impl AppState {
             settings_write: Arc::default(),
             flows,
             mcp_apps: Arc::default(),
+            pairing: Arc::default(),
+            navigator: None,
         })
+    }
+
+    /// Serves editors' `/v1/lsp` connections with `navigator`.
+    pub fn with_navigator(mut self, navigator: Arc<crate::navigator::bootstrap::Shared>) -> Self {
+        self.navigator = Some(navigator);
+        self
     }
 }
 

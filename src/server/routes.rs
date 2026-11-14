@@ -466,7 +466,9 @@ async fn shutdown(
 ) -> Response {
     let req = body.map(|b| b.0).unwrap_or_default();
     let mut admission = state.admission.lock().await;
-    if !req.force && state.is_turn_running() {
+    // The service decides under its own admission lock, which every message and session
+    // start takes: a non-forced shutdown either sees that work and refuses, or closes before it.
+    if !state.service().try_close(req.force) {
         return (
             StatusCode::CONFLICT,
             Json(json!({

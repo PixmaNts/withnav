@@ -613,3 +613,42 @@ async fn two_actors_created_by_one_service_share_client_cache_instance() {
     assert!(Arc::ptr_eq(&actor2.client_cache, &service.client_cache));
     assert!(Arc::ptr_eq(&actor1.client_cache, &actor2.client_cache));
 }
+
+// Given a message or session start being admitted
+// When a non-forced shutdown is asked, then the work finishes
+// Then the shutdown is refused while the work is in flight, accepted after, and refuses new work
+#[tokio::test]
+async fn a_non_forced_close_waits_for_admitted_work() {
+    let (_dir, service) = test_service();
+    let ticket = service.admit_work().expect("admitted");
+    assert!(!service.try_close(false), "work in flight");
+    drop(ticket);
+    assert!(service.try_close(false));
+    assert!(matches!(
+        service.admit_work(),
+        Err(ServerError::ShuttingDown)
+    ));
+}
+
+// Given a session start admitted before shutdown
+// When the shutdown drain runs
+// Then it waits for that start to finish (and register) before draining
+#[tokio::test]
+async fn the_drain_waits_for_admitted_session_starts() {
+    let (_dir, service) = test_service();
+    let ticket = service.admit_work().expect("admitted");
+    let draining = {
+        let service = service.clone();
+        tokio::spawn(async move { service.close_all().await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !draining.is_finished(),
+        "the drain must wait for the admitted start"
+    );
+    drop(ticket);
+    tokio::time::timeout(std::time::Duration::from_secs(10), draining)
+        .await
+        .expect("the drain ends once the start finished")
+        .unwrap();
+}

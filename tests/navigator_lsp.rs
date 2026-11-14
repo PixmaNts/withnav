@@ -1434,6 +1434,38 @@ async fn conversation_notification_binds_and_unbinds_with_incarnation_check() {
         feed.bound_editor(s_deferred).is_some(),
         "the newer binding stays"
     );
+
+    // An unfocus for an unrelated conversation (a background tab closed) does not cancel a
+    // bind still waiting for the conversation the editor shows.
+    let s_pending = ulid::Ulid::generate();
+    let inc_pending = ulid::Ulid::generate();
+    let post_pending: withnav::navigator::conversation::SessionPost =
+        Arc::new(|_| Box::pin(async { Ok(()) }));
+    feed.register_session_incarnation(s_pending, inc_pending, post_pending, false);
+    nav.client
+        .notify(
+            "withnav/conversation",
+            json!({
+                "sessionId": s_pending.to_string(),
+                "incarnation": inc_pending.to_string(),
+                "focus": true,
+            }),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    nav.client
+        .notify(
+            "withnav/conversation",
+            json!({ "sessionId": ulid::Ulid::generate().to_string(), "focus": false }),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    feed.mark_incarnation_ready(s_pending, inc_pending);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        feed.bound_editor(s_pending).is_some(),
+        "an unrelated unfocus must not cancel the pending bind"
+    );
 }
 
 #[tokio::test]

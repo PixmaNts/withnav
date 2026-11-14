@@ -94,11 +94,11 @@ export class ChatHub implements ChatTabs {
     const [tab] = this.order.splice(index, 1);
     tab.off();
     tab.backend.dispose();
-    if (tab.sessionId) {
+    // Only the conversation this editor is bound to is unbound: a background tab was never
+    // bound, and an unfocus for it would cancel the active tab's bind still in progress.
+    if (tab.sessionId && this.boundSessionId === tab.sessionId) {
       this.notifyBinding?.({ sessionId: tab.sessionId, focus: false });
-      if (this.boundSessionId === tab.sessionId) {
-        this.boundSessionId = undefined;
-      }
+      this.boundSessionId = undefined;
     }
     if (this.activeId === id) {
       this.activeId = (this.order[index] ?? this.order[index - 1])?.id;

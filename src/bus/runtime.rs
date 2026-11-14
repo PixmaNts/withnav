@@ -397,6 +397,12 @@ impl RuntimeStatus {
             None => false,
         }
     }
+    /// A Captain message sits in the inbox and the runtime has not taken it yet.
+    pub fn has_queued_captain(&self) -> bool {
+        self.queued_captain
+            .load(std::sync::atomic::Ordering::Acquire)
+            > 0
+    }
     pub(crate) fn queue_captain(&self) {
         self.queued_captain
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);

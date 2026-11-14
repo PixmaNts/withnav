@@ -219,10 +219,11 @@ impl Service {
 
     async fn stop_all_sessions(&self) {
         let _shutdown = self.gates.shutdown().await;
-        {
-            let _admission = self.admission_gate.lock().await;
-            self.closing
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Refuse new work, then let the admitted messages and session starts finish: a session
+        // being started is registered before its ticket drops, so the loop below ends it.
+        self.try_close(true);
+        while self.pending_work() > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         loop {
             let admission = self.admission_gate.lock().await;

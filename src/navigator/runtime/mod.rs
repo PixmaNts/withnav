@@ -98,6 +98,8 @@ pub(crate) struct Runtime {
     /// Counts this editor's `withnav/conversation` notifications; a delayed bind gives up once
     /// a newer one arrived.
     binding_generation: std::sync::atomic::AtomicU64,
+    /// The conversation a bind is still waiting for, if any.
+    pending_bind: std::sync::Mutex<Option<ulid::Ulid>>,
     /// The root whose catalogue built this connection's layers: the initialize workspace,
     /// fixed for the connection even when folder changes promote another root to primary.
     layers_root: Option<PathBuf>,
@@ -172,6 +174,7 @@ impl Runtime {
             config_dir: deps.config_dir,
             explicit_models_path: deps.explicit_models_path,
             binding_generation: std::sync::atomic::AtomicU64::new(0),
+            pending_bind: std::sync::Mutex::new(None),
             layers_root: deps.workspace.clone(),
             disabled_layers: deps.disabled_layers,
             startup_warnings: Mutex::new(deps.startup_warnings),
@@ -787,8 +790,6 @@ impl Runtime {
     pub(crate) async fn on_conversation(&self, params: ConversationParams) {
         // Each notification supersedes the earlier ones of this editor: a bind still retrying
         // for a conversation the editor has since left must not clear the newer binding.
-        let generation = self.binding_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let current = || self.binding_generation.load(Ordering::SeqCst) == generation;
         let Ok(session_id) = params.session_id.parse::<ulid::Ulid>() else {
             tracing::warn!(
                 "withnav/conversation: invalid sessionId '{}'",
@@ -811,7 +812,16 @@ impl Runtime {
             return;
         };
 
+        // A newer focus supersedes a pending bind; an unfocus does only for the conversation
+        // that bind is for, so closing an unrelated tab never cancels it.
+        let pending = *self.pending_bind.lock().unwrap_or_else(|e| e.into_inner());
+        if params.focus || pending == Some(session_id) {
+            self.binding_generation.fetch_add(1, Ordering::SeqCst);
+        }
+        let generation = self.binding_generation.load(Ordering::SeqCst);
+        let current = || self.binding_generation.load(Ordering::SeqCst) == generation;
         if params.focus {
+            *self.pending_bind.lock().unwrap_or_else(|e| e.into_inner()) = Some(session_id);
             let incarnation = if let Some(ref inc_str) = params.incarnation {
                 match inc_str.parse::<ulid::Ulid>() {
                     Ok(inc) => Some(inc),
@@ -862,6 +872,9 @@ impl Runtime {
                     }
                     res = try_bind(&feed);
                 }
+            }
+            if current() {
+                *self.pending_bind.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
             if let Err(e) = res {
                 tracing::warn!("failed to bind editor to session {session_id}: {e}");

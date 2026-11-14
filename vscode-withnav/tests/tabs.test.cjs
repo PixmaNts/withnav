@@ -1227,3 +1227,13 @@ test("hub: a new conversation started in the same tab drops the binding of the c
     { sessionId: "S1", focus: false },
   ]);
 });
+
+test("hub: closing a background tab sends no unfocus", () => {
+  const bindings = [];
+  const saved = { sessions: ["S1", "S2"], active: 0 };
+  const { hub } = makeHub(saved, params => bindings.push({ ...params }));
+  const tabs = hub.tabs();
+  assert.deepEqual(bindings, [{ sessionId: "S1", focus: true }]);
+  hub.close(tabs[1].id);
+  assert.deepEqual(bindings, [{ sessionId: "S1", focus: true }], "S2 was never bound");
+});

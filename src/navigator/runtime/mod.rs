@@ -91,6 +91,9 @@ pub(crate) struct Runtime {
     /// wake posts through. None keeps wakes logged as
     /// `cognition_unavailable`.
     pub(crate) conversation: Option<ConversationFeed>,
+    secondary_catalogue_warnings: std::sync::Mutex<HashSet<PathBuf>>,
+    primary_models_path: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
     /// Startup notes about disabled layers, surfaced once after initialize.
     pub(crate) disabled_layers: Vec<String>,
     pub(crate) startup_warnings: Mutex<Vec<String>>,
@@ -157,6 +160,9 @@ impl Runtime {
             reflex_model: deps.reflex_model,
             server_info: deps.server_info,
             conversation: deps.conversation,
+            secondary_catalogue_warnings: std::sync::Mutex::new(HashSet::new()),
+            primary_models_path: deps.primary_models_path,
+            config_dir: deps.config_dir,
             disabled_layers: deps.disabled_layers,
             startup_warnings: Mutex::new(deps.startup_warnings),
             focused: Mutex::new(None),
@@ -418,6 +424,66 @@ impl Runtime {
             return Some(PathBuf::from("."));
         }
         None
+    }
+
+    pub(crate) async fn layers_available_for_root(&self, root: &Path) -> bool {
+        let primary_root = self.workspace.lock().await.clone();
+        if primary_root.as_deref().is_some_and(|primary| {
+            WorkspaceFeedRegistry::canonical_key(primary)
+                == WorkspaceFeedRegistry::canonical_key(root)
+        }) {
+            return true;
+        }
+        let Some(primary) = self.primary_models_path.as_deref() else {
+            return true;
+        };
+        let Some(config_dir) = self.config_dir.as_deref() else {
+            return true;
+        };
+        let Some(secondary) = crate::provider::config::resolve_models_path(None, root, config_dir)
+        else {
+            return true;
+        };
+        let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        canonical(primary) == canonical(&secondary)
+    }
+
+    pub(crate) async fn layer_catalogue_message(&self, root: &Path) -> Option<String> {
+        let primary_root = self.workspace.lock().await.clone();
+        if primary_root.as_deref().is_some_and(|primary| {
+            WorkspaceFeedRegistry::canonical_key(primary)
+                == WorkspaceFeedRegistry::canonical_key(root)
+        }) {
+            return None;
+        }
+        let primary = self.primary_models_path.as_deref()?;
+        let config_dir = self.config_dir.as_deref()?;
+        let secondary = crate::provider::config::resolve_models_path(None, root, config_dir)?;
+        let differs = {
+            let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+            canonical(primary) != canonical(&secondary)
+        };
+        differs.then(|| {
+            format!(
+                "layers disabled for workspace root {}: its models catalogue differs from the primary root",
+                root.display()
+            )
+        })
+    }
+
+    pub(crate) async fn report_secondary_catalogue_disabled(&self, root: &Path) {
+        let root_key = WorkspaceFeedRegistry::canonical_key(root);
+        if !self
+            .secondary_catalogue_warnings
+            .lock()
+            .unwrap()
+            .insert(root_key)
+        {
+            return;
+        }
+        if let Some(message) = self.layer_catalogue_message(root).await {
+            self.set_status("error", Some(message)).await;
+        }
     }
 
     pub(crate) async fn has_root(&self, root: &Path) -> bool {
@@ -728,21 +794,54 @@ impl Runtime {
         };
 
         if params.focus {
-            let res = if let Some(ref inc_str) = params.incarnation {
-                if let Ok(incarnation) = inc_str.parse::<ulid::Ulid>() {
+            let incarnation = if let Some(ref inc_str) = params.incarnation {
+                match inc_str.parse::<ulid::Ulid>() {
+                    Ok(inc) => Some(inc),
+                    Err(_) => {
+                        tracing::warn!("withnav/conversation: invalid incarnation '{}'", inc_str);
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+
+            let try_bind = |feed: &ConversationFeed| -> Result<(), crate::navigator::conversation::BindingError> {
+                if let Some(inc) = incarnation {
                     let target = ConversationTarget {
                         session_id,
-                        incarnation,
+                        incarnation: inc,
                         workspace: feed.workspace().to_path_buf(),
                     };
                     feed.bind_editor_target(&target, self.editor_id)
                 } else {
-                    tracing::warn!("withnav/conversation: invalid incarnation '{}'", inc_str);
                     feed.bind_editor(session_id, self.editor_id)
                 }
-            } else {
-                feed.bind_editor(session_id, self.editor_id)
             };
+
+            let mut res = try_bind(&feed);
+            if matches!(
+                res,
+                Err(crate::navigator::conversation::BindingError::SessionUnavailable)
+            ) {
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+                while matches!(
+                    res,
+                    Err(crate::navigator::conversation::BindingError::SessionUnavailable)
+                ) {
+                    let now = tokio::time::Instant::now();
+                    if now >= deadline {
+                        break;
+                    }
+                    let notify = feed.ready_notify();
+                    let step = (deadline - now).min(std::time::Duration::from_millis(25));
+                    tokio::select! {
+                        _ = notify.notified() => {}
+                        _ = tokio::time::sleep(step) => {}
+                    }
+                    res = try_bind(&feed);
+                }
+            }
             if let Err(e) = res {
                 tracing::warn!("failed to bind editor to session {session_id}: {e}");
             }
@@ -811,6 +910,12 @@ impl Runtime {
             return;
         }
         let root = self.resolve_document_root(&uri).await;
+        if let Some(root) = &root
+            && !self.layers_available_for_root(root).await
+        {
+            self.report_secondary_catalogue_disabled(root).await;
+            return;
+        }
         if self.connection_cancel.is_cancelled() || workspace_cancel.is_cancelled() {
             return;
         }
@@ -1308,6 +1413,66 @@ mod tests {
         assert_eq!(
             runtime.resolve_document_root(&target_uri).await,
             Some(parent)
+        );
+    }
+
+    #[tokio::test]
+    async fn secondary_root_layers_require_same_catalogue_as_primary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let primary = tmp.path().join("primary");
+        let config = tmp.path().join("config");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        let catalog_path = config.join("models.json");
+        std::fs::write(&catalog_path, "{}").unwrap();
+        let same_catalogue_root = tmp.path().join("same");
+        std::fs::create_dir_all(&same_catalogue_root).unwrap();
+
+        let deps = NavigatorDeps::new(Arc::new(SilentMetacognition), tmp.path().join("log"))
+            .with_dirs(Some(primary.clone()), None)
+            .with_models_catalogue(Some(catalog_path.clone()), Some(config.clone()));
+        let (service, _socket) = crate::navigator::build_service(deps);
+        let runtime = service.inner().runtime();
+        assert!(runtime.layers_available_for_root(&primary).await);
+        assert!(
+            runtime
+                .layers_available_for_root(&same_catalogue_root)
+                .await
+        );
+        let fallback_root = tmp.path().join("fallback");
+        std::fs::create_dir_all(&fallback_root).unwrap();
+        assert!(runtime.layers_available_for_root(&fallback_root).await);
+        assert!(
+            runtime
+                .layer_catalogue_message(&fallback_root)
+                .await
+                .is_none()
+        );
+        assert!(
+            runtime
+                .layer_catalogue_message(&same_catalogue_root)
+                .await
+                .is_none()
+        );
+
+        let different_catalogue_root = tmp.path().join("different");
+        std::fs::create_dir_all(&different_catalogue_root).unwrap();
+        std::fs::write(
+            different_catalogue_root.join("models.json"),
+            "{\"different\":true}",
+        )
+        .unwrap();
+        assert!(
+            !runtime
+                .layers_available_for_root(&different_catalogue_root)
+                .await
+        );
+        assert!(
+            runtime
+                .layer_catalogue_message(&different_catalogue_root)
+                .await
+                .unwrap()
+                .contains(&different_catalogue_root.display().to_string())
         );
     }
 

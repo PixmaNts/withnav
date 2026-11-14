@@ -183,6 +183,70 @@ async fn two_editors_share_owner_and_one_closing_does_not_stop_the_other() {
         .unwrap();
     let session_id = create_res["session_id"].as_str().unwrap();
 
+    let mut event_stream = client
+        .get(format!(
+            "http://127.0.0.1:{port}/v1/sessions/{session_id}/events"
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert!(event_stream.status().is_success());
+
+    let post_res = client
+        .post(format!(
+            "http://127.0.0.1:{port}/v1/sessions/{session_id}/messages"
+        ))
+        .bearer_auth(token)
+        .json(&json!({
+            "target_actor_id": "agent:main",
+            "mode": "next-turn",
+            "content": [{ "type": "text", "text": "live message from second client" }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        post_res.status().is_success(),
+        "second client message: {}",
+        post_res.status()
+    );
+
+    let event = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut buf = String::new();
+        loop {
+            let chunk = event_stream
+                .chunk()
+                .await
+                .expect("session stream read failed")
+                .expect("session stream closed before posted event");
+            buf.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(end) = buf.find("\n\n") {
+                let frame: String = buf.drain(..end + 2).collect();
+                let data = frame
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data:"))
+                    .map(str::trim)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if data.is_empty() {
+                    continue;
+                }
+                let value: serde_json::Value = serde_json::from_str(&data).unwrap();
+                if value["kind"] == "message.received"
+                    && value["payload"]
+                        .to_string()
+                        .contains("live message from second client")
+                {
+                    return value;
+                }
+            }
+        }
+    })
+    .await
+    .expect("posted message event did not arrive before timeout");
+    assert_eq!(event["kind"], "message.received");
+
     let list_res: serde_json::Value = client
         .get(format!("http://127.0.0.1:{port}/v1/sessions"))
         .query(&[("workspace", ws_a.to_str().unwrap())])

@@ -25,6 +25,10 @@ pub struct AppState {
     /// The navigator the editors' `/v1/lsp` connections run in; `None` in a server built
     /// without one (tests).
     pub(crate) navigator: Option<Arc<crate::navigator::bootstrap::Shared>>,
+    /// Random owner instance string for hello proof verification.
+    pub(crate) instance: Arc<String>,
+    /// Shutdown trigger for graceful server termination via `/v1/shutdown`.
+    pub(crate) shutdown_notify: Arc<tokio::sync::Notify>,
 }
 
 impl AppState {
@@ -46,6 +50,8 @@ impl AppState {
         let (session, http) = config.split();
         let service = Service::with_hooks(session, hooks, client_cache)?;
         let flows = service.flows.clone();
+        let instance = crate::server::owner::generate_instance()
+            .unwrap_or_else(|_| ulid::Ulid::generate().to_string());
         Ok(Self {
             service,
             http: Arc::new(http),
@@ -54,7 +60,41 @@ impl AppState {
             mcp_apps: Arc::default(),
             pairing: Arc::default(),
             navigator: None,
+            instance: Arc::new(instance),
+            shutdown_notify: Arc::default(),
         })
+    }
+
+    /// Sets a specific instance identifier on the state.
+    pub fn with_instance(mut self, instance: impl Into<String>) -> Self {
+        self.instance = Arc::new(instance.into());
+        self
+    }
+
+    /// Returns the owner's random instance identifier.
+    pub fn instance(&self) -> &str {
+        &self.instance
+    }
+
+    /// Triggers graceful shutdown of the server.
+    pub fn trigger_shutdown(&self) {
+        self.shutdown_notify.notify_waiters();
+    }
+
+    /// Waits until graceful shutdown is triggered.
+    pub async fn shutdown_notified(&self) {
+        self.shutdown_notify.notified().await;
+    }
+
+    /// Returns true if any active session is currently running a turn.
+    pub fn is_turn_running(&self) -> bool {
+        self.service.is_turn_running()
+    }
+
+    /// Marks a session's turn as running for tests.
+    #[doc(hidden)]
+    pub async fn pin_session_turn(&self, session_id: ulid::Ulid) {
+        self.service.pin_session_turn(session_id).await;
     }
 
     /// Serves editors' `/v1/lsp` connections with `navigator`.

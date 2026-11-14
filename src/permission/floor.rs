@@ -183,6 +183,7 @@ fn protected_targets(cx: &FloorContext) -> (Vec<PathBuf>, Vec<PathBuf>) {
     for name in ["withnav.db", "withnav.db-wal", "withnav.db-shm"] {
         add(&cx.data_dir, name, false);
     }
+    add(&cx.data_dir, "server", true);
     (files, roots)
 }
 
@@ -1201,6 +1202,7 @@ mod tests {
             "data/withnav.db-wal",
             "data/withnav.db-shm",
             "config/flows/mine/flow.json",
+            "data/server/owner.json",
             "project/../config/config.json",
         ] {
             let full = root.join(path);

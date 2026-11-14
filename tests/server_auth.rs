@@ -161,3 +161,157 @@ async fn without_a_token_behaviour_is_unchanged() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(state.session_count(), 1);
 }
+
+#[tokio::test]
+async fn host_header_validation() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut state = test_state(tmp.path(), Some("tok".into()));
+    let bound_addr: std::net::SocketAddr = "127.0.0.1:7310".parse().unwrap();
+    std::sync::Arc::make_mut(&mut state.http).bind = bound_addr;
+
+    for (host, expected_status) in [
+        ("127.0.0.1:7310", StatusCode::OK),
+        ("localhost:7310", StatusCode::OK),
+        ("evil.com:7310", StatusCode::FORBIDDEN),
+        ("127.0.0.1:9999", StatusCode::FORBIDDEN),
+        ("attacker.com", StatusCode::FORBIDDEN),
+    ] {
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/health")
+            .header("host", host)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app(state.clone()).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), expected_status, "host {host}");
+    }
+}
+
+#[tokio::test]
+async fn origin_header_validation() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut state = test_state(tmp.path(), Some("tok".into()));
+    let bound_addr: std::net::SocketAddr = "127.0.0.1:7310".parse().unwrap();
+    std::sync::Arc::make_mut(&mut state.http).bind = bound_addr;
+
+    for (origin, expected_status) in [
+        ("http://127.0.0.1:7310", StatusCode::OK),
+        ("http://localhost:7310", StatusCode::OK),
+        ("null", StatusCode::FORBIDDEN),
+        ("http://evil.com:7310", StatusCode::FORBIDDEN),
+        ("https://127.0.0.1:7310", StatusCode::FORBIDDEN),
+    ] {
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/health")
+            .header("origin", origin)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app(state.clone()).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), expected_status, "origin {origin}");
+    }
+}
+
+#[tokio::test]
+async fn public_hello_route_answers_without_token() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = test_state(tmp.path(), Some("token123".into()));
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/hello?nonce=aabbcc")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let val: Value = body_json(resp).await;
+    assert_eq!(val["protocol"], 1);
+    assert_eq!(val["instance"], state.instance());
+    let expected_proof =
+        withnav::server::owner::hello_proof("token123", "aabbcc", state.instance());
+    assert_eq!(val["proof"], expected_proof);
+}
+
+#[tokio::test]
+async fn shutdown_route_requires_owner_token() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = test_state(tmp.path(), Some("owner-token".into()));
+
+    // Missing token -> 401
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/shutdown")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Wrong token -> 401
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/shutdown")
+        .header("authorization", "Bearer wrong-token")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Owner token -> 202
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/shutdown")
+        .header("authorization", "Bearer owner-token")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"force": true}).to_string()))
+        .unwrap();
+    let resp = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn shutdown_busy_returns_409_unless_forced() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("create ws");
+    let state = test_state(tmp.path(), Some("owner-token".into()));
+
+    let resp = request_with_auth(
+        &state,
+        Some("Bearer owner-token"),
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "workspace": ws.to_str().unwrap() })),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let session_id: ulid::Ulid = body["session_id"].as_str().unwrap().parse().unwrap();
+
+    // Mark a turn as running on the live session
+    state.pin_session_turn(session_id).await;
+    assert!(state.is_turn_running());
+
+    // Without force: 409 busy
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/shutdown")
+        .header("authorization", "Bearer owner-token")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"force": false}).to_string()))
+        .unwrap();
+    let resp = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let val = body_json(resp).await;
+    assert_eq!(val["reason"], "busy");
+
+    // With force: 202 accepted
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/shutdown")
+        .header("authorization", "Bearer owner-token")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"force": true}).to_string()))
+        .unwrap();
+    let resp = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+}

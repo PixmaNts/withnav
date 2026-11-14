@@ -55,10 +55,9 @@ pub struct HttpConfig {
 }
 
 impl ServerConfig {
-    /// Bind-time validation: refuse a non-loopback address unless the
-    /// explicit escape hatch was passed.
+    /// Bind-time validation: refuse a non-loopback address unconditionally.
     pub fn validate(&self) -> Result<(), ServerError> {
-        if !self.bind.ip().is_loopback() && !self.allow_non_loopback {
+        if !self.bind.ip().is_loopback() {
             return Err(ServerError::NonLoopbackBind(self.bind));
         }
         Ok(())
@@ -114,13 +113,13 @@ mod tests {
         ));
     }
 
-    // Given a non-loopback bind WITH --allow-non-loopback
+    // Given a non-loopback bind
     // When ServerConfig::validate runs
-    // Then it is accepted (documented at-your-own-risk; still no TLS)
+    // Then it is refused unconditionally
     #[test]
-    fn non_loopback_bind_is_accepted_with_the_explicit_flag() {
-        assert!(test_config("0.0.0.0:7310", true).validate().is_ok());
-        assert!(test_config("192.168.1.10:7310", true).validate().is_ok());
+    fn non_loopback_bind_is_refused_unconditionally() {
+        assert!(test_config("0.0.0.0:7310", false).validate().is_err());
+        assert!(test_config("192.168.1.10:7310", false).validate().is_err());
     }
 
     // Given a full server config

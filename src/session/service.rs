@@ -374,6 +374,28 @@ pub struct Service {
 }
 
 impl Service {
+    /// Probes for any held instance locks under `<database>.instances/`.
+    pub fn check_legacy_instances(database: &std::path::Path) -> Result<(), String> {
+        super::instance::check_legacy_instances(database)
+    }
+
+    /// Returns true if any active session currently has a turn running.
+    pub fn is_turn_running(&self) -> bool {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.values().any(|h| {
+            h.lifecycle == Lifecycle::Active
+                && (h.status.selection.is_running() || h.status.actor_state() == "running")
+        })
+    }
+
+    /// Marks a session's turn as running for tests.
+    #[doc(hidden)]
+    pub async fn pin_session_turn(&self, session_id: SessionId) {
+        let handle = self.sessions.lock().unwrap().get(&session_id).cloned();
+        if let Some(handle) = handle {
+            handle.status.selection.pin_turn().await;
+        }
+    }
     /// Debug-build readiness seam: tests create frozen registries only after discovery settles.
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]

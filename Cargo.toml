@@ -79,6 +79,7 @@ clap.workspace = true
 sha2.workspace = true
 # sha2 0.11 digests no longer implement LowerHex: hex-encode them explicitly.
 hex.workspace = true
+getrandom = "0.2"
 time = { workspace = true, features = ["formatting", "parsing"] }
 directories = "6.0"
 tempfile = "3"

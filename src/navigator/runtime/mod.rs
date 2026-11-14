@@ -728,21 +728,54 @@ impl Runtime {
         };
 
         if params.focus {
-            let res = if let Some(ref inc_str) = params.incarnation {
-                if let Ok(incarnation) = inc_str.parse::<ulid::Ulid>() {
+            let incarnation = if let Some(ref inc_str) = params.incarnation {
+                match inc_str.parse::<ulid::Ulid>() {
+                    Ok(inc) => Some(inc),
+                    Err(_) => {
+                        tracing::warn!("withnav/conversation: invalid incarnation '{}'", inc_str);
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+
+            let try_bind = |feed: &ConversationFeed| -> Result<(), crate::navigator::conversation::BindingError> {
+                if let Some(inc) = incarnation {
                     let target = ConversationTarget {
                         session_id,
-                        incarnation,
+                        incarnation: inc,
                         workspace: feed.workspace().to_path_buf(),
                     };
                     feed.bind_editor_target(&target, self.editor_id)
                 } else {
-                    tracing::warn!("withnav/conversation: invalid incarnation '{}'", inc_str);
                     feed.bind_editor(session_id, self.editor_id)
                 }
-            } else {
-                feed.bind_editor(session_id, self.editor_id)
             };
+
+            let mut res = try_bind(&feed);
+            if matches!(
+                res,
+                Err(crate::navigator::conversation::BindingError::SessionUnavailable)
+            ) {
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+                while matches!(
+                    res,
+                    Err(crate::navigator::conversation::BindingError::SessionUnavailable)
+                ) {
+                    let now = tokio::time::Instant::now();
+                    if now >= deadline {
+                        break;
+                    }
+                    let notify = feed.ready_notify();
+                    let step = (deadline - now).min(std::time::Duration::from_millis(25));
+                    tokio::select! {
+                        _ = notify.notified() => {}
+                        _ = tokio::time::sleep(step) => {}
+                    }
+                    res = try_bind(&feed);
+                }
+            }
             if let Err(e) = res {
                 tracing::warn!("failed to bind editor to session {session_id}: {e}");
             }

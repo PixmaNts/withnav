@@ -1284,4 +1284,409 @@ async fn conversation_notification_binds_and_unbinds_with_incarnation_check() {
         feed.bound_editor(session_id).is_none(),
         "editor must be unbound"
     );
+
+    // Malformed incarnation is rejected (never silently treated as absent)
+    nav.client
+        .notify(
+            "withnav/conversation",
+            json!({
+                "sessionId": session_id.to_string(),
+                "incarnation": "not-a-valid-ulid",
+                "focus": true,
+            }),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        feed.bound_editor(session_id).is_none(),
+        "malformed incarnation must be rejected without binding"
+    );
+
+    // Binding right after create/resume retries when session becomes available
+    let s_deferred = ulid::Ulid::generate();
+    let inc_deferred = ulid::Ulid::generate();
+    let post_deferred: withnav::navigator::conversation::SessionPost =
+        Arc::new(|_| Box::pin(async { Ok(()) }));
+    feed.register_session_incarnation(s_deferred, inc_deferred, post_deferred, false);
+
+    // Send binding while available is still false
+    nav.client
+        .notify(
+            "withnav/conversation",
+            json!({
+                "sessionId": s_deferred.to_string(),
+                "incarnation": inc_deferred.to_string(),
+                "focus": true,
+            }),
+        )
+        .await;
+
+    // Before ready, binding is not established
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(feed.bound_editor(s_deferred).is_none());
+
+    // Mark ready: retry wakes and establishes binding
+    feed.mark_incarnation_ready(s_deferred, inc_deferred);
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let bound_deferred = feed
+        .bound_editor(s_deferred)
+        .expect("deferred session must be bound once ready");
+    assert_eq!(bound_deferred.1, inc_deferred);
+}
+
+#[tokio::test]
+async fn two_editor_connections_route_by_session_binding_and_focus_switch_clears_old_binding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("workspace");
+    let cfg = tmp.path().join("config");
+    let data = tmp.path().join("data");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+
+    let models = serde_json::json!({
+        "providers": { "mock": { "base_url": "http://127.0.0.1:1/v1" } },
+        "models": {
+            "mock/chat": { "provider": "mock", "model": "chat", "context_window": 128000, "supports_tools": true },
+            "mock/fim": { "provider": "mock", "model": "fim", "api": "fim" }
+        }
+    });
+    std::fs::write(cfg.join("models.json"), models.to_string()).unwrap();
+    std::fs::write(
+        cfg.join("config.json"),
+        json!({
+            "agents": { "build": { "model": "mock/chat" } },
+            "layers": { "reflex": "mock/fim" }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let clients = Arc::new(withnav_provider::openai::ClientCache::new());
+    let preflight_a = withnav::session::preflight::Preflight::capture(
+        &cfg,
+        None,
+        &root,
+        &withnav::agent::instructions::RulesRoots::default(),
+        clients.clone(),
+    )
+    .await
+    .unwrap();
+    let preflight_b = withnav::session::preflight::Preflight::capture(
+        &cfg,
+        None,
+        &root,
+        &withnav::agent::instructions::RulesRoots::default(),
+        clients.clone(),
+    )
+    .await
+    .unwrap();
+
+    let server_config = withnav::server::ServerConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        models_path: None,
+        config_dir: cfg.clone(),
+        allow_non_loopback: false,
+        bearer_token: Some("test-token".into()),
+        history_db: data.join("history.sqlite3"),
+        data_dir: data.clone(),
+        rules_roots: withnav::agent::instructions::RulesRoots::default(),
+        web: None,
+    };
+    let app_state =
+        withnav::server::session::AppState::new(server_config, clients.clone()).unwrap();
+    let shared = withnav::navigator::bootstrap::Shared::new(clients);
+    let feed = shared.registry.get_or_create(&root);
+
+    // Setup sessions S1, S2, S3
+    let s1 = ulid::Ulid::generate();
+    let inc1 = ulid::Ulid::generate();
+    let wake_sink_1 = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let s1_sink = wake_sink_1.clone();
+    let post1: withnav::navigator::conversation::SessionPost = Arc::new(move |wake| {
+        let sink = s1_sink.clone();
+        Box::pin(async move {
+            sink.lock().unwrap().push(wake);
+            Ok(())
+        })
+    });
+    feed.register_session_incarnation(s1, inc1, post1, true);
+
+    let s2 = ulid::Ulid::generate();
+    let inc2 = ulid::Ulid::generate();
+    let wake_sink_2 = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let s2_sink = wake_sink_2.clone();
+    let post2: withnav::navigator::conversation::SessionPost = Arc::new(move |wake| {
+        let sink = s2_sink.clone();
+        Box::pin(async move {
+            sink.lock().unwrap().push(wake);
+            Ok(())
+        })
+    });
+    feed.register_session_incarnation(s2, inc2, post2, true);
+
+    let s3 = ulid::Ulid::generate();
+    let inc3 = ulid::Ulid::generate();
+    let post3: withnav::navigator::conversation::SessionPost =
+        Arc::new(|_| Box::pin(async { Ok(()) }));
+    feed.register_session_incarnation(s3, inc3, post3, true);
+
+    // Two editor connections A and B
+    let (mut client_a_io, server_a_io) = tokio::io::duplex(64 * 1024);
+    let (mut client_b_io, server_b_io) = tokio::io::duplex(64 * 1024);
+
+    let init_frame_a = common::lsp::frame(json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "capabilities": {},
+            "rootUri": format!("file://{}", root.display())
+        }
+    }));
+    let init_frame_b = common::lsp::frame(json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "capabilities": {},
+            "rootUri": format!("file://{}", root.display())
+        }
+    }));
+
+    use tokio::io::AsyncWriteExt as _;
+    client_a_io.write_all(&init_frame_a).await.unwrap();
+    client_b_io.write_all(&init_frame_b).await.unwrap();
+
+    let _serve_a = tokio::spawn(withnav::navigator::bootstrap::serve_connection(
+        server_a_io,
+        root.clone(),
+        preflight_a,
+        app_state.clone(),
+        shared.clone(),
+    ));
+    let _serve_b = tokio::spawn(withnav::navigator::bootstrap::serve_connection(
+        server_b_io,
+        root.clone(),
+        preflight_b,
+        app_state,
+        shared.clone(),
+    ));
+
+    let mut reader_a = tokio::io::BufReader::new(client_a_io);
+    let mut reader_b = tokio::io::BufReader::new(client_b_io);
+
+    let init_resp_a = tokio::time::timeout(
+        Duration::from_secs(5),
+        common::lsp::read_message(&mut reader_a),
+    )
+    .await
+    .unwrap();
+    assert_eq!(init_resp_a["id"], 1);
+
+    let init_resp_b = tokio::time::timeout(
+        Duration::from_secs(5),
+        common::lsp::read_message(&mut reader_b),
+    )
+    .await
+    .unwrap();
+    assert_eq!(init_resp_b["id"], 1);
+
+    reader_a
+        .get_mut()
+        .write_all(&common::lsp::frame(json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        })))
+        .await
+        .unwrap();
+    reader_b
+        .get_mut()
+        .write_all(&common::lsp::frame(json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        })))
+        .await
+        .unwrap();
+
+    // Read withnav/serverInfo on both
+    let _ = tokio::time::timeout(
+        Duration::from_secs(5),
+        common::lsp::read_message(&mut reader_a),
+    )
+    .await
+    .unwrap();
+    let _ = tokio::time::timeout(
+        Duration::from_secs(5),
+        common::lsp::read_message(&mut reader_b),
+    )
+    .await
+    .unwrap();
+
+    // Editor A binds to S1
+    reader_a
+        .get_mut()
+        .write_all(&common::lsp::frame(json!({
+            "jsonrpc": "2.0",
+            "method": "withnav/conversation",
+            "params": {
+                "sessionId": s1.to_string(),
+                "focus": true
+            }
+        })))
+        .await
+        .unwrap();
+
+    // Editor B binds to S2
+    reader_b
+        .get_mut()
+        .write_all(&common::lsp::frame(json!({
+            "jsonrpc": "2.0",
+            "method": "withnav/conversation",
+            "params": {
+                "sessionId": s2.to_string(),
+                "focus": true
+            }
+        })))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    // A is bound to S1, B is bound to S2
+    let sel_s1 = feed
+        .select_editor(Some(s1))
+        .expect("S1 must select editor A");
+    let sel_s2 = feed
+        .select_editor(Some(s2))
+        .expect("S2 must select editor B");
+    assert_ne!(sel_s1.id, sel_s2.id);
+
+    // Reveal for S1 reaches only editor A
+    let reveal_s1 = sel_s1.reveal;
+    let path_a = format!("{}/test.rs", root.display());
+    let reveal_task_a = tokio::spawn(async move {
+        (reveal_s1)(withnav::navigator::lsp::protocol::RevealParams {
+            path: path_a,
+            line: Some(10),
+            placement: withnav::navigator::lsp::protocol::RevealPlacement::Active,
+            symbol: None,
+        })
+        .await
+    });
+
+    let msg_a = tokio::time::timeout(
+        Duration::from_secs(5),
+        common::lsp::read_message(&mut reader_a),
+    )
+    .await
+    .unwrap();
+    assert_eq!(msg_a["method"], "withnav/reveal");
+    assert_eq!(msg_a["params"]["line"], 10);
+
+    // Reply from editor A to complete reveal
+    reader_a
+        .get_mut()
+        .write_all(&common::lsp::frame(json!({
+            "jsonrpc": "2.0",
+            "id": msg_a["id"],
+            "result": { "view_column": 1 }
+        })))
+        .await
+        .unwrap();
+    let _ = reveal_task_a.await.unwrap();
+
+    // Reveal for S2 reaches only editor B
+    let reveal_s2 = sel_s2.reveal;
+    let path_b = format!("{}/test_b.rs", root.display());
+    let reveal_task_b = tokio::spawn(async move {
+        (reveal_s2)(withnav::navigator::lsp::protocol::RevealParams {
+            path: path_b,
+            line: Some(20),
+            placement: withnav::navigator::lsp::protocol::RevealPlacement::Active,
+            symbol: None,
+        })
+        .await
+    });
+
+    let msg_b = tokio::time::timeout(
+        Duration::from_secs(5),
+        common::lsp::read_message(&mut reader_b),
+    )
+    .await
+    .unwrap();
+    assert_eq!(msg_b["method"], "withnav/reveal");
+    assert_eq!(msg_b["params"]["line"], 20);
+
+    // Reply from editor B
+    reader_b
+        .get_mut()
+        .write_all(&common::lsp::frame(json!({
+            "jsonrpc": "2.0",
+            "id": msg_b["id"],
+            "result": { "view_column": 1 }
+        })))
+        .await
+        .unwrap();
+    let _ = reveal_task_b.await.unwrap();
+
+    // Wake for S1 reaches S1 post hook
+    let wake_s1_outcome = feed
+        .post_targeted_wake(
+            &withnav::navigator::conversation::ConversationTarget {
+                workspace: root.clone(),
+                session_id: s1,
+                incarnation: inc1,
+            },
+            "wake for S1",
+        )
+        .await;
+    assert_eq!(
+        wake_s1_outcome,
+        withnav::navigator::conversation::WakeOutcome::Posted(s1)
+    );
+    assert_eq!(*wake_sink_1.lock().unwrap(), vec!["wake for S1"]);
+    assert!(wake_sink_2.lock().unwrap().is_empty());
+
+    // Wake for S2 reaches S2 post hook
+    let wake_s2_outcome = feed
+        .post_targeted_wake(
+            &withnav::navigator::conversation::ConversationTarget {
+                workspace: root.clone(),
+                session_id: s2,
+                incarnation: inc2,
+            },
+            "wake for S2",
+        )
+        .await;
+    assert_eq!(
+        wake_s2_outcome,
+        withnav::navigator::conversation::WakeOutcome::Posted(s2)
+    );
+    assert_eq!(*wake_sink_2.lock().unwrap(), vec!["wake for S2"]);
+
+    // Switching editor A's focus to S3 removes the S1 binding
+    reader_a
+        .get_mut()
+        .write_all(&common::lsp::frame(json!({
+            "jsonrpc": "2.0",
+            "method": "withnav/conversation",
+            "params": {
+                "sessionId": s3.to_string(),
+                "focus": true
+            }
+        })))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    // S1 is no longer bound to editor A (ambiguous because two editors are registered and neither bound to S1)
+    assert!(feed.select_editor(Some(s1)).is_err());
+    // S3 is now bound to editor A
+    assert_eq!(feed.select_editor(Some(s3)).unwrap().id, sel_s1.id);
+    // S2 is still bound to editor B
+    assert_eq!(feed.select_editor(Some(s2)).unwrap().id, sel_s2.id);
 }

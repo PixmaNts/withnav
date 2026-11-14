@@ -26,6 +26,7 @@ interface Tab { id: string; backend: TabBackend; title: string; sessionId?: stri
 export class ChatHub implements ChatTabs {
   private readonly order: Tab[] = [];
   private activeId: string | undefined;
+  private boundSessionId: string | undefined;
   private nextId = 0;
   private endpoint: ServerInfoParams | undefined;
   private list: ConversationSummary[] = [];
@@ -82,7 +83,7 @@ export class ChatHub implements ChatTabs {
     if (sessionId) void backend.openConversation(sessionId).catch(this.notifyError);
     if (!restoring) {
       this.changed();
-      if (sessionId) this.bindActive();
+      this.bindActive();
     }
     return id;
   }
@@ -95,6 +96,9 @@ export class ChatHub implements ChatTabs {
     tab.backend.dispose();
     if (tab.sessionId) {
       this.notifyBinding?.({ sessionId: tab.sessionId, focus: false });
+      if (this.boundSessionId === tab.sessionId) {
+        this.boundSessionId = undefined;
+      }
     }
     if (this.activeId === id) {
       this.activeId = (this.order[index] ?? this.order[index - 1])?.id;
@@ -124,13 +128,19 @@ export class ChatHub implements ChatTabs {
 
   private bindActive(): void {
     const active = this.order.find(tab => tab.id === this.activeId);
-    if (!active?.sessionId) return;
-    const incarnation = active.backend.currentIncarnation?.() ?? undefined;
+    const targetSessionId = active?.sessionId;
+    if (this.boundSessionId && this.boundSessionId !== targetSessionId) {
+      this.notifyBinding?.({ sessionId: this.boundSessionId, focus: false });
+      this.boundSessionId = undefined;
+    }
+    if (!targetSessionId) return;
+    const incarnation = active?.backend.currentIncarnation?.() ?? undefined;
     this.notifyBinding?.({
-      sessionId: active.sessionId,
+      sessionId: targetSessionId,
       ...(incarnation ? { incarnation } : {}),
       focus: true,
     });
+    this.boundSessionId = targetSessionId;
   }
 
   settingsRequest(path: string, init?: RequestInit, signal?: AbortSignal): Promise<Response> {
@@ -156,6 +166,10 @@ export class ChatHub implements ChatTabs {
     this.disposed = true;
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.listerOff();
+    if (this.boundSessionId) {
+      this.notifyBinding?.({ sessionId: this.boundSessionId, focus: false });
+      this.boundSessionId = undefined;
+    }
     for (const tab of this.order.splice(0)) { tab.off(); tab.backend.dispose(); }
     this.lister.dispose();
     this.tabListeners.clear(); this.messageListeners.clear(); this.listListeners.clear();

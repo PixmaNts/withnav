@@ -191,11 +191,12 @@ test("hub: binding notification is sent on activate and restart, not on backgrou
     { sessionId: "S1", focus: true },
   ]);
 
-  // Tab activation sends focus: true for the focused tab
+  // Tab activation unbinds the previously focused session and sends focus: true for the new tab
   const tabs = hub.tabs();
   hub.focus(tabs[1].id);
   assert.deepEqual(bindings, [
     { sessionId: "S1", focus: true },
+    { sessionId: "S1", focus: false },
     { sessionId: "S2", focus: true },
   ]);
 
@@ -203,6 +204,7 @@ test("hub: binding notification is sent on activate and restart, not on backgrou
   hub.setServerInfo({ port: 1234, token: "token" });
   assert.deepEqual(bindings, [
     { sessionId: "S1", focus: true },
+    { sessionId: "S1", focus: false },
     { sessionId: "S2", focus: true },
     { sessionId: "S2", focus: true },
   ]);
@@ -211,10 +213,36 @@ test("hub: binding notification is sent on activate and restart, not on backgrou
   hub.close(tabs[1].id);
   assert.deepEqual(bindings, [
     { sessionId: "S1", focus: true },
+    { sessionId: "S1", focus: false },
     { sessionId: "S2", focus: true },
     { sessionId: "S2", focus: true },
     { sessionId: "S2", focus: false },
     { sessionId: "S3", focus: true },
+  ]);
+
+  // Transitioning to a new conversation (no session id) unbinds the previously focused session
+  const newTabId = hub.open();
+  assert.deepEqual(bindings, [
+    { sessionId: "S1", focus: true },
+    { sessionId: "S1", focus: false },
+    { sessionId: "S2", focus: true },
+    { sessionId: "S2", focus: true },
+    { sessionId: "S2", focus: false },
+    { sessionId: "S3", focus: true },
+    { sessionId: "S3", focus: false },
+  ]);
+
+  // When the new conversation receives an id, it binds the new session
+  hub.backend(newTabId).emit({ type: "conversationOpened", id: "S4", title: "New" });
+  assert.deepEqual(bindings, [
+    { sessionId: "S1", focus: true },
+    { sessionId: "S1", focus: false },
+    { sessionId: "S2", focus: true },
+    { sessionId: "S2", focus: true },
+    { sessionId: "S2", focus: false },
+    { sessionId: "S3", focus: true },
+    { sessionId: "S3", focus: false },
+    { sessionId: "S4", focus: true },
   ]);
 });
 

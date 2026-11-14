@@ -22,8 +22,8 @@ use tower_lsp_server::{Client, ClientSocket, LanguageServer, LspService, Server}
 use crate::navigator::NavigatorDeps;
 use crate::navigator::runtime::Runtime;
 use protocol::{
-    DiagnosticsParams, FeedbackParams, InlineCompletionParams, InlineCompletionResult,
-    IntentParams, ReflexShownParams,
+    ConversationParams, DiagnosticsParams, FeedbackParams, InlineCompletionParams,
+    InlineCompletionResult, IntentParams, ReflexShownParams,
 };
 use uri::uri_to_path;
 
@@ -162,6 +162,10 @@ impl NavigatorBackend {
     pub async fn reflex_shown(&self, params: ReflexShownParams) {
         self.runtime.on_reflex_shown(params).await;
     }
+
+    pub async fn conversation(&self, params: ConversationParams) {
+        self.runtime.on_conversation(params).await;
+    }
 }
 
 /// Builds the [`LspService`] for a navigator backend. Split from [`serve`] so
@@ -184,6 +188,7 @@ pub fn build_service(deps: NavigatorDeps) -> (LspService<NavigatorBackend>, Clie
             NavigatorBackend::inline_completion,
         )
         .custom_method("withnav/reflexShown", NavigatorBackend::reflex_shown)
+        .custom_method("withnav/conversation", NavigatorBackend::conversation)
         .finish()
 }
 

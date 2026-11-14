@@ -42,6 +42,12 @@ impl Runtime {
         if self.connection_cancel.is_cancelled() || self.routing_generation() != generation {
             return InlineCompletionResult::default();
         }
+        if let Some(root) = &root
+            && !self.layers_available_for_root(root).await
+        {
+            self.report_secondary_catalogue_disabled(root).await;
+            return InlineCompletionResult::default();
+        }
         let feed = root.as_deref().and_then(|r| self.feed_for_workspace(r));
         let editor_snapshot = feed.as_ref().map(|f| f.snapshot_for_editor(self.editor_id));
         let target = editor_snapshot.as_ref().and_then(|s| s.target.clone());
@@ -145,6 +151,9 @@ impl Runtime {
         let Some(root) = self.resolve_document_root(uri).await else {
             return;
         };
+        if !self.layers_available_for_root(&root).await {
+            return;
+        }
         let reflex_context = self.reflex_context_for_workspace(&root).await;
         if !reflex_context.is_enabled() {
             return;

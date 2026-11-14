@@ -194,6 +194,10 @@ impl Runtime {
         let Some(root) = self.resolve_document_root(uri).await else {
             return false;
         };
+        if !self.layers_available_for_root(&root).await {
+            self.report_secondary_catalogue_disabled(&root).await;
+            return false;
+        }
         if self.routing_generation() != generation {
             return false;
         }

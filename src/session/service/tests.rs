@@ -613,3 +613,75 @@ async fn two_actors_created_by_one_service_share_client_cache_instance() {
     assert!(Arc::ptr_eq(&actor2.client_cache, &service.client_cache));
     assert!(Arc::ptr_eq(&actor1.client_cache, &actor2.client_cache));
 }
+
+// Given a message or session start being admitted
+// When a non-forced shutdown is asked, then the work finishes
+// Then the shutdown is refused while the work is in flight, accepted after, and refuses new work
+#[tokio::test]
+async fn a_non_forced_close_waits_for_admitted_work() {
+    let (_dir, service) = test_service();
+    let ticket = service.admit_work().expect("admitted");
+    assert!(!service.try_close(false), "work in flight");
+    drop(ticket);
+    assert!(service.try_close(false));
+    assert!(matches!(
+        service.admit_work(),
+        Err(ServerError::ShuttingDown)
+    ));
+}
+
+// Given a session start admitted before shutdown
+// When the shutdown drain runs
+// Then it waits for that start to finish (and register) before draining
+#[tokio::test]
+async fn the_drain_waits_for_admitted_session_starts() {
+    let (_dir, service) = test_service();
+    let ticket = service.admit_work().expect("admitted");
+    let draining = {
+        let service = service.clone();
+        tokio::spawn(async move { service.close_all().await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !draining.is_finished(),
+        "the drain must wait for the admitted start"
+    );
+    drop(ticket);
+    tokio::time::timeout(std::time::Duration::from_secs(10), draining)
+        .await
+        .expect("the drain ends once the start finished")
+        .unwrap();
+}
+
+// Given an idle session with a Captain message waiting in its inbox, not yet taken by the
+//       runtime
+// When a non-forced shutdown is asked
+// Then it is refused: the drain would drop the message
+#[tokio::test]
+async fn a_queued_captain_message_keeps_a_non_forced_close_out() {
+    let (dir, service) = test_service();
+    std::fs::create_dir_all(dir.path().join("cfg")).unwrap();
+    std::fs::write(
+        dir.path().join("cfg/config.json"),
+        r#"{"agents":{"build":{"model":"mock/test"}}}"#,
+    )
+    .unwrap();
+    crate::provider::auth::set_key(&service.config.config_dir, "mock", "test").unwrap();
+    std::fs::write(
+        dir.path().join("models.json"),
+        r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/test":{"provider":"mock","model":"test","context_window":128000}}}"#,
+    )
+    .unwrap();
+    let id = service
+        .create_session(dir.path(), None, false)
+        .await
+        .expect("session");
+    assert!(!service.is_turn_running(), "idle before the message");
+    service
+        .handle(id)
+        .expect("live session")
+        .status
+        .queue_captain();
+    assert!(service.is_turn_running(), "a queued message counts as work");
+    assert!(!service.try_close(false));
+}

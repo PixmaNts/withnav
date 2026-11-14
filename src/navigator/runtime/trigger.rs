@@ -110,6 +110,10 @@ impl Runtime {
                 .clone()
                 .unwrap_or_else(|| std::path::PathBuf::from(".")),
         };
+        if !self.layers_available_for_root(&root).await {
+            self.report_secondary_catalogue_disabled(&root).await;
+            return None;
+        }
         let feed = self.feed_for_workspace(&root);
         let digest = feed.as_ref().map(|f| f.digest()).unwrap_or_default();
         self.gather_with_digest(uri, event, now, &root, digest)

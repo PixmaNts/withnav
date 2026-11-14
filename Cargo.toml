@@ -79,6 +79,7 @@ clap.workspace = true
 sha2.workspace = true
 # sha2 0.11 digests no longer implement LowerHex: hex-encode them explicitly.
 hex.workspace = true
+getrandom = "0.2"
 time = { workspace = true, features = ["formatting", "parsing"] }
 directories = "6.0"
 tempfile = "3"
@@ -87,6 +88,8 @@ bytes = "1"
 futures-util.workspace = true
 # Phase 2: event bus + local HTTP server (thin slice wrapping the Phase-1 loop).
 axum = { version = "0.8.9", features = ["macros"] }
+hyper = "1"
+hyper-util = { version = "0.1", features = ["tokio"] }
 futures = "0.3"
 tower-lsp-server = "0.23.0"
 similar = "3.2"

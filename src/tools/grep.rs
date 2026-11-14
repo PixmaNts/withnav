@@ -83,6 +83,10 @@ fn rg_command_with_hidden(pattern: &str, root: &Path, hidden: bool) -> tokio::pr
         command.arg("--iglob").arg(format!("!**/{name}"));
         command.arg("--iglob").arg(format!("!**/{name}/**"));
     }
+    command.arg("--iglob").arg(format!(
+        "!**/{}",
+        crate::permission::floor::OWNER_RECORD_SUFFIX.join("/")
+    ));
     command.arg("--regexp").arg(pattern).arg("--").arg(root);
     command
 }
@@ -802,6 +806,35 @@ mod tests {
         let text = String::from_utf8_lossy(&output.stdout);
         assert_eq!(text.lines().count(), 1);
         assert!(text.contains("ordinary"));
+    }
+
+    // Given a data directory inside the workspace, holding the server's record with its token
+    // When the workspace is searched, by ripgrep or by the fallback walker
+    // Then the record never appears, while an unrelated owner.json still does
+    #[tokio::test]
+    async fn a_search_never_returns_the_server_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let record = tmp.path().join("data/withnav/server/owner.json");
+        std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+        std::fs::write(&record, r#"{"token":"needle-token"}"#).unwrap();
+        std::fs::write(tmp.path().join("owner.json"), "needle-unrelated").unwrap();
+        assert!(sensitive_read(&record));
+        assert!(!sensitive_read(&tmp.path().join("owner.json")));
+        let output = rg_command_with_hidden("needle", tmp.path(), true)
+            .output()
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(!text.contains("needle-token"), "{text}");
+        assert!(text.contains("needle-unrelated"), "{text}");
+        let walked = walk(
+            "needle",
+            tmp.path(),
+            &CancellationToken::new(),
+            Limits::default(),
+        )
+        .unwrap();
+        assert!(!walked.output.contains("needle-token"), "{walked:?}");
     }
 
     #[tokio::test]

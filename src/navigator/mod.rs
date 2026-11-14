@@ -91,6 +91,13 @@ pub struct NavigatorDeps {
     /// Flow conversion failures, shown once after the editor initializes.
     pub startup_warnings: Vec<String>,
     pub log_path: PathBuf,
+    /// The primary workspace root's resolved models catalogue path.
+    pub primary_models_path: Option<PathBuf>,
+    /// The configuration directory for resolving fallback models catalogue.
+    pub config_dir: Option<PathBuf>,
+    /// The catalogue the owner was started with (`nav serve --models`); it applies to every
+    /// root, so secondary roots resolve to it too.
+    pub explicit_models_path: Option<PathBuf>,
 }
 
 impl NavigatorDeps {
@@ -112,7 +119,26 @@ impl NavigatorDeps {
             disabled_layers: Vec::new(),
             startup_warnings: Vec::new(),
             log_path: log_path.into(),
+            primary_models_path: None,
+            config_dir: None,
+            explicit_models_path: None,
         }
+    }
+
+    pub fn with_models_catalogue(
+        mut self,
+        primary_models_path: Option<PathBuf>,
+        config_dir: Option<PathBuf>,
+    ) -> Self {
+        self.primary_models_path = primary_models_path;
+        self.config_dir = config_dir;
+        self
+    }
+
+    /// Builder-style: the catalogue the owner was started with, shared by every root.
+    pub fn with_explicit_models(mut self, path: Option<PathBuf>) -> Self {
+        self.explicit_models_path = path;
+        self
     }
 
     /// Builder-style: attaches the reflex layer's model seam.

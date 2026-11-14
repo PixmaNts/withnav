@@ -355,6 +355,10 @@ pub struct Service {
     /// them all.
     pub(super) gates: Arc<super::gate::LifecycleGates>,
     pub(super) admission_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Work admission for shutdown: whether the service is closing, and how many messages and
+    /// root-session starts are in flight. The shutdown decision and every admission take this
+    /// one lock, so a non-forced shutdown never interrupts work it did not see.
+    pub(super) admission_state: Arc<std::sync::Mutex<AdmissionState>>,
     pub(super) subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
     pub(super) unpublished_children: Arc<Mutex<std::collections::HashSet<SessionId>>>,
     pub(crate) child_operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
@@ -373,7 +377,87 @@ pub struct Service {
     pub(super) test_points: TestPoints,
 }
 
+#[derive(Debug, Default)]
+pub(super) struct AdmissionState {
+    pub(super) closing: bool,
+    pub(super) pending: usize,
+}
+
+/// One admitted message or root-session start; the shutdown drain waits until none is left.
+#[derive(Debug)]
+pub(super) struct WorkTicket(Arc<std::sync::Mutex<AdmissionState>>);
+
+impl Drop for WorkTicket {
+    fn drop(&mut self) {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        state.pending = state.pending.saturating_sub(1);
+    }
+}
+
 impl Service {
+    /// Admits one message or root-session start, unless shutdown has begun.
+    pub(super) fn admit_work(&self) -> Result<WorkTicket, ServerError> {
+        let mut state = self
+            .admission_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if state.closing {
+            return Err(ServerError::ShuttingDown);
+        }
+        state.pending += 1;
+        Ok(WorkTicket(self.admission_state.clone()))
+    }
+
+    /// Starts closing the service, refusing new work from now on. Without `force` it refuses,
+    /// and changes nothing, while a turn runs, a Captain message waits in an inbox, or a
+    /// message or session start is being admitted: those would be interrupted by the drain.
+    pub fn try_close(&self, force: bool) -> bool {
+        let mut state = self
+            .admission_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !force && (state.pending > 0 || self.is_turn_running()) {
+            return false;
+        }
+        state.closing = true;
+        true
+    }
+
+    /// Admissions still in flight.
+    pub(super) fn pending_work(&self) -> usize {
+        self.admission_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pending
+    }
+
+    /// Probes for any held instance locks under `<database>.instances/`.
+    pub fn check_legacy_instances(database: &std::path::Path) -> Result<(), String> {
+        super::instance::check_legacy_instances(database)
+    }
+
+    /// Returns true if any active session currently has a turn running.
+    pub fn is_turn_running(&self) -> bool {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.values().any(|h| {
+            // Queued first: the runtime marks its turn running before it takes a queued
+            // Captain message off the count, so reading the count first and the running state
+            // second cannot miss a message passing from one to the other.
+            h.lifecycle == Lifecycle::Active
+                && (h.status.has_queued_captain()
+                    || h.status.selection.is_running()
+                    || h.status.actor_state() == "running")
+        })
+    }
+
+    /// Marks a session's turn as running for tests.
+    #[doc(hidden)]
+    pub async fn pin_session_turn(&self, session_id: SessionId) {
+        let handle = self.sessions.lock().unwrap().get(&session_id).cloned();
+        if let Some(handle) = handle {
+            handle.status.selection.pin_turn().await;
+        }
+    }
     /// Debug-build readiness seam: tests create frozen registries only after discovery settles.
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
@@ -569,6 +653,7 @@ impl Service {
             hooks,
             gates: Arc::default(),
             admission_gate: Arc::new(tokio::sync::Mutex::new(())),
+            admission_state: Arc::default(),
             subagent_slots: Arc::new(Mutex::new(seeded_slots)),
             unpublished_children: Arc::default(),
             child_operations: Arc::default(),
@@ -1184,7 +1269,10 @@ impl Service {
     /// caller names the source actor. `message.received` is sequenced before
     /// the command reaches the inbox, and only for an accepted command.
     pub async fn send(&self, mut command: Command) -> Result<MessageAccepted, ServerError> {
+        // Routing first: a closed session answers `ResumeRequired` whether or not the server is
+        // shutting down. The ticket is taken right after, before anything is enqueued.
         let handle = self.routable_handle(command.session_id).await?;
+        let _ticket = self.admit_work()?;
         if handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
         }
@@ -2174,6 +2262,13 @@ impl Service {
         child_parent: Option<SessionId>,
         inherited: Option<SelectedModel>,
     ) -> Result<SessionId, ServerError> {
+        // Held until the session is registered, so the shutdown drain, which waits for every
+        // ticket, finds it in the registry and ends it normally.
+        let _ticket = if child_parent.is_none() {
+            Some(self.admit_work()?)
+        } else {
+            None
+        };
         let prepared = self
             .prepare_session_kind(
                 workspace,

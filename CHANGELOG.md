@@ -8,6 +8,25 @@ requests land in `develop`.
 
 ### Changed
 
+- One WithNav server owns the conversation database and serves every client. The first client
+  (the editor's `nav lsp`, `nav tui`, `nav web` or `nav run`) starts `nav serve` in the background;
+  the others connect to it, so a conversation started in VS Code is live in the terminal and the
+  browser, and the reverse. The server keeps running when its clients leave; `nav serve stop`
+  (`--force` to end running turns) stops it and `nav serve status` reports it. `nav lsp` connects
+  the editor to the server's language server, so several editors share it and closing one leaves
+  the others working. `nav permissions` and `nav doctor` ask the server instead of opening the
+  database. Session lists match a workspace reached through a symbolic link.
+- Security of the shared server: loopback only (`--allow-non-loopback` and `--bind` are removed;
+  `--port` sets the port), a token always required, written with the port to
+  `<data dir>/server/owner.json` (owner-only); a client checks the server proves it holds that
+  token before sending it; foreign `Host`/`Origin` headers are refused; requests never go
+  through a configured proxy or follow a redirect; the token-less bypass special cases are gone.
+- `nav web` no longer puts a token in the address: it opens a single-use pairing code that the
+  page exchanges for its own 12-hour browser credential, and exits at once. `--port` other than 0
+  is refused (use `nav serve --port`).
+- `--models` on a client now names the catalogue the shared server must use; a running server with
+  another one is reported instead of silently used.
+- The discovery file `nav lsp` published under `$XDG_RUNTIME_DIR/withnav-servers/` is gone.
 - The permission decision order is now stated once, in ADR 0015 ("Decision order"), and the code
   comments of `src/permission/decide.rs`, `ARCHITECTURE.md` and the book's permissions page all
   describe that same order — the one the code applies: yolo, a written `deny` rule, the fixed

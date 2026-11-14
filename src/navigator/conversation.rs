@@ -425,6 +425,7 @@ pub struct ConversationFeed {
     workspace: PathBuf,
     inner: Arc<Mutex<FeedState>>,
     events: broadcast::Sender<ConversationEvent>,
+    ready_notify: Arc<tokio::sync::Notify>,
 }
 
 impl Default for ConversationFeed {
@@ -458,7 +459,12 @@ impl ConversationFeed {
             workspace,
             inner: Arc::default(),
             events: broadcast::channel(EVENT_CAPACITY).0,
+            ready_notify: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    pub fn ready_notify(&self) -> Arc<tokio::sync::Notify> {
+        self.ready_notify.clone()
     }
 
     pub fn workspace(&self) -> &Path {
@@ -591,6 +597,7 @@ impl ConversationFeed {
             return Err(BindingError::SessionUnavailable);
         }
         let incarnation = entry.incarnation;
+        state.session_editors.retain(|_, (id, _)| *id != editor_id);
         state
             .session_editors
             .insert(session_id, (editor_id, incarnation));
@@ -617,6 +624,7 @@ impl ConversationFeed {
         if entry.incarnation != target.incarnation || !entry.available || entry.invalidated {
             return Err(BindingError::SessionUnavailable);
         }
+        state.session_editors.retain(|_, (id, _)| *id != editor_id);
         state
             .session_editors
             .insert(target.session_id, (editor_id, target.incarnation));
@@ -640,6 +648,24 @@ impl ConversationFeed {
             return true;
         }
         false
+    }
+
+    /// Clears an explicit session-to-editor binding only if currently bound to the given editor.
+    pub fn unbind_editor_connection(&self, session_id: Ulid, editor_id: EditorId) -> bool {
+        let mut state = self.lock();
+        if let Some(&(bound_editor, _)) = state.session_editors.get(&session_id)
+            && bound_editor == editor_id
+        {
+            state.session_editors.remove(&session_id);
+            return true;
+        }
+        false
+    }
+
+    /// Returns the explicit editor binding and incarnation for a session, if one exists.
+    pub fn bound_editor(&self, session_id: Ulid) -> Option<(EditorId, Ulid)> {
+        let state = self.lock();
+        state.session_editors.get(&session_id).copied()
     }
 
     /// A new subscription to the feed's [`ConversationEvent`]s, starting
@@ -675,6 +701,10 @@ impl ConversationFeed {
                 has_captain_turns: false,
             },
         );
+        if available {
+            drop(state);
+            self.ready_notify.notify_waiters();
+        }
     }
 
     /// Registers a navigator session as immediately available (convenience helper).
@@ -698,6 +728,8 @@ impl ConversationFeed {
             if state.active.is_none() && has_turns {
                 state.active = Some(session_id);
             }
+            drop(state);
+            self.ready_notify.notify_waiters();
             return true;
         }
         false
@@ -2364,8 +2396,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_for_editor_with_multiple_bound_sessions_requires_active_and_rejects_ambiguity()
-     {
+    async fn binding_session_clears_previous_editor_bindings_and_snapshots_focused_session() {
         let feed = ConversationFeed::with_workspace(PathBuf::from("/workspace"));
         let s1 = Ulid::generate();
         let inc1 = Ulid::generate();
@@ -2400,44 +2431,36 @@ mod tests {
             CancellationToken::new(),
         );
 
-        // Bind both s1 and s2 to the same editor
+        // 1. Bind s1 to editor
         assert_eq!(feed.bind_editor(s1, editor), Ok(()));
+        assert_eq!(feed.bound_editor(s1).map(|(e, _)| e), Some(editor));
+        feed.observe_incarnation(inc1, &message_envelope(s1, "user:http", "chat in s1"))
+            .await;
+        let snap1 = feed.snapshot_for_editor(editor);
+        assert!(snap1.available);
+        assert_eq!(snap1.target.unwrap().session_id, s1);
+        assert!(snap1.digest.contains("chat in s1"));
+
+        // 2. Binding s2 to the same editor replaces s1 binding
         assert_eq!(feed.bind_editor(s2, editor), Ok(()));
+        assert_eq!(feed.bound_editor(s1), None, "s1 binding must be cleared");
+        assert_eq!(feed.bound_editor(s2).map(|(e, _)| e), Some(editor));
 
-        // 1. Neither s1 nor s2 is active (state.active is None) => ambiguous!
-        let snap_none = feed.snapshot_for_editor(editor);
-        assert!(
-            !snap_none.available,
-            "multiple bound sessions with none active must return unavailable on ambiguity"
-        );
+        feed.observe_incarnation(inc2, &message_envelope(s2, "user:http", "chat in s2"))
+            .await;
+        let snap2 = feed.snapshot_for_editor(editor);
+        assert!(snap2.available);
+        assert_eq!(snap2.target.unwrap().session_id, s2);
+        assert!(snap2.digest.contains("chat in s2"));
+        assert!(!snap2.digest.contains("chat in s1"));
 
-        // 2. Unrelated session s3 is active => ambiguous for this editor!
+        // 3. Unrelated session s3 becoming active does not steal the snapshot of bound session s2
         feed.observe_incarnation(inc3, &message_envelope(s3, "user:http", "chat in s3"))
             .await;
         assert_eq!(feed.active_session(), Some(s3));
-        let snap_s3_active = feed.snapshot_for_editor(editor);
-        assert!(
-            !snap_s3_active.available,
-            "multiple bound sessions when active is unrelated must return unavailable"
-        );
-
-        // 3. Bound session s1 becomes active => snapshots s1 deterministically
-        feed.observe_incarnation(inc1, &message_envelope(s1, "user:http", "chat in s1"))
-            .await;
-        assert_eq!(feed.active_session(), Some(s1));
-        let snap_s1 = feed.snapshot_for_editor(editor);
-        assert!(snap_s1.available);
-        assert_eq!(snap_s1.target.unwrap().session_id, s1);
-        assert!(snap_s1.digest.contains("chat in s1"));
-
-        // 4. Bound session s2 becomes active => snapshots s2 deterministically
-        feed.observe_incarnation(inc2, &message_envelope(s2, "user:http", "chat in s2"))
-            .await;
-        assert_eq!(feed.active_session(), Some(s2));
-        let snap_s2 = feed.snapshot_for_editor(editor);
-        assert!(snap_s2.available);
-        assert_eq!(snap_s2.target.unwrap().session_id, s2);
-        assert!(snap_s2.digest.contains("chat in s2"));
+        let snap_after_s3 = feed.snapshot_for_editor(editor);
+        assert!(snap_after_s3.available);
+        assert_eq!(snap_after_s3.target.unwrap().session_id, s2);
     }
 
     #[tokio::test]

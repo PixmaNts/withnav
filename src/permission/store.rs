@@ -133,6 +133,7 @@ impl PermissionStore {
             Ok(runtime) => {
                 self.writes_in_flight
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                DETACHED_WRITES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 // The guard releases the count even if the task is cancelled
                 // before it runs, so a waiter is never left waiting forever.
                 let store = InFlight::new(self.clone());
@@ -183,7 +184,26 @@ impl Drop for InFlight {
         self.0
             .writes_in_flight
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        DETACHED_WRITES.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
+}
+
+/// Detached decision writes not yet on disk, across every store of the process: the owner waits
+/// for them before it releases the database, so a decision made just before shutdown is not lost
+/// to the process exiting under a blocking task.
+static DETACHED_WRITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Waits until every detached write has landed, or `deadline` passes; true when none is left.
+pub async fn wait_for_detached_writes(deadline: std::time::Duration) -> bool {
+    use std::sync::atomic::Ordering;
+    let until = tokio::time::Instant::now() + deadline;
+    while DETACHED_WRITES.load(Ordering::SeqCst) > 0 {
+        if tokio::time::Instant::now() >= until {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    true
 }
 
 pub(crate) fn path_text(path: &Path) -> Result<&str, Error> {
@@ -194,6 +214,36 @@ pub(crate) fn path_text(path: &Path) -> Result<&str, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Given a decision write still running on the blocking pool
+    // When the owner waits for detached writes before releasing the database
+    // Then the wait ends only once the row is on disk
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn waiting_for_detached_writes_returns_after_they_land() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(PermissionStore::open(dir.path()).unwrap());
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        store.detach(move |store| {
+            started_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            store
+                .db()
+                .execute_batch("CREATE TABLE late_write (id INTEGER)")
+                .unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(wait_for_detached_writes(std::time::Duration::from_secs(5)).await);
+        let reopened = PermissionStore::open(dir.path()).unwrap();
+        let tables: i64 = reopened
+            .db()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'late_write'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 1);
+    }
 
     #[test]
     fn standalone_connections_share_wal_database_without_seeding_rules() {

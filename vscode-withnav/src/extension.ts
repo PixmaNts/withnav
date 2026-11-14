@@ -9,6 +9,7 @@ import {
 } from "vscode-languageclient/node";
 import {
   ClearNotification,
+  ConversationBindingNotification,
   DiagnosticsNotification,
   DiagnosticSeverityName,
   DiagnosticItem,
@@ -73,6 +74,9 @@ export function activate(_context: vscode.ExtensionContext) {
       save: value => { void Promise.resolve(_context.workspaceState.update(TABS_KEY, value)).catch(() => undefined); },
     },
     error => void vscode.window.showErrorMessage(`WithNav: ${error instanceof Error ? error.message : String(error)}`),
+    params => {
+      void client?.sendNotification(ConversationBindingNotification.type, params).catch(() => undefined);
+    },
   );
   decorationType = vscode.window.createTextEditorDecorationType({
     after: {

@@ -689,8 +689,48 @@ impl CuttableProxy {
             while let Ok((mut inbound, _)) = listener.accept().await {
                 let target = target.clone();
                 let task = tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     if let Ok(mut outbound) = tokio::net::TcpStream::connect(&target).await {
-                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 1024];
+                        let mut header_end = None;
+                        while let Ok(n) = inbound.read(&mut chunk).await {
+                            if n == 0 {
+                                break;
+                            }
+                            buf.extend_from_slice(&chunk[..n]);
+                            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                header_end = Some(pos + 4);
+                                break;
+                            }
+                            if let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
+                                header_end = Some(pos + 2);
+                                break;
+                            }
+                        }
+                        if let Some(end) = header_end {
+                            let header_bytes = &buf[..end];
+                            let rest_bytes = &buf[end..];
+                            let header_str = String::from_utf8_lossy(header_bytes);
+                            let mut rewritten = String::new();
+                            for line in header_str.split_inclusive('\n') {
+                                let trimmed_lower = line.to_ascii_lowercase();
+                                if trimmed_lower.starts_with("host:") {
+                                    let cr = if line.ends_with("\r\n") { "\r\n" } else { "\n" };
+                                    rewritten.push_str(&format!("Host: {target}{cr}"));
+                                } else {
+                                    rewritten.push_str(line);
+                                }
+                            }
+                            let _ = outbound.write_all(rewritten.as_bytes()).await;
+                            let _ = outbound.write_all(rest_bytes).await;
+                            let _ =
+                                tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                        } else if !buf.is_empty() {
+                            let _ = outbound.write_all(&buf).await;
+                            let _ =
+                                tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                        }
                     }
                 });
                 tracked.lock().expect("proxy connections").push(task);

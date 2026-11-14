@@ -164,31 +164,90 @@ pub async fn inspect(
         schema_version: 1,
         ..Default::default()
     };
-    if let Some(data) = &data {
-        let path = data.join("withnav.db");
-        if path.exists() || (data.exists() && !data.is_dir()) {
-            let readable = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .and_then(|db| {
-                    db.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0))?;
-                    for (table, columns) in [
-                        ("permission_rules", "id,action,resource,effect,scope,scope_value,origin,created_at,revoked_at,action_glob,resource_glob,action_bare_glob,resource_bare_glob,precision"),
-                        ("permission_decisions", "id,time,session_id,turn_id,call_id,request_id,agent,workspace,tool,call_snapshot,command_matches,rule_id,effect,flow_verdict,captain_answer,outcome,approved_by"),
-                        ("validations", "id,kind,name,location,content_sha256,validated_at,revoked_at"),
-                    ] {
-                        let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [table], |row| row.get(0))?;
-                        if exists {
-                            db.prepare(&format!("SELECT {columns} FROM {table} LIMIT 1"))?.query([])?.next()?;
-                        }
-                    }
-                    Ok(())
-                });
-            match readable {
-                Ok(()) => report.add("permissions.database", Status::Ok, format!("{}: readable (initialisation and writes not tested)", path.display()), None),
-                Err(error) => report.add("permissions.database", Status::Warning,
-                    format!("{}: {error}", path.display()),
-                    Some("Permission rules unavailable: every call is asked unless the permission flow allows it; bypass and Always are disabled.")),
+    let wanted = crate::app::connect::Wanted {
+        config_dir: config.to_path_buf(),
+        data_dir: data.clone().unwrap_or_else(|| config.join("data")),
+        history_db: data
+            .as_ref()
+            .map(|d| d.join("withnav.db"))
+            .unwrap_or_else(|| config.join("data").join("withnav.db")),
+        models: None,
+        exe: std::env::current_exe().unwrap_or_default(),
+    };
+
+    let (owner, discovery_error) = match crate::app::connect::find_server(&wanted).await {
+        Ok(owner) => (owner, None),
+        Err(error) => (None, Some(error.to_string())),
+    };
+    if let Some(owner) = &owner {
+        report.add(
+            "server.owner",
+            Status::Ok,
+            format!(
+                "pid {} on port {} (build {})",
+                owner.record.pid, owner.record.port, owner.record.build
+            ),
+            None,
+        );
+
+        let client_res = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build();
+        let db_check = match client_res {
+            Ok(client) => {
+                let resp = client
+                    .get(format!("{}/v1/permissions/validations", owner.url))
+                    .bearer_auth(&owner.token)
+                    .send()
+                    .await;
+                match resp {
+                    Ok(r) if r.status().is_success() => Ok(()),
+                    Ok(r) => Err(format!("server returned HTTP {}", r.status())),
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+            Err(e) => Err(format!("cannot build HTTP client: {e}")),
+        };
+
+        match db_check {
+            Ok(()) => {
+                report.add(
+                    "permissions.database",
+                    Status::Ok,
+                    "readable via server",
+                    None,
+                );
+            }
+            Err(err) => {
+                report.add(
+                    "permissions.database",
+                    Status::Warning,
+                    format!("server query failed: {err}"),
+                    Some("Permission rules unavailable: every call is asked unless the permission flow allows it; bypass and Always are disabled."),
+                );
             }
         }
+    } else if let Some(error) = discovery_error {
+        report.add(
+            "server.owner",
+            Status::Failed,
+            format!("server discovery failed: {error}"),
+            Some("Resolve the server discovery error before relying on owner-side checks."),
+        );
+        report.add(
+            "permissions.database",
+            Status::Warning,
+            "unavailable: server discovery failed",
+            Some("Permission rules could not be checked because server discovery failed."),
+        );
+    } else {
+        report.add(
+            "permissions.database",
+            Status::Warning,
+            "unavailable: no WithNav server running (`nav serve`)",
+            Some("Permission rules unavailable: every call is asked unless the permission flow allows it; bypass and Always are disabled."),
+        );
     }
 
     let workspace =
@@ -406,7 +465,7 @@ pub async fn inspect(
         &workspace,
         settings_document.as_ref(),
     );
-    workspace_checks(&mut report, config, &workspace, data.as_deref());
+    workspace_checks(&mut report, config, &workspace, owner.as_ref()).await;
     binary_checks(&mut report, home, &workspace).await;
     let mut keys = BTreeMap::new();
     if let Ok((models, _, _)) = &models {
@@ -1028,7 +1087,12 @@ fn legacy(
     }
 }
 
-fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path, data: Option<&Path>) {
+async fn workspace_checks(
+    report: &mut Report,
+    config: &Path,
+    workspace: &Path,
+    owner: Option<&crate::app::connect::Owner>,
+) {
     report.add(
         "workspace.directory",
         if workspace.is_dir() {
@@ -1095,20 +1159,51 @@ fn workspace_checks(report: &mut Report, config: &Path, workspace: &Path, data: 
                         .canonicalize()
                         .unwrap_or_else(|_| path.clone())
                         .join(&name);
-                    let approval = crate::permission::validation::inspect_valid(
-                        data,
-                        crate::permission::validation::ValidationKind::Flow,
-                        &location.to_string_lossy(),
-                        &hash,
-                    );
+                    let validation = if valid {
+                        if let Some(owner) = owner {
+                            let client = reqwest::Client::builder()
+                                .no_proxy()
+                                .redirect(reqwest::redirect::Policy::none())
+                                .build();
+                            if let Ok(client) = client {
+                                let location = location.to_string_lossy().into_owned();
+                                if let Ok(response) = client
+                                    .get(format!("{}/v1/permissions/validation/check", owner.url))
+                                    .bearer_auth(&owner.token)
+                                    .query(&[
+                                        ("kind", "flow"),
+                                        ("location", location.as_str()),
+                                        ("hash", hash.as_str()),
+                                    ])
+                                    .send()
+                                    .await
+                                {
+                                    if response.status().is_success() {
+                                        response
+                                            .json::<serde_json::Value>()
+                                            .await
+                                            .ok()
+                                            .and_then(|value| value["valid"].as_bool())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some(false)
+                    };
                     report.add(
                         format!("flows.{scope}.{name}"),
-                        if !valid || approval.is_err() { Status::Failed } else if approval.as_ref().is_ok_and(|valid| *valid) { Status::Ok } else { Status::Warning },
-                        if !valid { "invalid schema or unreadable template" }
-                        else if approval.is_err() { "validation database unreadable" }
-                        else if approval.unwrap_or(false) { "current flow version validated" }
-                        else { "current flow version not validated; not loaded" },
-                        Some("Review the flow and use nav permissions validate flow <name>; doctor does not reload flows."),
+                        match validation { Some(true) => Status::Ok, Some(false) => if valid { Status::Warning } else { Status::Failed }, None => Status::Warning },
+                        match validation { Some(true) => "current flow version validated", Some(false) if valid => "current flow version not validated; not loaded", Some(false) => "invalid schema or unreadable template", None if !valid => "invalid schema or unreadable template", None => "validation status unavailable without owner; flow not loaded" },
+                        Some("Start nav serve and use nav permissions validate flow <name> to check and validate the current flow version."),
                     );
                 }
             }

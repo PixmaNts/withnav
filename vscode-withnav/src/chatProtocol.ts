@@ -337,6 +337,8 @@ export interface ChatBackend {
   deleteConversation(id: string): Promise<void>;
   /** The open conversation's id, if one exists yet. */
   currentConversationId(): string | undefined;
+  /** The open conversation's runtime incarnation, if known. */
+  currentIncarnation?(): string | null;
   /** Model name for the next new conversation (ignored while one is open with messages). */
   selectModel(name: string): void;
   readMcpResource?(server: string, uri: string): Promise<McpResourceBody>;

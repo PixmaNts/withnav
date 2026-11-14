@@ -34,9 +34,9 @@ use crate::navigator::conversation::{
 use crate::navigator::document::Documents;
 use crate::navigator::log::{LogRecord, NavLog};
 use crate::navigator::lsp::protocol::{
-    ClearNotification, ClearParams, DiagnosticItem, DiagnosticsParams, FeedbackParams,
-    IntentParams, ReflexShownParams, ServerInfoNotification, ServerInfoParams, StatusNotification,
-    StatusParams,
+    ClearNotification, ClearParams, ConversationParams, DiagnosticItem, DiagnosticsParams,
+    FeedbackParams, IntentParams, ReflexShownParams, ServerInfoNotification, ServerInfoParams,
+    StatusNotification, StatusParams,
 };
 use crate::navigator::metacognition::Diag;
 use crate::navigator::ports::ReflexContextModel;
@@ -91,6 +91,18 @@ pub(crate) struct Runtime {
     /// wake posts through. None keeps wakes logged as
     /// `cognition_unavailable`.
     pub(crate) conversation: Option<ConversationFeed>,
+    secondary_catalogue_warnings: std::sync::Mutex<HashSet<PathBuf>>,
+    primary_models_path: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
+    explicit_models_path: Option<PathBuf>,
+    /// Counts this editor's `withnav/conversation` notifications; a delayed bind gives up once
+    /// a newer one arrived.
+    binding_generation: std::sync::atomic::AtomicU64,
+    /// The conversation a bind is still waiting for, if any.
+    pending_bind: std::sync::Mutex<Option<ulid::Ulid>>,
+    /// The root whose catalogue built this connection's layers: the initialize workspace,
+    /// fixed for the connection even when folder changes promote another root to primary.
+    layers_root: Option<PathBuf>,
     /// Startup notes about disabled layers, surfaced once after initialize.
     pub(crate) disabled_layers: Vec<String>,
     pub(crate) startup_warnings: Mutex<Vec<String>>,
@@ -151,12 +163,19 @@ impl Runtime {
             documents: Mutex::new(Documents::default()),
             intent: Mutex::new(IntentBinding::default()),
             folders: Mutex::new(deps.workspace.iter().cloned().collect()),
-            workspace: Mutex::new(deps.workspace),
+            workspace: Mutex::new(deps.workspace.clone()),
             metacognition_model: deps.metacognition_model,
             reflex,
             reflex_model: deps.reflex_model,
             server_info: deps.server_info,
             conversation: deps.conversation,
+            secondary_catalogue_warnings: std::sync::Mutex::new(HashSet::new()),
+            primary_models_path: deps.primary_models_path,
+            config_dir: deps.config_dir,
+            explicit_models_path: deps.explicit_models_path,
+            binding_generation: std::sync::atomic::AtomicU64::new(0),
+            pending_bind: std::sync::Mutex::new(None),
+            layers_root: deps.workspace.clone(),
             disabled_layers: deps.disabled_layers,
             startup_warnings: Mutex::new(deps.startup_warnings),
             focused: Mutex::new(None),
@@ -224,6 +243,14 @@ impl Runtime {
         drop(folders);
         drop(workspace);
         self.sync_registrations(&roots).await;
+        // Say at once that a newly added root runs without layers, rather than only when one
+        // of its documents first needs a layer: the editor then learns it on the folder change,
+        // whatever order its next requests are handled in.
+        for root in &roots {
+            if !self.layers_available_for_root(root).await {
+                self.report_secondary_catalogue_disabled(root).await;
+            }
+        }
     }
 
     /// `workspace/didChangeWorkspaceFolders`: folders come and go while the
@@ -245,6 +272,11 @@ impl Runtime {
         drop(folders);
         drop(workspace);
         self.sync_registrations(&roots).await;
+        for root in &roots {
+            if !self.layers_available_for_root(root).await {
+                self.report_secondary_catalogue_disabled(root).await;
+            }
+        }
     }
 
     pub(crate) async fn register_after_initialize(self: &Arc<Self>) {
@@ -418,6 +450,57 @@ impl Runtime {
             return Some(PathBuf::from("."));
         }
         None
+    }
+
+    /// Whether this connection's layers may serve documents of `root`: they were built from the
+    /// catalogue of [`Self::layers_root`], so another root may use them only when it resolves
+    /// to that same catalogue. A root that resolves to no catalogue at all cannot borrow them.
+    pub(crate) async fn layers_available_for_root(&self, root: &Path) -> bool {
+        self.layer_catalogue_message(root).await.is_none()
+    }
+
+    pub(crate) async fn layer_catalogue_message(&self, root: &Path) -> Option<String> {
+        let layers_root = match &self.layers_root {
+            Some(layers_root) => layers_root.clone(),
+            None => self.workspace.lock().await.clone()?,
+        };
+        if WorkspaceFeedRegistry::canonical_key(&layers_root)
+            == WorkspaceFeedRegistry::canonical_key(root)
+        {
+            return None;
+        }
+        let primary = self.primary_models_path.as_deref()?;
+        let config_dir = self.config_dir.as_deref()?;
+        let canonical = |p: &Path| std::fs::canonicalize(p).ok();
+        let same = crate::provider::config::resolve_models_path(
+            self.explicit_models_path.as_deref(),
+            root,
+            config_dir,
+        )
+        .is_some_and(|secondary| {
+            canonical(primary).is_some() && canonical(primary) == canonical(&secondary)
+        });
+        (!same).then(|| {
+            format!(
+                "layers disabled for workspace root {}: its models catalogue differs from the one this editor connection was started with",
+                root.display()
+            )
+        })
+    }
+
+    pub(crate) async fn report_secondary_catalogue_disabled(&self, root: &Path) {
+        let root_key = WorkspaceFeedRegistry::canonical_key(root);
+        if !self
+            .secondary_catalogue_warnings
+            .lock()
+            .unwrap()
+            .insert(root_key)
+        {
+            return;
+        }
+        if let Some(message) = self.layer_catalogue_message(root).await {
+            self.set_status("error", Some(message)).await;
+        }
     }
 
     pub(crate) async fn has_root(&self, root: &Path) -> bool {
@@ -703,6 +786,104 @@ impl Runtime {
         intent.bound_root = bound_root;
     }
 
+    /// `withnav/conversation`: explicitly binds or unbinds this editor connection to a session.
+    pub(crate) async fn on_conversation(&self, params: ConversationParams) {
+        // Each notification supersedes the earlier ones of this editor: a bind still retrying
+        // for a conversation the editor has since left must not clear the newer binding.
+        let Ok(session_id) = params.session_id.parse::<ulid::Ulid>() else {
+            tracing::warn!(
+                "withnav/conversation: invalid sessionId '{}'",
+                params.session_id
+            );
+            return;
+        };
+        let feed = if let Some(feed) = &self.conversation {
+            feed.clone()
+        } else if let Some(registry) = &self.registry {
+            let ws = self
+                .workspace
+                .lock()
+                .await
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("."));
+            registry.get_or_create(&ws)
+        } else {
+            tracing::warn!("withnav/conversation: no conversation feed available");
+            return;
+        };
+
+        // A newer focus supersedes a pending bind; an unfocus does only for the conversation
+        // that bind is for, so closing an unrelated tab never cancels it.
+        let pending = *self.pending_bind.lock().unwrap_or_else(|e| e.into_inner());
+        if params.focus || pending == Some(session_id) {
+            self.binding_generation.fetch_add(1, Ordering::SeqCst);
+        }
+        let generation = self.binding_generation.load(Ordering::SeqCst);
+        let current = || self.binding_generation.load(Ordering::SeqCst) == generation;
+        if params.focus {
+            *self.pending_bind.lock().unwrap_or_else(|e| e.into_inner()) = Some(session_id);
+            let incarnation = if let Some(ref inc_str) = params.incarnation {
+                match inc_str.parse::<ulid::Ulid>() {
+                    Ok(inc) => Some(inc),
+                    Err(_) => {
+                        tracing::warn!("withnav/conversation: invalid incarnation '{}'", inc_str);
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+
+            let try_bind = |feed: &ConversationFeed| -> Result<(), crate::navigator::conversation::BindingError> {
+                if let Some(inc) = incarnation {
+                    let target = ConversationTarget {
+                        session_id,
+                        incarnation: inc,
+                        workspace: feed.workspace().to_path_buf(),
+                    };
+                    feed.bind_editor_target(&target, self.editor_id)
+                } else {
+                    feed.bind_editor(session_id, self.editor_id)
+                }
+            };
+
+            let mut res = try_bind(&feed);
+            if matches!(
+                res,
+                Err(crate::navigator::conversation::BindingError::SessionUnavailable)
+            ) {
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+                while matches!(
+                    res,
+                    Err(crate::navigator::conversation::BindingError::SessionUnavailable)
+                ) {
+                    let now = tokio::time::Instant::now();
+                    if now >= deadline {
+                        break;
+                    }
+                    let notify = feed.ready_notify();
+                    let step = (deadline - now).min(std::time::Duration::from_millis(25));
+                    tokio::select! {
+                        _ = notify.notified() => {}
+                        _ = tokio::time::sleep(step) => {}
+                    }
+                    if !current() {
+                        return;
+                    }
+                    res = try_bind(&feed);
+                }
+            }
+            if current() {
+                *self.pending_bind.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
+            if let Err(e) = res {
+                tracing::warn!("failed to bind editor to session {session_id}: {e}");
+            }
+        } else {
+            feed.unbind_editor_connection(session_id, self.editor_id);
+        }
+    }
+
     pub(crate) async fn on_did_open(self: &Arc<Self>, params: DidOpenTextDocumentParams) {
         let doc = params.text_document;
         let uri = crate::navigator::uri_key(&doc.uri);
@@ -763,6 +944,12 @@ impl Runtime {
             return;
         }
         let root = self.resolve_document_root(&uri).await;
+        if let Some(root) = &root
+            && !self.layers_available_for_root(root).await
+        {
+            self.report_secondary_catalogue_disabled(root).await;
+            return;
+        }
         if self.connection_cancel.is_cancelled() || workspace_cancel.is_cancelled() {
             return;
         }
@@ -1260,6 +1447,117 @@ mod tests {
         assert_eq!(
             runtime.resolve_document_root(&target_uri).await,
             Some(parent)
+        );
+    }
+
+    // Given layers built from the primary root's catalogue
+    // When a secondary root resolves no catalogue, when the primary root is removed and a root
+    //      with another catalogue becomes primary, and when the owner has an explicit catalogue
+    // Then the first two cannot borrow the layers and the third can
+    #[tokio::test]
+    async fn layers_follow_the_catalogue_that_built_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let primary = tmp.path().join("primary");
+        let other = tmp.path().join("other");
+        let bare = tmp.path().join("bare");
+        let config = tmp.path().join("config");
+        for dir in [&primary, &other, &bare, &config] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let primary_models = primary.join("models.json");
+        std::fs::write(&primary_models, "{}").unwrap();
+        std::fs::write(other.join("models.json"), "{\"other\":true}").unwrap();
+        let build = |explicit: Option<PathBuf>| {
+            let deps = NavigatorDeps::new(Arc::new(SilentMetacognition), tmp.path().join("log"))
+                .with_dirs(Some(primary.clone()), None)
+                .with_models_catalogue(Some(primary_models.clone()), Some(config.clone()))
+                .with_explicit_models(explicit);
+            crate::navigator::build_service(deps)
+        };
+
+        let (service, _socket) = build(None);
+        let runtime = service.inner().runtime().clone();
+        assert!(
+            !runtime.layers_available_for_root(&bare).await,
+            "no catalogue"
+        );
+        runtime
+            .change_workspace_folders(vec![other.clone()], vec![primary.clone()])
+            .await;
+        assert!(
+            !runtime.layers_available_for_root(&other).await,
+            "a promoted root keeps its own catalogue"
+        );
+
+        let (service, _socket) = build(Some(primary_models.clone()));
+        let runtime = service.inner().runtime().clone();
+        assert!(
+            runtime.layers_available_for_root(&other).await,
+            "explicit catalogue"
+        );
+        assert!(
+            runtime.layers_available_for_root(&bare).await,
+            "explicit catalogue"
+        );
+    }
+
+    #[tokio::test]
+    async fn secondary_root_layers_require_same_catalogue_as_primary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let primary = tmp.path().join("primary");
+        let config = tmp.path().join("config");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        let catalog_path = config.join("models.json");
+        std::fs::write(&catalog_path, "{}").unwrap();
+        let same_catalogue_root = tmp.path().join("same");
+        std::fs::create_dir_all(&same_catalogue_root).unwrap();
+
+        let deps = NavigatorDeps::new(Arc::new(SilentMetacognition), tmp.path().join("log"))
+            .with_dirs(Some(primary.clone()), None)
+            .with_models_catalogue(Some(catalog_path.clone()), Some(config.clone()));
+        let (service, _socket) = crate::navigator::build_service(deps);
+        let runtime = service.inner().runtime();
+        assert!(runtime.layers_available_for_root(&primary).await);
+        assert!(
+            runtime
+                .layers_available_for_root(&same_catalogue_root)
+                .await
+        );
+        let fallback_root = tmp.path().join("fallback");
+        std::fs::create_dir_all(&fallback_root).unwrap();
+        assert!(runtime.layers_available_for_root(&fallback_root).await);
+        assert!(
+            runtime
+                .layer_catalogue_message(&fallback_root)
+                .await
+                .is_none()
+        );
+        assert!(
+            runtime
+                .layer_catalogue_message(&same_catalogue_root)
+                .await
+                .is_none()
+        );
+
+        let different_catalogue_root = tmp.path().join("different");
+        std::fs::create_dir_all(&different_catalogue_root).unwrap();
+        std::fs::write(
+            different_catalogue_root.join("models.json"),
+            "{\"different\":true}",
+        )
+        .unwrap();
+        assert!(
+            !runtime
+                .layers_available_for_root(&different_catalogue_root)
+                .await
+        );
+        assert!(
+            runtime
+                .layer_catalogue_message(&different_catalogue_root)
+                .await
+                .unwrap()
+                .contains(&different_catalogue_root.display().to_string())
         );
     }
 

@@ -1,17 +1,14 @@
 //! CLI adapter for the terminal client; owns process configuration only.
 //!
-//! Without `--url` or `--models`, the client first joins the server an editor's `nav lsp`
-//! runs for the same workspace, found through [`crate::server::discovery`]: both clients then
-//! share one server, so a conversation started in one is visible and usable in the other.
-//! Otherwise embedded mode starts a private server on a loopback port with a per-process bearer
-//! token and stops it when the client quits. `--url` mode only connects to a server somebody
-//! else runs. Quitting a joined or `--url` server just disconnects; when the editor's LSP
-//! exits, its server goes with it.
+//! Without `--url`, the client first performs preflight validation for the workspace, then joins
+//! the background server that owns the database via `connect::ensure_server`. Quitting only
+//! disconnects; the server continues running in the background. `--url` mode connects to a server
+//! somebody else runs.
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use super::embedded::{EmbeddedServer, check_health, resolve_workspace};
+use super::embedded::{check_health, resolve_workspace};
 use super::{EXIT_DONE, TuiArgs};
 
 /// Environment variable holding the bearer token of a server given by `--url`.
@@ -123,38 +120,24 @@ pub async fn run(args: TuiArgs) -> anyhow::Result<i32> {
     let workspace = resolve_workspace(&args.workspace)?;
     if let Some(url) = args.url.clone() {
         run_remote(args, workspace, url).await?;
-    } else if let Some(editor) = editor_server(
-        &args,
-        &workspace,
-        crate::server::discovery::dir().as_deref(),
-    )
-    .await
-    {
-        tracing::info!(
-            "joining the server nav lsp (pid {}) runs for {} on port {}",
-            editor.pid,
-            workspace.display(),
-            editor.port
-        );
-        let url = editor.url();
-        connect(args, workspace, url, Some(editor.token)).await?;
     } else {
-        run_embedded(args, workspace).await?;
+        let cfg_dir = super::config_dir()?;
+        let rules_roots = crate::agent::instructions::RulesRoots::from_user_home();
+        let client_cache = Arc::new(crate::provider::openai::ClientCache::new());
+        crate::session::preflight::check(
+            &cfg_dir,
+            args.models.as_deref(),
+            &workspace,
+            &rules_roots,
+            client_cache,
+        )
+        .await?;
+
+        let wanted = crate::app::connect::Wanted::from_env(args.models.as_deref())?;
+        let owner = crate::app::connect::ensure_server(&wanted).await?;
+        connect(args, workspace, owner.url, Some(owner.token)).await?;
     }
     Ok(EXIT_DONE)
-}
-
-/// The live server an editor's `nav lsp` published for `workspace` in `dir`. `--models` asks
-/// for a private server with that catalogue, so it never joins.
-async fn editor_server(
-    args: &TuiArgs,
-    workspace: &Path,
-    dir: Option<&Path>,
-) -> Option<crate::server::discovery::Entry> {
-    if args.models.is_some() {
-        return None;
-    }
-    crate::server::discovery::find(dir?, workspace).await
 }
 
 async fn run_remote(args: TuiArgs, workspace: PathBuf, url: String) -> anyhow::Result<()> {
@@ -205,30 +188,6 @@ fn server_token(lookup: impl Fn(&str) -> Option<String>) -> (Option<String>, boo
     }
 }
 
-async fn run_embedded(args: TuiArgs, workspace: PathBuf) -> anyhow::Result<()> {
-    let server = EmbeddedServer::start(
-        args.models.as_deref(),
-        std::slice::from_ref(&workspace),
-        None,
-        0,
-    )
-    .await?;
-    let result = withnav_tui::run(withnav_tui::TuiOptions {
-        url: server.url.clone(),
-        token: Some(server.token.clone()),
-        workspace,
-        initial_model: args.model,
-        initial_session: args.session,
-        embedded: true,
-        config_dir: crate::provider::auth::default_config_dir(),
-        host: Arc::new(Host),
-    })
-    .await;
-    server.stop().await;
-    result?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,49 +220,6 @@ mod tests {
             server_token(env(&[(TOKEN_ENV, "new"), (LEGACY_TOKEN_ENV, "old")]));
         assert_eq!(token.as_deref(), Some("new"));
         assert!(!deprecated);
-    }
-
-    #[cfg(unix)]
-    fn args(models: Option<PathBuf>) -> TuiArgs {
-        TuiArgs {
-            workspace: PathBuf::from("."),
-            model: None,
-            session: None,
-            models,
-            url: None,
-        }
-    }
-
-    // Given an editor's server published for the workspace, with its token
-    // When the terminal client starts without --url, with and without --models
-    // Then it joins that server, unless --models asked for a private one or there is no
-    //      discovery directory
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn the_client_joins_the_editors_server_unless_models_is_given() {
-        use crate::server::discovery;
-        let root = tempfile::tempdir().unwrap();
-        let workspace = discovery::canonical_workspace(root.path()).unwrap();
-        let dir = workspace.join(discovery::DIR_NAME);
-        let app = axum::Router::new()
-            .route("/v1/health", axum::routing::get(|| async { "ok" }))
-            .route("/v1/mcp", axum::routing::get(|| async { "{}" }));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let _published = discovery::publish(&dir, &workspace, port, "editor-token").unwrap();
-
-        let joined = editor_server(&args(None), &workspace, Some(&dir))
-            .await
-            .expect("joined");
-        assert_eq!((joined.port, joined.token.as_str()), (port, "editor-token"));
-        assert!(
-            editor_server(&args(Some("models.json".into())), &workspace, Some(&dir))
-                .await
-                .is_none()
-        );
-        assert!(editor_server(&args(None), &workspace, None).await.is_none());
-        task.abort();
     }
 
     // Given neither name, or empty values

@@ -741,6 +741,7 @@ async fn withnav_run_executes_a_command() {
     let cfg = TestServerConfig::unreachable(tmp.path());
     cfg.config();
     let (root, models) = (tmp.path().to_path_buf(), cfg.models_path());
+    let _owner_guard = common::owner::OwnerGuard::new(&root.join("data/withnav"));
     let (ok, bad) = tokio::task::spawn_blocking(move || {
         (
             run_withnav(&root, &models, &ws, "/help"),

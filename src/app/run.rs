@@ -1,17 +1,17 @@
 //! `nav run`: one task through the session server, then exit.
+use std::time::Duration;
+
+use futures_util::StreamExt;
+use tokio_util::sync::CancellationToken;
+use withnav_client::stream::StreamEvent;
+
 use super::*;
+use crate::app::connect::{Wanted, ensure_server};
 
-/// `run`: a one-shot IN-PROCESS CLIENT of the same core `serve` uses.
-/// It starts the session manager (sequencer + runtime task, NO HTTP
-/// server), subscribes to the session's event stream BEFORE posting the
-/// prompt (so no initial `llm.delta` is lost — deltas are not in the replay
-/// ring), renders each event through the `event_to_ui` adapter,
-/// and derives the exit code from the terminal events — NOT from a direct
-/// `run_agent` call (no shortcut). Order: create -> subscribe -> post ->
-/// render-until-terminal -> close.
+/// `run`: an HTTP + SSE client of the background owner that owns the database.
+/// Order: preflight -> ensure_server -> wait_for_mcp -> create session -> bypass if --yes ->
+/// open event stream -> wait for Connected -> post prompt/command -> render-until-terminal -> exit.
 pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
-    use crate::server::session::ServerConfig;
-
     let workspace = match args.workspace {
         Some(w) => w,
         None => std::env::current_dir()?,
@@ -29,188 +29,260 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
     .await?;
     let prompt = read_prompt(args.prompt)?;
 
-    let state = crate::server::session::AppState::new(
-        ServerConfig {
-            bind: "127.0.0.1:0".parse().expect("loopback"),
-            models_path: args.models.clone(),
-            config_dir: cfg_dir,
-            allow_non_loopback: false,
-            bearer_token: None,
-            history_db: history_db_path()?,
-            data_dir: crate::paths::data_dir()
-                .ok_or_else(|| anyhow::anyhow!("cannot resolve data dir"))?,
-            rules_roots,
-            web: None,
-        },
-        client_cache,
-    )?;
+    let wanted = Wanted::from_env(args.models.as_deref())?;
+    let owner = ensure_server(&wanted).await?;
+    let client = withnav_client::client::Client::new(owner.url.clone(), Some(owner.token.clone()));
+
     // The run's only session freezes its tool inventory when it is created:
     // let configured MCP servers finish starting first (bounded).
-    state.service().wait_for_mcp().await;
+    wait_for_mcp(&client).await;
+
     // A session that cannot start (no window, unknown alias, no key) ends the
     // run the way a failed turn does: the `error:` line, exit 1.
-    let session_id = match state
-        .create_session_with(
-            &workspace,
-            args.model.as_deref(),
-            false,
-            crate::session::VariantChoice::from_word(args.variant.as_deref()),
-            args.agent.as_deref(),
-        )
+    let variant = match args.variant.as_deref() {
+        None | Some("inherit") => None,
+        Some("none") => Some(None),
+        Some(name) => Some(Some(name.to_string())),
+    };
+    let session = match client
+        .create(withnav_client_api::protocol::CreateSessionRequest {
+            workspace: workspace.display().to_string(),
+            model: args.model.clone(),
+            resume: None,
+            agent: args.agent.clone(),
+            variant,
+        })
         .await
     {
-        Ok(id) => id,
+        Ok(s) => s,
         Err(e) => {
             eprintln!("\nerror: {e}");
             return Ok(EXIT_ERROR);
         }
     };
-    let handle = state
-        .handle(session_id)
-        .ok_or_else(|| anyhow::anyhow!("session vanished immediately after creation"))?;
+    let session_id = session.session_id;
 
-    // Ctrl-C cancels the SESSION token the runtime watches, so the in-flight
-    // turn is interrupted and the runtime emits turn.end{interrupted} — the
-    // render loop then exits 130. (Cancelling a standalone token would not
-    // reach the runtime.)
-    install_sigint_handler(handle.session_cancel.clone());
+    // Bypass is on before the first prompt; no fallback if it cannot be.
+    if args.yes
+        && let Err(e) = client.set_bypass(&session_id, true).await
+    {
+        eprintln!("\nerror: cannot enable bypass: {e}");
+        let _ = client.delete_session(&session_id).await;
+        return Ok(EXIT_ERROR);
+    }
 
     // Subscribe BEFORE posting: deltas are live-only, so a late
     // subscriber would drop the initial streamed text.
-    let mut sub = state
-        .subscribe(session_id, None)
-        .await
-        .map_err(|e| anyhow::anyhow!("subscribe failed: {e}"))?;
+    let stream_cancel = CancellationToken::new();
+    let mut stream = withnav_client::stream::subscribe(
+        client.clone(),
+        session_id.clone(),
+        None,
+        stream_cancel.clone(),
+    );
+
+    // Wait for the event stream to connect before submitting any message or command.
+    let connect_timeout = tokio::time::sleep(Duration::from_secs(10));
+    tokio::pin!(connect_timeout);
+    loop {
+        tokio::select! {
+            _ = &mut connect_timeout => {
+                eprintln!("\nerror: timed out waiting for event stream connection");
+                stream_cancel.cancel();
+                let _ = client.delete_session(&session_id).await;
+                return Ok(EXIT_ERROR);
+            }
+            event = stream.next() => match event {
+                Some(StreamEvent::Connected) => break,
+                Some(StreamEvent::Disconnected) | Some(StreamEvent::ProtocolError(_)) => {
+                    eprintln!("\nerror: event stream disconnected before connection established");
+                    stream_cancel.cancel();
+                    let _ = client.delete_session(&session_id).await;
+                    return Ok(EXIT_ERROR);
+                }
+                None => {
+                    eprintln!("\nerror: event stream ended prematurely");
+                    stream_cancel.cancel();
+                    let _ = client.delete_session(&session_id).await;
+                    return Ok(EXIT_ERROR);
+                }
+                _ => {}
+            }
+        }
+    }
 
     // A leading `/name` runs a session command and prints its result; `//text`
     // sends the literal message `/text`.
     let prompt = match crate::session::route_line(&prompt) {
         crate::session::Routed::Command { name, arguments } => {
-            let exit = match state.run_command(session_id, &name, &arguments).await {
-                Ok(outcome) if outcome.ok => {
-                    println!("{}", outcome.render_text());
-                    EXIT_DONE
-                }
-                Ok(outcome) => {
-                    eprintln!("error: {}", outcome.render_text());
-                    EXIT_ERROR
+            let exit = match client
+                .run_command(
+                    &session_id,
+                    withnav_client_api::protocol::CommandRequest {
+                        name: name.clone(),
+                        arguments,
+                    },
+                )
+                .await
+            {
+                Ok(resp) => {
+                    let outcome = crate::session::CommandOutcome {
+                        operation_id: resp.operation_id.parse().unwrap_or_default(),
+                        name,
+                        ok: resp.ok,
+                        data: resp.data,
+                        error: resp.error,
+                    };
+                    if outcome.ok {
+                        println!("{}", outcome.render_text());
+                        EXIT_DONE
+                    } else {
+                        eprintln!("error: {}", outcome.render_text());
+                        EXIT_ERROR
+                    }
                 }
                 Err(e) => {
                     eprintln!("error: {e}");
                     EXIT_ERROR
                 }
             };
-            let _ = state.close_session(session_id).await;
+            stream_cancel.cancel();
+            let _ = client.delete_session(&session_id).await;
             return Ok(exit);
         }
         crate::session::Routed::Message(text) => text,
     };
 
-    // Bypass is on before the first prompt; no fallback if it cannot be.
-    if args.yes
-        && let Err(e) = state
-            .set_bypass(
-                session_id,
-                true,
-                crate::bus::runtime::bypass::BypassOrigin::Cli,
-            )
-            .await
+    if let Err(e) = client
+        .send(
+            &session_id,
+            withnav_client_api::protocol::SubmitRequest {
+                answer: None,
+                target_actor_id: "agent:main".into(),
+                mode: "next-turn".into(),
+                content: vec![withnav_client_api::command::ContentBlock::Text { text: prompt }],
+            },
+        )
+        .await
     {
-        eprintln!("\nerror: cannot enable bypass: {e}");
-        let _ = state.close_session(session_id).await;
+        eprintln!("\nerror: post failed: {e}");
+        stream_cancel.cancel();
+        let _ = client.delete_session(&session_id).await;
         return Ok(EXIT_ERROR);
     }
 
-    post_prompt(&state, session_id, &prompt).await?;
-
     let mut renderer = Renderer::new(args.show_thinking);
-    let exit = render_until_terminal(&mut sub, &mut renderer).await;
 
-    let _ = state.close_session(session_id).await;
+    // Ctrl-C stops this specific session on the owner process and triggers an interrupted exit.
+    let client_for_sigint = client.clone();
+    let session_id_for_sigint = session_id.clone();
+    let sigint_token = CancellationToken::new();
+    let sigint_token_clone = sigint_token.clone();
+    let sigint_task = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            let _ = client_for_sigint.stop(&session_id_for_sigint).await;
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            sigint_token_clone.cancel();
+        }
+    });
+
+    let exit = tokio::select! {
+        _ = sigint_token.cancelled() => {
+            eprint!("\ninterrupted");
+            EXIT_INTERRUPTED
+        }
+        exit = render_until_terminal(&mut stream, &mut renderer) => exit,
+    };
+
+    sigint_task.abort();
+    stream_cancel.cancel();
+    let _ = client.delete_session(&session_id).await;
     Ok(exit)
 }
 
-/// Post the user prompt as a `next-turn` command through the in-process
-/// inbox, sequencing `message.received` before the command is consumed.
-async fn post_prompt(
-    state: &crate::server::session::AppState,
-    session_id: ulid::Ulid,
-    prompt: &str,
-) -> anyhow::Result<()> {
-    use crate::bus::command::{Command, ContentBlock, DeliveryMode};
-    use crate::bus::event::ROOT_ACTOR_ID;
-
-    let command = Command {
-        command_id: ulid::Ulid::generate(),
-        session_id,
-        source_actor_id: "user:cli".to_string(),
-        target_actor_id: ROOT_ACTOR_ID.to_string(),
-        mode: DeliveryMode::NextTurn,
-        content: vec![ContentBlock::Text {
-            text: prompt.to_string(),
-        }],
-        created_at: std::time::SystemTime::now(),
-    };
-    state
-        .send(command)
-        .await
-        .map_err(|e| anyhow::anyhow!("post failed: {e}"))?;
-    Ok(())
+/// Wait until configured MCP servers are ready or failed (bounded at 30 s).
+async fn wait_for_mcp(client: &withnav_client::client::Client) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
+        match client.mcp().await {
+            Ok(status) => {
+                let any_starting = status.servers.iter().any(|s| s.state == "starting");
+                if !any_starting {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 /// Render events through the `event_to_ui` adapter until a terminal
-/// `turn.end`, reproducing the Phase-1 `finish` behavior (stdout via the
+/// `turn.end`, reproducing the finish behavior (stdout via the
 /// UiEvents, plus the stderr line + exit code for interrupted/error) from the
-/// event stream instead of the raw `RunOutcome`.
+/// client event stream.
 ///
 /// A `permission.requested` ends the run with [`EXIT_PERMISSION_REQUIRED`] and
-/// a `permission_required: <tool> <scope>: <reason>` line on stderr. Nothing
-/// is ever approved here: with `--yes` the session's bypass already answered
-/// the ordinary requests, so one that arrives is one the Captain must decide.
-pub(super) async fn render_until_terminal(
-    sub: &mut crate::session::Subscription,
-    renderer: &mut Renderer,
-) -> i32 {
-    if let crate::bus::ResumeOutcome::Replay(events) = &sub.replay {
-        for env in events {
-            if let Some(ui) = event_to_ui(env) {
-                renderer.render(ui);
+/// a `permission_required: <tool> <scope>: <reason>` line on stderr.
+pub(super) async fn render_until_terminal<S>(stream: &mut S, renderer: &mut Renderer) -> i32
+where
+    S: futures_util::Stream<Item = StreamEvent> + Unpin + ?Sized,
+{
+    let mut consecutive_reconnects = 0;
+    const MAX_RECONNECTS: usize = 5;
+
+    while let Some(event) = stream.next().await {
+        match event {
+            StreamEvent::Connected => {
+                consecutive_reconnects = 0;
             }
-        }
-    }
-    let Some(live) = sub.live.as_mut() else {
-        return EXIT_ERROR;
-    };
-    // Ctrl-C cancels the session token, so cancellation arrives here as a real
-    // turn.end{interrupted} event — just read the live stream to the terminal.
-    while let Some(env) = live.recv().await {
-        if let Some(ui) = event_to_ui(&env) {
-            renderer.render(ui);
-        }
-        if env.kind == EventKind::PermissionRequested.as_str() {
-            let Ok(request) = serde_json::from_value::<crate::bus::event::PermissionRequested>(
-                env.payload.clone(),
-            ) else {
+            StreamEvent::Envelope(env) => {
+                consecutive_reconnects = 0;
+                if let Some(ui) = event_to_ui(&env) {
+                    renderer.render(ui);
+                }
+                if env.kind == EventKind::PermissionRequested.as_str() {
+                    let Ok(request) = serde_json::from_value::<
+                        crate::bus::event::PermissionRequested,
+                    >(env.payload.clone()) else {
+                        return EXIT_ERROR;
+                    };
+                    eprintln!(
+                        "\npermission_required: {} {}: {}",
+                        request.tool, request.scope, request.reason
+                    );
+                    return EXIT_PERMISSION_REQUIRED;
+                }
+                if env.kind == EventKind::TurnEnd.as_str() {
+                    return exit_code_for(&env);
+                }
+            }
+            StreamEvent::Resync => {
+                consecutive_reconnects = 0;
+            }
+            StreamEvent::Reconnecting => {
+                consecutive_reconnects += 1;
+                if consecutive_reconnects > MAX_RECONNECTS {
+                    eprintln!(
+                        "\nerror: lost connection to server (max reconnect attempts exceeded)"
+                    );
+                    return EXIT_ERROR;
+                }
+            }
+            StreamEvent::Disconnected => {
                 return EXIT_ERROR;
-            };
-            eprintln!(
-                "\npermission_required: {} {}: {}",
-                request.tool, request.scope, request.reason
-            );
-            return EXIT_PERMISSION_REQUIRED;
-        }
-        if env.kind == EventKind::TurnEnd.as_str() {
-            return exit_code_for(&env);
+            }
+            StreamEvent::ProtocolError(err) => {
+                eprintln!("\nerror: protocol error: {err}");
+                return EXIT_ERROR;
+            }
         }
     }
     EXIT_ERROR
 }
 
 /// Derive the process exit code from a `turn.end` envelope AND print the same
-/// stderr line Phase-1 `finish` did (Interrupted/Error). The exact stderr text
-/// is produced by [`terminal_stderr_line`] so a parity test can assert the
-/// REAL string the production path prints. Done->0, Yielded->2,
-/// Interrupted->130 (+stderr), Error->1 (+stderr with the bounded summary).
+/// stderr line finish did (Interrupted/Error).
 pub fn exit_code_for(env: &EventEnvelope) -> i32 {
     let Ok(payload) = serde_json::from_value::<TurnEnd>(env.payload.clone()) else {
         return EXIT_ERROR;
@@ -226,9 +298,9 @@ pub fn exit_code_for(env: &EventEnvelope) -> i32 {
     }
 }
 
-/// The stderr line the terminal outcome prints, matching Phase-1 `finish`:
+/// The stderr line the terminal outcome prints:
 /// `\ninterrupted` for Interrupted, `\nerror: {message}` for Error, and
-/// nothing (stdout-only via `event_to_ui`) for Done/Yielded.
+/// nothing for Done/Yielded.
 pub fn terminal_stderr_line(payload: &TurnEnd) -> Option<String> {
     match payload.outcome {
         TurnEndOutcome::Interrupted => Some("\ninterrupted".to_string()),
@@ -244,12 +316,7 @@ pub fn terminal_stderr_line(payload: &TurnEnd) -> Option<String> {
     }
 }
 
-/// Render-behind-a-subscriber adapter : maps a bus event
-/// onto the SAME UiEvent the Phase-1 `on_delta` closure + `finish` produced,
-/// so `render.rs` and CLI stdout do not change.
-/// Returns `None` for events with no CLI rendering (session/turn lifecycle,
-/// llm.response, tool calls, agent.state, task.done, message.received) — the
-/// Phase-1 path rendered none of those either.
+/// Render-behind-a-subscriber adapter: maps a bus event onto the SAME UiEvent.
 pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
     let kind = EventKind::from_wire(&envelope.kind)?;
     match kind {
@@ -281,10 +348,6 @@ pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
             let payload: TurnEnd = serde_json::from_value(envelope.payload.clone()).ok()?;
             match payload.outcome {
                 TurnEndOutcome::Done => Some(UiEvent::Done),
-                // `finish` renders the same Yielded UiEvent for both (the
-                // budget case pins question="step budget exhausted",
-                // kind="budget"), and prints "interrupted"/"error" to stderr
-                // without a UiEvent — so neither maps to a UiEvent here.
                 TurnEndOutcome::Yielded | TurnEndOutcome::Interrupted | TurnEndOutcome::Error => {
                     None
                 }
@@ -325,12 +388,4 @@ pub(super) fn read_prompt(prompt: Option<String>) -> anyhow::Result<String> {
             Ok(buf.trim().to_string())
         }
     }
-}
-
-fn install_sigint_handler(cancel: CancellationToken) {
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            cancel.cancel();
-        }
-    });
 }

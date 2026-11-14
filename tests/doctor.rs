@@ -735,7 +735,8 @@ async fn doctor_reports_unreadable_permission_rules_without_changing_the_databas
     assert_eq!(permission.status, Status::Warning);
     let text = report.human();
     assert!(
-        text.contains("withnav.db") && text.contains("every call is asked"),
+        text.contains("unavailable: no WithNav server running")
+            && text.contains("every call is asked"),
         "{text}"
     );
 }

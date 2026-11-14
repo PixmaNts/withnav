@@ -270,6 +270,7 @@ async fn run_binary_prints_the_error_line_to_stderr_and_exits_1() {
     )
     .unwrap();
 
+    let _owner_guard = common::owner::OwnerGuard::new(&data_home.join("withnav"));
     let out = tokio::task::spawn_blocking({
         let models = models.clone();
         let home = root.to_path_buf();
@@ -416,6 +417,7 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
     )
     .unwrap();
 
+    let _owner_guard = common::owner::OwnerGuard::new(&root.join("data/withnav"));
     let out = tokio::task::spawn_blocking({
         let models = models.clone();
         let home = root.to_path_buf();

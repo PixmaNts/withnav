@@ -122,6 +122,7 @@ fn relative_root_floor_probe() {
 fn permissions_cli_round_trip() {
     let data = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
+    let _owner_guard = common::owner::OwnerGuard::new(&data.path().join("data/withnav"));
     let run = |args: &[&str]| {
         let output = nav(data.path(), workspace.path(), args);
         assert!(

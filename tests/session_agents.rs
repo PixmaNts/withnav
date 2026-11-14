@@ -1019,6 +1019,7 @@ async fn run_agent_case(
     cfg.config();
     let models = cfg.models_path();
     let (root, ws) = (env.root.clone(), env.ws.clone());
+    let _owner_guard = common::owner::OwnerGuard::new(&env.root.join("data/withnav"));
     let output = tokio::task::spawn_blocking(move || {
         run_withnav(
             &root,

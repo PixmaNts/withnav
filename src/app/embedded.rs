@@ -1,6 +1,7 @@
-//! The private session server both embedded clients run in-process: the terminal client (`withnav
-//! tui`) and the browser client (`nav web`). It binds loopback only, protects every `/v1` route
-//! with a per-process bearer token, and stops gracefully when its owner is done.
+//! Workspace resolution and loopback health checks for local clients.
+//!
+//! The legacy in-process server is retained while other entry points transition to
+//! attaching to the background database owner.
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;

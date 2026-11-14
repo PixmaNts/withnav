@@ -1,15 +1,21 @@
-//! `nav permissions`: rules, validations and decision history.
+//! `nav permissions`: rules, validations and decision history via the background owner.
 use super::*;
+use crate::app::connect::{Wanted, ensure_server};
+use crate::permission::decisions::Decision;
+use crate::permission::rules::{Rule, RuleScope};
+use crate::permission::validation::Validation;
 
-pub(super) fn permissions_command(command: PermissionCommand) -> anyhow::Result<i32> {
-    use crate::permission::{
-        decisions::DecisionFilter,
-        rules::{RuleFilter, RuleOrigin, RuleScope},
-        store::PermissionStore,
-    };
-    let data_dir = crate::paths::data_dir()
-        .ok_or_else(|| anyhow::anyhow!("cannot resolve the WithNav data dir"))?;
-    let store = PermissionStore::open(&data_dir)?;
+pub(super) async fn permissions_command(command: PermissionCommand) -> anyhow::Result<i32> {
+    let wanted = Wanted::from_env(None)?;
+    let owner = ensure_server(&wanted).await?;
+
+    let mut builder = reqwest::Client::builder();
+    if withnav_client::client::is_loopback(&owner.url) {
+        builder = builder.no_proxy();
+    }
+    let client = builder.build()?;
+    let auth_header = format!("Bearer {}", owner.token);
+
     match command {
         PermissionCommand::Validate {
             kind,
@@ -19,44 +25,45 @@ pub(super) fn permissions_command(command: PermissionCommand) -> anyhow::Result<
             if kind != crate::permission::validation::ValidationKind::Flow {
                 anyhow::bail!("skill admission is not available yet");
             }
-            let flows = crate::flows::store::FlowStore::with_data(
-                std::env::current_dir()?,
-                config_dir()?,
-                data_dir,
-            );
-            let location = match location {
-                Some(location) => location,
-                None => {
-                    let matches: Vec<_> = flows
-                        .list()
-                        .map_err(|e| anyhow::anyhow!("{}", e.reason))?
-                        .into_iter()
-                        .filter(|flow| {
-                            flow.name == name
-                                && flow.location != crate::flows::store::Location::Builtin
-                        })
-                        .collect();
-                    if matches.len() != 1 {
-                        anyhow::bail!(
-                            "select --location global or workspace for an ambiguous or missing flow"
-                        );
-                    }
-                    matches[0].location
-                }
-            };
-            let document = flows
-                .get(&name, location)
-                .map_err(|e| anyhow::anyhow!("{}", e.reason))?;
-            let approval = flows
-                .validate_version(&name, location, &document.revision)
-                .map_err(|e| anyhow::anyhow!("{}", e.reason))?;
+            let url = format!("{}/v1/permissions/validate", owner.url);
+            let workspace = std::env::current_dir()?;
+            let response = client
+                .post(&url)
+                .header(reqwest::header::AUTHORIZATION, &auth_header)
+                .json(&serde_json::json!({
+                    "kind": kind,
+                    "name": name,
+                    "location": location,
+                    "workspace": workspace,
+                }))
+                .send()
+                .await?;
+
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            if !status.is_success() {
+                anyhow::bail!("{}", extract_error(status, &body));
+            }
+            let approval: Validation = serde_json::from_str(&body)?;
             println!(
                 "validated flow {} at {} ({}) as {}",
                 name, approval.location, approval.content_sha256, approval.id
             );
         }
         PermissionCommand::Validations { json } => {
-            let validations = store.list_validations()?;
+            let url = format!("{}/v1/permissions/validations", owner.url);
+            let response = client
+                .get(&url)
+                .header(reqwest::header::AUTHORIZATION, &auth_header)
+                .send()
+                .await?;
+
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            if !status.is_success() {
+                anyhow::bail!("{}", extract_error(status, &body));
+            }
+            let validations: Vec<Validation> = serde_json::from_str(&body)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&validations)?);
             } else {
@@ -78,16 +85,52 @@ pub(super) fn permissions_command(command: PermissionCommand) -> anyhow::Result<
             }
         }
         PermissionCommand::RevokeValidation { id } => {
-            if !store.revoke_validation(id)? {
+            let workspace = std::env::current_dir()?;
+            let url = format!("{}/v1/permissions/validations/{}", owner.url, id);
+            let response = client
+                .delete(&url)
+                .header(reqwest::header::AUTHORIZATION, &auth_header)
+                .query(&[("workspace", workspace.to_str().unwrap_or_default())])
+                .send()
+                .await?;
+
+            let status = response.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
                 anyhow::bail!("validation {id} not found or already revoked");
+            }
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                anyhow::bail!("{}", extract_error(status, &body));
             }
             println!("revoked validation {id}; reload flows to apply");
         }
         PermissionCommand::List { all, scope, json } => {
-            let rules = store.list(&RuleFilter {
-                include_revoked: all,
-                scope: scope.scope(),
-            })?;
+            let url = format!("{}/v1/permissions/rules", owner.url);
+            let mut req = client
+                .get(&url)
+                .header(reqwest::header::AUTHORIZATION, &auth_header);
+            if all {
+                req = req.query(&[("all", "true")]);
+            }
+            match scope.scope() {
+                Some(RuleScope::Global) => {
+                    req = req.query(&[("global", "true")]);
+                }
+                Some(RuleScope::Project(p)) => {
+                    req = req.query(&[("project", p.to_str().unwrap_or_default())]);
+                }
+                Some(RuleScope::Agent(a)) => {
+                    req = req.query(&[("agent", a.as_str())]);
+                }
+                None => {}
+            }
+            let response = req.send().await?;
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            if !status.is_success() {
+                anyhow::bail!("{}", extract_error(status, &body));
+            }
+            let rules: Vec<Rule> = serde_json::from_str(&body)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&rules)?);
             } else if rules.is_empty() {
@@ -120,17 +163,58 @@ pub(super) fn permissions_command(command: PermissionCommand) -> anyhow::Result<
                 Some(scope) => scope,
                 None => RuleScope::Project(std::env::current_dir()?),
             };
-            let rule = store.add(&action, &resource, effect, scope, RuleOrigin::Manual)?;
+            let url = format!("{}/v1/permissions/rules", owner.url);
+            let response = client
+                .post(&url)
+                .header(reqwest::header::AUTHORIZATION, &auth_header)
+                .json(&serde_json::json!({
+                    "action": action,
+                    "resource": resource,
+                    "effect": effect,
+                    "scope": scope,
+                }))
+                .send()
+                .await?;
+
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            if !status.is_success() {
+                anyhow::bail!("{}", extract_error(status, &body));
+            }
+            let rule: Rule = serde_json::from_str(&body)?;
             println!("added permission rule {}", rule.id);
         }
         PermissionCommand::Revoke { id } => {
-            if !store.revoke(id)? {
+            let url = format!("{}/v1/permissions/rules/{}", owner.url, id);
+            let response = client
+                .delete(&url)
+                .header(reqwest::header::AUTHORIZATION, &auth_header)
+                .send()
+                .await?;
+
+            let status = response.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
                 anyhow::bail!("permission rule {id} not found or already revoked");
+            }
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                anyhow::bail!("{}", extract_error(status, &body));
             }
             println!("revoked permission rule {id}");
         }
         PermissionCommand::History { limit, json } => {
-            let decisions = store.list_decisions(&DecisionFilter::default(), limit)?;
+            let url = format!("{}/v1/permissions/history", owner.url);
+            let req = client
+                .get(&url)
+                .header(reqwest::header::AUTHORIZATION, &auth_header)
+                .query(&[("limit", limit.to_string())]);
+            let response = req.send().await?;
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            if !status.is_success() {
+                anyhow::bail!("{}", extract_error(status, &body));
+            }
+            let decisions: Vec<Decision> = serde_json::from_str(&body)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&decisions)?);
             } else if decisions.is_empty() {
@@ -152,4 +236,13 @@ pub(super) fn permissions_command(command: PermissionCommand) -> anyhow::Result<
         }
     }
     Ok(EXIT_DONE)
+}
+
+fn extract_error(status: reqwest::StatusCode, body: &str) -> String {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body)
+        && let Some(err) = value.get("error").and_then(|e| e.as_str())
+    {
+        return err.to_string();
+    }
+    format!("HTTP {status}: {body}")
 }

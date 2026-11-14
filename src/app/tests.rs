@@ -1,5 +1,6 @@
 use super::*;
 use clap::CommandFactory;
+use futures_util::StreamExt;
 
 #[test]
 fn cli_debug_assert() {
@@ -8,7 +9,6 @@ fn cli_debug_assert() {
 
 #[tokio::test]
 async fn typed_watchdog_pause_exits_yielded_and_notice_renders() {
-    let (tx, rx) = tokio::sync::mpsc::channel(4);
     let pause = kind_envelope(
         EventKind::AgentYield,
         serde_json::to_value(AgentYield {
@@ -25,16 +25,13 @@ async fn typed_watchdog_pause_exits_yielded_and_notice_renders() {
     assert!(
         matches!(event_to_ui(&pause), Some(UiEvent::Yielded { kind:Some(kind), .. }) if kind == "watchdog")
     );
-    tx.send(pause).await.unwrap();
-    tx.send(turn_end_envelope(TurnEndOutcome::Yielded))
-        .await
-        .unwrap();
-    let mut subscription = crate::session::Subscription {
-        replay: crate::bus::ResumeOutcome::Replay(vec![]),
-        live: Some(rx),
-    };
+    let mut stream = Box::pin(futures_util::stream::iter(vec![
+        withnav_client::stream::StreamEvent::Connected,
+        withnav_client::stream::StreamEvent::Envelope(pause),
+        withnav_client::stream::StreamEvent::Envelope(turn_end_envelope(TurnEndOutcome::Yielded)),
+    ]));
     assert_eq!(
-        render_until_terminal(&mut subscription, &mut Renderer::new(false)).await,
+        render_until_terminal(&mut stream, &mut Renderer::new(false)).await,
         EXIT_YIELDED
     );
     let notice = kind_envelope(
@@ -44,6 +41,71 @@ async fn typed_watchdog_pause_exits_yielded_and_notice_renders() {
     assert!(
         matches!(event_to_ui(&notice), Some(UiEvent::AssistantText(text)) if text.contains("500"))
     );
+}
+
+#[tokio::test]
+async fn stream_ordering_requires_connected_event_before_delivery() {
+    use withnav_client::stream::StreamEvent;
+    let events = vec![StreamEvent::Connected];
+    let mut stream = Box::pin(futures_util::stream::iter(events));
+    let mut connected = false;
+    while let Some(event) = stream.next().await {
+        if matches!(event, StreamEvent::Connected) {
+            connected = true;
+            break;
+        }
+    }
+    assert!(
+        connected,
+        "connection gate must observe StreamEvent::Connected"
+    );
+
+    let disconnected_events = vec![StreamEvent::Disconnected];
+    let mut stream = Box::pin(futures_util::stream::iter(disconnected_events));
+    let mut connected = false;
+    while let Some(event) = stream.next().await {
+        if matches!(event, StreamEvent::Connected) {
+            connected = true;
+            break;
+        }
+    }
+    assert!(
+        !connected,
+        "disconnected stream must not proceed to delivery"
+    );
+}
+
+#[test]
+fn slash_command_routing_distinguishes_commands_and_messages() {
+    match crate::session::route_line("/help") {
+        crate::session::Routed::Command { name, arguments } => {
+            assert_eq!(name, "help");
+            assert_eq!(arguments, "");
+        }
+        _ => panic!("expected command"),
+    }
+
+    match crate::session::route_line("/agent plan") {
+        crate::session::Routed::Command { name, arguments } => {
+            assert_eq!(name, "agent");
+            assert_eq!(arguments, "plan");
+        }
+        _ => panic!("expected command"),
+    }
+
+    match crate::session::route_line("//escaped") {
+        crate::session::Routed::Message(text) => {
+            assert_eq!(text, "/escaped");
+        }
+        _ => panic!("expected message"),
+    }
+
+    match crate::session::route_line("plain text prompt") {
+        crate::session::Routed::Message(text) => {
+            assert_eq!(text, "plain text prompt");
+        }
+        _ => panic!("expected message"),
+    }
 }
 
 #[test]

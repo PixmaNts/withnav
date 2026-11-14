@@ -8,6 +8,7 @@ mod common;
 struct Run {
     out: Output,
     dirs: TempDir,
+    _guard: common::owner::OwnerGuard,
 }
 
 fn tui(args: &[&str]) -> Run {
@@ -16,8 +17,13 @@ fn tui(args: &[&str]) -> Run {
 
 fn tui_with(args: &[&str], env: &[(&str, &str)]) -> Run {
     let (mut command, dirs) = tui_command(args, env);
+    let guard = common::owner::OwnerGuard::new(&dirs.path().join("data").join("withnav"));
     let out = command.output().expect("run the binary");
-    Run { out, dirs }
+    Run {
+        out,
+        dirs,
+        _guard: guard,
+    }
 }
 
 fn tui_command(args: &[&str], env: &[(&str, &str)]) -> (Command, TempDir) {
@@ -68,6 +74,7 @@ async fn unavailable_server() -> wiremock::MockServer {
 async fn tui_unavailable(server: &wiremock::MockServer, env: &[(&str, &str)]) -> Run {
     let url = server.uri();
     let (command, dirs) = tui_command(&["--url", &url, "--workspace", "."], env);
+    let guard = common::owner::OwnerGuard::new(&dirs.path().join("data").join("withnav"));
     let out = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         tokio::process::Command::from(command)
@@ -77,7 +84,11 @@ async fn tui_unavailable(server: &wiremock::MockServer, env: &[(&str, &str)]) ->
     .await
     .expect("unavailable server must fail within a bounded wait")
     .expect("run the binary");
-    Run { out, dirs }
+    Run {
+        out,
+        dirs,
+        _guard: guard,
+    }
 }
 
 #[test]

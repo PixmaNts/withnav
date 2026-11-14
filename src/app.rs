@@ -3,7 +3,6 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use tokio_util::sync::CancellationToken;
 
 use crate::agent::instructions::RulesRoots;
 use crate::bus::event::{AgentYield, EventEnvelope, EventKind, LlmDelta, TurnEnd, TurnEndOutcome};
@@ -202,11 +201,10 @@ pub struct TuiArgs {
     /// Id of a past conversation to resume.
     #[arg(long, conflicts_with = "model")]
     pub session: Option<String>,
-    /// Path of the models file for a private embedded server: the client then never joins the
-    /// server an editor runs for this workspace.
+    /// Path of the models file: the background owner must have been started with the same one.
     #[arg(long, conflicts_with = "url")]
     pub models: Option<PathBuf>,
-    /// Connect to a running server instead of joining the editor's or starting one. If it needs a
+    /// Connect to a running server instead of joining the background owner. If it needs a
     /// bearer token, set WITHNAV_SERVER_TOKEN.
     #[arg(long, conflicts_with = "models")]
     pub url: Option<String>,
@@ -269,6 +267,7 @@ pub struct RunArgs {
     #[arg(long)]
     pub workspace: Option<PathBuf>,
 
+    /// Explicit models.json; the background owner must have been started with the same one.
     #[arg(long)]
     pub models: Option<PathBuf>,
 
@@ -322,9 +321,7 @@ pub fn init_tracing() {
 pub async fn dispatch(command: Commands) -> anyhow::Result<i32> {
     match command {
         Commands::Doctor(args) => doctor::command(args).await,
-        Commands::Permissions { command } => {
-            tokio::task::spawn_blocking(move || permissions_command(command)).await?
-        }
+        Commands::Permissions { command } => permissions_command(command).await,
         Commands::Flows {
             command: FlowCommand::Catalogue,
         } => {

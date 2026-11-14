@@ -1086,6 +1086,7 @@ async fn withnav_run_stops_on_a_permission_request_unless_yes() {
     let cfg = config(&env, &provider);
     cfg.config();
     let models = cfg.models_path();
+    let _owner_guard = common::owner::OwnerGuard::new(&env.root.join("data/withnav"));
 
     let (root_env, models_a) = (env.root.clone(), models.clone());
     let ws = env.ws.clone();

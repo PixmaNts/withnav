@@ -524,7 +524,7 @@ async fn nav_serve_stop_stops_owner_and_releases_lock() {
 
 // Given a background owner left by a test runner that was killed before its guard ran
 // When the next test run isolates a command
-// Then that orphan is stopped and its temporary directory removed, and a live run's owner stays
+// Then that orphan is stopped and no file is removed
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn owners_of_a_dead_test_runner_are_swept() {
@@ -566,5 +566,5 @@ async fn owners_of_a_dead_test_runner_are_swept() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert!(!root.path().exists(), "its temporary directory is removed");
+    assert!(root.path().exists(), "the sweep removes no file");
 }

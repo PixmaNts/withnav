@@ -9,7 +9,8 @@ pub const RUNNER_PID_ENV: &str = "WITHNAV_TEST_RUNNER_PID";
 /// Stops background owners left by an earlier test run that was killed before its guards ran
 /// (a timeout, an interrupted run). Only a `nav serve` that carries [`RUNNER_PID_ENV`] naming a
 /// runner that is gone, and whose data directory is under the system temporary directory, is
-/// stopped: a real owner never has that variable, and a live run's owners are left alone.
+/// stopped: a real owner never has that variable, and a live run's owners are left alone. No
+/// file is removed.
 pub fn sweep_orphans() {
     #[cfg(target_os = "linux")]
     {
@@ -50,15 +51,12 @@ pub fn sweep_orphans() {
             if runner_alive || !Path::new(&data).starts_with(&temp) {
                 continue;
             }
+            // Only the process is stopped: its directory is left in place, since nothing
+            // records which directory a test run owns, and guessing from the temporary-directory
+            // prefix could delete another run's files.
             let _ = std::process::Command::new("kill")
                 .args(["-9", &pid.to_string()])
                 .status();
-            let _ = std::fs::remove_dir_all(
-                Path::new(&data)
-                    .ancestors()
-                    .find(|dir| dir.parent() == Some(temp.as_path()))
-                    .unwrap_or(Path::new(&data)),
-            );
         }
     }
 }

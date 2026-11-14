@@ -440,10 +440,13 @@ impl Service {
     pub fn is_turn_running(&self) -> bool {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.values().any(|h| {
+            // Queued first: the runtime marks its turn running before it takes a queued
+            // Captain message off the count, so reading the count first and the running state
+            // second cannot miss a message passing from one to the other.
             h.lifecycle == Lifecycle::Active
-                && (h.status.selection.is_running()
-                    || h.status.actor_state() == "running"
-                    || h.status.has_queued_captain())
+                && (h.status.has_queued_captain()
+                    || h.status.selection.is_running()
+                    || h.status.actor_state() == "running")
         })
     }
 

@@ -280,10 +280,24 @@ async fn revoke_validation(
 
     match result {
         Ok(Ok(true)) => {
+            // Make sure the caller's workspace is loaded, then reload every loaded workspace:
+            // the revoked flow may be global or belong to a workspace other than the caller's.
             if let Some(workspace) = query.workspace {
-                let _ = state.flows.store(workspace).reload();
+                let _ = state.flows.store(workspace);
             }
-            (StatusCode::OK, Json(json!({ "revoked": true }))).into_response()
+            let flows = state.flows.clone();
+            let failed = tokio::task::spawn_blocking(move || flows.reload_all())
+                .await
+                .unwrap_or_default();
+            let failed: Vec<_> = failed
+                .into_iter()
+                .map(|(workspace, reason)| json!({ "workspace": workspace, "error": reason }))
+                .collect();
+            (
+                StatusCode::OK,
+                Json(json!({ "revoked": true, "reload_failed": failed })),
+            )
+                .into_response()
         }
         Ok(Ok(false)) => (
             StatusCode::NOT_FOUND,

@@ -102,6 +102,29 @@ impl Host {
             diagnostic,
         }
     }
+    /// Reloads the flows of every workspace this host has loaded and returns the workspaces whose
+    /// reload failed, with the reason. A revoked validation applies to a global flow in every
+    /// workspace and to a workspace flow wherever that workspace is loaded; reloading them all is
+    /// what makes a revocation take effect for running sessions without a restart, whichever
+    /// directory the revocation came from.
+    pub fn reload_all(&self) -> Vec<(PathBuf, String)> {
+        let stores: Vec<(PathBuf, Arc<FlowStore>)> = self
+            .workspaces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(path, entry)| (path.clone(), entry.store.clone()))
+            .collect();
+        stores
+            .into_iter()
+            .filter_map(|(path, store)| {
+                store
+                    .reload()
+                    .err()
+                    .map(|error| (path, error.reason.replace('_', " ")))
+            })
+            .collect()
+    }
     pub fn diagnostics(&self, path: &Path) -> Vec<instinct_flow::Diagnostic> {
         let workspace = self.workspace(path);
         let mut workspaces = self.workspaces.lock().unwrap_or_else(|e| e.into_inner());
@@ -323,6 +346,44 @@ mod tests {
         store.reload().unwrap();
         assert_eq!(verdict(&runtime).await, FlowVerdict::Allow);
         assert!(!runtime.store.reload_diagnostics().is_empty());
+    }
+    // Given a validated global flow that denies, loaded in two workspaces of one host
+    // When its validation is revoked and the host reloads every loaded workspace
+    // Then neither workspace keeps running the revoked flow
+    #[tokio::test]
+    async fn reload_all_applies_a_revocation_to_every_loaded_workspace() {
+        use super::super::{runtime::FlowVerdict, store::Location};
+        let temp = tempfile::tempdir().unwrap();
+        let (first, second) = (temp.path().join("first"), temp.path().join("second"));
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let host = Host::new(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            None,
+            Arc::new(crate::provider::openai::ClientCache::new()),
+        );
+        let store = host.store(first.clone());
+        store
+            .save("guard", Location::Global, None, content("deny"))
+            .unwrap();
+        store.validate_test_documents();
+        assert!(host.reload_all().is_empty());
+        let runtimes = [
+            host.runtime(&first).unwrap(),
+            host.runtime(&second).unwrap(),
+        ];
+        for runtime in &runtimes {
+            assert!(matches!(verdict(runtime).await, FlowVerdict::Deny { .. }));
+        }
+        let permissions = crate::permission::store::PermissionStore::open(&host.data).unwrap();
+        for approval in permissions.list_validations().unwrap() {
+            permissions.revoke_validation(approval.id).unwrap();
+        }
+        assert!(host.reload_all().is_empty());
+        for runtime in &runtimes {
+            assert_eq!(verdict(runtime).await, FlowVerdict::Allow);
+        }
     }
     #[test]
     fn editor_adapter_observes_shared_host_reload() {

@@ -110,7 +110,15 @@ pub(super) async fn permissions_command(command: PermissionCommand) -> anyhow::R
                 let body = response.text().await.unwrap_or_default();
                 anyhow::bail!("{}", extract_error(status, &body));
             }
-            println!("revoked validation {id}; reload flows to apply");
+            let body: serde_json::Value = response.json().await.unwrap_or_default();
+            println!("revoked validation {id}");
+            for failure in body["reload_failed"].as_array().into_iter().flatten() {
+                eprintln!(
+                    "warning: flows of {} did not reload: {}",
+                    failure["workspace"].as_str().unwrap_or("?"),
+                    failure["error"].as_str().unwrap_or("unknown error")
+                );
+            }
         }
         PermissionCommand::List { all, scope, json } => {
             let url = format!("{}/v1/permissions/rules", owner.url);

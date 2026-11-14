@@ -1269,8 +1269,10 @@ impl Service {
     /// caller names the source actor. `message.received` is sequenced before
     /// the command reaches the inbox, and only for an accepted command.
     pub async fn send(&self, mut command: Command) -> Result<MessageAccepted, ServerError> {
-        let _ticket = self.admit_work()?;
+        // Routing first: a closed session answers `ResumeRequired` whether or not the server is
+        // shutting down. The ticket is taken right after, before anything is enqueued.
         let handle = self.routable_handle(command.session_id).await?;
+        let _ticket = self.admit_work()?;
         if handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
         }

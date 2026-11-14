@@ -1170,15 +1170,29 @@ async fn workspace_checks(
                                 if let Ok(response) = client
                                     .get(format!("{}/v1/permissions/validation/check", owner.url))
                                     .bearer_auth(&owner.token)
-                                    .query(&[("kind", "flow"), ("location", location.as_str()), ("hash", hash.as_str())])
+                                    .query(&[
+                                        ("kind", "flow"),
+                                        ("location", location.as_str()),
+                                        ("hash", hash.as_str()),
+                                    ])
                                     .send()
                                     .await
                                 {
                                     if response.status().is_success() {
-                                        response.json::<serde_json::Value>().await.ok().and_then(|value| value["valid"].as_bool())
-                                    } else { None }
-                                } else { None }
-                            } else { None }
+                                        response
+                                            .json::<serde_json::Value>()
+                                            .await
+                                            .ok()
+                                            .and_then(|value| value["valid"].as_bool())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }

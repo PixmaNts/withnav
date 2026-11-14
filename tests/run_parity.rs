@@ -548,24 +548,45 @@ async fn run_preserves_conversation_history_after_successful_and_permission_requ
     let token = record["token"].as_str().unwrap();
 
     let http_client = reqwest::Client::new();
-    let list_url = format!("http://127.0.0.1:{port}/v1/sessions?workspace={}", ws.display());
+    let list_url = format!(
+        "http://127.0.0.1:{port}/v1/sessions?workspace={}",
+        ws.display()
+    );
 
-    let res = http_client.get(&list_url).bearer_auth(token).send().await.unwrap();
+    let res = http_client
+        .get(&list_url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), reqwest::StatusCode::OK);
     let list_body: serde_json::Value = res.json().await.unwrap();
     let sessions = list_body["sessions"].as_array().unwrap();
-    assert_eq!(sessions.len(), 1, "session must remain listed after successful run");
+    assert_eq!(
+        sessions.len(),
+        1,
+        "session must remain listed after successful run"
+    );
     assert!(sessions[0]["message_count"].as_u64().unwrap() >= 1);
 
     // 2. Permission-required run (without --yes)
     let out2 = run_cmd("second task with write").await.unwrap();
     assert_eq!(out2.status.code(), Some(3), "out2: {:?}", out2);
 
-    let res2 = http_client.get(&list_url).bearer_auth(token).send().await.unwrap();
+    let res2 = http_client
+        .get(&list_url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res2.status(), reqwest::StatusCode::OK);
     let list_body2: serde_json::Value = res2.json().await.unwrap();
     let sessions2 = list_body2["sessions"].as_array().unwrap();
-    assert_eq!(sessions2.len(), 2, "both sessions must remain listed after permission-required run");
+    assert_eq!(
+        sessions2.len(),
+        2,
+        "both sessions must remain listed after permission-required run"
+    );
     for s in sessions2 {
         assert!(s["message_count"].as_u64().unwrap() >= 1);
     }

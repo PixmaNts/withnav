@@ -33,7 +33,11 @@ async fn permission_routes_require_authentication() {
         ("DELETE", "/v1/permissions/rules/1", Body::empty()),
         ("GET", "/v1/permissions/history", Body::empty()),
         ("GET", "/v1/permissions/validations", Body::empty()),
-        ("GET", "/v1/permissions/validation/check?kind=flow&location=%2Fflow&hash=sha256%3Aabc", Body::empty()),
+        (
+            "GET",
+            "/v1/permissions/validation/check?kind=flow&location=%2Fflow&hash=sha256%3Aabc",
+            Body::empty(),
+        ),
         ("DELETE", "/v1/permissions/validations/1", Body::empty()),
         (
             "POST",
@@ -82,7 +86,10 @@ async fn validation_check_reads_without_migrating_database() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(std::fs::read(&db).ok(), before);
-    assert!(!db.exists(), "read-only validation lookup must not create the database");
+    assert!(
+        !db.exists(),
+        "read-only validation lookup must not create the database"
+    );
 }
 
 #[tokio::test]

@@ -53,13 +53,23 @@ async fn check_validation(
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
         let store = PermissionStore::with_connection(connection);
-        store.is_valid(kind, &location, &hash).map_err(anyhow::Error::from)
+        store
+            .is_valid(kind, &location, &hash)
+            .map_err(anyhow::Error::from)
     })
     .await;
     match result {
         Ok(Ok(valid)) => (StatusCode::OK, Json(json!({"valid": valid}))).into_response(),
-        Ok(Err(error)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": error.to_string()}))).into_response(),
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": error.to_string()}))).into_response(),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
     }
 }
 

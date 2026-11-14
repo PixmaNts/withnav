@@ -355,13 +355,30 @@ async fn relative_paths_target_invoking_workspace_when_owner_started_elsewhere()
         "http://127.0.0.1:{port}/v1/sessions?workspace={}",
         canonical_b.display()
     );
-    let res = client.get(&list_b_url).bearer_auth(token).send().await.unwrap();
+    let res = client
+        .get(&list_b_url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
     let body: serde_json::Value = res.json().await.unwrap();
     let sessions_b = body["sessions"].as_array().unwrap();
-    assert_eq!(sessions_b.len(), 1, "workspace B must have exactly one session");
+    assert_eq!(
+        sessions_b.len(),
+        1,
+        "workspace B must have exactly one session"
+    );
 
     let session_id = sessions_b[0]["id"].as_str().unwrap();
     let detail_url = format!("http://127.0.0.1:{port}/v1/sessions/{session_id}");
-    let detail: serde_json::Value = client.get(&detail_url).bearer_auth(token).send().await.unwrap().json().await.unwrap();
+    let detail: serde_json::Value = client
+        .get(&detail_url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(detail["workspace"], canonical_b.to_str().unwrap());
 }

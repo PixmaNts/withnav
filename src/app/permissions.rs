@@ -169,9 +169,7 @@ pub(super) async fn permissions_command(command: PermissionCommand) -> anyhow::R
             scope,
         } => {
             let scope = match scope.scope() {
-                Some(RuleScope::Project(p)) => {
-                    RuleScope::Project(resolve_project_path(&p)?)
-                }
+                Some(RuleScope::Project(p)) => RuleScope::Project(resolve_project_path(&p)?),
                 Some(scope) => scope,
                 None => RuleScope::Project(resolve_project_path(&std::env::current_dir()?)?),
             };

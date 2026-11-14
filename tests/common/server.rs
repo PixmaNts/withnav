@@ -724,10 +724,12 @@ impl CuttableProxy {
                             }
                             let _ = outbound.write_all(rewritten.as_bytes()).await;
                             let _ = outbound.write_all(rest_bytes).await;
-                            let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                            let _ =
+                                tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
                         } else if !buf.is_empty() {
                             let _ = outbound.write_all(&buf).await;
-                            let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                            let _ =
+                                tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
                         }
                     }
                 });

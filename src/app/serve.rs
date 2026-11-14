@@ -41,6 +41,9 @@ pub(super) async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
         }
     };
 
+    // Remove any stale owner record under the acquired lock
+    let _ = Record::remove(&paths);
+
     crate::session::Service::check_legacy_instances(&paths.database)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -48,13 +51,28 @@ pub(super) async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
     let client_cache = std::sync::Arc::new(crate::provider::openai::ClientCache::new());
     let shared = crate::navigator::bootstrap::Shared::new(client_cache.clone());
 
-    let cfg_dir = config_dir()?;
+    let raw_cfg = config_dir()?;
+    if !raw_cfg.exists() {
+        std::fs::create_dir_all(&raw_cfg)?;
+    }
+    let cfg_dir = std::fs::canonicalize(&raw_cfg).unwrap_or(raw_cfg);
+    let canonical_models = match args.models {
+        Some(ref p) => {
+            let abs = if p.is_absolute() {
+                p.clone()
+            } else {
+                std::env::current_dir()?.join(p)
+            };
+            Some(std::fs::canonicalize(&abs)?)
+        }
+        None => None,
+    };
     let rules_roots = RulesRoots::from_user_home();
     let bind_addr = std::net::SocketAddr::from(([127, 0, 0, 1], args.port));
 
     let config = crate::server::session::ServerConfig {
         bind: bind_addr,
-        models_path: args.models.clone(),
+        models_path: canonical_models.clone(),
         config_dir: cfg_dir.clone(),
         allow_non_loopback: false,
         bearer_token: Some(token.clone()),
@@ -86,7 +104,7 @@ pub(super) async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
         port: bound_port,
         token,
         config_dir: cfg_dir,
-        models_path: args.models,
+        models_path: canonical_models,
         started_at: time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default(),
@@ -202,12 +220,47 @@ async fn acquire_patiently(
         if let Some(lock) = OwnerLock::try_acquire(paths)? {
             return Ok(Some(lock));
         }
-        if paths.record.exists() {
+        if is_live_owner(paths).await {
             return Ok(None);
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     Ok(None)
+}
+
+async fn is_live_owner(paths: &crate::server::owner::OwnerPaths) -> bool {
+    let Ok(record) = Record::read_from(paths) else {
+        return false;
+    };
+    let Ok(client) = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_millis(150))
+        .timeout(std::time::Duration::from_millis(300))
+        .build()
+    else {
+        return false;
+    };
+    let mut nonce_bytes = [0u8; 16];
+    if getrandom::getrandom(&mut nonce_bytes).is_err() {
+        return false;
+    }
+    let nonce = hex::encode(nonce_bytes);
+    let url = format!("http://127.0.0.1:{}/v1/hello?nonce={nonce}", record.port);
+    let Ok(resp) = client.get(&url).send().await else {
+        return false;
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    let Ok(hello) = resp.json::<crate::server::owner::Hello>().await else {
+        return false;
+    };
+    if hello.instance != record.instance {
+        return false;
+    }
+    let expected = crate::server::owner::hello_proof(&record.token, &nonce, &record.instance);
+    crate::server::owner::constant_time_eq(&hello.proof, &expected)
 }
 
 /// Shuts the owner down once its lock file is gone or replaced: the data directory was deleted

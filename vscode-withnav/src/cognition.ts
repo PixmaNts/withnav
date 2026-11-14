@@ -549,6 +549,10 @@ export class CognitionBackend implements ChatBackend {
     return this.state.session ?? this.state.resumeId;
   }
 
+  currentIncarnation(): string | null {
+    return this.state.incarnation;
+  }
+
   async listConversations(): Promise<ConversationSummary[]> {
     // Before the first announcement there is nothing to list; the bootstrap
     // on the announcement pushes the real list.
@@ -764,6 +768,7 @@ export class CognitionBackend implements ChatBackend {
     if (!session || !this.endpoint) return undefined;
     const response = await fetch(`http://127.0.0.1:${this.endpoint.port}/v1/sessions/${encodeURIComponent(session)}/attachments/${encodeURIComponent(attachmentId)}`, {
       headers: { authorization: `Bearer ${this.endpoint.token}` },
+      redirect: "error",
     }).catch(() => undefined);
     const type = response?.headers.get("content-type") ?? "";
     if (!response?.ok || !type.startsWith("image/")) return undefined;
@@ -1211,7 +1216,7 @@ export class CognitionBackend implements ChatBackend {
       if (this.state.lastSeq !== undefined) headers["last-event-id"] = this.state.lastSeq;
       const response = await fetch(
         `http://127.0.0.1:${endpoint.port}/v1/sessions/${encodeURIComponent(session)}/events`,
-        { headers, signal: abort.signal },
+        { headers, signal: abort.signal, redirect: "error" },
       );
       if (!response.ok || !response.body) {
         throw new Error(`event stream: HTTP ${response.status}`);
@@ -1455,6 +1460,7 @@ export class CognitionBackend implements ChatBackend {
       const cursor = !cards.length ? this.state.childStateCursors.get(child) : undefined;
       const response = await fetch(`http://127.0.0.1:${endpoint.port}/v1/sessions/${encodeURIComponent(child)}/events`, {
         headers: { authorization: `Bearer ${endpoint.token}`, ...(cursor ? { "last-event-id": cursor } : {}) }, signal: abort.signal,
+        redirect: "error",
       });
       if (!response.ok || !response.body) return;
       reader = response.body.getReader();
@@ -1905,6 +1911,7 @@ export class CognitionBackend implements ChatBackend {
           "content-type": "application/json",
           ...init.headers,
         },
+        redirect: "error",
       });
     } catch (error) {
       check();

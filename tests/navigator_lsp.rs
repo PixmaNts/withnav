@@ -1080,3 +1080,208 @@ async fn an_ordinary_trigger_still_supersedes_a_help_remark_and_tool_rounds_diff
     assert_eq!(remark["params"]["text"], "ordinary");
     assert!(delivered(&client).iter().any(|(d, _)| d == "cancelled"));
 }
+
+#[tokio::test]
+async fn shared_shutdown_cancels_and_joins_connection_tasks() {
+    let clients = Arc::new(withnav_provider::openai::ClientCache::new());
+    let shared = withnav::navigator::bootstrap::Shared::new(clients);
+
+    let (_tx_a, rx_a) = tokio::sync::oneshot::channel::<()>();
+    let (_tx_b, rx_b) = tokio::sync::oneshot::channel::<()>();
+
+    shared
+        .spawn_connection(async move {
+            let _ = rx_a.await;
+        })
+        .await;
+
+    shared
+        .spawn_connection(async move {
+            let _ = rx_b.await;
+        })
+        .await;
+
+    let shutdown_fut = shared.shutdown();
+    tokio::time::timeout(Duration::from_secs(2), shutdown_fut)
+        .await
+        .expect("shutdown must cancel and join all connection tasks");
+}
+
+#[tokio::test]
+async fn initialize_frame_replay_delivers_first_request_to_serve() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    let cfg = root.join("config");
+    let data = root.join("data");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+
+    let models = serde_json::json!({
+        "providers": { "mock": { "base_url": "http://127.0.0.1:1/v1" } },
+        "models": {
+            "mock/chat": { "provider": "mock", "model": "chat", "context_window": 128000, "supports_tools": true },
+            "mock/fim": { "provider": "mock", "model": "fim", "api": "fim" }
+        }
+    });
+    std::fs::write(cfg.join("models.json"), models.to_string()).unwrap();
+    std::fs::write(
+        cfg.join("config.json"),
+        serde_json::json!({
+            "agents": { "build": { "model": "mock/chat" } },
+            "layers": { "reflex": "mock/fim" }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let clients = Arc::new(withnav_provider::openai::ClientCache::new());
+    let preflight = withnav::session::preflight::Preflight::capture(
+        &cfg,
+        None,
+        &root,
+        &withnav::agent::instructions::RulesRoots::default(),
+        clients.clone(),
+    )
+    .await
+    .unwrap();
+
+    let server_config = withnav::server::ServerConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        models_path: None,
+        config_dir: cfg.clone(),
+        allow_non_loopback: false,
+        bearer_token: Some("test-token".into()),
+        history_db: data.join("history.sqlite3"),
+        data_dir: data.clone(),
+        rules_roots: withnav::agent::instructions::RulesRoots::default(),
+        web: None,
+    };
+    let app_state =
+        withnav::server::session::AppState::new(server_config, clients.clone()).unwrap();
+    let shared = withnav::navigator::bootstrap::Shared::new(clients);
+
+    let (mut client_io, server_io) = tokio::io::duplex(64 * 1024);
+
+    let init_frame = common::lsp::frame(json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "capabilities": {},
+            "rootUri": format!("file://{}", root.display())
+        }
+    }));
+    use tokio::io::AsyncWriteExt as _;
+    client_io.write_all(&init_frame).await.unwrap();
+
+    let serve_task = tokio::spawn(withnav::navigator::bootstrap::serve_connection(
+        server_io,
+        root.clone(),
+        preflight,
+        app_state,
+        shared.clone(),
+    ));
+
+    let mut buf_reader = tokio::io::BufReader::new(client_io);
+    let init_response = tokio::time::timeout(
+        Duration::from_secs(5),
+        common::lsp::read_message(&mut buf_reader),
+    )
+    .await
+    .expect("timeout waiting for initialize reply");
+
+    assert_eq!(init_response["id"], 1);
+    assert!(init_response["result"]["capabilities"].is_object());
+
+    buf_reader
+        .get_mut()
+        .write_all(&common::lsp::frame(json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        })))
+        .await
+        .unwrap();
+
+    let server_info = tokio::time::timeout(
+        Duration::from_secs(5),
+        common::lsp::read_message(&mut buf_reader),
+    )
+    .await
+    .expect("timeout waiting for serverInfo");
+
+    assert_eq!(server_info["method"], "withnav/serverInfo");
+
+    drop(buf_reader);
+    let _ = tokio::time::timeout(Duration::from_secs(2), serve_task).await;
+}
+
+#[tokio::test]
+async fn conversation_notification_binds_and_unbinds_with_incarnation_check() {
+    let feed = withnav::navigator::conversation::ConversationFeed::new();
+    let session_id = ulid::Ulid::generate();
+    let incarnation = ulid::Ulid::generate();
+
+    let post: withnav::navigator::conversation::SessionPost =
+        Arc::new(|_wake| Box::pin(async { Ok(()) }));
+    feed.register_session_incarnation(session_id, incarnation, post, true);
+
+    let mut nav = Nav::start_with(MockCommenter::new(vec![]), json!({}), |deps, _| {
+        deps.with_conversation(feed.clone())
+    })
+    .await;
+
+    // Send binding with matching incarnation and focus: true
+    nav.client
+        .notify(
+            "withnav/conversation",
+            json!({
+                "sessionId": session_id.to_string(),
+                "incarnation": incarnation.to_string(),
+                "focus": true,
+            }),
+        )
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Verify the editor is bound with matching incarnation
+    let bound = feed.bound_editor(session_id).expect("editor must be bound");
+    assert_eq!(bound.1, incarnation);
+
+    // Send binding with mismatched incarnation: should fail to rebind
+    let wrong_incarnation = ulid::Ulid::generate();
+    nav.client
+        .notify(
+            "withnav/conversation",
+            json!({
+                "sessionId": session_id.to_string(),
+                "incarnation": wrong_incarnation.to_string(),
+                "focus": true,
+            }),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The binding is unchanged (still the old valid incarnation)
+    let bound = feed.bound_editor(session_id).expect("binding retained");
+    assert_eq!(bound.1, incarnation);
+
+    // Send focus: false to unbind
+    nav.client
+        .notify(
+            "withnav/conversation",
+            json!({
+                "sessionId": session_id.to_string(),
+                "focus": false,
+            }),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Verify editor is unbound
+    assert!(
+        feed.bound_editor(session_id).is_none(),
+        "editor must be unbound"
+    );
+}

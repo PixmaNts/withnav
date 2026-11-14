@@ -34,9 +34,9 @@ use crate::navigator::conversation::{
 use crate::navigator::document::Documents;
 use crate::navigator::log::{LogRecord, NavLog};
 use crate::navigator::lsp::protocol::{
-    ClearNotification, ClearParams, DiagnosticItem, DiagnosticsParams, FeedbackParams,
-    IntentParams, ReflexShownParams, ServerInfoNotification, ServerInfoParams, StatusNotification,
-    StatusParams,
+    ClearNotification, ClearParams, ConversationParams, DiagnosticItem, DiagnosticsParams,
+    FeedbackParams, IntentParams, ReflexShownParams, ServerInfoNotification, ServerInfoParams,
+    StatusNotification, StatusParams,
 };
 use crate::navigator::metacognition::Diag;
 use crate::navigator::ports::ReflexContextModel;
@@ -701,6 +701,54 @@ impl Runtime {
         let mut intent = self.intent.lock().await;
         intent.text = if text.is_empty() { None } else { Some(text) };
         intent.bound_root = bound_root;
+    }
+
+    /// `withnav/conversation`: explicitly binds or unbinds this editor connection to a session.
+    pub(crate) async fn on_conversation(&self, params: ConversationParams) {
+        let Ok(session_id) = params.session_id.parse::<ulid::Ulid>() else {
+            tracing::warn!(
+                "withnav/conversation: invalid sessionId '{}'",
+                params.session_id
+            );
+            return;
+        };
+        let feed = if let Some(feed) = &self.conversation {
+            feed.clone()
+        } else if let Some(registry) = &self.registry {
+            let ws = self
+                .workspace
+                .lock()
+                .await
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("."));
+            registry.get_or_create(&ws)
+        } else {
+            tracing::warn!("withnav/conversation: no conversation feed available");
+            return;
+        };
+
+        if params.focus {
+            let res = if let Some(ref inc_str) = params.incarnation {
+                if let Ok(incarnation) = inc_str.parse::<ulid::Ulid>() {
+                    let target = ConversationTarget {
+                        session_id,
+                        incarnation,
+                        workspace: feed.workspace().to_path_buf(),
+                    };
+                    feed.bind_editor_target(&target, self.editor_id)
+                } else {
+                    tracing::warn!("withnav/conversation: invalid incarnation '{}'", inc_str);
+                    feed.bind_editor(session_id, self.editor_id)
+                }
+            } else {
+                feed.bind_editor(session_id, self.editor_id)
+            };
+            if let Err(e) = res {
+                tracing::warn!("failed to bind editor to session {session_id}: {e}");
+            }
+        } else {
+            feed.unbind_editor_connection(session_id, self.editor_id);
+        }
     }
 
     pub(crate) async fn on_did_open(self: &Arc<Self>, params: DidOpenTextDocumentParams) {

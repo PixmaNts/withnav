@@ -642,6 +642,24 @@ impl ConversationFeed {
         false
     }
 
+    /// Clears an explicit session-to-editor binding only if currently bound to the given editor.
+    pub fn unbind_editor_connection(&self, session_id: Ulid, editor_id: EditorId) -> bool {
+        let mut state = self.lock();
+        if let Some(&(bound_editor, _)) = state.session_editors.get(&session_id)
+            && bound_editor == editor_id
+        {
+            state.session_editors.remove(&session_id);
+            return true;
+        }
+        false
+    }
+
+    /// Returns the explicit editor binding and incarnation for a session, if one exists.
+    pub fn bound_editor(&self, session_id: Ulid) -> Option<(EditorId, Ulid)> {
+        let state = self.lock();
+        state.session_editors.get(&session_id).copied()
+    }
+
     /// A new subscription to the feed's [`ConversationEvent`]s, starting
     /// now. Cheap; any number of subscribers.
     pub fn subscribe(&self) -> broadcast::Receiver<ConversationEvent> {

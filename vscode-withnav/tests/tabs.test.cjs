@@ -66,9 +66,15 @@ function fakeBackend() {
     selectModel(name) { this.model = name; },
   };
 }
-function makeHub(saved) {
+function makeHub(saved, notifyBinding) {
   const backends = []; const lister = fakeBackend(); const saves = [];
-  const hub = new ChatHub(() => { const b = fakeBackend(); backends.push(b); return b; }, lister, { load: () => saved, save: value => saves.push(value) });
+  const hub = new ChatHub(
+    () => { const b = fakeBackend(); backends.push(b); return b; },
+    lister,
+    { load: () => saved, save: value => saves.push(value) },
+    () => undefined,
+    notifyBinding,
+  );
   return { hub, backends, lister, saves };
 }
 
@@ -172,6 +178,44 @@ test("hub: a failed coalesced list refresh is reported, unless the hub was dispo
   pending(new Error("late"));
   await flush();
   assert.deepEqual(errors, ["HTTP 503"], "a refresh failing after disposal stays silent");
+});
+
+test("hub: binding notification is sent on activate and restart, not on background restore, and unbinds on close", () => {
+  const bindings = [];
+  const notifyBinding = params => bindings.push({ ...params });
+  const saved = { sessions: ["S1", "S2", "S3"], active: 0 };
+  const { hub } = makeHub(saved, notifyBinding);
+
+  // Background restore: only active tab S1 should be bound, background tabs S2 and S3 are not bound
+  assert.deepEqual(bindings, [
+    { sessionId: "S1", focus: true },
+  ]);
+
+  // Tab activation sends focus: true for the focused tab
+  const tabs = hub.tabs();
+  hub.focus(tabs[1].id);
+  assert.deepEqual(bindings, [
+    { sessionId: "S1", focus: true },
+    { sessionId: "S2", focus: true },
+  ]);
+
+  // Restart sends binding again for active tab even if port/token are unchanged
+  hub.setServerInfo({ port: 1234, token: "token" });
+  assert.deepEqual(bindings, [
+    { sessionId: "S1", focus: true },
+    { sessionId: "S2", focus: true },
+    { sessionId: "S2", focus: true },
+  ]);
+
+  // Closing a tab sends focus: false for that tab and activates the neighbor
+  hub.close(tabs[1].id);
+  assert.deepEqual(bindings, [
+    { sessionId: "S1", focus: true },
+    { sessionId: "S2", focus: true },
+    { sessionId: "S2", focus: true },
+    { sessionId: "S2", focus: false },
+    { sessionId: "S3", focus: true },
+  ]);
 });
 
 // --- The chat view routes by tab --------------------------------------------------------------------

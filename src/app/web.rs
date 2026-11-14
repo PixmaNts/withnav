@@ -29,7 +29,11 @@ pub async fn run(args: WebArgs) -> anyhow::Result<i32> {
     let wanted = connect::Wanted::from_env(args.models.as_deref())?;
     let owner = connect::ensure_server(&wanted).await?;
     let pair_url = format!("{}/v1/pair", owner.url);
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("cannot build HTTP client")?;
     let response = client
         .post(&pair_url)
         .header(

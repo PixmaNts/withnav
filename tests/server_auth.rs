@@ -348,3 +348,21 @@ async fn after_shutdown_is_accepted_new_work_is_refused() {
     let resp = request_with_auth(&state, None, "GET", "/v1/health", None).await;
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+// Given the server that owns the database
+// When a session is requested for a relative workspace
+// Then it is refused instead of resolving against the owner's own working directory
+#[tokio::test]
+async fn a_relative_session_workspace_is_refused() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = test_state(tmp.path(), Some("owner-token".into()));
+    let resp = request_with_auth(
+        &state,
+        Some("Bearer owner-token"),
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "workspace": "." })),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

@@ -229,11 +229,33 @@ async fn list_history(
     }
 }
 
+/// Read-only: `nav doctor` lists validations to check the database, and a diagnostic must
+/// neither create the database nor migrate its schema. No database, or no validations table
+/// yet, means no validations.
 async fn list_validations(State(state): State<AppState>) -> Response {
-    let data_dir = state.config.data_dir.clone();
+    let database = state.config.data_dir.join("withnav.db");
     let result = tokio::task::spawn_blocking(move || -> Result<_, String> {
-        let store = PermissionStore::open(&data_dir).map_err(|e| e.to_string())?;
-        store.list_validations().map_err(|e| e.to_string())
+        if !database.exists() {
+            return Ok(Vec::new());
+        }
+        let connection = rusqlite::Connection::open_with_flags(
+            &database,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(|e| e.to_string())?;
+        let has_table: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='validations')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if !has_table {
+            return Ok(Vec::new());
+        }
+        PermissionStore::with_connection(connection)
+            .list_validations()
+            .map_err(|e| e.to_string())
     })
     .await;
 

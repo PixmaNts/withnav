@@ -40,7 +40,24 @@ pub const SENSITIVE_NAMES: &[&str] = &[
     "*.keyring",
 ];
 
+/// The WithNav server's record holds its bearer token: `server/owner.json` under a data
+/// directory, which may live inside a workspace. Matched as a path suffix, so an unrelated
+/// `owner.json` elsewhere stays readable.
+pub const OWNER_RECORD_SUFFIX: &[&str] = &["server", "owner.json"];
+
+fn is_owner_record(path: &std::path::Path) -> bool {
+    let parts: Vec<_> = path.components().map(|part| part.as_os_str()).collect();
+    parts.len() >= OWNER_RECORD_SUFFIX.len()
+        && parts[parts.len() - OWNER_RECORD_SUFFIX.len()..]
+            .iter()
+            .zip(OWNER_RECORD_SUFFIX)
+            .all(|(part, name)| part.eq_ignore_ascii_case(name))
+}
+
 pub fn sensitive_read(path: &std::path::Path) -> bool {
+    if is_owner_record(path) {
+        return true;
+    }
     static MATCHER: std::sync::OnceLock<globset::GlobSet> = std::sync::OnceLock::new();
     let matcher = MATCHER.get_or_init(|| {
         let mut builder = globset::GlobSetBuilder::new();

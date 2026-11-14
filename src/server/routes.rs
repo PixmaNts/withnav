@@ -622,6 +622,13 @@ async fn create_session(
             return error_response(ServerError::SessionNotFound(request.resume.unwrap()));
         }
     };
+    // A relative workspace would resolve against the owner's working directory, which is
+    // whichever directory the first client happened to start it from.
+    if !std::path::Path::new(&request.workspace).is_absolute() {
+        return error_response(ServerError::MalformedBody(
+            "workspace must be an absolute path".to_string(),
+        ));
+    }
     if resume.is_some()
         && (request.editor.is_some()
             || request.model.is_some()

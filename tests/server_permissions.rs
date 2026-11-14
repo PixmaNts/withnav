@@ -333,3 +333,50 @@ async fn server_permissions_rejects_relative_paths() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+// Given a server whose database has no validations table yet
+// When the validations are listed (what `nav doctor` does)
+// Then the answer is an empty list and the schema is left as it was
+#[tokio::test]
+async fn listing_validations_never_migrates_the_database() {
+    let tmp = tempfile::tempdir().unwrap();
+    let token = "test-token";
+    let cfg = TestServerConfig::mock(tmp.path(), UNREACHABLE_PROVIDER_URL).bearer_token(token);
+    let database = tmp.path().join("data/withnav.db");
+    let state = cfg.state();
+    let tables = || -> Vec<String> {
+        if !database.exists() {
+            return vec!["<no database>".into()];
+        }
+        let connection = rusqlite::Connection::open_with_flags(
+            &database,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let mut statement = connection
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let before = tables();
+    assert!(
+        !before.iter().any(|name| name == "validations"),
+        "{before:?}"
+    );
+    let app = withnav::server::routes::app(state.clone());
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/permissions/validations")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), b"[]");
+    assert_eq!(tables(), before);
+}

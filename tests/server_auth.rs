@@ -172,9 +172,9 @@ async fn host_header_validation() {
     for (host, expected_status) in [
         ("127.0.0.1:7310", StatusCode::OK),
         ("localhost:7310", StatusCode::OK),
-        ("evil.com:7310", StatusCode::FORBIDDEN),
-        ("127.0.0.1:9999", StatusCode::FORBIDDEN),
-        ("attacker.com", StatusCode::FORBIDDEN),
+        ("evil.com:7310", StatusCode::MISDIRECTED_REQUEST),
+        ("127.0.0.1:9999", StatusCode::MISDIRECTED_REQUEST),
+        ("attacker.com", StatusCode::MISDIRECTED_REQUEST),
     ] {
         let req = Request::builder()
             .method("GET")

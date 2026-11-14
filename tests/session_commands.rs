@@ -4,6 +4,7 @@
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
+use tower::ServiceExt;
 
 use withnav::bus::event::EventEnvelope;
 use withnav::server::{AppState, app};
@@ -438,39 +439,61 @@ async fn http_endpoints_list_and_run_commands() {
 #[tokio::test]
 async fn bypass_http_requires_configured_authentication() {
     let (tmp, ws) = tmp_ws();
-    let state = state(tmp.path());
+    let token = "test-owner-token";
+    let state = TestServerConfig::unreachable(tmp.path())
+        .bearer_token(token)
+        .state();
     let router = app(state.clone());
     let id = state.create_session(&ws, None, false).await.unwrap();
+
+    // 1. Refused without owner token (missing header -> 401)
     for (suffix, body) in [
         ("bypass", json!({"enabled": true})),
         ("commands", json!({"name": "bypass", "arguments": "on"})),
         ("commands", json!({"name": " /bypass ", "arguments": "off"})),
     ] {
-        let (status, body) = request_json(
-            &router,
-            "POST",
-            &format!("/v1/sessions/{id}/{suffix}"),
-            Some(&body),
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-        assert_eq!(body["reason"], "auth_required");
-        assert!(
-            body["error"]
-                .as_str()
-                .unwrap()
-                .contains("bypass can only be changed by an authenticated client")
-        );
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/v1/sessions/{id}/{suffix}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let resp = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
-    let (status, body) = request_json(
-        &router,
-        "POST",
-        &format!("/v1/sessions/{id}/commands"),
-        Some(&json!({"name": "bypass"})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["data"]["enabled"], false);
+
+    // 2. Refused with wrong token -> 401
+    for (suffix, body) in [
+        ("bypass", json!({"enabled": true})),
+        ("commands", json!({"name": "bypass", "arguments": "on"})),
+    ] {
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/v1/sessions/{id}/{suffix}"))
+            .header("authorization", "Bearer wrong-token")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let resp = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // 3. Accepted with owner token -> 200
+    for (suffix, body) in [
+        ("bypass", json!({"enabled": true})),
+        ("commands", json!({"name": "bypass", "arguments": "off"})),
+        ("commands", json!({"name": " /bypass ", "arguments": "on"})),
+    ] {
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/v1/sessions/{id}/{suffix}"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let resp = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
 }
 
 #[tokio::test]

@@ -374,6 +374,20 @@ pub fn hello_proof(token: &str, nonce: &str, instance: &str) -> String {
     hmac_sha256(token.as_bytes(), &message)
 }
 
+/// Compares two strings in constant time.
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    if a_bytes.len() != b_bytes.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (&x, &y) in a_bytes.iter().zip(b_bytes) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// `POST /v1/shutdown` body (authenticated). Without `force` a server with running turns
 /// answers 409 and keeps running.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

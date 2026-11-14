@@ -66,19 +66,6 @@ impl std::fmt::Debug for Owner {
     }
 }
 
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
-    if a_bytes.len() != b_bytes.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (&x, &y) in a_bytes.iter().zip(b_bytes) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
 #[cfg(unix)]
 fn spawn_detached(wanted: &Wanted, paths: &OwnerPaths) -> anyhow::Result<()> {
     paths.ensure_dir()?;
@@ -273,7 +260,7 @@ pub async fn find_server(wanted: &Wanted) -> anyhow::Result<Option<Owner>> {
     }
 
     let expected_proof = crate::server::owner::hello_proof(&record.token, &nonce, &record.instance);
-    if !constant_time_eq(&hello.proof, &expected_proof) {
+    if !crate::server::owner::constant_time_eq(&hello.proof, &expected_proof) {
         anyhow::bail!("owner proof verification failed: invalid hello answer");
     }
 

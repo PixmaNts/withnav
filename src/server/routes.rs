@@ -234,7 +234,7 @@ pub fn app(state: AppState) -> Router {
             async move {
                 let bound_port = app_state.http.bind.port();
 
-                // 1. Host check: when present, must equal 127.0.0.1:<bound port> or localhost:<bound port>; else 421/403.
+                // 1. Host check: when present, must equal 127.0.0.1:<bound port> or localhost:<bound port>; else 421 Misdirected Request.
                 if let Some(host) = request
                     .headers()
                     .get(axum::http::header::HOST)
@@ -245,10 +245,14 @@ pub fn app(state: AppState) -> Router {
                         host == format!("127.0.0.1:{bound_port}")
                             || host == format!("localhost:{bound_port}")
                     } else {
-                        host.starts_with("127.0.0.1") || host.starts_with("localhost")
+                        host == "127.0.0.1"
+                            || host == "localhost"
+                            || host.split_once(':').is_some_and(|(h, p)| {
+                                (h == "127.0.0.1" || h == "localhost") && p.parse::<u16>().is_ok()
+                            })
                     };
                     if !valid {
-                        return StatusCode::FORBIDDEN.into_response();
+                        return StatusCode::MISDIRECTED_REQUEST.into_response();
                     }
                 }
 
@@ -266,8 +270,12 @@ pub fn app(state: AppState) -> Router {
                         origin == format!("http://127.0.0.1:{bound_port}")
                             || origin == format!("http://localhost:{bound_port}")
                     } else {
-                        origin.starts_with("http://127.0.0.1")
-                            || origin.starts_with("http://localhost")
+                        origin == "http://127.0.0.1"
+                            || origin == "http://localhost"
+                            || origin
+                                .strip_prefix("http://127.0.0.1:")
+                                .or_else(|| origin.strip_prefix("http://localhost:"))
+                                .is_some_and(|p| p.parse::<u16>().is_ok())
                     };
                     if !valid {
                         return StatusCode::FORBIDDEN.into_response();
@@ -298,10 +306,12 @@ pub fn app(state: AppState) -> Router {
                         path == "/v1/shutdown" || path == "/v1/pair" || path == "/v1/lsp";
 
                     if is_owner_only {
-                        if bearer != owner_token {
+                        if !crate::server::owner::constant_time_eq(bearer, owner_token) {
                             return StatusCode::UNAUTHORIZED.into_response();
                         }
-                    } else if bearer != owner_token && !app_state.pairing.accepts(bearer) {
+                    } else if !crate::server::owner::constant_time_eq(bearer, owner_token)
+                        && !app_state.pairing.accepts(bearer)
+                    {
                         return StatusCode::UNAUTHORIZED.into_response();
                     }
                 }

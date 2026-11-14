@@ -122,6 +122,13 @@ If the data directory is deleted, the server stops on its own.
 
 Its log is `~/.local/share/withnav/server/server.log`.
 
+Upgrading WithNav: stop the server first (`nav serve stop`), then install; the next client starts
+the new version. A client of another version refuses to join a running server and says so. Do not
+run an older `nav` against the same data directory while the new server runs: older versions do
+not know the owner lock. The data directory may be reached through a symbolic link (both paths
+find the same server), but `withnav.db` itself must not be a symbolic link, and hard links or a
+data directory shared over a network file system are not supported.
+
 On Windows the server and its clients use the same design; the token file is protected by an
 access list limited to you, SYSTEM and Administrators. If Windows forbids starting it in the
 background (a job object without breakaway), the client says so: start `nav serve` yourself.

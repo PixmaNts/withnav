@@ -103,12 +103,12 @@ Dependencies point down this list. A module never imports one above it.
 | `metacognition/` | the one `Metacognition` implementation: remark prompt and tool loop with its budget (`mod.rs`), answer parsing (`answer.rs`), the read/grep tools (`tools.rs`), the reflex-context producer and its prompt (`reflex_context.rs`) |
 | `replay/` | offline replay of historical decision captures through built-in editor flows (`flows.rs`); no model calls or effects |
 | `log.rs` | the JSONL decision log: record types, `PendingTrigger::finish` (the only writer of trigger records) |
-| `conversation.rs` | `ConversationFeed`: the active conversation, its digest, the ask guard, wakes, Captain-turn events |
+| `conversation.rs` | `ConversationFeed`: the conversations of one workspace, their digest, the ask guard, wakes, Captain-turn events; which conversation each editor connection shows (one binding per editor, set by `withnav/conversation`, incarnation-checked) |
 | `intent.rs` | `.withnav/intent.md`: read, section-wise atomic write, and the cognition's `intent` tool |
 | `reveal.rs` | the cognition's `reveal` tool: validates a workspace file (optional symbol, line, editor-group placement), then asks the editor through the `ConversationFeed`'s editor slot, a `withnav/reveal` LSP request answered by `vscode-withnav/src/reveal.ts`; an impossible placement comes back as a tool error |
 | `ports.rs` | the model seams (`FimModel`, `Metacognition`, `ReflexContextModel`) and `ModelError` |
 | `models.rs` | adapters from the provider clients to those seams |
-| `bootstrap.rs` | process wiring: builds each lower layer from its assignment, starts the in-process session server |
+| `bootstrap.rs` | editor-connection wiring inside the owner: `Shared` (workspace feeds, model clients, tracked connections joined at shutdown) and `serve_connection`, which builds each lower layer from the connection's initialize workspace catalogue and serves the navigator over the upgraded `/v1/lsp` stream; it never starts a server of its own |
 
 ### Inside `crates/withnav-tui/`
 

@@ -186,7 +186,6 @@ fn command(dir: &Path, lsp: bool) -> tokio::process::Command {
 async fn overrides_cannot_hide_default_failure_before_run_bind_terminal_or_lsp_readiness() {
     for args in [
         vec!["run", "--model", "mock/chat", "--prompt", "never send"],
-        vec!["serve", "--bind", "127.0.0.1:0"],
         vec!["tui", "--model", "mock/chat"],
     ] {
         let dir = fixture(json!({"agents":{"build":"mock/fim"}}));

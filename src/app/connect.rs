@@ -179,6 +179,15 @@ pub async fn ensure_server(wanted: &Wanted) -> anyhow::Result<Owner> {
 
 /// Like [`ensure_server`] but never starts one: `None` when no owner holds the lock.
 pub async fn find_server(wanted: &Wanted) -> anyhow::Result<Option<Owner>> {
+    // Looking never creates anything: without a data directory there is no owner, and a
+    // read-only command such as `nav doctor` must leave the disk untouched.
+    if !wanted
+        .history_db
+        .parent()
+        .is_some_and(std::path::Path::exists)
+    {
+        return Ok(None);
+    }
     let paths = OwnerPaths::resolve(&wanted.history_db)?;
     if !OwnerLock::is_held(&paths)? {
         return Ok(None);

@@ -230,6 +230,14 @@ impl Runtime {
         drop(folders);
         drop(workspace);
         self.sync_registrations(&roots).await;
+        // Say at once that a newly added root runs without layers, rather than only when one
+        // of its documents first needs a layer: the editor then learns it on the folder change,
+        // whatever order its next requests are handled in.
+        for root in &roots {
+            if !self.layers_available_for_root(root).await {
+                self.report_secondary_catalogue_disabled(root).await;
+            }
+        }
     }
 
     /// `workspace/didChangeWorkspaceFolders`: folders come and go while the

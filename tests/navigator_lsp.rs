@@ -563,7 +563,9 @@ async fn secondary_catalogue_disabled_status_reaches_editor_with_root_name() {
         .await;
     let uri = format!("file://{}/src.rs", secondary_root.display());
     client.client.did_open(&uri, "fn main() {}", 1).await;
-    client
+    // The status may arrive before or after the completion's answer; `request` hands back the
+    // notifications it read before the answer, so look there first.
+    let mut seen = client
         .client
         .request(
             77,
@@ -573,8 +575,13 @@ async fn secondary_catalogue_disabled_status_reaches_editor_with_root_name() {
             }),
         )
         .await;
-    let mut seen = Vec::new();
-    let status = client.client.expect("withnav/status", &mut seen).await;
+    let status = match seen
+        .iter()
+        .position(|msg| msg["method"] == "withnav/status")
+    {
+        Some(index) => seen.remove(index),
+        None => client.client.expect("withnav/status", &mut seen).await,
+    };
     assert_eq!(status["params"]["state"], "error");
     assert!(
         status["params"]["message"]

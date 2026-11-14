@@ -21,11 +21,46 @@ pub(super) fn router() -> Router<AppState> {
         .route("/v1/permissions/rules/{id}", delete(revoke_rule))
         .route("/v1/permissions/history", get(list_history))
         .route("/v1/permissions/validations", get(list_validations))
+        .route("/v1/permissions/validation/check", get(check_validation))
         .route(
             "/v1/permissions/validations/{id}",
             delete(revoke_validation),
         )
         .route("/v1/permissions/validate", post(validate_flow))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CheckValidationQuery {
+    pub kind: ValidationKind,
+    pub location: String,
+    pub hash: String,
+}
+
+async fn check_validation(
+    State(state): State<AppState>,
+    Query(query): Query<CheckValidationQuery>,
+) -> Response {
+    let location = query.location;
+    let hash = query.hash;
+    let kind = query.kind;
+    let validation_db = state.config.data_dir.join("withnav.db");
+    let result = tokio::task::spawn_blocking(move || {
+        if !validation_db.exists() {
+            return Ok(false);
+        }
+        let connection = rusqlite::Connection::open_with_flags(
+            validation_db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let store = PermissionStore::with_connection(connection);
+        store.is_valid(kind, &location, &hash).map_err(anyhow::Error::from)
+    })
+    .await;
+    match result {
+        Ok(Ok(valid)) => (StatusCode::OK, Json(json!({"valid": valid}))).into_response(),
+        Ok(Err(error)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": error.to_string()}))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": error.to_string()}))).into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]

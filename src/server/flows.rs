@@ -194,7 +194,12 @@ async fn workspace(
         .await
         .map_err(|_| StoreError::reason("io"))?
         .iter()
-        .any(|w| std::path::Path::new(&w.workspace) == path);
+        // A conversation saved under a symlinked spelling of the same directory counts: the
+        // browser lists it under its canonical form, so Studio must accept that form too.
+        .any(|w| {
+            let stored = std::path::Path::new(&w.workspace);
+            stored == path || stored.canonicalize().ok().as_ref() == Some(&path)
+        });
     if !launched && !known {
         return Err(StoreError::reason("forbidden"));
     }

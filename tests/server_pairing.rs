@@ -425,3 +425,32 @@ async fn middleware_integration_assertions() {
         assert_eq!(status, StatusCode::OK);
     }
 }
+
+// Given a conversation saved under a symlinked spelling of a workspace
+// When Studio is opened for the canonical form the browser lists
+// Then the workspace is recognised instead of refused
+#[cfg(unix)]
+#[tokio::test]
+async fn studio_accepts_the_canonical_form_of_a_symlinked_history_workspace() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = withnav::tools::canonical_path(tmp.path()).expect("canonical root");
+    let real = root.join("real-workspace");
+    let alias = root.join("alias-workspace");
+    std::fs::create_dir_all(&real).expect("create real");
+    std::os::unix::fs::symlink(&real, &alias).expect("symlink");
+    let state = pairing_state(&root, false);
+    state
+        .create_session(&alias, None, false)
+        .await
+        .expect("session under the alias");
+
+    let (status, _, body) = request_json(
+        &state,
+        "GET",
+        &format!("/v1/flows?workspace={}", real.to_str().unwrap()),
+        None,
+        None,
+    )
+    .await;
+    assert_ne!(status, StatusCode::FORBIDDEN, "{body}");
+}

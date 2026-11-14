@@ -23,7 +23,13 @@ async fn request_json(
     body: Option<Value>,
     auth: Option<&str>,
 ) -> (StatusCode, HeaderMap, Value) {
-    let mut builder = Request::builder().method(method).uri(uri);
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("host", format!("127.0.0.1:{}", state.http.bind.port()))
+        .extension(axum::extract::ConnectInfo(
+            "127.0.0.1:1234".parse::<std::net::SocketAddr>().unwrap(),
+        ));
     if let Some(auth_val) = auth {
         builder = builder.header("authorization", auth_val);
     }
@@ -291,6 +297,94 @@ async fn credential_lists_its_launch_workspaces_first_and_isolated() {
     for entry in list_owner {
         assert_eq!(entry["launched"], false);
     }
+}
+
+// Given a browser credential with a new launch workspace having no conversation history
+// When /v1/flows is requested for that workspace
+// Then the paired credential is authorized to use flows routes, while another credential is forbidden
+#[tokio::test]
+async fn pairing_launch_workspace_authorizes_flows_routes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = withnav::tools::canonical_path(tmp.path()).expect("canonical root");
+    let new_dir = root.join("new-workspace");
+    let other_dir = root.join("other-workspace");
+    std::fs::create_dir_all(&new_dir).expect("create new_dir");
+    std::fs::create_dir_all(&other_dir).expect("create other_dir");
+
+    let state = pairing_state(&root, false);
+
+    // Pair credential A with new_dir
+    let (_, _, body_a) = request_json(
+        &state,
+        "POST",
+        "/v1/pair",
+        Some(json!({ "workspaces": [new_dir.to_str().unwrap()] })),
+        None,
+    )
+    .await;
+    let code_a = body_a["code"].as_str().expect("code a");
+    let (_, _, ex_a) = request_json(
+        &state,
+        "POST",
+        "/v1/pair/exchange",
+        Some(json!({ "code": code_a })),
+        None,
+    )
+    .await;
+    let cred_a = ex_a["credential"].as_str().expect("cred a");
+
+    // Pair credential B with other_dir
+    let (_, _, body_b) = request_json(
+        &state,
+        "POST",
+        "/v1/pair",
+        Some(json!({ "workspaces": [other_dir.to_str().unwrap()] })),
+        None,
+    )
+    .await;
+    let code_b = body_b["code"].as_str().expect("code b");
+    let (_, _, ex_b) = request_json(
+        &state,
+        "POST",
+        "/v1/pair/exchange",
+        Some(json!({ "code": code_b })),
+        None,
+    )
+    .await;
+    let cred_b = ex_b["credential"].as_str().expect("cred b");
+
+    // Credential A can use flows routes for new_dir
+    let flows_uri_new = format!("/v1/flows?workspace={}", new_dir.to_str().unwrap());
+    let (status, _, body_flows) = request_json(
+        &state,
+        "GET",
+        &flows_uri_new,
+        None,
+        Some(&format!("Bearer {cred_a}")),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "cred_a should be authorized for its launch workspace"
+    );
+    assert!(body_flows["flows"].is_array());
+
+    // Credential B cannot use flows routes for new_dir (not in its launch workspaces and not in history)
+    let (status, _, body_forbidden) = request_json(
+        &state,
+        "GET",
+        &flows_uri_new,
+        None,
+        Some(&format!("Bearer {cred_b}")),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "cred_b should be forbidden for unlaunched workspace"
+    );
+    assert_eq!(body_forbidden["reason"], "forbidden");
 }
 
 // Check assertions waiting for the middleware lane:

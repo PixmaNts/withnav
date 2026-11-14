@@ -521,3 +521,50 @@ async fn nav_serve_stop_stops_owner_and_releases_lock() {
     assert!(!paths.record.exists());
     drop(guard);
 }
+
+// Given a background owner left by a test runner that was killed before its guard ran
+// When the next test run isolates a command
+// Then that orphan is stopped and its temporary directory removed, and a live run's owner stays
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn owners_of_a_dead_test_runner_are_swept() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let data = root.path().join("data/withnav");
+    let mut dead = std::process::Command::new("true").spawn().unwrap();
+    let dead_pid = dead.id();
+    dead.wait().unwrap();
+
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_nav"));
+    common::isolate(&mut command, root.path());
+    command
+        .args(["serve", "--detach"])
+        .env(common::owner::RUNNER_PID_ENV, dead_pid.to_string())
+        .env("HOME", root.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut owner = command.spawn().expect("spawn owner");
+    let record = data.join("server/owner.json");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !record.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "owner never published"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    common::owner::sweep_orphans();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if owner.try_wait().unwrap().is_some() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the orphan owner was not stopped"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(!root.path().exists(), "its temporary directory is removed");
+}

@@ -29,6 +29,10 @@ pub fn isolate(command: &mut std::process::Command, root: &std::path::Path) {
         .env_remove("WITHNAV_CONFIG_DIR")
         .env_remove("WITHNAV_DATA_DIR")
         .env_remove("XDG_RUNTIME_DIR");
+    // A background owner this command starts inherits the test runner's pid, so the next
+    // test run can stop it if this one is killed before its guard runs.
+    command.env(owner::RUNNER_PID_ENV, std::process::id().to_string());
+    owner::sweep_orphans();
     command
         .env("WITHNAV_CONFIG_DIR", &config)
         .env("WITHNAV_DATA_DIR", &data);

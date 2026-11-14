@@ -2,6 +2,67 @@
 //! test leaves a detached server running.
 use std::path::{Path, PathBuf};
 
+/// Set by [`super::isolate`] on every `nav` a test starts, and so inherited by the owner it may
+/// start: the pid of the test runner.
+pub const RUNNER_PID_ENV: &str = "WITHNAV_TEST_RUNNER_PID";
+
+/// Stops background owners left by an earlier test run that was killed before its guards ran
+/// (a timeout, an interrupted run). Only a `nav serve` that carries [`RUNNER_PID_ENV`] naming a
+/// runner that is gone, and whose data directory is under the system temporary directory, is
+/// stopped: a real owner never has that variable, and a live run's owners are left alone.
+pub fn sweep_orphans() {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(processes) = std::fs::read_dir("/proc") else {
+            return;
+        };
+        let temp = std::env::temp_dir();
+        for entry in processes.flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
+                continue;
+            };
+            let args: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
+            if !args.iter().any(|a| *a == b"serve") || !args.iter().any(|a| *a == b"--detach") {
+                continue;
+            }
+            let Ok(environ) = std::fs::read(entry.path().join("environ")) else {
+                continue;
+            };
+            let var = |name: &str| {
+                environ.split(|b| *b == 0).find_map(|pair| {
+                    let pair = std::str::from_utf8(pair).ok()?;
+                    pair.strip_prefix(name)?
+                        .strip_prefix('=')
+                        .map(str::to_owned)
+                })
+            };
+            let (Some(runner), Some(data)) = (var(RUNNER_PID_ENV), var("WITHNAV_DATA_DIR")) else {
+                continue;
+            };
+            let runner_alive = std::path::Path::new("/proc").join(&runner).exists();
+            if runner_alive || !Path::new(&data).starts_with(&temp) {
+                continue;
+            }
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status();
+            let _ = std::fs::remove_dir_all(
+                Path::new(&data)
+                    .ancestors()
+                    .find(|dir| dir.parent() == Some(temp.as_path()))
+                    .unwrap_or(Path::new(&data)),
+            );
+        }
+    }
+}
+
 /// On drop, kills the owner published under `<data dir>/server/owner.json`, if any.
 pub struct OwnerGuard {
     record: PathBuf,

@@ -12,6 +12,8 @@ pub mod deadline;
 
 pub mod lsp;
 
+pub mod owner;
+
 pub mod navigator;
 pub mod server;
 pub mod sse;

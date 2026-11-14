@@ -122,9 +122,15 @@ pub(super) async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
     state.close_all().await;
     let flows = state.flows.clone();
     let _ = tokio::task::spawn_blocking(move || flows.shutdown()).await;
-    if !crate::permission::store::wait_for_detached_writes(std::time::Duration::from_secs(10)).await
+    // The lock is released only once they all landed: a write is one short SQLite statement
+    // with a 5 s busy timeout, so a long wait means a stuck database, which is said and waited
+    // for rather than handed to the next owner mid-write.
+    while !crate::permission::store::wait_for_detached_writes(std::time::Duration::from_secs(10))
+        .await
     {
-        tracing::warn!("permission decisions were still being written after 10 s");
+        tracing::warn!(
+            "permission decisions are still being written; waiting before releasing the database"
+        );
     }
     let _ = Record::remove(&paths);
     drop(lock);

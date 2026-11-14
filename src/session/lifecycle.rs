@@ -219,6 +219,11 @@ impl Service {
 
     async fn stop_all_sessions(&self) {
         let _shutdown = self.gates.shutdown().await;
+        {
+            let _admission = self.admission_gate.lock().await;
+            self.closing
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         loop {
             let admission = self.admission_gate.lock().await;
             let owned = self

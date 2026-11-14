@@ -366,3 +366,25 @@ async fn a_relative_session_workspace_is_refused() {
     .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+// Given a server whose sessions were drained for shutdown (a signal, without the HTTP latch)
+// When a conversation then reaches registration
+// Then it is refused with 503 instead of appearing after the drain
+#[tokio::test]
+async fn a_conversation_reaching_registration_after_the_drain_is_refused() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("create ws");
+    let state = test_state(tmp.path(), Some("owner-token".into()));
+    state.close_all().await;
+    let resp = request_with_auth(
+        &state,
+        Some("Bearer owner-token"),
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "workspace": ws.to_str().unwrap() })),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_json(resp).await["reason"], "shutting_down");
+}

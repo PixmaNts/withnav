@@ -355,6 +355,9 @@ pub struct Service {
     /// them all.
     pub(super) gates: Arc<super::gate::LifecycleGates>,
     pub(super) admission_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Set under `admission_gate` when shutdown starts draining: a conversation that reaches
+    /// registration afterwards is refused, so none can appear after the drain's last snapshot.
+    pub(super) closing: Arc<std::sync::atomic::AtomicBool>,
     pub(super) subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
     pub(super) unpublished_children: Arc<Mutex<std::collections::HashSet<SessionId>>>,
     pub(crate) child_operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
@@ -591,6 +594,7 @@ impl Service {
             hooks,
             gates: Arc::default(),
             admission_gate: Arc::new(tokio::sync::Mutex::new(())),
+            closing: Arc::default(),
             subagent_slots: Arc::new(Mutex::new(seeded_slots)),
             unpublished_children: Arc::default(),
             child_operations: Arc::default(),
@@ -3251,6 +3255,10 @@ impl Service {
             } else {
                 None
             };
+            if child_parent.is_none() && self.closing.load(std::sync::atomic::Ordering::SeqCst) {
+                handle.session_cancel.cancel();
+                return Err(ServerError::ShuttingDown);
+            }
             let supervised = child_parent.is_none().then(|| handle.clone());
             self.lock_sessions().insert(session_id, handle);
             // Registered first: an end seen at once still finds its entry.

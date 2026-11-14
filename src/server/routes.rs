@@ -1426,6 +1426,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
     let status = match &err {
         ServerError::SessionArchived { .. } => StatusCode::FORBIDDEN,
         ServerError::ChildReadOnly => StatusCode::FORBIDDEN,
+        ServerError::ShuttingDown => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::SubagentCapacity { .. } => StatusCode::TOO_MANY_REQUESTS,
         ServerError::SubagentSettings(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::SessionTreeTooDeep { .. } => StatusCode::INTERNAL_SERVER_ERROR,
@@ -1474,6 +1475,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
     let reason = match &err {
         ServerError::ResumeRequired => Some("resume_required"),
         ServerError::ChildReadOnly => Some("child_read_only"),
+        ServerError::ShuttingDown => Some("shutting_down"),
         ServerError::BudgetTopupLimit => Some("budget_topup_limit"),
         ServerError::SubagentCapacity { .. } => Some("subagent_capacity"),
         ServerError::PermissionStale => Some("permission_stale"),

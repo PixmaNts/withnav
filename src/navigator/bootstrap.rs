@@ -336,7 +336,7 @@ pub async fn serve_connection<S>(
     };
 
     let config_dir = &app_state.config.config_dir;
-    let _ = preflight.models_path();
+    let primary_models_path = preflight.models_path().to_path_buf();
     let log_path =
         crate::paths::decision_log().unwrap_or_else(|| config_dir.join("navigator.jsonl"));
     if let Some(parent) = log_path.parent() {
@@ -345,6 +345,7 @@ pub async fn serve_connection<S>(
 
     let catalog =
         crate::provider::catalog::ModelCatalog::new(Some(app_state.config.data_dir.clone()));
+    let root = initialized_workspace;
     let layers = build_layers_from(
         preflight.models(),
         config_dir,
@@ -353,7 +354,6 @@ pub async fn serve_connection<S>(
         shared.clients.clone(),
     );
 
-    let root = initialized_workspace;
     let conversation = shared.registry.get_or_create(&root);
     let flow_host = app_state.flows.clone();
     let flow_runtime = {
@@ -369,6 +369,7 @@ pub async fn serve_connection<S>(
     });
 
     let user_dir = navigator::default_user_dir();
+    let disabled_layers = layers.disabled.clone();
     let mut deps = NavigatorDeps::new(layers.metacognition(), log_path)
         .with_dirs(Some(root.clone()), user_dir)
         .with_registry(shared.registry.clone())
@@ -379,7 +380,8 @@ pub async fn serve_connection<S>(
             layers.instinct_model.clone(),
             layers.metacognition_model.clone(),
         )
-        .with_disabled_layers(layers.disabled.clone());
+        .with_models_catalogue(Some(primary_models_path), Some(config_dir.clone()))
+        .with_disabled_layers(disabled_layers);
     deps.flows = flow_factory;
     deps.startup_warnings = flow_host
         .store(root.clone())

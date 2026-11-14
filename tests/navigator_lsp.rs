@@ -529,6 +529,61 @@ async fn inline_completion_answers_empty_items() {
     assert!(resp["result"]["requestId"].as_str().is_some());
 }
 
+#[tokio::test]
+async fn secondary_catalogue_disabled_status_reaches_editor_with_root_name() {
+    let mut client = Nav::start_with(MockCommenter::new(vec![]), json!({}), |deps, temp| {
+        let primary = temp.join("primary");
+        let secondary = temp.join("secondary");
+        let config = temp.join("config");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::create_dir_all(&secondary).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        let primary_models = config.join("models.json");
+        std::fs::write(&primary_models, "{}").unwrap();
+        std::fs::write(secondary.join("models.json"), "{\"different\":true}").unwrap();
+        deps.with_dirs(Some(primary.clone()), None)
+            .with_models_catalogue(Some(primary_models), Some(config))
+            .with_fim(Arc::new(ScriptedFim::fixed("unused")))
+            .with_model_ids(Some("fim".into()), None, None)
+    })
+    .await;
+    let secondary_root = client.tmp.path().join("secondary");
+    client
+        .client
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeWorkspaceFolders",
+            "params": {
+                "event": {
+                    "added": [{ "uri": format!("file://{}", secondary_root.display()), "name": "secondary" }],
+                    "removed": []
+                }
+            }
+        }))
+        .await;
+    let uri = format!("file://{}/src.rs", secondary_root.display());
+    client.client.did_open(&uri, "fn main() {}", 1).await;
+    client
+        .client
+        .request(
+            77,
+            "withnav/inlineCompletion",
+            json!({
+                "uri": uri, "version": 1, "line": 0, "character": 0
+            }),
+        )
+        .await;
+    let mut seen = Vec::new();
+    let status = client.client.expect("withnav/status", &mut seen).await;
+    assert_eq!(status["params"]["state"], "error");
+    assert!(
+        status["params"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&secondary_root.display().to_string())
+    );
+}
+
 /// A request superseded during its debounce never reaches the model, so only
 /// the request that did is logged as a reflex call.
 #[tokio::test]

@@ -108,6 +108,13 @@ impl OwnerPaths {
                 );
             }
         }
+        #[cfg(windows)]
+        {
+            withnav_provider::auth::protect_private(&self.dir)
+                .map_err(|e| anyhow::anyhow!("cannot protect server directory: {e}"))?;
+            withnav_provider::auth::check_private(&self.dir)
+                .map_err(|e| anyhow::anyhow!("server directory ACL check failed: {e}"))?;
+        }
 
         Ok(())
     }
@@ -232,6 +239,11 @@ impl Record {
             file.write_all(&json_bytes)?;
             file.sync_all()?;
         }
+        #[cfg(windows)]
+        {
+            withnav_provider::auth::protect_private(&temp_path)
+                .map_err(|e| anyhow::anyhow!("cannot protect owner record: {e}"))?;
+        }
         std::fs::rename(&temp_path, &paths.record)?;
         Ok(())
     }
@@ -260,6 +272,19 @@ impl Record {
             if meta.len() > 4096 {
                 anyhow::bail!("owner record {:?} exceeds 4 KiB size limit", paths.record);
             }
+        }
+        #[cfg(windows)]
+        {
+            let meta = std::fs::symlink_metadata(&paths.record)?;
+            if !meta.file_type().is_file() {
+                anyhow::bail!("owner record {:?} is not a regular file", paths.record);
+            }
+            if meta.len() > 4096 {
+                anyhow::bail!("owner record {:?} exceeds 4 KiB size limit", paths.record);
+            }
+            withnav_provider::auth::check_private(&paths.record).map_err(|e| {
+                anyhow::anyhow!("owner record {:?} ACL check failed: {e}", paths.record)
+            })?;
         }
         let bytes = std::fs::read(&paths.record)?;
         if bytes.len() > 4096 {

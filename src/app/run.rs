@@ -67,7 +67,7 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
         && let Err(e) = client.set_bypass(&session_id, true).await
     {
         eprintln!("\nerror: cannot enable bypass: {e}");
-        let _ = client.delete_session(&session_id).await;
+        let _ = client.stop(&session_id).await;
         return Ok(EXIT_ERROR);
     }
 
@@ -89,7 +89,7 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
             _ = &mut connect_timeout => {
                 eprintln!("\nerror: timed out waiting for event stream connection");
                 stream_cancel.cancel();
-                let _ = client.delete_session(&session_id).await;
+                let _ = client.stop(&session_id).await;
                 return Ok(EXIT_ERROR);
             }
             event = stream.next() => match event {
@@ -97,13 +97,13 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
                 Some(StreamEvent::Disconnected) | Some(StreamEvent::ProtocolError(_)) => {
                     eprintln!("\nerror: event stream disconnected before connection established");
                     stream_cancel.cancel();
-                    let _ = client.delete_session(&session_id).await;
+                    let _ = client.stop(&session_id).await;
                     return Ok(EXIT_ERROR);
                 }
                 None => {
                     eprintln!("\nerror: event stream ended prematurely");
                     stream_cancel.cancel();
-                    let _ = client.delete_session(&session_id).await;
+                    let _ = client.stop(&session_id).await;
                     return Ok(EXIT_ERROR);
                 }
                 _ => {}
@@ -147,7 +147,7 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
                 }
             };
             stream_cancel.cancel();
-            let _ = client.delete_session(&session_id).await;
+            let _ = client.stop(&session_id).await;
             return Ok(exit);
         }
         crate::session::Routed::Message(text) => text,
@@ -167,7 +167,7 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
     {
         eprintln!("\nerror: post failed: {e}");
         stream_cancel.cancel();
-        let _ = client.delete_session(&session_id).await;
+        let _ = client.stop(&session_id).await;
         return Ok(EXIT_ERROR);
     }
 
@@ -196,7 +196,7 @@ pub(super) async fn run_command(args: RunArgs) -> anyhow::Result<i32> {
 
     sigint_task.abort();
     stream_cancel.cancel();
-    let _ = client.delete_session(&session_id).await;
+    let _ = client.stop(&session_id).await;
     Ok(exit)
 }
 

@@ -28,7 +28,9 @@ use withnav::tools::native::ReadTool;
 use withnav::tools::{Registry, ToolContext};
 
 mod common;
-use common::sse::{MockProvider, http_sse, spawn_mock_provider, sse_body};
+use common::sse::{
+    MockProvider, http_sse, spawn_mock_provider, sse_body, text_response, tool_call_chunk,
+};
 
 async fn scripted_actor(done: &str) -> (MockProvider, tempfile::TempDir, AgentActor) {
     let server = spawn_mock_provider(vec![http_sse(&sse_body(&[done]))]).await;
@@ -456,4 +458,115 @@ async fn run_binary_refuses_an_alias_without_a_known_window() {
         "stderr lacks the window refusal; got {stderr:?}"
     );
     assert_eq!(out.status.code(), Some(1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_preserves_conversation_history_after_successful_and_permission_required_runs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    let target = ws.join("output.txt");
+
+    let resp_success = text_response("Hello from mock assistant");
+    let resp_perm = http_sse(&sse_body(&[&tool_call_chunk(
+        "call_1",
+        "write",
+        &serde_json::json!({
+            "path": target.to_str().unwrap(),
+            "content": "new file content"
+        }),
+    )]));
+
+    let mock = spawn_mock_provider(vec![resp_success, resp_perm]).await;
+    let data_home = root.join("data");
+    let config_home = root.join("config");
+    std::fs::create_dir_all(config_home.join("withnav")).unwrap();
+    std::fs::write(
+        config_home.join("withnav/config.json"),
+        r#"{"agents":{"build":{"model":"mock/m"}}}"#,
+    )
+    .unwrap();
+    let models = root.join("models.json");
+    std::fs::write(
+        &models,
+        serde_json::json!({
+            "providers": { "mock": {
+                "base_url": mock.url,
+                "api_key_env": "WITHNAV_RUN_PARITY_KEY",
+                "headers": {}, "connect_timeout_ms": 2000, "request_timeout_ms": 30000
+            }},
+            "models": { "mock/m": {
+                "provider": "mock", "model": "m", "reasoning_history": "preserve",
+                "context_window": 128000
+            }}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let _owner_guard = common::owner::OwnerGuard::new(&data_home.join("withnav"));
+
+    let run_cmd = |prompt: &'static str| {
+        let (root, models, ws, data_home, config_home) = (
+            root.to_path_buf(),
+            models.clone(),
+            ws.clone(),
+            data_home.clone(),
+            config_home.clone(),
+        );
+        tokio::task::spawn_blocking(move || {
+            let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_nav"));
+            common::isolate(&mut command, &root);
+            command
+                .args([
+                    "run",
+                    "--workspace",
+                    ws.to_str().unwrap(),
+                    "--models",
+                    models.to_str().unwrap(),
+                    "--prompt",
+                    prompt,
+                ])
+                .env("WITHNAV_RUN_PARITY_KEY", "test-key")
+                .env("XDG_DATA_HOME", data_home.as_os_str())
+                .env("XDG_CONFIG_HOME", config_home.as_os_str())
+                .env("HOME", &root)
+                .output()
+                .expect("run the binary")
+        })
+    };
+
+    // 1. Successful run
+    let out1 = run_cmd("first task").await.unwrap();
+    assert_eq!(out1.status.code(), Some(0), "out1: {:?}", out1);
+
+    // Read owner record to inspect sessions via the owner API
+    let record_bytes = std::fs::read(data_home.join("withnav/server/owner.json")).unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&record_bytes).unwrap();
+    let port = record["port"].as_u64().unwrap();
+    let token = record["token"].as_str().unwrap();
+
+    let http_client = reqwest::Client::new();
+    let list_url = format!("http://127.0.0.1:{port}/v1/sessions?workspace={}", ws.display());
+
+    let res = http_client.get(&list_url).bearer_auth(token).send().await.unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let list_body: serde_json::Value = res.json().await.unwrap();
+    let sessions = list_body["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1, "session must remain listed after successful run");
+    assert!(sessions[0]["message_count"].as_u64().unwrap() >= 1);
+
+    // 2. Permission-required run (without --yes)
+    let out2 = run_cmd("second task with write").await.unwrap();
+    assert_eq!(out2.status.code(), Some(3), "out2: {:?}", out2);
+
+    let res2 = http_client.get(&list_url).bearer_auth(token).send().await.unwrap();
+    assert_eq!(res2.status(), reqwest::StatusCode::OK);
+    let list_body2: serde_json::Value = res2.json().await.unwrap();
+    let sessions2 = list_body2["sessions"].as_array().unwrap();
+    assert_eq!(sessions2.len(), 2, "both sessions must remain listed after permission-required run");
+    for s in sessions2 {
+        assert!(s["message_count"].as_u64().unwrap() >= 1);
+    }
 }

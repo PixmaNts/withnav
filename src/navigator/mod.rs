@@ -95,6 +95,9 @@ pub struct NavigatorDeps {
     pub primary_models_path: Option<PathBuf>,
     /// The configuration directory for resolving fallback models catalogue.
     pub config_dir: Option<PathBuf>,
+    /// The catalogue the owner was started with (`nav serve --models`); it applies to every
+    /// root, so secondary roots resolve to it too.
+    pub explicit_models_path: Option<PathBuf>,
 }
 
 impl NavigatorDeps {
@@ -118,6 +121,7 @@ impl NavigatorDeps {
             log_path: log_path.into(),
             primary_models_path: None,
             config_dir: None,
+            explicit_models_path: None,
         }
     }
 
@@ -128,6 +132,12 @@ impl NavigatorDeps {
     ) -> Self {
         self.primary_models_path = primary_models_path;
         self.config_dir = config_dir;
+        self
+    }
+
+    /// Builder-style: the catalogue the owner was started with, shared by every root.
+    pub fn with_explicit_models(mut self, path: Option<PathBuf>) -> Self {
+        self.explicit_models_path = path;
         self
     }
 

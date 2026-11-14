@@ -381,6 +381,7 @@ pub async fn serve_connection<S>(
             layers.metacognition_model.clone(),
         )
         .with_models_catalogue(Some(primary_models_path), Some(config_dir.clone()))
+        .with_explicit_models(app_state.config.models_path.clone())
         .with_disabled_layers(disabled_layers);
     deps.flows = flow_factory;
     deps.startup_warnings = flow_host

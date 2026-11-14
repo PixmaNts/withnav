@@ -94,6 +94,13 @@ pub(crate) struct Runtime {
     secondary_catalogue_warnings: std::sync::Mutex<HashSet<PathBuf>>,
     primary_models_path: Option<PathBuf>,
     config_dir: Option<PathBuf>,
+    explicit_models_path: Option<PathBuf>,
+    /// Counts this editor's `withnav/conversation` notifications; a delayed bind gives up once
+    /// a newer one arrived.
+    binding_generation: std::sync::atomic::AtomicU64,
+    /// The root whose catalogue built this connection's layers: the initialize workspace,
+    /// fixed for the connection even when folder changes promote another root to primary.
+    layers_root: Option<PathBuf>,
     /// Startup notes about disabled layers, surfaced once after initialize.
     pub(crate) disabled_layers: Vec<String>,
     pub(crate) startup_warnings: Mutex<Vec<String>>,
@@ -154,7 +161,7 @@ impl Runtime {
             documents: Mutex::new(Documents::default()),
             intent: Mutex::new(IntentBinding::default()),
             folders: Mutex::new(deps.workspace.iter().cloned().collect()),
-            workspace: Mutex::new(deps.workspace),
+            workspace: Mutex::new(deps.workspace.clone()),
             metacognition_model: deps.metacognition_model,
             reflex,
             reflex_model: deps.reflex_model,
@@ -163,6 +170,9 @@ impl Runtime {
             secondary_catalogue_warnings: std::sync::Mutex::new(HashSet::new()),
             primary_models_path: deps.primary_models_path,
             config_dir: deps.config_dir,
+            explicit_models_path: deps.explicit_models_path,
+            binding_generation: std::sync::atomic::AtomicU64::new(0),
+            layers_root: deps.workspace.clone(),
             disabled_layers: deps.disabled_layers,
             startup_warnings: Mutex::new(deps.startup_warnings),
             focused: Mutex::new(None),
@@ -259,6 +269,11 @@ impl Runtime {
         drop(folders);
         drop(workspace);
         self.sync_registrations(&roots).await;
+        for root in &roots {
+            if !self.layers_available_for_root(root).await {
+                self.report_secondary_catalogue_disabled(root).await;
+            }
+        }
     }
 
     pub(crate) async fn register_after_initialize(self: &Arc<Self>) {
@@ -434,46 +449,37 @@ impl Runtime {
         None
     }
 
+    /// Whether this connection's layers may serve documents of `root`: they were built from the
+    /// catalogue of [`Self::layers_root`], so another root may use them only when it resolves
+    /// to that same catalogue. A root that resolves to no catalogue at all cannot borrow them.
     pub(crate) async fn layers_available_for_root(&self, root: &Path) -> bool {
-        let primary_root = self.workspace.lock().await.clone();
-        if primary_root.as_deref().is_some_and(|primary| {
-            WorkspaceFeedRegistry::canonical_key(primary)
-                == WorkspaceFeedRegistry::canonical_key(root)
-        }) {
-            return true;
-        }
-        let Some(primary) = self.primary_models_path.as_deref() else {
-            return true;
-        };
-        let Some(config_dir) = self.config_dir.as_deref() else {
-            return true;
-        };
-        let Some(secondary) = crate::provider::config::resolve_models_path(None, root, config_dir)
-        else {
-            return true;
-        };
-        let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        canonical(primary) == canonical(&secondary)
+        self.layer_catalogue_message(root).await.is_none()
     }
 
     pub(crate) async fn layer_catalogue_message(&self, root: &Path) -> Option<String> {
-        let primary_root = self.workspace.lock().await.clone();
-        if primary_root.as_deref().is_some_and(|primary| {
-            WorkspaceFeedRegistry::canonical_key(primary)
-                == WorkspaceFeedRegistry::canonical_key(root)
-        }) {
+        let layers_root = match &self.layers_root {
+            Some(layers_root) => layers_root.clone(),
+            None => self.workspace.lock().await.clone()?,
+        };
+        if WorkspaceFeedRegistry::canonical_key(&layers_root)
+            == WorkspaceFeedRegistry::canonical_key(root)
+        {
             return None;
         }
         let primary = self.primary_models_path.as_deref()?;
         let config_dir = self.config_dir.as_deref()?;
-        let secondary = crate::provider::config::resolve_models_path(None, root, config_dir)?;
-        let differs = {
-            let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-            canonical(primary) != canonical(&secondary)
-        };
-        differs.then(|| {
+        let canonical = |p: &Path| std::fs::canonicalize(p).ok();
+        let same = crate::provider::config::resolve_models_path(
+            self.explicit_models_path.as_deref(),
+            root,
+            config_dir,
+        )
+        .is_some_and(|secondary| {
+            canonical(primary).is_some() && canonical(primary) == canonical(&secondary)
+        });
+        (!same).then(|| {
             format!(
-                "layers disabled for workspace root {}: its models catalogue differs from the primary root",
+                "layers disabled for workspace root {}: its models catalogue differs from the one this editor connection was started with",
                 root.display()
             )
         })
@@ -779,6 +785,10 @@ impl Runtime {
 
     /// `withnav/conversation`: explicitly binds or unbinds this editor connection to a session.
     pub(crate) async fn on_conversation(&self, params: ConversationParams) {
+        // Each notification supersedes the earlier ones of this editor: a bind still retrying
+        // for a conversation the editor has since left must not clear the newer binding.
+        let generation = self.binding_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let current = || self.binding_generation.load(Ordering::SeqCst) == generation;
         let Ok(session_id) = params.session_id.parse::<ulid::Ulid>() else {
             tracing::warn!(
                 "withnav/conversation: invalid sessionId '{}'",
@@ -846,6 +856,9 @@ impl Runtime {
                     tokio::select! {
                         _ = notify.notified() => {}
                         _ = tokio::time::sleep(step) => {}
+                    }
+                    if !current() {
+                        return;
                     }
                     res = try_bind(&feed);
                 }
@@ -1421,6 +1434,57 @@ mod tests {
         assert_eq!(
             runtime.resolve_document_root(&target_uri).await,
             Some(parent)
+        );
+    }
+
+    // Given layers built from the primary root's catalogue
+    // When a secondary root resolves no catalogue, when the primary root is removed and a root
+    //      with another catalogue becomes primary, and when the owner has an explicit catalogue
+    // Then the first two cannot borrow the layers and the third can
+    #[tokio::test]
+    async fn layers_follow_the_catalogue_that_built_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let primary = tmp.path().join("primary");
+        let other = tmp.path().join("other");
+        let bare = tmp.path().join("bare");
+        let config = tmp.path().join("config");
+        for dir in [&primary, &other, &bare, &config] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let primary_models = primary.join("models.json");
+        std::fs::write(&primary_models, "{}").unwrap();
+        std::fs::write(other.join("models.json"), "{\"other\":true}").unwrap();
+        let build = |explicit: Option<PathBuf>| {
+            let deps = NavigatorDeps::new(Arc::new(SilentMetacognition), tmp.path().join("log"))
+                .with_dirs(Some(primary.clone()), None)
+                .with_models_catalogue(Some(primary_models.clone()), Some(config.clone()))
+                .with_explicit_models(explicit);
+            crate::navigator::build_service(deps)
+        };
+
+        let (service, _socket) = build(None);
+        let runtime = service.inner().runtime().clone();
+        assert!(
+            !runtime.layers_available_for_root(&bare).await,
+            "no catalogue"
+        );
+        runtime
+            .change_workspace_folders(vec![other.clone()], vec![primary.clone()])
+            .await;
+        assert!(
+            !runtime.layers_available_for_root(&other).await,
+            "a promoted root keeps its own catalogue"
+        );
+
+        let (service, _socket) = build(Some(primary_models.clone()));
+        let runtime = service.inner().runtime().clone();
+        assert!(
+            runtime.layers_available_for_root(&other).await,
+            "explicit catalogue"
+        );
+        assert!(
+            runtime.layers_available_for_root(&bare).await,
+            "explicit catalogue"
         );
     }
 

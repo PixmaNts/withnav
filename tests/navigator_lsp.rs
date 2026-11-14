@@ -1394,6 +1394,46 @@ async fn conversation_notification_binds_and_unbinds_with_incarnation_check() {
         .bound_editor(s_deferred)
         .expect("deferred session must be bound once ready");
     assert_eq!(bound_deferred.1, inc_deferred);
+
+    // A bind still waiting for an unready conversation gives up when the editor focuses
+    // another one meanwhile: the late bind must not replace the newer binding.
+    let s_late = ulid::Ulid::generate();
+    let inc_late = ulid::Ulid::generate();
+    let post_late: withnav::navigator::conversation::SessionPost =
+        Arc::new(|_| Box::pin(async { Ok(()) }));
+    feed.register_session_incarnation(s_late, inc_late, post_late, false);
+    nav.client
+        .notify(
+            "withnav/conversation",
+            json!({
+                "sessionId": s_late.to_string(),
+                "incarnation": inc_late.to_string(),
+                "focus": true,
+            }),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    nav.client
+        .notify(
+            "withnav/conversation",
+            json!({
+                "sessionId": s_deferred.to_string(),
+                "incarnation": inc_deferred.to_string(),
+                "focus": true,
+            }),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    feed.mark_incarnation_ready(s_late, inc_late);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        feed.bound_editor(s_late).is_none(),
+        "a superseded bind must not land"
+    );
+    assert!(
+        feed.bound_editor(s_deferred).is_some(),
+        "the newer binding stays"
+    );
 }
 
 #[tokio::test]

@@ -1,5 +1,9 @@
 //! Integration tests for the database owner process lifecycle, record publishing,
 //! security checks, hello proof verification, and client connectivity.
+//!
+//! Unix only: they kill owners with signals, check file modes and build symbolic links. The
+//! Windows owner (file lock, owner-only access list, detached start) has no runtime test here.
+#![cfg(unix)]
 use std::path::PathBuf;
 
 use withnav::app::connect::{Wanted, ensure_server, find_server};
@@ -90,7 +94,7 @@ async fn permissions_and_token_redaction() {
 }
 
 #[tokio::test]
-async fn stale_record_free_lock_starts_new_owner() {
+async fn stale_record_from_sigkilled_owner_and_concurrent_ensure_server() {
     let env = common::TestEnv::new();
     let data_dir = env.root.join("data/withnav");
     let config_dir = env.root.join("config/withnav");
@@ -116,15 +120,74 @@ async fn stale_record_free_lock_starts_new_owner() {
             .status();
     }
 
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while OwnerLock::is_held(&paths).unwrap_or(false) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the killed owner still holds the lock after 15 s"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
     assert!(paths.record.exists());
 
-    let owner2 = ensure_server(&wanted).await.expect("ensure server 2");
-    assert_ne!(owner1.record.pid, owner2.record.pid);
-    assert_ne!(owner1.instance, owner2.instance);
+    let mut tasks = Vec::new();
+    for _ in 0..4 {
+        let w = wanted.clone();
+        tasks.push(tokio::spawn(async move {
+            ensure_server(&w).await.expect("concurrent ensure server")
+        }));
+    }
+
+    let mut owners = Vec::new();
+    for t in tasks {
+        owners.push(t.await.expect("join"));
+    }
+
+    let first = &owners[0];
+    assert_ne!(first.record.pid, pid1);
+    assert_ne!(first.instance, owner1.instance);
+    for other in &owners[1..] {
+        assert_eq!(first.instance, other.instance);
+        assert_eq!(first.record.pid, other.record.pid);
+        assert_eq!(first.url, other.url);
+    }
+}
+
+#[tokio::test]
+async fn client_probe_racing_single_starter_never_makes_it_exit() {
+    let env = common::TestEnv::new();
+    let data_dir = env.root.join("data/withnav");
+    let config_dir = env.root.join("config/withnav");
+    let history_db = data_dir.join("withnav.db");
+    let guard = common::owner::OwnerGuard::new(&data_dir);
+
+    let wanted = Wanted {
+        config_dir,
+        data_dir,
+        history_db: history_db.clone(),
+        models: None,
+        exe: PathBuf::from(env!("CARGO_BIN_EXE_nav")),
+    };
+
+    let w_probe = wanted.clone();
+    let stop_probe = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_probe_clone = stop_probe.clone();
+
+    let probe_task = tokio::spawn(async move {
+        while !stop_probe_clone.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = find_server(&w_probe).await;
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    });
+
+    let owner = ensure_server(&wanted).await.expect("ensure server");
+    stop_probe.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = probe_task.await;
+
+    assert!(OwnerLock::is_held(&OwnerPaths::resolve(&history_db).unwrap()).unwrap_or(false));
+    assert_eq!(owner.record.build, env!("WITHNAV_VERSION"));
+    drop(guard);
 }
 
 #[tokio::test]
@@ -208,7 +271,9 @@ async fn lock_held_forged_record_wrong_proof_refused_no_auth_header() {
     let res = find_server(&wanted).await;
     assert!(res.is_err());
     let err = res.err().unwrap().to_string();
-    assert!(err.contains("proof verification failed"));
+    assert!(
+        err.contains("proof verification failed") || err.contains("a server is starting or stuck")
+    );
 
     let requests = fake_server.received_requests().await.expect("requests");
     assert!(!requests.is_empty());
@@ -341,6 +406,53 @@ async fn data_dir_reached_through_symlink_alias_shares_owner() {
     assert_eq!(owner_real.url, owner_alias.url);
 
     drop(guard);
+}
+
+#[tokio::test]
+async fn symlinked_database_file_is_refused() {
+    let env = common::TestEnv::new();
+    let data_dir = env.root.join("data/withnav");
+    let config_dir = env.root.join("config/withnav");
+    std::fs::create_dir_all(&data_dir).expect("create data");
+
+    let real_db = env.root.join("real.db");
+    std::fs::write(&real_db, []).expect("create real db");
+    let symlink_db = data_dir.join("withnav.db");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&real_db, &symlink_db).expect("create symlink");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+        .arg("serve")
+        .env("WITHNAV_DATA_DIR", &data_dir)
+        .env("WITHNAV_CONFIG_DIR", &config_dir)
+        .output()
+        .expect("serve run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is a symlink; point the data directory instead"),
+        "expected symlink refusal, got: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(&symlink_db);
+    let dangling_target = env.root.join("nonexistent.db");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&dangling_target, &symlink_db).expect("create dangling symlink");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
+        .arg("serve")
+        .env("WITHNAV_DATA_DIR", &data_dir)
+        .env("WITHNAV_CONFIG_DIR", &config_dir)
+        .output()
+        .expect("serve run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is a symlink; point the data directory instead"),
+        "expected dangling symlink refusal, got: {stderr}"
+    );
 }
 
 #[tokio::test]

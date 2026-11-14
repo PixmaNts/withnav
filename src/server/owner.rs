@@ -32,6 +32,15 @@ impl OwnerPaths {
     /// Resolves the canonical paths for the database owner.
     /// Follows symlinks to canonicalize `withnav.db`; if absent, canonicalizes the parent directory.
     pub fn resolve(history_db: &Path) -> anyhow::Result<Self> {
+        if let Ok(meta) = std::fs::symlink_metadata(history_db)
+            && meta.file_type().is_symlink()
+        {
+            anyhow::bail!(
+                "history database {} is a symlink; point the data directory instead",
+                history_db.display()
+            );
+        }
+
         let database = if history_db.exists() {
             std::fs::canonicalize(history_db)?
         } else {
@@ -115,9 +124,9 @@ impl OwnerPaths {
         }
         #[cfg(windows)]
         {
-            withnav_provider::auth::protect_private(&self.dir)
+            withnav_provider::auth::protect_owner_only(&self.dir)
                 .map_err(|e| anyhow::anyhow!("cannot protect server directory: {e}"))?;
-            withnav_provider::auth::check_private(&self.dir)
+            withnav_provider::auth::check_owner_only(&self.dir)
                 .map_err(|e| anyhow::anyhow!("server directory ACL check failed: {e}"))?;
         }
 
@@ -246,7 +255,7 @@ impl Record {
         }
         #[cfg(windows)]
         {
-            withnav_provider::auth::protect_private(&temp_path)
+            withnav_provider::auth::protect_owner_only(&temp_path)
                 .map_err(|e| anyhow::anyhow!("cannot protect owner record: {e}"))?;
         }
         std::fs::rename(&temp_path, &paths.record)?;
@@ -287,7 +296,7 @@ impl Record {
             if meta.len() > 4096 {
                 anyhow::bail!("owner record {:?} exceeds 4 KiB size limit", paths.record);
             }
-            withnav_provider::auth::check_private(&paths.record).map_err(|e| {
+            withnav_provider::auth::check_owner_only(&paths.record).map_err(|e| {
                 anyhow::anyhow!("owner record {:?} ACL check failed: {e}", paths.record)
             })?;
         }
@@ -372,6 +381,20 @@ pub fn hello_proof(token: &str, nonce: &str, instance: &str) -> String {
     message.extend_from_slice(nonce.as_bytes());
     message.extend_from_slice(instance.as_bytes());
     hmac_sha256(token.as_bytes(), &message)
+}
+
+/// Compares two strings in constant time.
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    if a_bytes.len() != b_bytes.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (&x, &y) in a_bytes.iter().zip(b_bytes) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// `POST /v1/shutdown` body (authenticated). Without `force` a server with running turns

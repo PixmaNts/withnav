@@ -20,19 +20,21 @@ pub struct Wanted {
 impl Wanted {
     /// The user's directories and this executable, with an optional explicit `--models`.
     pub fn from_env(models: Option<&Path>) -> anyhow::Result<Self> {
-        let config_dir = crate::provider::auth::default_config_dir()
+        let raw_cfg = crate::provider::auth::default_config_dir()
             .ok_or_else(|| anyhow::anyhow!("cannot resolve config directory"))?;
+        let config_dir = std::fs::canonicalize(&raw_cfg).unwrap_or(raw_cfg);
         let data_dir = crate::paths::data_dir()
             .ok_or_else(|| anyhow::anyhow!("cannot resolve data directory"))?;
         let history_db = crate::paths::history_db()
             .ok_or_else(|| anyhow::anyhow!("cannot resolve history database path"))?;
         let models = models
             .map(|m| {
-                if m.is_absolute() {
-                    Ok(m.to_path_buf())
+                let abs = if m.is_absolute() {
+                    m.to_path_buf()
                 } else {
-                    std::env::current_dir().map(|cwd| cwd.join(m))
-                }
+                    std::env::current_dir()?.join(m)
+                };
+                Ok::<PathBuf, anyhow::Error>(std::fs::canonicalize(&abs).unwrap_or(abs))
             })
             .transpose()?;
         let exe = std::env::current_exe()?;
@@ -64,19 +66,6 @@ impl std::fmt::Debug for Owner {
             .field("instance", &self.instance)
             .finish()
     }
-}
-
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
-    if a_bytes.len() != b_bytes.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (&x, &y) in a_bytes.iter().zip(b_bytes) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 #[cfg(unix)]
@@ -139,8 +128,11 @@ fn spawn_detached(wanted: &Wanted, paths: &OwnerPaths) -> anyhow::Result<()> {
 
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x00000008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
-    cmd.creation_flags(DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB);
+    // A new process group keeps a Ctrl-C or Ctrl-Break sent to the starting console from
+    // reaching the owner, which outlives the client that started it.
+    cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
 
     match cmd.spawn() {
         Ok(_) => Ok(()),
@@ -177,76 +169,11 @@ pub async fn ensure_server(wanted: &Wanted) -> anyhow::Result<Owner> {
     anyhow::bail!("timed out waiting for background owner to start (15s); `nav serve status`");
 }
 
-/// Like [`ensure_server`] but never starts one: `None` when no owner holds the lock.
-pub async fn find_server(wanted: &Wanted) -> anyhow::Result<Option<Owner>> {
-    // Looking never creates anything: without a data directory there is no owner, and a
-    // read-only command such as `nav doctor` must leave the disk untouched.
-    if !wanted
-        .history_db
-        .parent()
-        .is_some_and(std::path::Path::exists)
-    {
-        return Ok(None);
-    }
-    let paths = OwnerPaths::resolve(&wanted.history_db)?;
-    if !OwnerLock::is_held(&paths)? {
-        return Ok(None);
-    }
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct CompatibilityError(String);
 
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut record = None;
-    while tokio::time::Instant::now() < deadline {
-        match Record::read_from(&paths) {
-            Ok(r) => {
-                record = Some(r);
-                break;
-            }
-            Err(_) => {
-                if !OwnerLock::is_held(&paths)? {
-                    return Ok(None);
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-        }
-    }
-
-    let record = record
-        .ok_or_else(|| anyhow::anyhow!("a server is starting or stuck; `nav serve status`"))?;
-
-    if record.protocol != PROTOCOL {
-        anyhow::bail!(
-            "server protocol mismatch (server build {}, client build {}); run `nav serve stop`",
-            record.build,
-            env!("WITHNAV_VERSION")
-        );
-    }
-
-    let wanted_cfg =
-        std::fs::canonicalize(&wanted.config_dir).unwrap_or_else(|_| wanted.config_dir.clone());
-    let server_cfg =
-        std::fs::canonicalize(&record.config_dir).unwrap_or_else(|_| record.config_dir.clone());
-    if wanted_cfg != server_cfg {
-        anyhow::bail!(
-            "server config dir mismatch (server uses {}, wanted {}); run `nav serve stop`",
-            record.config_dir.display(),
-            wanted.config_dir.display()
-        );
-    }
-
-    if let Some(ref wanted_models) = wanted.models {
-        let matches_models = record.models_path.as_ref().is_some_and(|server_models| {
-            std::fs::canonicalize(wanted_models).ok() == std::fs::canonicalize(server_models).ok()
-                || wanted_models == server_models
-        });
-        if !matches_models {
-            anyhow::bail!(
-                "server models path mismatch (server uses {:?}, wanted {:?}); run `nav serve stop`",
-                record.models_path,
-                wanted.models
-            );
-        }
-    }
-
+async fn probe_live_owner(wanted: &Wanted, record: &Record) -> anyhow::Result<Owner> {
     let mut nonce_bytes = [0u8; 32];
     getrandom::getrandom(&mut nonce_bytes)
         .map_err(|e| anyhow::anyhow!("failed to read OS entropy: {e}"))?;
@@ -255,15 +182,25 @@ pub async fn find_server(wanted: &Wanted) -> anyhow::Result<Option<Owner>> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(3))
         .build()?;
 
     let hello_url = format!("http://127.0.0.1:{}/v1/hello?nonce={nonce}", record.port);
-    let resp = client.get(&hello_url).send().await?;
+    let mut resp = client.get(&hello_url).send().await?;
     if !resp.status().is_success() {
         anyhow::bail!("server returned status {} on hello probe", resp.status());
     }
 
-    let hello: crate::server::owner::Hello = resp.json().await?;
+    let mut body_bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if body_bytes.len() + chunk.len() > 4096 {
+            anyhow::bail!("hello response exceeded 4 KiB limit");
+        }
+        body_bytes.extend_from_slice(&chunk);
+    }
+
+    let hello: crate::server::owner::Hello = serde_json::from_slice(&body_bytes)?;
     if hello.instance != record.instance {
         anyhow::bail!(
             "server instance mismatch: expected {}, got {}",
@@ -273,14 +210,107 @@ pub async fn find_server(wanted: &Wanted) -> anyhow::Result<Option<Owner>> {
     }
 
     let expected_proof = crate::server::owner::hello_proof(&record.token, &nonce, &record.instance);
-    if !constant_time_eq(&hello.proof, &expected_proof) {
+    if !crate::server::owner::constant_time_eq(&hello.proof, &expected_proof) {
         anyhow::bail!("owner proof verification failed: invalid hello answer");
     }
 
-    Ok(Some(Owner {
+    if record.protocol != PROTOCOL {
+        return Err(CompatibilityError(format!(
+            "server protocol mismatch (server build {}, client build {}); run `nav serve stop`",
+            record.build,
+            env!("WITHNAV_VERSION")
+        ))
+        .into());
+    }
+
+    if record.build != env!("WITHNAV_VERSION") {
+        return Err(CompatibilityError(format!(
+            "server build mismatch (server {}, client {}); run `nav serve stop`",
+            record.build,
+            env!("WITHNAV_VERSION")
+        ))
+        .into());
+    }
+
+    let wanted_cfg = std::fs::canonicalize(&wanted.config_dir)
+        .map_err(|e| CompatibilityError(format!("cannot canonicalize wanted config dir: {e}")))?;
+    let server_cfg = std::fs::canonicalize(&record.config_dir)
+        .map_err(|e| CompatibilityError(format!("cannot canonicalize server config dir: {e}")))?;
+    if wanted_cfg != server_cfg {
+        return Err(CompatibilityError(format!(
+            "server config dir mismatch (server uses {}, wanted {}); run `nav serve stop`",
+            record.config_dir.display(),
+            wanted.config_dir.display()
+        ))
+        .into());
+    }
+
+    if let Some(ref wanted_models) = wanted.models {
+        let Some(ref server_models) = record.models_path else {
+            return Err(CompatibilityError(format!(
+                "server models path mismatch (server uses None, wanted {:?}); run `nav serve stop`",
+                wanted.models
+            ))
+            .into());
+        };
+        let wanted_canon = std::fs::canonicalize(wanted_models).map_err(|e| {
+            CompatibilityError(format!("cannot canonicalize wanted models path: {e}"))
+        })?;
+        let server_canon = std::fs::canonicalize(server_models).map_err(|e| {
+            CompatibilityError(format!("cannot canonicalize server models path: {e}"))
+        })?;
+        if wanted_canon != server_canon {
+            return Err(CompatibilityError(format!(
+                "server models path mismatch (server uses {:?}, wanted {:?}); run `nav serve stop`",
+                record.models_path, wanted.models
+            ))
+            .into());
+        }
+    }
+
+    Ok(Owner {
         url: format!("http://127.0.0.1:{}", record.port),
         token: record.token.clone(),
         instance: record.instance.clone(),
-        record,
-    }))
+        record: record.clone(),
+    })
+}
+
+/// Like [`ensure_server`] but never starts one: `None` when no owner holds the lock.
+pub async fn find_server(wanted: &Wanted) -> anyhow::Result<Option<Owner>> {
+    if !wanted
+        .history_db
+        .parent()
+        .is_some_and(std::path::Path::exists)
+    {
+        return Ok(None);
+    }
+    let paths = OwnerPaths::resolve(&wanted.history_db)?;
+    let held = OwnerLock::is_held(&paths)?;
+    if !held {
+        return Ok(None);
+    }
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        if !OwnerLock::is_held(&paths)? {
+            return Ok(None);
+        }
+        if let Ok(record) = Record::read_from(&paths) {
+            match probe_live_owner(wanted, &record).await {
+                Ok(owner) => return Ok(Some(owner)),
+                Err(err) => {
+                    if let Some(incompat) = err.downcast_ref::<CompatibilityError>() {
+                        return Err(anyhow::anyhow!("{incompat}"));
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    if !OwnerLock::is_held(&paths)? {
+        return Ok(None);
+    }
+    anyhow::bail!("a server is starting or stuck; `nav serve status`");
 }

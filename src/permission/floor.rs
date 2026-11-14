@@ -180,10 +180,14 @@ fn protected_targets(cx: &FloorContext) -> (Vec<PathBuf>, Vec<PathBuf>) {
     };
     add(&cx.config_dir, "config.json", false);
     add(&cx.config_dir, "flows", true);
-    for name in ["withnav.db", "withnav.db-wal", "withnav.db-shm"] {
+    for name in [
+        "withnav.db",
+        "withnav.db-wal",
+        "withnav.db-shm",
+        "withnav.db.owner.lock",
+    ] {
         add(&cx.data_dir, name, false);
     }
-    add(&cx.data_dir, "server", true);
     (files, roots)
 }
 
@@ -405,7 +409,47 @@ fn native(call: &ToolCall, cx: &FloorContext, writes: bool) -> Floor {
 /// innocently can point at a key.
 fn names_credential(word: &str, cx: &FloorContext) -> bool {
     let plain: String = word.chars().filter(|c| !"[]{}*?\\".contains(*c)).collect();
-    credential(Path::new(&plain)) || resolve_path(word, cx).is_some_and(|path| credential(&path))
+    credential(Path::new(&plain))
+        || resolve_path(word, cx).is_some_and(|path| credential(&path))
+        || server_credential(word, cx)
+}
+
+fn server_credential(word: &str, cx: &FloorContext) -> bool {
+    let Some(ref data_dir) = cx.data_dir else {
+        return false;
+    };
+    let server_dir = data_dir.join("server");
+    let resolved_server =
+        resolve_path(&server_dir.to_string_lossy(), cx).unwrap_or_else(|| server_dir.clone());
+
+    let is_in = |p: &Path| -> bool {
+        #[cfg(windows)]
+        {
+            let identity = |path: &Path| crate::tools::win_path::path_identity(path);
+            identity(p).is_ok_and(|p| {
+                identity(&resolved_server)
+                    .is_ok_and(|root| crate::tools::win_path::path_within(&p, &root))
+                    || identity(&server_dir)
+                        .is_ok_and(|root| crate::tools::win_path::path_within(&p, &root))
+            })
+        }
+        #[cfg(unix)]
+        {
+            p.starts_with(&resolved_server) || p.starts_with(&server_dir)
+        }
+    };
+
+    if let Some(resolved) = resolve_path(word, cx)
+        && is_in(&resolved)
+    {
+        return true;
+    }
+    if let Some(requested) = resolve(word, cx, false)
+        && is_in(&requested)
+    {
+        return true;
+    }
+    false
 }
 
 /// Programs that only read their operands, so naming a protected file is free.
@@ -1201,8 +1245,8 @@ mod tests {
             "data/withnav.db",
             "data/withnav.db-wal",
             "data/withnav.db-shm",
+            "data/withnav.db.owner.lock",
             "config/flows/mine/flow.json",
-            "data/server/owner.json",
             "project/../config/config.json",
         ] {
             let full = root.join(path);
@@ -1231,6 +1275,34 @@ mod tests {
             "project/config.json",
         ] {
             assert!(!protected_write(&root.join(path), &f.cx), "{path}");
+        }
+    }
+
+    #[test]
+    fn read_of_owner_json_hits_credential_floor() {
+        let f = fixture();
+        let server_dir = f.cx.data_dir.as_ref().unwrap().join("server");
+        std::fs::create_dir_all(&server_dir).unwrap();
+        let owner_json = server_dir.join("owner.json");
+        std::fs::write(&owner_json, "{}").unwrap();
+
+        let ws_link = f.cx.workspace.join("owner_alias.json");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&owner_json, &ws_link).unwrap();
+
+        let name = owner_json.to_string_lossy().into_owned();
+        assert!(matches!(
+            check(&native_call("read", &name), &[], &f.cx),
+            Floor::Credential(_)
+        ));
+
+        #[cfg(unix)]
+        {
+            let link_name = ws_link.to_string_lossy().into_owned();
+            assert!(matches!(
+                check(&native_call("read", &link_name), &[], &f.cx),
+                Floor::Credential(_)
+            ));
         }
     }
 

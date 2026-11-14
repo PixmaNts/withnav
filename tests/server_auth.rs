@@ -172,9 +172,9 @@ async fn host_header_validation() {
     for (host, expected_status) in [
         ("127.0.0.1:7310", StatusCode::OK),
         ("localhost:7310", StatusCode::OK),
-        ("evil.com:7310", StatusCode::FORBIDDEN),
-        ("127.0.0.1:9999", StatusCode::FORBIDDEN),
-        ("attacker.com", StatusCode::FORBIDDEN),
+        ("evil.com:7310", StatusCode::MISDIRECTED_REQUEST),
+        ("127.0.0.1:9999", StatusCode::MISDIRECTED_REQUEST),
+        ("attacker.com", StatusCode::MISDIRECTED_REQUEST),
     ] {
         let req = Request::builder()
             .method("GET")
@@ -314,4 +314,37 @@ async fn shutdown_busy_returns_409_unless_forced() {
         .unwrap();
     let resp = app(state.clone()).oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
+}
+
+// Given a server whose shutdown was accepted
+// When a client then tries to start work
+// Then the request is refused with 503 while health and the owner proof still answer
+#[tokio::test]
+async fn after_shutdown_is_accepted_new_work_is_refused() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("create ws");
+    let state = test_state(tmp.path(), Some("owner-token".into()));
+
+    let resp = request_with_auth(
+        &state,
+        Some("Bearer owner-token"),
+        "POST",
+        "/v1/shutdown",
+        Some(json!({ "force": false })),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    let resp = request_with_auth(
+        &state,
+        Some("Bearer owner-token"),
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "workspace": ws.to_str().unwrap() })),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let resp = request_with_auth(&state, None, "GET", "/v1/health", None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
 }

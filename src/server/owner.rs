@@ -70,16 +70,21 @@ impl OwnerPaths {
     /// If permissions or ownership do not match, the directory is refused without repairing.
     pub fn ensure_dir(&self) -> anyhow::Result<()> {
         if !self.dir.exists() {
+            // Two clients starting the first owner at once both get here; the one that loses
+            // the creation race checks the directory the winner made, like any existing one.
             #[cfg(unix)]
-            {
+            let created = {
                 use std::os::unix::fs::DirBuilderExt;
                 let mut builder = std::fs::DirBuilder::new();
                 builder.mode(0o700);
-                builder.create(&self.dir)?;
-            }
+                builder.create(&self.dir)
+            };
             #[cfg(not(unix))]
-            {
-                std::fs::create_dir_all(&self.dir)?;
+            let created = std::fs::create_dir(&self.dir);
+            match created {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(err) => return Err(err.into()),
             }
         }
 

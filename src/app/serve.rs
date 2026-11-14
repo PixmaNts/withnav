@@ -85,7 +85,9 @@ pub(super) async fn serve_command(args: ServeArgs) -> anyhow::Result<i32> {
     };
     record.write_to(&paths)?;
 
+    let watcher = tokio::spawn(watch_lock_file(paths.lock.clone(), state.clone()));
     let serve_res = crate::server::routes::serve_state_on(state.clone(), listener).await;
+    watcher.abort();
 
     shared.shutdown().await;
     state.close_all().await;
@@ -194,4 +196,36 @@ async fn acquire_patiently(
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     Ok(None)
+}
+
+/// Shuts the owner down once its lock file is gone or replaced: the data directory was deleted
+/// or moved, so no client can find this owner any more and its database is no longer the one
+/// at that path. Without this a detached owner whose directory was removed (a temporary test
+/// directory, a wiped data dir) would run forever, unreachable.
+async fn watch_lock_file(lock: std::path::PathBuf, state: crate::server::session::AppState) {
+    let identity = |path: &std::path::Path| {
+        let metadata = std::fs::metadata(path).ok()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            Some((metadata.dev(), metadata.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = metadata;
+            Some((0, 0))
+        }
+    };
+    let Some(original) = identity(&lock) else {
+        return;
+    };
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+    loop {
+        interval.tick().await;
+        if identity(&lock) != Some(original) {
+            tracing::warn!("the owner lock file is gone or replaced; shutting down");
+            state.trigger_shutdown();
+            return;
+        }
+    }
 }

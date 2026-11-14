@@ -70,6 +70,7 @@ async fn startup_does_not_wait_for_model_discovery() {
 
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_nav"));
     common::isolate(command.as_std_mut(), root.path());
+    let _guard = common::owner::OwnerGuard::new(&root.path().join("data/withnav"));
     let mut child = command
         .args(["lsp", "--stdio"])
         .arg("--models")

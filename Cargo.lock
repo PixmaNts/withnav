@@ -4573,6 +4573,8 @@ dependencies = [
  "htmd",
  "html2text",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "ignore",
  "image",
  "imagesize",

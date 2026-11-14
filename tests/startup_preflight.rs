@@ -206,6 +206,7 @@ async fn overrides_cannot_hide_default_failure_before_run_bind_terminal_or_lsp_r
         assert!(!dir.path().join("data/withnav/history.sqlite3").exists());
     }
     let dir = fixture(json!({}));
+    let _guard = common::owner::OwnerGuard::new(&dir.path().join("data/withnav"));
     use tokio::io::AsyncWriteExt as _;
     let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}})
         .to_string();
@@ -285,6 +286,7 @@ async fn lsp_workspace_catalog_and_project_primary_override_are_authoritative() 
             )
             .unwrap();
         }
+        let _guard = common::owner::OwnerGuard::new(&dir.path().join("data/withnav"));
         let mut child = command(dir.path(), true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -401,6 +403,7 @@ async fn lsp_actual_invalid_catalog_and_malformed_frame_fail_before_readiness() 
         .unwrap();
         models["models"]["mock/chat"]["api"] = json!("fim");
         std::fs::write(workspace.join("models.json"), models.to_string()).unwrap();
+        let _guard = common::owner::OwnerGuard::new(&dir.path().join("data/withnav"));
         let mut child = command(dir.path(), true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

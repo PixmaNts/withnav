@@ -12,8 +12,7 @@ use crate::navigator::metacognition::LlmCommenter;
 use crate::navigator::models::FimAdapter;
 use crate::navigator::ports::FimModel;
 use crate::navigator::{
-    self, ConversationFeed, Metacognition, ModelError, NavigatorDeps, Remark, RemarkContext,
-    ServerInfoParams,
+    self, Metacognition, ModelError, NavigatorDeps, Remark, RemarkContext, ServerInfoParams,
 };
 use crate::provider::auth;
 use crate::provider::catalog::{ModelCatalog, resolve_chat};
@@ -258,10 +257,19 @@ impl Layers {
 ///
 /// Interface agreed between the owner and the editor connections; filled by the editor
 /// connection implementation.
-#[derive(Debug)]
 pub struct Shared {
     pub registry: crate::navigator::conversation::WorkspaceFeedRegistry,
     pub clients: Arc<ClientCache>,
+    cancel: tokio_util::sync::CancellationToken,
+    connections: tokio::sync::Mutex<tokio::task::JoinSet<()>>,
+}
+
+impl std::fmt::Debug for Shared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Shared")
+            .field("registry", &self.registry)
+            .finish()
+    }
 }
 
 impl Shared {
@@ -269,6 +277,8 @@ impl Shared {
         Arc::new(Self {
             registry: crate::navigator::conversation::WorkspaceFeedRegistry::new(),
             clients,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            connections: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
         })
     }
 
@@ -281,99 +291,74 @@ impl Shared {
     }
 
     /// Owner shutdown: cancels and joins every editor connection.
-    pub async fn shutdown(&self) {}
+    pub async fn shutdown(&self) {
+        self.cancel.cancel();
+        let mut connections = self.connections.lock().await;
+        while let Some(res) = connections.join_next().await {
+            let _ = res;
+        }
+    }
+
+    /// Spawns a connection task tracked by the shared join set and cancellation token.
+    pub async fn spawn_connection<F>(&self, fut: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let child_cancel = self.cancel.child_token();
+        let mut connections = self.connections.lock().await;
+        while connections.try_join_next().is_some() {}
+        connections.spawn(async move {
+            tokio::select! {
+                _ = child_cancel.cancelled() => {}
+                _ = fut => {}
+            }
+        });
+    }
 }
 
-/// Builds the layers, starts the cognition chat server and serves the
-/// navigator over stdio until the client exits.
-pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
-    use tokio::io::AsyncReadExt as _;
-    let cwd = std::env::current_dir()?;
-    let mut stdin = tokio::io::stdin();
-    let Some((frame, initialized_workspace)) = initial_workspace(&mut stdin, &cwd).await? else {
-        return Ok(());
+/// Serves one editor's upgraded LSP connection inside the owner process.
+pub async fn serve_connection<S>(
+    stream: S,
+    workspace: PathBuf,
+    preflight: crate::session::preflight::Preflight,
+    app_state: crate::server::session::AppState,
+    shared: Arc<Shared>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    let (mut read_half, write_half) = tokio::io::split(stream);
+    let Some((frame, initialized_workspace)) = initial_workspace(&mut read_half, &workspace)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return;
     };
-    let config_dir =
-        auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
-    let clients = Arc::new(ClientCache::new());
-    let preflight = crate::session::preflight::Preflight::capture(
-        &config_dir,
-        models_path,
-        &initialized_workspace,
-        &crate::agent::instructions::RulesRoots::from_user_home(),
-        clients.clone(),
-    )
-    .await?;
-    preflight.check(&initialized_workspace).await?;
 
-    let log_path = crate::paths::decision_log()
-        .ok_or_else(|| anyhow::anyhow!("cannot resolve user data dir"))?;
-    let mut layers = build_layers_from(
-        preflight.models(),
-        &config_dir,
-        &ModelCatalog::system(),
-        log_path.clone(),
-        clients.clone(),
-    );
+    let config_dir = &app_state.config.config_dir;
+    let _ = preflight.models_path();
+    let log_path =
+        crate::paths::decision_log().unwrap_or_else(|| config_dir.join("navigator.jsonl"));
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // Admission, layers and cognition all use the initialize workspace catalog.
-    let workspace = Some(initialized_workspace);
-    let user_dir = navigator::default_user_dir();
-    let root = workspace.clone().unwrap_or_else(|| PathBuf::from("."));
+    let catalog =
+        crate::provider::catalog::ModelCatalog::new(Some(app_state.config.data_dir.clone()));
+    let layers = build_layers_from(
+        preflight.models(),
+        config_dir,
+        &catalog,
+        log_path.clone(),
+        shared.clients.clone(),
+    );
 
-    // The cognition chat rides on an in-process Phase-2 server bound to a
-    // loopback ephemeral port with a per-process bearer token, announced as
-    // `withnav/serverInfo`. It lives exactly as long as the LSP session:
-    // when `navigator::serve` returns (exit/EOF) the shutdown trigger fires,
-    // every session is closed and the server drains so the process exits.
-    // The SAME conversation hub goes to the session server (sessions
-    // register themselves there) and to the navigator deps (wakes post
-    // through it): one process, two channels, one conversation.
-    let registry = crate::navigator::conversation::WorkspaceFeedRegistry::new();
-    let conversation = registry.get_or_create(&root);
-    let http = match spawn_cognition_server(
-        preflight.models_path(),
-        registry.clone(),
-        conversation.clone(),
-        clients.clone(),
-    )
-    .await
-    {
-        Ok(http) => Some(http),
-        Err(e) => {
-            // A failed bind or an unopenable history database must not take
-            // the navigator down: run the LSP without the chat (no
-            // serverInfo notification) and say so in `withnav/status`.
-            tracing::error!("cognition chat server unavailable: {e}");
-            layers.disabled.push(format!("chat: {e}"));
-            None
-        }
-    };
-    // The terminal client of this workspace joins this server through the discovery file,
-    // which lives exactly as long as the server answers here: it is removed below, before the
-    // server shuts down.
-    let published = http.as_ref().and_then(|http| {
-        crate::server::discovery::publish_for(&root, http.info.port, &http.info.token)
-    });
-    let flow_host = http
-        .as_ref()
-        .map(|http| http.flows.clone())
-        .unwrap_or_else(|| {
-            Arc::new(crate::flows::host::Host::new(
-                config_dir.clone(),
-                crate::paths::data_dir().unwrap_or_else(|| config_dir.join("data")),
-                Some(preflight.models_path().to_path_buf()),
-                clients.clone(),
-            ))
-        });
-    // Loading the workspace's flows reads their validations from the
-    // permission database: on the blocking pool.
+    let root = initialized_workspace;
+    let conversation = shared.registry.get_or_create(&root);
+    let flow_host = app_state.flows.clone();
     let flow_runtime = {
-        let (host, root) = (flow_host.clone(), root.clone());
-        tokio::task::spawn_blocking(move || host.runtime(&root))
+        let (host, root_path) = (flow_host.clone(), root.clone());
+        tokio::task::spawn_blocking(move || host.runtime(&root_path))
             .await
             .ok()
             .flatten()
@@ -383,9 +368,10 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
             as Arc<crate::navigator::FlowFactory>
     });
 
+    let user_dir = navigator::default_user_dir();
     let mut deps = NavigatorDeps::new(layers.metacognition(), log_path)
-        .with_dirs(workspace, user_dir)
-        .with_registry(registry.clone())
+        .with_dirs(Some(root.clone()), user_dir)
+        .with_registry(shared.registry.clone())
         .with_conversation(conversation)
         .with_host(flow_host.clone())
         .with_model_ids(
@@ -401,9 +387,12 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
         .into_iter()
         .map(|diagnostic| diagnostic.message)
         .collect();
-    if let Some(info) = http.as_ref().map(|h| h.info.clone()) {
-        deps = deps.with_server_info(info);
-    }
+
+    let server_info = ServerInfoParams {
+        port: app_state.http.bind.port(),
+        token: app_state.http.bearer_token.clone().unwrap_or_default(),
+    };
+    deps = deps.with_server_info(server_info);
     if let Some(fim) = layers.fim {
         deps = deps.with_fim(fim);
     }
@@ -411,27 +400,13 @@ pub async fn run(models_path: Option<&Path>) -> anyhow::Result<()> {
         deps = deps.with_reflex_context(llm);
     }
 
-    navigator::serve(
-        std::io::Cursor::new(frame).chain(stdin),
-        tokio::io::stdout(),
-        deps,
-    )
-    .await;
-
-    // LSP exit/EOF: unpublish first so no new client joins, then close every chat session and
-    // let the server drain, so the process exits instead of leaking the HTTP task.
-    drop(published);
-    if let Some(http) = http {
-        let _ = http.shutdown.send(());
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), http.task).await;
-    }
-    let _ = tokio::task::spawn_blocking(move || flow_host.shutdown()).await;
-    Ok(())
+    let input = tokio::io::AsyncReadExt::chain(std::io::Cursor::new(frame), read_half);
+    navigator::serve(input, write_half, deps).await;
 }
 
 /// Reads and replays the first initialize frame: an editor's cwd is not its project.
 /// Bounded framing keeps untrusted stdio input from allocating without a limit.
-async fn initial_workspace<R: tokio::io::AsyncRead + Unpin>(
+pub async fn initial_workspace<R: tokio::io::AsyncRead + Unpin>(
     input: &mut R,
     cwd: &Path,
 ) -> anyhow::Result<Option<(Vec<u8>, PathBuf)>> {
@@ -501,81 +476,6 @@ async fn initial_workspace<R: tokio::io::AsyncRead + Unpin>(
         ),
     };
     Ok(Some((frame, workspace)))
-}
-
-/// The running cognition chat server: the spawned HTTP task plus the
-/// shutdown trigger the LSP exit fires, and the endpoint to announce.
-struct CognitionHttp {
-    task: tokio::task::JoinHandle<()>,
-    shutdown: tokio::sync::oneshot::Sender<()>,
-    info: ServerInfoParams,
-    flows: Arc<crate::flows::host::Host>,
-}
-
-/// The in-process cognition server: an [`AppState`] over the same models
-/// resolution as the LSP layers, bound to a loopback ephemeral port, with a
-/// random 64-hex-char bearer token.
-///
-/// [`AppState`]: crate::server::session::AppState
-async fn spawn_cognition_server(
-    models_path: &Path,
-    registry: crate::navigator::conversation::WorkspaceFeedRegistry,
-    conversation: ConversationFeed,
-    client_cache: Arc<ClientCache>,
-) -> anyhow::Result<CognitionHttp> {
-    use crate::server::session::{AppState, ServerConfig};
-
-    let config_dir =
-        auth::default_config_dir().ok_or_else(|| anyhow::anyhow!("cannot resolve config dir"))?;
-    let token = bearer_token();
-    // Conversation history: one SQLite file in WithNav's data dir.
-    let history_db = crate::paths::history_db()
-        .ok_or_else(|| anyhow::anyhow!("cannot resolve the WithNav data dir"))?;
-    let config = ServerConfig {
-        bind: "127.0.0.1:0".parse().expect("loopback bind"),
-        models_path: Some(models_path.to_path_buf()),
-        config_dir,
-        allow_non_loopback: false,
-        bearer_token: Some(token.clone()),
-        history_db,
-        data_dir: crate::paths::data_dir()
-            .ok_or_else(|| anyhow::anyhow!("cannot resolve data dir"))?,
-        rules_roots: crate::agent::instructions::RulesRoots::from_user_home(),
-        web: None,
-    };
-    let state = AppState::with_hooks(
-        config,
-        Arc::new(navigator::NavigatorHooks::with_feed_and_registry(
-            Some(conversation),
-            Some(registry),
-        )),
-        client_cache,
-    )?;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
-    let flows = state.service().flows.clone();
-
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let task = tokio::spawn(async move {
-        let _ = crate::server::routes::serve_until(state, listener, async move {
-            let _ = shutdown_rx.await;
-        })
-        .await;
-    });
-
-    Ok(CognitionHttp {
-        task,
-        shutdown: shutdown_tx,
-        info: ServerInfoParams { port, token },
-        flows,
-    })
-}
-
-/// A random 32-byte bearer token, hex-encoded: two ULIDs give 128 random
-/// bits each with millisecond ordering, plenty for a per-process secret.
-fn bearer_token() -> String {
-    use ulid::Ulid;
-    format!("{}{}", Ulid::generate(), Ulid::generate()).to_lowercase()
 }
 
 /// Stand-in used when the metacognition layer could not be built: every

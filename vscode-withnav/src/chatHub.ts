@@ -7,6 +7,8 @@ export interface TabBackend extends ChatBackend {
   setServerInfo(info: ServerInfoParams): void;
 }
 
+export type ConversationBindingSender = (params: { sessionId: string; incarnation?: string; focus: boolean }) => void;
+
 /** What survives a reload of the window: the sessions open in tabs (an empty tab has no id) and the focused one. */
 export interface SavedTabs { sessions: (string | null)[]; active: number }
 export interface TabStore { load(): SavedTabs | undefined; save(value: SavedTabs): void }
@@ -39,6 +41,7 @@ export class ChatHub implements ChatTabs {
     private readonly lister: TabBackend,
     private readonly store?: TabStore,
     private readonly notifyError: (error: unknown) => void = () => undefined,
+    private readonly notifyBinding?: ConversationBindingSender,
   ) {
     this.listerOff = lister.subscribe(message => this.acceptList(message));
     const saved = store?.load();
@@ -46,6 +49,7 @@ export class ChatHub implements ChatTabs {
     if (!this.order.length) this.open();
     const index = saved?.active ?? 0;
     if (this.order[index]) this.activeId = this.order[index].id;
+    this.bindActive();
   }
 
   tabs(): TabInfo[] { return this.order.map(tab => ({ id: tab.id, title: tab.title, ...(tab.sessionId ? { sessionId: tab.sessionId } : {}) })); }
@@ -76,7 +80,10 @@ export class ChatHub implements ChatTabs {
     this.activeId = id;
     if (this.endpoint) backend.setServerInfo(this.endpoint);
     if (sessionId) void backend.openConversation(sessionId).catch(this.notifyError);
-    if (!restoring) this.changed();
+    if (!restoring) {
+      this.changed();
+      if (sessionId) this.bindActive();
+    }
     return id;
   }
 
@@ -86,7 +93,13 @@ export class ChatHub implements ChatTabs {
     const [tab] = this.order.splice(index, 1);
     tab.off();
     tab.backend.dispose();
-    if (this.activeId === id) this.activeId = (this.order[index] ?? this.order[index - 1])?.id;
+    if (tab.sessionId) {
+      this.notifyBinding?.({ sessionId: tab.sessionId, focus: false });
+    }
+    if (this.activeId === id) {
+      this.activeId = (this.order[index] ?? this.order[index - 1])?.id;
+      this.bindActive();
+    }
     this.changed();
   }
 
@@ -94,6 +107,7 @@ export class ChatHub implements ChatTabs {
     if (this.activeId === id || !this.order.some(tab => tab.id === id)) return;
     this.activeId = id;
     this.changed();
+    this.bindActive();
   }
 
   /** Forwards an endpoint announcement to every backend; tabs that lost their server reopen their session. */
@@ -105,6 +119,18 @@ export class ChatHub implements ChatTabs {
       tab.backend.setServerInfo(info);
       if (restarted && tab.sessionId) void tab.backend.openConversation(tab.sessionId).catch(this.notifyError);
     }
+    this.bindActive();
+  }
+
+  private bindActive(): void {
+    const active = this.order.find(tab => tab.id === this.activeId);
+    if (!active?.sessionId) return;
+    const incarnation = active.backend.currentIncarnation?.() ?? undefined;
+    this.notifyBinding?.({
+      sessionId: active.sessionId,
+      ...(incarnation ? { incarnation } : {}),
+      focus: true,
+    });
   }
 
   settingsRequest(path: string, init?: RequestInit, signal?: AbortSignal): Promise<Response> {
@@ -145,6 +171,9 @@ export class ChatHub implements ChatTabs {
         tab.sessionId = sessionId;
         tab.title = title;
         this.changed();
+      }
+      if (tab.id === this.activeId && sessionId) {
+        this.bindActive();
       }
     }
     // A finished turn changes the list (message counts, ordering): refresh it, coalesced.

@@ -372,25 +372,68 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSession> {
     })
 }
 
+fn matching_workspaces(tx: &Transaction<'_>, workspace: &str) -> Result<Vec<String>, String> {
+    let mut stmt = tx
+        .prepare("SELECT DISTINCT workspace FROM sessions")
+        .map_err(|e| format!("prepare distinct workspaces: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("query distinct workspaces: {e}"))?;
+
+    let target_path = Path::new(workspace);
+    let target_canonical = crate::tools::canonical_path(target_path).ok();
+
+    let mut matches = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for row in rows {
+        let stored = row.map_err(|e| e.to_string())?;
+        let is_exact = stored == workspace;
+        let is_canonical_match = target_canonical.as_ref().is_some_and(|target| {
+            crate::tools::canonical_path(Path::new(&stored))
+                .ok()
+                .as_ref()
+                == Some(target)
+        });
+
+        if (is_exact || is_canonical_match) && seen.insert(stored.clone()) {
+            matches.push(stored);
+        }
+    }
+
+    if seen.insert(workspace.to_string()) {
+        matches.push(workspace.to_string());
+    }
+
+    Ok(matches)
+}
+
 fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String> {
     with_read_tx(path, |tx| {
-        let mut stmt = tx
-            .prepare(
-                "SELECT s.id, s.workspace, s.model, s.editor, s.title,
-                        s.created_at, s.updated_at, s.last_seq,
-                        s.model_resolution, s.variant, s.variant_override, s.primary_agent,
-                        s.reasoning_floor, s.agent_overrides, s.selection_provenance, s.resume_disabled_reason,
-                        (SELECT COUNT(*) FROM events e
-                         WHERE e.session_id = s.id AND e.kind = 'message.received'),
-                        c.parent_id, c.child_id, c.agent, c.goal, c.policy_snapshot,
-                        c.status, c.created_at, c.terminal_at, c.terminal_reason, c.result_text
-                 FROM sessions s LEFT JOIN child_links c ON c.child_id = s.id
-                 WHERE s.workspace = ?1
-                 ORDER BY s.updated_at DESC, s.id DESC",
-            )
-            .map_err(|e| format!("prepare: {e}"))?;
+        let matches = matching_workspaces(tx, workspace)?;
+        if matches.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = (1..=matches.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT s.id, s.workspace, s.model, s.editor, s.title,
+                    s.created_at, s.updated_at, s.last_seq,
+                    s.model_resolution, s.variant, s.variant_override, s.primary_agent,
+                    s.reasoning_floor, s.agent_overrides, s.selection_provenance, s.resume_disabled_reason,
+                    (SELECT COUNT(*) FROM events e
+                     WHERE e.session_id = s.id AND e.kind = 'message.received'),
+                    c.parent_id, c.child_id, c.agent, c.goal, c.policy_snapshot,
+                    c.status, c.created_at, c.terminal_at, c.terminal_reason, c.result_text
+             FROM sessions s LEFT JOIN child_links c ON c.child_id = s.id
+             WHERE s.workspace IN ({placeholders})
+             ORDER BY s.updated_at DESC, s.id DESC"
+        );
+        let mut stmt = tx.prepare(&sql).map_err(|e| format!("prepare: {e}"))?;
         let rows = stmt
-            .query_map(params![workspace], |row| {
+            .query_map(rusqlite::params_from_iter(&matches), |row| {
                 let link = if row.get::<_, Option<String>>(18)?.is_some() {
                     Some(super::child_link_from_row_at(row, 17)?)
                 } else {
@@ -404,6 +447,7 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
             })
             .map_err(|e| format!("query: {e}"))?;
         let mut out = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
         for row in rows {
             let decoded = row
                 .map_err(|e| e.to_string())
@@ -415,7 +459,11 @@ fn list_sync(path: &Path, workspace: &str) -> Result<Vec<ListedSession>, String>
                     })
                 });
             match decoded {
-                Ok(session) => out.push(session),
+                Ok(session) => {
+                    if seen_ids.insert(session.meta.id) {
+                        out.push(session);
+                    }
+                }
                 // One unreadable row must not hide the healthy conversations of the
                 // workspace; opening that row (`meta`, resume) still fails explicitly.
                 Err(err) => tracing::error!("history list: unreadable row skipped: {err}"),
@@ -518,5 +566,76 @@ pub(crate) mod read_count {
             .as_ref()
             .and_then(|counts| counts.get(path).copied())
             .unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn workspace_listing_matches_canonical_aliases_and_raw_missing_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("history.db");
+        let store = HistoryStore::open(&db_path).expect("open history store");
+
+        let real_ws = temp.path().join("real_workspace");
+        std::fs::create_dir_all(&real_ws).unwrap();
+        let real_canonical = crate::tools::canonical_path(&real_ws).unwrap();
+
+        let symlink_ws = temp.path().join("symlink_alias");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_ws, &symlink_ws).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&real_ws, &symlink_ws).unwrap();
+
+        let missing_ws = temp.path().join("historical_missing_workspace");
+
+        let id_symlink = Ulid::generate();
+        let id_real = Ulid::generate();
+        let id_missing = Ulid::generate();
+
+        let symlink_str = symlink_ws.to_str().unwrap();
+        let real_str = real_canonical.to_str().unwrap();
+        let missing_str = missing_ws.to_str().unwrap();
+
+        store
+            .record_session(id_symlink, symlink_str, "default", false)
+            .await
+            .expect("record symlink session");
+        store
+            .record_session(id_real, real_str, "default", false)
+            .await
+            .expect("record real session");
+        store
+            .record_session(id_missing, missing_str, "default", false)
+            .await
+            .expect("record missing session");
+
+        // Listing by canonical path returns both the real path session and symlink alias session
+        let list_real = store.list(real_str).await.expect("list by real");
+        let listed_ids: Vec<_> = list_real.iter().map(|s| s.meta.id).collect();
+        assert_eq!(listed_ids.len(), 2);
+        assert!(listed_ids.contains(&id_symlink));
+        assert!(listed_ids.contains(&id_real));
+        assert!(!listed_ids.contains(&id_missing));
+
+        // Listing by symlink alias also returns both
+        let list_symlink = store.list(symlink_str).await.expect("list by symlink");
+        let symlink_listed_ids: Vec<_> = list_symlink.iter().map(|s| s.meta.id).collect();
+        assert_eq!(symlink_listed_ids.len(), 2);
+        assert!(symlink_listed_ids.contains(&id_symlink));
+        assert!(symlink_listed_ids.contains(&id_real));
+
+        // Listing by missing historical path returns the exact raw match
+        let list_missing = store.list(missing_str).await.expect("list by missing");
+        let missing_listed_ids: Vec<_> = list_missing.iter().map(|s| s.meta.id).collect();
+        assert_eq!(missing_listed_ids, vec![id_missing]);
+
+        // Stored rows are never rewritten in the database
+        let loaded_symlink = store.meta(id_symlink).await.unwrap().unwrap();
+        assert_eq!(loaded_symlink.workspace, symlink_str);
+        let loaded_missing = store.meta(id_missing).await.unwrap().unwrap();
+        assert_eq!(loaded_missing.workspace, missing_str);
     }
 }

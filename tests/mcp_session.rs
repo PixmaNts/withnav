@@ -183,6 +183,7 @@ async fn nav_run_waits_for_a_server_that_initialises_after_a_delay() {
     )
     .unwrap();
     let (root, ws) = (env.root.clone(), env.ws.clone());
+    let _owner_guard = common::owner::OwnerGuard::new(&root.join("data/withnav"));
     let output = tokio::task::spawn_blocking(move || {
         std::process::Command::new(env!("CARGO_BIN_EXE_nav"))
             .args(["run", "--workspace"])

@@ -443,6 +443,7 @@ async fn withnav_run_variant_reaches_the_wire() {
     )
     .unwrap();
     let (root, models) = (tmp.path().to_path_buf(), cfg.models_path());
+    let _owner_guard = common::owner::OwnerGuard::new(&root.join("data/withnav"));
     let run = move |variant: &'static str, ws: std::path::PathBuf| {
         let (root, models) = (root.clone(), models.clone());
         tokio::task::spawn_blocking(move || {

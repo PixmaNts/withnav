@@ -165,9 +165,50 @@ fn replay_session_end_interrupted_fixture() {
     let envelopes = load_fixture("session-end-interrupted.sse");
     let state = replay(&envelopes);
 
+    // session.end settles the whole conversation: activity stops, the
+    // running call is interrupted and the completed one keeps its result.
+    assert_eq!(state.activity, Activity::Stopped);
+    assert_eq!(state.conversation.current_turn, None);
+
+    let tools: Vec<_> = state
+        .conversation
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::ToolCall { name, status, .. } => Some((name.as_str(), *status)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(tools.len(), 2);
+    assert_eq!(tools[0], ("glob", Some(ToolStatus::Ok)));
+    assert_eq!(tools[1], ("bash", Some(ToolStatus::Interrupted)));
+}
+
+#[test]
+fn replay_session_end_permission_fixture() {
+    let envelopes = load_fixture("session-end-permission.sse");
+    let state = replay(&envelopes);
+
     assert_eq!(state.activity, Activity::Stopped);
 
-    let tool_status = state
+    // The gated call never ran: it settles interrupted like every planned
+    // call the session abandoned, and the prompt it raised is no longer
+    // answerable.
+    let permissions: Vec<_> = state
+        .conversation
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Permission(p) => Some((p.tool.as_str(), p.resolution.as_deref(), p.stale)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(permissions.len(), 1);
+    assert_eq!(permissions[0], ("bash", Some("cancelled"), false));
+    assert!(state.conversation.open_permissions.is_empty());
+
+    let gated = state
         .conversation
         .blocks
         .iter()
@@ -175,8 +216,49 @@ fn replay_session_end_interrupted_fixture() {
             BlockKind::ToolCall { name, status, .. } if name == "bash" => *status,
             _ => None,
         });
+    assert_eq!(gated, Some(ToolStatus::Interrupted));
 
-    assert_eq!(tool_status, Some(ToolStatus::Interrupted));
+    let completed = state
+        .conversation
+        .blocks
+        .iter()
+        .find_map(|b| match &b.kind {
+            BlockKind::ToolCall { name, status, .. } if name == "glob" => *status,
+            _ => None,
+        });
+    assert_eq!(completed, Some(ToolStatus::Ok));
+}
+
+#[test]
+fn replayed_session_end_is_idempotent() {
+    let envelopes = load_fixture("session-end-permission.sse");
+    let mut state = replay(&envelopes);
+
+    // A second end (a resync overlap, a repeated capture) settles nothing
+    // twice: the settled prompt keeps its resolution and the completed tool
+    // keeps its result. Only the event cursor legitimately moves.
+    let before = state.conversation.clone();
+    let second = EventEnvelope {
+        seq: 10,
+        kind: "session.end".into(),
+        ..envelopes.last().cloned().unwrap()
+    };
+    let mut mcp = None;
+    apply_envelope(
+        &mut state,
+        second,
+        EnvelopeContext {
+            own_session: None,
+            read_only: false,
+            default_agent: None,
+            catalog: &[],
+            mcp: &mut mcp,
+        },
+    )
+    .expect("apply_envelope must succeed");
+    assert_eq!(state.conversation.blocks, before.blocks);
+    assert_eq!(state.conversation.open_permissions, before.open_permissions);
+    assert_eq!(state.activity, Activity::Stopped);
 }
 
 #[test]

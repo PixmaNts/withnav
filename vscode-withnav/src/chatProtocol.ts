@@ -149,7 +149,7 @@ export type HostToWebview = { generation?: number; tab?: string } & (
   /** Streamed reasoning text for the current turn, to append (shown collapsed). */
   | { type: "reasoning"; id: string; stepId?: string; text: string }
   /** A tool call inside the current turn. `summary` is a short human line (e.g. "read src/main.rs"). */
-  | { type: "tool"; id: string; callId: string; phase: "start" | "end"; name: string; summary: string; ok?: boolean; evidence?: PermissionEvidence; mcpMedia?: McpMediaItem[]; mcpUi?: McpUiMeta; args?: Record<string, unknown>; output?: string; metadata?: Record<string, unknown>; images?: ImageRef[] }
+  | { type: "tool"; id: string; callId: string; phase: "start" | "end"; name: string; summary: string; ok?: boolean; interrupted?: boolean; evidence?: PermissionEvidence; mcpMedia?: McpMediaItem[]; mcpUi?: McpUiMeta; args?: Record<string, unknown>; output?: string; metadata?: Record<string, unknown>; images?: ImageRef[] }
   /** The turn is over. `error` is set when it failed. */
   | { type: "turnEnd"; id: string; outcome: "done" | "stopped" | "error"; error?: string }
   /** The cognition asked the Captain a question and waits for the next message as the answer. */

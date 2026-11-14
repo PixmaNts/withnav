@@ -91,8 +91,37 @@ describe("transcript projection", () => {
     const view = reduceAll(emptyView(), events);
     const [turn] = turns(view.items);
     expect(turn!.status).toBe("interrupted");
+    expect(view.tools["toolu_01listfilescall000000001"]?.status).toBe("ok");
     expect(view.tools["toolu_01longtaskcall000000001"]?.status).toBe("interrupted");
     expect(view.activity).toBe("stopped");
+  });
+
+  it("cancels a pending permission on session.end and keeps the completed call", () => {
+    const events = fixture("session-end-permission.sse");
+    const view = reduceAll(emptyView(), events);
+    const permission = view.permissions["01M48ENPREQ00000000000000"];
+    expect(permission?.resolution).toBe("cancelled");
+    expect(openPermissions(view)).toEqual([]);
+    expect(view.tools["toolu_01listcall00000000000001"]?.status).toBe("ok");
+    expect(view.activity).toBe("stopped");
+    const [turn] = turns(view.items);
+    expect(turn!.status).toBe("yielded");
+  });
+
+  it("settles nothing twice on a repeated session.end", () => {
+    const events = fixture("session-end-permission.sse");
+    const view = reduceAll(emptyView(), events);
+    const second = events.slice();
+    const end = second[second.length - 1]!;
+    second[second.length - 1] = { ...end, seq: end.seq + 1 };
+    const again = reduceAll(view, second.slice(-1));
+    // The cursor and the ended timestamp legitimately move; the settlement
+    // itself does not repeat.
+    expect(again.permissions["01M48ENPREQ00000000000000"]?.resolution).toBe("cancelled");
+    expect(again.tools["toolu_01listcall00000000000001"]?.status).toBe("ok");
+    expect(again.activity).toBe("stopped");
+    const [turn] = turns(again.items);
+    expect(turn!.status).toBe("yielded");
   });
 
   it("projects turn failures and preserves error details", () => {

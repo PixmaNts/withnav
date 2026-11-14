@@ -681,7 +681,7 @@ modelBtn.addEventListener("keydown", event => {
 });
 type TextSegment = { kind: "text"; stepId?: string; content: HTMLElement; reasoning: HTMLElement; details: HTMLDetailsElement; text: string; thoughts: string };
 type ToolGroup = { kind: "tools"; details: HTMLDetailsElement; summary: HTMLElement; calls: Map<string, Extract<HostToWebview, { type: "tool" }>>; chosen: boolean; finished: boolean };
-type Turn = { root: HTMLElement; roots: HTMLElement[]; activityButton?: HTMLButtonElement; activityOpen?: boolean; last?: TextSegment | ToolGroup; calls: Map<string, HTMLElement>; groups: Map<string, ToolGroup>; time?: HTMLElement; startedAt?: number };
+type Turn = { root: HTMLElement; roots: HTMLElement[]; activityButton?: HTMLButtonElement; activityOpen?: boolean; last?: TextSegment | ToolGroup; calls: Map<string, HTMLElement>; groups: Map<string, ToolGroup>; time?: HTMLElement; startedAt?: number; ended?: boolean };
 const turns = new Map<string, Turn>();
 let state = "connecting";
 let pendingQuestion = false;
@@ -1299,13 +1299,15 @@ function activity(item: Turn, event: Extract<HostToWebview, { type: "tool" }>): 
   const calls = [...group.calls.values()];
   const failed = calls.filter(call => call.phase === "end" && call.ok === false).length;
   const running = calls.find(call => call.phase === "start");
+  const interrupted = calls.filter(call => call.phase === "end" && call.interrupted).length;
   group.summary.replaceChildren(el("span", "", actionsSummary(calls)));
   if (failed) group.summary.append(el("span", "tool-group-failed", ` · ${failed} failed`));
+  if (interrupted) group.summary.append(el("span", "tool-group-interrupted", ` · ${interrupted} interrupted`));
   if (running) group.summary.append(el("span", "tool-group-running", ` · running ${running.summary || running.name}`));
   if (!group.chosen) group.details.open = !replaying && !group.finished;
   row.replaceChildren();
-  row.className = `tool-row ${event.phase === "start" ? "working" : event.ok === false ? "failed" : "complete"}`;
-  row.append(el("span", "tool-mark", event.phase === "start" ? "◌" : event.ok === false ? "×" : "✓"));
+  row.className = `tool-row ${event.phase === "start" ? "working" : event.interrupted ? "interrupted" : event.ok === false ? "failed" : "complete"}`;
+  row.append(el("span", "tool-mark", event.phase === "start" ? "◌" : event.interrupted ? "■" : event.ok === false ? "×" : "✓"));
   const summary = event.summary || event.name;
   const target = toolPath(summary);
   if (target) {
@@ -1324,7 +1326,7 @@ function activity(item: Turn, event: Extract<HostToWebview, { type: "tool" }>): 
     row.append(text);
   }
   row.title = summary;
-  row.setAttribute("aria-label", `${event.phase === "start" ? "Running" : event.ok === false ? "Failed" : "Finished"}: ${summary}`);
+  row.setAttribute("aria-label", `${event.phase === "start" ? "Running" : event.interrupted ? "Interrupted" : event.ok === false ? "Failed" : "Finished"}: ${summary}`);
   if (event.mcpUi && (event.mcpUi.resource_uri || event.mcpUi.html || event.mcpUi.url)) {
     const ui = event.mcpUi;
     const btn = el("button", "mcp-open-btn", "Open App");
@@ -1895,7 +1897,17 @@ function receive(event: HostToWebview): void {
       const item = turn(event.id);
       finishGroup(item);
       if (item.startedAt !== undefined && item.time) { item.time.textContent = ` · ${durationLabel(Date.now() - item.startedAt)}`; item.startedAt = undefined; }
-      if (event.outcome !== "done") item.root.append(el("div", "turn-result", event.error || (event.outcome === "stopped" ? "Stopped" : "The turn failed.")));
+      // A turn the session already settled (a synthetic end) and whose own
+      // turn.end then replays through a resync gap must not grow a second
+      // result row: the first rendering stays the only one.
+      if (!item.ended) {
+        item.ended = true;
+        if (event.outcome !== "done") {
+          const result = el("div", "turn-result", event.error || (event.outcome === "stopped" ? "Stopped" : "The turn failed."));
+          result.dataset.outcome = event.outcome;
+          item.root.append(result);
+        }
+      }
       setStatus(event.outcome === "error" ? "error" : "ready", event.error);
       follow();
       break;

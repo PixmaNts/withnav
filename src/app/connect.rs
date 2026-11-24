@@ -136,9 +136,21 @@ fn spawn_detached(wanted: &Wanted, paths: &OwnerPaths) -> anyhow::Result<()> {
 
     match cmd.spawn() {
         Ok(_) => Ok(()),
+        // A job object without JOB_OBJECT_LIMIT_BREAKAWAY_OK refuses the breakaway flag with
+        // ERROR_ACCESS_DENIED (seen on the GitHub Windows runner, 2026-11-24). Starting the owner
+        // inside the job still serves the clients; it only ends when that job is closed.
+        Err(err) if err.raw_os_error() == Some(5) => {
+            cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+            match cmd.spawn() {
+                Ok(_) => Ok(()),
+                Err(err) => anyhow::bail!(
+                    "detached server spawn failed on Windows ({err}); start `nav serve` manually"
+                ),
+            }
+        }
         Err(err) => {
             anyhow::bail!(
-                "detached server spawn failed on Windows (job object may forbid breakaway: {err}); start `nav serve` manually"
+                "detached server spawn failed on Windows ({err}); start `nav serve` manually"
             );
         }
     }

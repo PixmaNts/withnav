@@ -1093,6 +1093,22 @@ mod tests {
     use std::time::Duration;
     use ulid::Ulid;
 
+    /// A `file://` URI the LSP layer accepts on every platform. Formatting `path.display()`
+    /// after `file://` yields `file://C:\…` on Windows, which `uri_to_path_str` rejects, so
+    /// every routing assertion there saw `None`.
+    fn file_uri(path: &Path) -> String {
+        let text = path.to_string_lossy().replace('\\', "/");
+        let text = if text.starts_with('/') {
+            text
+        } else {
+            format!("/{text}")
+        };
+        format!(
+            "file://{}",
+            crate::navigator::lsp::uri::percent_encode(&text)
+        )
+    }
+
     struct SilentMetacognition;
     impl Metacognition for SilentMetacognition {
         fn remark<'a>(
@@ -1142,7 +1158,7 @@ mod tests {
         let workspace = runtime.workspace.lock().await;
         let reader = {
             let runtime = runtime.clone();
-            let uri = format!("file://{}/new.rs", root.display());
+            let uri = file_uri(&root.join("new.rs"));
             tokio::spawn(async move { runtime.resolve_document_root(&uri).await })
         };
         tokio::task::yield_now().await;
@@ -1178,7 +1194,7 @@ mod tests {
             .with_dirs(Some(root.clone()), None);
         let (service, _socket) = crate::navigator::build_service(deps);
         let runtime = service.inner().runtime().clone();
-        let uri = format!("file://{}/file.rs", root.display());
+        let uri = file_uri(&root.join("file.rs"));
         let mut docs = runtime.documents.lock().await;
         docs.open(&uri, "rust".into(), "fn main() {}".into(), 1);
         let previous = CancellationToken::new();
@@ -1411,7 +1427,7 @@ mod tests {
 
         let target_file = nested.join("src/lib.rs");
         std::fs::write(&target_file, "pub fn n() {}").unwrap();
-        let target_uri = format!("file://{}", target_file.display());
+        let target_uri = file_uri(&target_file);
 
         let deps = NavigatorDeps::new(Arc::new(SilentMetacognition), tmp.path().join("log.jsonl"));
         let (service, _socket) = crate::navigator::build_service(deps);
@@ -1614,7 +1630,7 @@ mod tests {
         // Document in removed root 2 now fails root resolution
         let file_2 = root_2.join("src/lib.rs");
         std::fs::write(&file_2, "fn r2() {}").unwrap();
-        let uri_2 = format!("file://{}", file_2.display());
+        let uri_2 = file_uri(&file_2);
         assert_eq!(runtime.resolve_document_root(&uri_2).await, None);
 
         // Now remove root 1 as well: all roots removed
@@ -1629,7 +1645,7 @@ mod tests {
         // In registered-root mode, with all roots removed, root resolution returns None (no fallback)
         let file_1 = root_1.join("src/lib.rs");
         std::fs::write(&file_1, "fn r1() {}").unwrap();
-        let uri_1 = format!("file://{}", file_1.display());
+        let uri_1 = file_uri(&file_1);
         assert_eq!(runtime.resolve_document_root(&uri_1).await, None);
     }
 
@@ -1683,8 +1699,8 @@ mod tests {
         let file_b = root_b.join("src/foreign.rs");
         std::fs::write(&file_a, "fn main() {}\n").unwrap();
         std::fs::write(&file_b, "fn foreign() {}\n").unwrap();
-        let uri_a = format!("file://{}", file_a.display());
-        let uri_b = format!("file://{}", file_b.display());
+        let uri_a = file_uri(&file_a);
+        let uri_b = file_uri(&file_b);
 
         let deps = NavigatorDeps::new(Arc::new(SilentMetacognition), tmp.path().join("log.jsonl"));
         let (service, _socket) = crate::navigator::build_service(deps);
@@ -1842,7 +1858,7 @@ mod tests {
 
         let internal_file = bootstrap_root.join("src/lib.rs");
         std::fs::write(&internal_file, "fn i() {}").unwrap();
-        let internal_uri = format!("file://{}", internal_file.display());
+        let internal_uri = file_uri(&internal_file);
         assert_eq!(
             runtime.resolve_document_root(&internal_uri).await,
             Some(bootstrap_root)
@@ -1850,7 +1866,7 @@ mod tests {
 
         let external_file = external_dir.join("other.rs");
         std::fs::write(&external_file, "fn e() {}").unwrap();
-        let external_uri = format!("file://{}", external_file.display());
+        let external_uri = file_uri(&external_file);
         assert_eq!(runtime.resolve_document_root(&external_uri).await, None);
     }
 
@@ -1862,7 +1878,7 @@ mod tests {
 
         let file = root.join("src/lib.rs");
         std::fs::write(&file, "fn old() {}\n").unwrap();
-        let uri = format!("file://{}", file.display());
+        let uri = file_uri(&file);
 
         struct DelayedCommenter {
             gate: Arc<tokio::sync::Notify>,
@@ -1977,7 +1993,7 @@ mod tests {
 
         let file = root.join("src/lib.rs");
         std::fs::write(&file, "fn r() {}\n").unwrap();
-        let uri = format!("file://{}", file.display());
+        let uri = file_uri(&file);
 
         let model_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let model_called_clone = model_called.clone();

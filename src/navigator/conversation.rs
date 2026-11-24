@@ -1818,10 +1818,12 @@ mod tests {
         );
 
         // Missing absolute path resolves to MissingAbsolute without cwd resolution
-        let missing = Path::new("/nonexistent/historical/project/path");
+        // Built under the temp dir so it is absolute on every platform: a bare `/…` path has no
+        // drive on Windows and is therefore relative there.
+        let missing = temp.path().join("nonexistent/historical/project/path");
         assert_eq!(
-            WorkspaceKey::from_path(missing),
-            WorkspaceKey::MissingAbsolute(missing.to_path_buf())
+            WorkspaceKey::from_path(&missing),
+            WorkspaceKey::MissingAbsolute(missing.clone())
         );
 
         // Relative path resolves to Relative without invoking canonicalize or resolving relative to cwd

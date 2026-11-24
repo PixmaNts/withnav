@@ -6,6 +6,8 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-11-24
+
 ### Changed
 
 - One WithNav server owns the conversation database and serves every client. The first client

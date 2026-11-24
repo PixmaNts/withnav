@@ -1303,18 +1303,18 @@ mod tests {
         let owner_json = server_dir.join("owner.json");
         std::fs::write(&owner_json, "{}").unwrap();
 
-        let ws_link = f.cx.workspace.join("owner_alias.json");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&owner_json, &ws_link).unwrap();
-
         let name = owner_json.to_string_lossy().into_owned();
         assert!(matches!(
             check(&native_call("read", &name), &[], &f.cx),
             Floor::Credential(_)
         ));
 
+        // A symbolic link to the record reaches the same floor; creating one needs a privilege
+        // Windows does not grant by default, so this half runs on Unix only.
         #[cfg(unix)]
         {
+            let ws_link = f.cx.workspace.join("owner_alias.json");
+            std::os::unix::fs::symlink(&owner_json, &ws_link).unwrap();
             let link_name = ws_link.to_string_lossy().into_owned();
             assert!(matches!(
                 check(&native_call("read", &link_name), &[], &f.cx),

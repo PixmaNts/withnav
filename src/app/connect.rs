@@ -134,6 +134,28 @@ fn spawn_detached(wanted: &Wanted, paths: &OwnerPaths) -> anyhow::Result<()> {
     // reaching the owner, which outlives the client that started it.
     cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
 
+    // Windows children inherit every inheritable handle of their parent, and this client's
+    // standard handles are inheritable when its own parent passed them in (an editor's or a
+    // test's pipes). The owner outlives the client, so holding those pipes keeps the reader
+    // waiting for an end of output that never comes (a CI test hung for hours, 2026-11-24).
+    // The owner's own stdio is set explicitly above; Rust duplicates inherited stdio for later
+    // children on its own, so clearing the flag here changes nothing else.
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+        for handle in [
+            std::io::stdin().as_raw_handle(),
+            std::io::stdout().as_raw_handle(),
+            std::io::stderr().as_raw_handle(),
+        ] {
+            if !handle.is_null() {
+                // SAFETY: the handles are this process's standard handles; only their
+                // inheritance flag changes, ownership stays with the standard streams.
+                unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+            }
+        }
+    }
+
     match cmd.spawn() {
         Ok(_) => Ok(()),
         // A job object without JOB_OBJECT_LIMIT_BREAKAWAY_OK refuses the breakaway flag with

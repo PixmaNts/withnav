@@ -2,10 +2,11 @@
 //! at least one success criterion, one bounded metacognition call reads the session ledger and
 //! says, per criterion, whether a ledger item supports it, contradicts it, or neither.
 //!
-//! Shadow only: each check (or skipped check) is one line of `<data dir>/goal-checks.jsonl` and
-//! nothing else. No session event, no note, nothing shown to the Captain or a client; the line
-//! exists so the check can be compared with the Captain's own judgement before it is ever
-//! delivered.
+//! Each check (or skipped check) is one line of `<data dir>/goal-checks.jsonl`, so the check can
+//! be compared with the Captain's own judgement. By default that line is all: no session event,
+//! no note, nothing shown to the Captain or a client. With the setting `goal_watch.notes` on, a
+//! check that finds something also queues one passive note for the agent's next turn (`note`);
+//! the line says whether a note was sent and, if not, why.
 //!
 //! The check runs off the turn's path: the watcher spawns it and goes on reading events, so a
 //! slow or hanging model never delays a turn's settlement or the next turn. It is bounded on
@@ -13,6 +14,9 @@
 //! child session (children never hold a goal) or when the metacognition layer is not assigned.
 
 mod input;
+mod note;
+
+pub use note::MAX_NOTE_CHARS;
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
@@ -30,6 +34,7 @@ use super::ledger::{SessionLedger, digest};
 use super::service::{Service, SessionHandle, SessionId};
 use super::subagents::watchdog::{Clock, RealClock};
 use crate::bus::event::EventEnvelope;
+use crate::bus::runtime::RuntimeStatus;
 use crate::provider::assignments::{AssignedModel, Layer};
 use crate::provider::client::ModelClient;
 use crate::provider::openai::{
@@ -84,7 +89,7 @@ pub enum Outcome {
     GoalChanged,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CriterionStatus {
     Supported,
@@ -116,6 +121,17 @@ struct Record {
     #[serde(skip_serializing_if = "Option::is_none")]
     output_tokens: Option<u64>,
     model: String,
+    /// Whether this check queued a passive note; [`Record::note_skipped`] says why not.
+    note_sent: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note_skipped: Option<note::Skipped>,
+}
+
+impl Record {
+    fn set_note(&mut self, skipped: Option<note::Skipped>) {
+        self.note_sent = skipped.is_none();
+        self.note_skipped = skipped;
+    }
 }
 
 /// The checks of every session of the service: which one runs, and when the recent ones
@@ -123,6 +139,7 @@ struct Record {
 #[derive(Default)]
 pub(crate) struct GoalChecks {
     windows: Mutex<HashMap<SessionId, Window>>,
+    noted: note::Noted,
     #[cfg(any(test, feature = "test-support"))]
     test: Mutex<Option<(Arc<dyn Clock>, Duration)>>,
 }
@@ -229,6 +246,8 @@ struct Turn {
     session: SessionId,
     turn_id: String,
     goal: SessionGoal,
+    /// The turn ended `done`: the agent stopped of its own accord, not on an error or interrupt.
+    done: bool,
 }
 
 impl Service {
@@ -295,25 +314,39 @@ impl Service {
                         .unwrap_or_default()
                         .to_owned(),
                     goal,
+                    done: event.payload["outcome"] == "done",
                 };
-                service.start_goal_check(turn, checker.clone(), cancel.clone());
+                service.start_goal_check(turn, checker.clone(), &status, cancel.clone());
             }
         });
     }
 
     /// Admits one check under the limits and spawns it, or logs why it is skipped.
-    fn start_goal_check(&self, turn: Turn, checker: Arc<Checker>, cancel: CancellationToken) {
+    fn start_goal_check(
+        &self,
+        turn: Turn,
+        checker: Arc<Checker>,
+        status: &Arc<RuntimeStatus>,
+        cancel: CancellationToken,
+    ) {
         let (clock, deadline) = self.goal_checks.clock_and_deadline();
         let slot = match self.goal_checks.admit(turn.session, clock.now()) {
             Ok(slot) => slot,
             Err(skipped) => {
                 if let Some(skipped) = skipped {
-                    append(&checker.log, &record(&turn, &checker, skipped));
+                    let mut line = record(&turn, &checker, skipped);
+                    line.set_note(Some(if self.notes_on() {
+                        note::Skipped::NothingToReport
+                    } else {
+                        note::Skipped::SettingOff
+                    }));
+                    append(&checker.log, &line);
                 }
                 return;
             }
         };
         let service = self.clone();
+        let status = status.clone();
         tokio::spawn(async move {
             let _slot = slot;
             let started = clock.now();
@@ -335,8 +368,67 @@ impl Service {
                 line.input_tokens = done.input_tokens;
                 line.output_tokens = done.output_tokens;
             }
+            line.set_note(service.note(&turn, &line, &status, &cancel));
             append(&checker.log, &line);
         });
+    }
+
+    /// Whether `goal_watch.notes` is on now. Read at each check, so a change applies from the
+    /// next check on; an unreadable file or a value that is not a boolean counts as off.
+    fn notes_on(&self) -> bool {
+        crate::settings::load(&self.config.config_dir)
+            .ok()
+            .and_then(|settings| settings.goal_watch_notes().ok())
+            .unwrap_or(false)
+    }
+
+    /// Queues the passive note of a finished check, or says why there is none. Never a wake: the
+    /// note waits for the next Captain message or turn, so a check never starts a turn and never
+    /// spends the session's flow-wake allowance.
+    fn note(
+        &self,
+        turn: &Turn,
+        line: &Record,
+        status: &RuntimeStatus,
+        cancel: &CancellationToken,
+    ) -> Option<note::Skipped> {
+        if !self.notes_on() {
+            return Some(note::Skipped::SettingOff);
+        }
+        if line.outcome != Outcome::Ok {
+            return Some(note::Skipped::NothingToReport);
+        }
+        let findings = note::findings(&line.statuses, turn.done);
+        if findings.is_empty() {
+            return Some(note::Skipped::NothingToReport);
+        }
+        let key: Vec<_> = findings.iter().map(|s| (s.index, s.status)).collect();
+        let revision = turn.goal.revision;
+        if self
+            .goal_checks
+            .noted
+            .contains(turn.session, revision, &key)
+        {
+            return Some(note::Skipped::Duplicate);
+        }
+        if cancel.is_cancelled() {
+            return Some(note::Skipped::DeliveryRefused);
+        }
+        let text = note::text(revision, &turn.goal.criteria, &findings);
+        // The turn id names the check: one turn end makes at most one check.
+        match status.queue_flow_note_report(
+            text,
+            note::FLOW.to_owned(),
+            turn.turn_id.clone(),
+            false,
+            false,
+        ) {
+            Ok(()) => {
+                self.goal_checks.noted.insert(turn.session, revision, key);
+                None
+            }
+            Err(_) => Some(note::Skipped::DeliveryRefused),
+        }
     }
 
     /// One check: the ledger digest, the call, the parse.
@@ -480,6 +572,8 @@ fn record(turn: &Turn, checker: &Checker, outcome: Outcome) -> Record {
         input_tokens: None,
         output_tokens: None,
         model: checker.assigned.name.to_string(),
+        note_sent: false,
+        note_skipped: None,
     }
 }
 

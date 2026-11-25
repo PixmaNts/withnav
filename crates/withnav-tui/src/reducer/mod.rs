@@ -358,6 +358,13 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             .flatten();
             // A turn may have changed files: the branch and the changes are read again.
             let turn_end = envelope.kind == withnav_client_api::event::EventKind::TurnEnd.as_str();
+            // The panel's goal comes from the ledger: a `/goal` change reads it again at once,
+            // not only after the next turn.
+            let goal_changed = [
+                withnav_client_api::event::EventKind::GoalUpdated.as_str(),
+                withnav_client_api::event::EventKind::GoalCleared.as_str(),
+            ]
+            .contains(&envelope.kind.as_str());
             if s.read_only()
                 && s.last_applied_seq.is_none_or(|seq| envelope.seq > seq)
                 && let Some(id) = s
@@ -443,6 +450,8 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             }
             if turn_end {
                 effects.extend(read_git(s));
+                effects.extend(read_ledger(s));
+            } else if goal_changed {
                 effects.extend(read_ledger(s));
             }
         }

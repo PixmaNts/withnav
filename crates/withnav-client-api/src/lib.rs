@@ -8,6 +8,7 @@
 pub mod attachment;
 pub mod command;
 pub mod event;
+pub mod goal;
 pub mod ledger;
 pub mod permissions;
 pub mod protocol;

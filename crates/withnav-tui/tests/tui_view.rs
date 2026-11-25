@@ -3193,6 +3193,7 @@ fn with_panel_data() -> State {
         skills_catalog: 2_400,
         tools: 6_800,
         messages: 27_000,
+        goal: 0,
     }));
     s.conversation.last_compaction = Some(withnav_client_api::event::ContextCompacted {
         written_by: None,

@@ -517,6 +517,7 @@ mod tests {
             rules: None,
             skills: None,
             tools: &[],
+            goal: None,
         };
         let full = compaction::estimate_effective(&components, &actor.transcript, None).total();
         let mut fitted = false;

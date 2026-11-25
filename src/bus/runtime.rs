@@ -125,6 +125,9 @@ pub struct RuntimeStatus {
     pub(crate) question_gate: tokio::sync::Mutex<()>,
     pending_question: Mutex<Option<crate::agent::response::HumanRequest>>,
     pub bypass: Arc<Mutex<crate::agent::actor::BypassState>>,
+    /// The Captain's session goal, shared with the actor (see [`crate::agent::actor::SharedGoal`]).
+    /// Changed only by `/goal`, after its event is stored.
+    pub goal: crate::agent::actor::SharedGoal,
     /// Serializes bypass changes and child starts below this root, so a
     /// child created while the setting changes reads one value or the other
     /// and is then given every later change.
@@ -900,6 +903,17 @@ impl RuntimeStatus {
         tracker.update(breakdown).cloned()
     }
 
+    /// Re-estimates the goal category for `goal_message`, the message requests now carry (or
+    /// `None` when the goal is cleared or paused); the new snapshot when the estimate changed.
+    /// The other categories stay as the last turn left them.
+    pub fn set_context_goal(&self, goal_message: Option<&str>) -> Option<ContextSnapshot> {
+        let mut tracker = self.lock_context();
+        let tracker = tracker.as_mut()?;
+        let mut breakdown = tracker.snapshot().breakdown;
+        breakdown.goal = crate::agent::context::goal_tokens(goal_message);
+        tracker.update(breakdown).cloned()
+    }
+
     /// The latest context snapshot, `None` for a session without a tracker.
     pub fn context_snapshot(&self) -> Option<ContextSnapshot> {
         self.lock_context().as_ref().map(|t| t.snapshot().clone())
@@ -1161,6 +1175,11 @@ pub fn spawn_with_completion(
     }
     let mut actor = actor;
     actor.bypass = status.bypass.clone();
+    // The goal the actor was built with (a resume folds it from the stored events) becomes the
+    // shared one the `/goal` command changes.
+    let goal = actor.goal.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    *status.goal.lock().unwrap_or_else(|e| e.into_inner()) = goal;
+    actor.goal = status.goal.clone();
     actor.parent_captain = status.parent_captain.clone();
     tokio::spawn(runtime_loop(
         session_id,

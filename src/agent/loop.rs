@@ -284,6 +284,9 @@ async fn run_steps_inner(
         // step is in, nothing waits for a human. A prompt over the input
         // budget is compacted by the caller before it is sent.
         let role_message = actor.role_message();
+        // Read once per request: a `/goal` change between two steps reaches the next request,
+        // never half of one.
+        let goal_message = actor.goal_message();
         let mut transcript_history = actor.effective_history();
         // Whatever a value reached the transcript by, the model never reads it. Redacted before
         // the image plan, so every history built from it below is redacted too.
@@ -297,14 +300,10 @@ async fn run_steps_inner(
         let mut history = actor.request_history(transcript_history.clone());
         let tools = actor.effective_tool_schemas();
         if actor.input_budget.is_some_and(|budget| {
-            crate::agent::context::estimate(
-                role_message.as_deref(),
-                actor.rules.message(),
-                actor.effective_skills_catalog(),
-                &history,
-                &tools,
-            )
-            .total()
+            actor
+                .components(role_message.as_deref(), goal_message.as_deref(), &tools)
+                .estimate(&history)
+                .total()
                 > budget
         }) {
             return Ok(RunOutcome::NeedsCompaction {
@@ -377,6 +376,7 @@ async fn run_steps_inner(
 
         observe(AgentEvent::StepStarted);
 
+        let history_len = history.len();
         let mut request = build_request(
             &actor.model,
             role_message.as_deref(),
@@ -387,6 +387,14 @@ async fn run_steps_inner(
             actor.max_tokens,
         );
         request.images = image_payloads;
+        // The goal is the last system message before the conversation: `build_request` puts its
+        // system messages first and the history last, so the history's length marks the spot.
+        if let Some(goal) = goal_message {
+            let at = request.messages.len() - history_len;
+            request
+                .messages
+                .insert(at, ChatMessage::System { content: goal });
+        }
 
         let turn = match client
             .chat_turn(
@@ -2289,7 +2297,7 @@ mod tests {
         );
         actor.role = Some(denied);
         let schemas = actor.effective_tool_schemas();
-        assert!(actor.components(None, &schemas).skills.is_none());
+        assert!(actor.components(None, None, &schemas).skills.is_none());
         assert_eq!(
             actor.context_breakdown().tools,
             crate::agent::context::estimate(

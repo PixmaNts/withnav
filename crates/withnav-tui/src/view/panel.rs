@@ -1,6 +1,7 @@
 //! The right column: what the conversation runs with, only from what the server and git report.
 //! Agents (the session's agent and the agents it started), Context (the breakdown of the
-//! last snapshot and the last compaction), Ledger (the turns, the files changed and the commands
+//! last snapshot and the last compaction), Goal (the Captain's `/goal`: objective, status and
+//! criteria count, from the ledger), Ledger (the turns, the files changed and the commands
 //! that keep failing, from the server's session ledger), Skills · MCP · Plugins (the skill catalog counts, the
 //! skills the model loaded, a dot per MCP server of the service), Layers (one dot each, from
 //! the assignment check and the conversation's activity) and Changes (the files git reports). A
@@ -18,7 +19,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use withnav_client_api::{event::TurnEndOutcome, tools::ToolStatus};
+use withnav_client_api::{event::TurnEndOutcome, goal::GoalStatus, tools::ToolStatus};
 use withnav_client_state::strip_controls;
 
 /// Columns the column takes, its left border included.
@@ -174,6 +175,10 @@ fn context(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     ] {
         lines.push(row(label, format!("~{}", tokens(value)), width, theme));
     }
+    // Only while requests carry the goal: a session without one keeps the rows it always had.
+    if b.goal > 0 {
+        lines.push(row("goal", format!("~{}", tokens(b.goal)), width, theme));
+    }
     lines.push(styled_row(
         "next request",
         format!("~{} · {}%", tokens(c.estimate_total), c.percent),
@@ -196,6 +201,52 @@ fn context(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
             theme.muted(),
         ));
     }
+    lines
+}
+
+/// Most lines the goal's objective takes; a longer one ends with `…`.
+const GOAL_LINES: usize = 3;
+
+/// The Captain's session goal, from the server's ledger: the objective, its status and how many
+/// success criteria it has.
+fn goal(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![title("Goal", theme)];
+    let Some(goal) = state
+        .conversation
+        .ledger
+        .as_ref()
+        .and_then(|l| l.goal.as_ref())
+    else {
+        lines.push(none(theme));
+        return lines;
+    };
+    let room = width.saturating_sub(2);
+    let mut objective = wrap(&strip_controls(&goal.objective), room);
+    if objective.len() > GOAL_LINES {
+        objective.truncate(GOAL_LINES);
+        let last = &mut objective[GOAL_LINES - 1];
+        *last = fit(&format!("{last}…"), room);
+    }
+    for part in objective {
+        lines.push(Line::styled(format!(" {part}"), theme.text()));
+    }
+    let (status, style) = match goal.status {
+        GoalStatus::Active => ("active", theme.number()),
+        GoalStatus::Paused => ("paused", theme.warning()),
+    };
+    lines.push(styled_row(
+        "status",
+        status.to_owned(),
+        width,
+        theme.text(),
+        style,
+    ));
+    lines.push(row(
+        "criteria",
+        goal.criteria.len().to_string(),
+        width,
+        theme,
+    ));
     lines
 }
 
@@ -436,6 +487,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     let mut lines = agents(state, width, theme);
     for section in [
         context(state, width, theme),
+        goal(state, width, theme),
         ledger(state, width, theme),
         extensions(state, width, theme),
         layers(state, width, theme),
@@ -457,7 +509,8 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
     use withnav_client_api::event::{Breakdown, SkillCounts};
     use withnav_client_api::ledger::{
-        FileTouched, LedgerTurns, RepeatedFailure, SessionLedger, SettledTurn,
+        FileTouched, GoalStatus, LedgerTurns, RepeatedFailure, SessionGoal, SessionLedger,
+        SettledTurn,
     };
     use withnav_client_api::protocol::ContextSnapshot;
 
@@ -555,6 +608,94 @@ mod tests {
     }
 
     #[test]
+    fn the_goal_section_shows_a_dash_without_a_goal_and_comes_before_the_ledger() {
+        let shown = rows(&State::default());
+        assert_eq!(section(&shown, "GOAL"), vec![" GOAL", "  —"]);
+        let mut state = State::default();
+        state.conversation.ledger = Some(SessionLedger::default());
+        let shown = rows(&state);
+        assert_eq!(section(&shown, "GOAL"), vec![" GOAL", "  —"]);
+        let goal = shown.iter().position(|r| r.ends_with("GOAL")).unwrap();
+        let ledger = shown.iter().position(|r| r.ends_with("LEDGER")).unwrap();
+        assert!(goal < ledger);
+    }
+
+    #[test]
+    fn the_goal_section_wraps_the_objective_to_three_lines_then_status_and_criteria() {
+        let mut state = State::default();
+        state.conversation.ledger = Some(SessionLedger {
+            goal: Some(SessionGoal {
+                revision: 4,
+                objective: "ship the parser rewrite with the new error recovery \x1b[2Jand the \
+                            docs for every flag the command line takes today"
+                    .into(),
+                criteria: vec!["tests pass".into(), "docs".into()],
+                status: GoalStatus::Paused,
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            section(&rows(&state), "GOAL"),
+            vec![
+                " GOAL",
+                "  ship the parser rewrite with",
+                "  the new error recovery and the",
+                "  docs for every flag the comman…",
+                "  status                    paused",
+                "  criteria                       2",
+            ]
+        );
+        state.conversation.ledger.as_mut().unwrap().goal = Some(SessionGoal {
+            revision: 1,
+            objective: "short".into(),
+            criteria: vec![],
+            status: GoalStatus::Active,
+        });
+        assert_eq!(
+            section(&rows(&state), "GOAL"),
+            vec![
+                " GOAL",
+                "  short",
+                "  status                    active",
+                "  criteria                       0",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_context_section_counts_the_goal_when_requests_carry_it() {
+        let mut state = State::default();
+        state.conversation.context = Some(ContextSnapshot {
+            model: "mock/m".into(),
+            gateway: "mock".into(),
+            upstream_id: "m".into(),
+            variant: None,
+            window: 200_000,
+            window_source: "models.json".into(),
+            estimate_total: 1_300,
+            breakdown: Breakdown {
+                system: 1_000,
+                goal: 300,
+                ..Default::default()
+            },
+            output_reserve: 8_192,
+            margin: 10_000,
+            input_budget: 181_808,
+            percent: 1,
+            last_usage: None,
+            skills: SkillCounts::default(),
+            rule_files: 0,
+            incarnation: ulid::Ulid(7),
+            revision: 1,
+        });
+        let shown = section(&rows(&state), "CONTEXT");
+        assert!(
+            shown.contains(&"  goal                        ~300".to_string()),
+            "{shown:#?}"
+        );
+    }
+
+    #[test]
     fn the_context_section_still_reads_the_snapshot() {
         let mut state = State::default();
         state.conversation.context = Some(ContextSnapshot {
@@ -571,6 +712,7 @@ mod tests {
                 skills_catalog: 2_400,
                 tools: 6_800,
                 messages: 27_000,
+                goal: 0,
             },
             output_reserve: 8_192,
             margin: 10_000,

@@ -100,7 +100,14 @@ pub fn system_tokens(role_message: Option<&str>) -> u64 {
     framed(SYSTEM_CONTRACT) + role_message.map_or(0, framed)
 }
 
-/// Estimates the request `prompt::build_request` assembles from these parts.
+/// The goal category: the session goal message, framed, or nothing without one.
+pub fn goal_tokens(goal: Option<&str>) -> u64 {
+    goal.map_or(0, |text| text_tokens(text) + MESSAGE_FRAMING_TOKENS)
+}
+
+/// Estimates the request `prompt::build_request` assembles from these parts. The goal message,
+/// which the loop adds after it, is counted by [`goal_tokens`]
+/// ([`crate::agent::compaction::Components::estimate`] does both).
 pub fn estimate(
     system_prompt: Option<&str>,
     rules: Option<&str>,
@@ -128,6 +135,7 @@ pub fn estimate(
         skills_catalog: skills.map_or(0, framed),
         tools: tools_tokens(tools),
         messages: history.iter().map(message_tokens).sum(),
+        goal: 0,
     }
 }
 

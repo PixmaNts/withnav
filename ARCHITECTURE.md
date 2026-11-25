@@ -809,7 +809,10 @@ the later 0.6 scope, not this contract.
   in the steering queue for the next boundary and starts nothing. `GoalChecks::noted` keeps, per
   session and for its current goal revision only, the finding sets already sent, so one set is
   noted once per revision. The log line carries `note_sent` and, when false, `note_skipped`
-  (`setting_off`, `nothing_to_report`, `duplicate`, `delivery_refused`). A watcher whose
+  (`setting_off`; `nothing_to_report` when the check ran without a finding; `check_skipped` for
+  an in-flight or rate skip, where no check ran; `duplicate`; `delivery_refused`, the findings
+  then left unmarked so a later check sends them). The note always names its first finding in
+  full: a const assertion in `note.rs` keeps the widest first clause within the bound. A watcher whose
   event stream the bus drops logs a warning. `Service::install_goal_check_test` (test-support)
   replaces its clock and deadline.
 - Compaction (a summary standing for the start of a long conversation): `agent/compaction.rs` plans

@@ -99,8 +99,10 @@ agent gets one short note with its next turn, for example `Goal check (revision 
 observation, not a Captain instruction.` The note waits for your next message (or the next turn
 something else starts) and never starts a turn itself. The same findings are noted once per goal
 revision; subagents never get a note. Each line of `goal-checks.jsonl` says whether a note was sent
-(`note_sent`) and, if not, why (`note_skipped`: `setting_off`, `nothing_to_report`, `duplicate` or
-`delivery_refused`).
+(`note_sent`) and, if not, why (`note_skipped`): `setting_off` (notes are off), `nothing_to_report`
+(the check found nothing to tell), `check_skipped` (no check ran: one was still running, or the
+hourly limit was reached), `duplicate` (already noted for this goal revision) or
+`delivery_refused` (the conversation was stopping; a later check can still send it).
 
 ## The terminal client: `nav tui`
 

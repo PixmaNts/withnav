@@ -21,6 +21,26 @@ pub const MAX_NOTE_CHARS: usize = 600;
 /// Longest criterion text quoted in a note, in characters.
 const MAX_CRITERION_CHARS: usize = 80;
 const FOOTER: &str = "This is an automatic observation, not a Captain instruction.";
+/// Widest decimal `u64`, for a revision or a criterion index.
+const U64_DIGITS: usize = 20;
+
+// The first finding is always written whole, so the note's bound must hold with the widest one:
+// the header, a first clause with a full criterion and evidence quote, the "N more" sentence and
+// the closing sentence. A change of the bounds that breaks this fails the build instead of
+// producing a note over `MAX_NOTE_CHARS` (all parts ASCII but the quoted text, bounded in
+// characters).
+const _: () = {
+    let header = "Goal check (revision ): ".len() + U64_DIGITS;
+    let clause = "Criterion ".len()
+        + U64_DIGITS
+        + " \"".len()
+        + MAX_CRITERION_CHARS
+        + "\" is contradicted: \"".len()
+        + super::MAX_EVIDENCE_CHARS
+        + "\". ".len();
+    let more = U64_DIGITS + " more not shown. ".len();
+    assert!(header + clause + more + FOOTER.len() <= MAX_NOTE_CHARS);
+};
 
 /// Why a check sent no note, as the log names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -28,8 +48,11 @@ const FOOTER: &str = "This is an automatic observation, not a Captain instructio
 pub(super) enum Skipped {
     /// `goal_watch.notes` is off, absent or not a boolean.
     SettingOff,
-    /// The check gave no statuses, or none the rule reports.
+    /// The check ran but gave no statuses, or none the rule reports.
     NothingToReport,
+    /// No check ran (`skipped_in_flight`, `skipped_rate`): nothing was looked at.
+    #[serde(rename = "check_skipped")]
+    NoCheck,
     /// The same findings were already noted for this goal revision.
     Duplicate,
     /// The session stopped before the note could be queued.
@@ -85,8 +108,9 @@ impl Noted {
 }
 
 /// The note for `findings` of goal revision `revision`, whose criteria are `criteria` (numbered
-/// from 1), at most [`MAX_NOTE_CHARS`] characters. Findings that do not fit are counted, not
-/// cut mid-sentence; the closing sentence is always there.
+/// from 1), at most [`MAX_NOTE_CHARS`] characters. The first finding is always named in full;
+/// later findings that do not fit are counted, not cut mid-sentence; the closing sentence is
+/// always there.
 pub(super) fn text(revision: u64, criteria: &[String], findings: &[&Status]) -> String {
     let mut text = format!("Goal check (revision {revision}): ");
     let total = findings.len();
@@ -119,7 +143,9 @@ pub(super) fn text(revision: u64, criteria: &[String], findings: &[&Status]) -> 
         } else {
             more(left).chars().count()
         };
-        if text.chars().count() + clause.chars().count() + reserve + footer > MAX_NOTE_CHARS {
+        if n > 0
+            && text.chars().count() + clause.chars().count() + reserve + footer > MAX_NOTE_CHARS
+        {
             text.push_str(&more(total - n));
             break;
         }
@@ -204,6 +230,28 @@ contradicted. This is an automatic observation, not a Captain instruction."
         assert!(note.contains(" more not shown. "), "{note}");
         assert!(note.ends_with(FOOTER));
         assert!(note.contains(&format!("\"0{}…\"", "c".repeat(MAX_CRITERION_CHARS - 2))));
+    }
+
+    #[test]
+    fn the_first_finding_is_always_named_in_full_at_its_widest() {
+        let criteria: Vec<String> = (0..10).map(|n| format!("{n}{}", "c".repeat(300))).collect();
+        let evidence = "e".repeat(super::super::MAX_EVIDENCE_CHARS);
+        let statuses: Vec<Status> = (1..=10)
+            .rev()
+            .map(|n| status(n, CriterionStatus::Contradicted, &evidence))
+            .collect();
+        let refs: Vec<&Status> = statuses.iter().collect();
+        let note = text(u64::MAX, &criteria, &refs);
+        assert!(note.chars().count() <= MAX_NOTE_CHARS, "{note}");
+        assert!(
+            note.starts_with(&format!(
+                "Goal check (revision {}): criterion 10 \"9{}…\" is contradicted: \"{evidence}\".",
+                u64::MAX,
+                "c".repeat(MAX_CRITERION_CHARS - 2)
+            )),
+            "{note}"
+        );
+        assert!(note.ends_with(FOOTER), "{note}");
     }
 
     #[test]

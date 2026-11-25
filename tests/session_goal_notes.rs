@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::matchers::{body_partial_json, body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use withnav::provider::openai::{ChatMessage, FlowSource, UserProvenance};
@@ -28,6 +28,16 @@ struct Env {
     ws: PathBuf,
     server: MockServer,
     log: PathBuf,
+    config: PathBuf,
+}
+
+impl Env {
+    /// Writes `goal_watch.notes` into the running server's settings file.
+    fn set_notes(&self, on: bool) {
+        let mut settings = withnav::settings::load(&self.config).unwrap();
+        settings.set_dotted("goal_watch.notes", json!(on));
+        withnav::settings::save(&self.config, &settings).unwrap();
+    }
 }
 
 /// A server whose cognition answers "done: all tests pass", whose metacognition answers `meta`,
@@ -50,20 +60,20 @@ async fn env(meta: ResponseTemplate, notes: Option<bool>) -> Env {
     let state = TestServerConfig::mock(tmp.path(), &server.uri())
         .extra_alias("metacognition", META)
         .state();
-    if let Some(on) = notes {
-        let config = tmp.path().join("cfg");
-        let mut settings = withnav::settings::load(&config).unwrap();
-        settings.set_dotted("goal_watch.notes", json!(on));
-        withnav::settings::save(&config, &settings).unwrap();
-    }
     let log = tmp.path().join("data").join(LOG_FILE);
-    Env {
+    let config = tmp.path().join("cfg");
+    let env = Env {
         _tmp: tmp,
         state,
         ws,
         server,
         log,
+        config,
+    };
+    if let Some(on) = notes {
+        env.set_notes(on);
     }
+    env
 }
 
 fn meta_answer(text: &str) -> ResponseTemplate {
@@ -143,9 +153,16 @@ async fn stored_notes(state: &AppState, id: ulid::Ulid) -> Vec<(String, String)>
         .collect()
 }
 
-/// Time for a note or a turn that should not happen to show up.
-async fn settle() {
-    tokio::time::sleep(Duration::from_millis(300)).await;
+/// Polls `condition` over the cognition requests until it holds, for at most 20 seconds.
+async fn wait_requests(server: &MockServer, what: &str, condition: impl Fn(&[Value]) -> bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !condition(&cognition_requests(server).await) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 const CONTRADICTED: &str = r#"{"criteria":[{"index":1,"status":"contradicted","evidence":"exit 101 · cargo test"},{"index":2,"status":"not_checked","evidence":""}]}"#;
@@ -176,8 +193,8 @@ async fn with_the_setting_off_nothing_changes_but_the_log_field() {
         turn(&env.state, id, "one").await;
         wait_lines(&env.log, 1).await;
         turn(&env.state, id, "two").await;
+        // The second line settles the second check: whatever it queued is queued by now.
         let logged = wait_lines(&env.log, 2).await;
-        settle().await;
         let mut stable = Vec::new();
         for line in &logged {
             let mut keys: Vec<&str> = line
@@ -260,8 +277,8 @@ async fn a_finding_is_noted_once_per_revision_at_the_next_turn() {
     assert_eq!(logged[0]["note_sent"], true);
     assert!(logged[0].get("note_skipped").is_none(), "{}", logged[0]);
 
-    // Queued, not delivered: no request, no event after the turn's own closing ones.
-    settle().await;
+    // Queued, not delivered: the line is written after the note is queued, and by then no
+    // request and no event follows the turn's own closing ones.
     assert_eq!(cognition_requests(&env.server).await.len(), 1);
     let after = env
         .state
@@ -326,12 +343,22 @@ async fn a_check_without_statuses_has_nothing_to_report() {
     assert_eq!(logged[0]["note_skipped"], "nothing_to_report");
 }
 
-// Given the setting on and a root session whose goal is active
-// When one of its child sessions runs a turn to its end
-// Then the child never receives a goal-watch note
+// Given the setting on, a root session whose goal is active, and one of its child sessions
+//      whose model answers slowly
+// When the root ends a turn while the child still runs, and the check queues a note
+// Then the note reaches the root's next request and is stored in the root's transcript; the
+//      child's requests and transcript never carry it
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_child_session_never_gets_a_note() {
+async fn a_note_goes_to_the_root_never_to_a_running_child() {
+    const CHILD_TASK: &str = "child-task: inspect the parser";
     let env = env(meta_answer(CONTRADICTED), Some(true)).await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_string_contains(CHILD_TASK))
+        .respond_with(sse_response(&[&text_chunk("child done")]).set_delay(Duration::from_secs(3)))
+        .with_priority(2)
+        .mount(&env.server)
+        .await;
     let root = env
         .state
         .create_session(&env.ws, None, false)
@@ -340,18 +367,121 @@ async fn a_child_session_never_gets_a_note() {
     two_criteria(&env.state, root).await;
     let child = env
         .state
-        .create_child_session(root, "vigie", "inspect the parser")
+        .create_child_session(root, "vigie", CHILD_TASK)
         .await
         .unwrap();
-    let sub = env.state.subscribe(child, None).await.unwrap();
-    collect_until(sub, |e| e.kind == "turn.end").await;
-    settle().await;
-    assert!(stored_notes(&env.state, child).await.is_empty());
+    let child_sub = env.state.subscribe(child, None).await.unwrap();
+    let first = turn(&env.state, root, "one").await;
+    let logged = wait_lines(&env.log, 1).await;
+    assert_eq!(logged[0]["session_id"], root.to_string());
+    assert_eq!(logged[0]["note_sent"], true, "{}", logged[0]);
     assert!(
-        lines(&env.log)
-            .iter()
-            .all(|line| line["session_id"] == root.to_string())
+        common::server::stored_events(&env.state, child, "turn.end")
+            .await
+            .is_empty(),
+        "the child still runs when the note is queued"
     );
+
+    collect_until(child_sub, |e| e.kind == "turn.end").await;
+    send_text(&env.state, root, "two").await;
+    let first_user = |request: &Value| {
+        request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "user")
+            .and_then(|m| m["content"].as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    wait_requests(&env.server, "a root request with the note", |requests| {
+        requests
+            .iter()
+            .any(|r| first_user(r) == "one" && !flow_notes(r).is_empty())
+    })
+    .await;
+    let requests = cognition_requests(&env.server).await;
+    let (child_requests, root_requests): (Vec<&Value>, Vec<&Value>) = requests
+        .iter()
+        .partition(|r| first_user(r).contains(CHILD_TASK));
+    assert!(!child_requests.is_empty(), "the child called its model");
+    assert!(child_requests.iter().all(|r| flow_notes(r).is_empty()));
+    let carried: Vec<&&Value> = root_requests
+        .iter()
+        .filter(|r| !flow_notes(r).is_empty())
+        .collect();
+    assert!(flow_notes(carried[0])[0].contains("Goal check (revision 3)"));
+    let stored = stored_notes(&env.state, root).await;
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].1, first);
+    assert!(stored_notes(&env.state, child).await.is_empty());
+}
+
+// Given a check still waiting on a slow model
+// When the next turn ends and its check is skipped as in flight, with the setting on, then off
+// Then the skip line says `check_skipped` when notes are on and `setting_off` when they are off,
+//      never `nothing_to_report`: no check ran, so nothing was looked at
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_skipped_check_says_so_in_its_note_field() {
+    for (notes, expected) in [(true, "check_skipped"), (false, "setting_off")] {
+        let env = env(
+            meta_answer(CONTRADICTED).set_delay(Duration::from_millis(1500)),
+            Some(notes),
+        )
+        .await;
+        let id = env
+            .state
+            .create_session(&env.ws, None, false)
+            .await
+            .unwrap();
+        two_criteria(&env.state, id).await;
+        turn(&env.state, id, "one").await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        while !env
+            .server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["model"] == META)
+        {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the first check never called"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        turn(&env.state, id, "two").await;
+        let logged = wait_lines(&env.log, 1).await;
+        assert_eq!(logged[0]["outcome"], "skipped_in_flight");
+        assert_eq!(logged[0]["note_sent"], false);
+        assert_eq!(logged[0]["note_skipped"], expected, "notes {notes}");
+        wait_lines(&env.log, 2).await;
+    }
+}
+
+// Given a session started with notes off
+// When the Captain turns `goal_watch.notes` on between two turns
+// Then the first check logs `setting_off` and the next one, on the same session, sends its note
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn turning_notes_on_applies_from_the_next_check() {
+    let env = env(meta_answer(CONTRADICTED), None).await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    two_criteria(&env.state, id).await;
+    turn(&env.state, id, "one").await;
+    let logged = wait_lines(&env.log, 1).await;
+    assert_eq!(logged[0]["note_skipped"], "setting_off");
+    env.set_notes(true);
+    turn(&env.state, id, "two").await;
+    let logged = wait_lines(&env.log, 2).await;
+    assert_eq!(logged[1]["note_sent"], true, "{}", logged[1]);
+    turn(&env.state, id, "three").await;
+    let requests = cognition_requests(&env.server).await;
+    assert_eq!(flow_notes(requests.last().unwrap()).len(), 1);
 }
 
 // Given the setting on, criteria that try to close the note's wrapper or are long, and a model

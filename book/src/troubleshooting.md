@@ -19,7 +19,7 @@ nav doctor --layer instinct
 
 > **Without `--offline`, doctor sends small synthetic requests to your configured providers and
 > may incur charges.** It makes two Reflex FIM calls (plain and with bounded context), one
-> Instinct call (an editor decision), and one tool-free Metacognition chat call. Instinct keeps its 2-second deadline. FIM is bounded at 10
+> Instinct call (an editor decision), and one tool-free Metacognition chat call. Instinct keeps its 4-second deadline. FIM is bounded at 10
 > seconds and chat at 20 seconds. No project source, session or tool is executed or sent. Provider
 > catalogue discovery may also run to verify offers.
 

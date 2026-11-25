@@ -378,8 +378,9 @@ async fn a_credential_at_the_reason_cut_leaves_no_fragment() {
 }
 
 #[tokio::test]
-async fn systemone_two_second_deadline() {
-    let (base, _, task) = server(200, false, Duration::from_secs(3)).await;
+async fn systemone_deadline() {
+    let deadline = withnav::provider::systemone::SYSTEMONE_DEADLINE;
+    let (base, _, task) = server(200, false, deadline + Duration::from_secs(1)).await;
     let root = tempfile::tempdir().unwrap();
     let (config, mut args) = fixture(root.path(), &base);
     args.layer = Some(withnav::app::doctor::DoctorLayer::Instinct);
@@ -388,7 +389,10 @@ async fn systemone_two_second_deadline() {
     let id = "live.instinct.editor";
     assert_eq!(check(&report, id).status, Status::Failed);
     assert_eq!(check(&report, id).category.as_deref(), Some("timeout"));
-    assert!((1900..2900).contains(&check(&report, id).elapsed_ms.unwrap()));
+    let deadline_ms = deadline.as_millis();
+    assert!(
+        (deadline_ms - 100..deadline_ms + 900).contains(&check(&report, id).elapsed_ms.unwrap())
+    );
     task.abort();
 }
 

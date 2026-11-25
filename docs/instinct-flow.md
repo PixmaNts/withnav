@@ -364,10 +364,12 @@ blocking `message.received` only waits for routing effects, not permission.
 Other triggers must be asynchronous. Async effects apply when the run finishes;
 they cannot change an already-admitted event.
 
-Set `blocking = true` and **required** `budget_ms = 1..2000`; omit `budget_ms`
+Set `blocking = true` and **required** `budget_ms = 1..8000`; omit `budget_ms`
 when non-blocking. The budget is one deadline covering input collection, waiting
 for call capacity and all chains, not a new allowance per decision. Async runs
-have a 5-second host deadline; each System One call has at most 2 seconds.
+have a 10-second host deadline; each System One call has at most 4 seconds, so
+the 8-second ceiling fits two calls in a row, or one that times out and the
+fallback after it. The built-in `permission-default` flow uses the whole 8 seconds.
 
 Failure discards **all** proposed graph actions, even if another chain finished.
 The matching fallback replaces them:

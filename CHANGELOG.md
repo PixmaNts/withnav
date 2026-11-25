@@ -36,6 +36,8 @@ requests land in `develop`.
   unjudged, the next trigger looks at it again, and the trigger record says `over_budget`.
 - Remark call records in the navigator log carry the input and output token counts when the
   provider reports them.
+- Instinct calls may take 4 s (flow budgets 8 s), metacognition remarks and reflex context 60 s;
+  raised to give the models room, to be tightened if latency hurts.
 
 ## [0.8.4] - 2026-11-24
 

@@ -160,7 +160,10 @@ pub struct LlmCommenter {
 
 /// The whole remark (tool rounds + final answer) is capped at this budget;
 /// past it the remark ends with [`ModelError::OverBudget`], not silence.
-const REMARK_BUDGET: Duration = Duration::from_secs(20);
+/// Raised from 20 s to 60 s (2026-11) to give slower models room; a remark
+/// arrives late rather than not at all, and the budget can be tightened if late
+/// remarks stop being useful.
+const REMARK_BUDGET: Duration = Duration::from_secs(60);
 /// Tool rounds of an ordinary remark: one optional round of reading, then the
 /// answer. Each round is a model round trip the Captain waits for, and an
 /// ordinary remark rests on the diff it was given. The call after the last

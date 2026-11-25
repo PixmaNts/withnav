@@ -241,7 +241,7 @@ impl SystemOneClient {
             model,
             client,
             key,
-            deadline: deadline.min(Duration::from_secs(2)),
+            deadline: deadline.min(Duration::from_millis(crate::CALL_DEADLINE_MS)),
             headers: map,
             header_values,
         })

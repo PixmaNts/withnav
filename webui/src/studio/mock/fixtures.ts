@@ -119,7 +119,7 @@ export const CATALOGUE: Catalogue = {
   inputs,
   actions,
   limits: {
-    nodes: 64, decisions_per_run: 16, blocking_budget_ms: 2000, async_deadline_ms: 5000, call_deadline_ms: 2000,
+    nodes: 64, decisions_per_run: 16, blocking_budget_ms: 8000, async_deadline_ms: 10000, call_deadline_ms: 4000,
     flow_bytes: 262144, input_bytes: 16384, run_input_bytes: 65536, state_bytes: 65536, template_bytes: 65536,
     expression_bytes: 4096, expression_tokens: 128, expression_operators: 32, expression_nesting: 16,
     expression_ast_depth: 32, expression_ast_nodes: 128, response_bytes: 262144, concurrent_calls: 4,

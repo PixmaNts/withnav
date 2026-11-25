@@ -1427,3 +1427,91 @@ async fn reversed_completion_order_produces_identical_bounded_proposals() {
     assert_eq!(results[0], results[1]);
     assert_eq!(results[0][0].params["text"], "abcde");
 }
+fn validate_budget(budget: u64) -> Result<CompiledDefinition, Vec<Diagnostic>> {
+    let text = (header("['a']") + &decision("a", ""))
+        .replace("budget_ms=800", &format!("budget_ms={budget}"));
+    Definition::parse(&text).unwrap().validate(
+        &catalogue(),
+        &Capabilities { images: false },
+        &BTreeMap::new(),
+    )
+}
+#[test]
+fn blocking_budget_admits_eight_seconds_and_no_more() {
+    assert!(validate_budget(8000).is_ok());
+    let errors = validate_budget(8001).unwrap_err();
+    assert!(errors.iter().any(|e| e.code == "limit"
+        && e.path == "flow.budget_ms"
+        && e.message == "blocking budget must be within host ceiling"));
+}
+/// Records how long the engine lets one call run.
+struct DeadlineProbe {
+    allowed: Mutex<Vec<Duration>>,
+}
+impl DecisionClient for DeadlineProbe {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities { images: false }
+    }
+    fn identity(&self) -> ClientIdentity {
+        Fake::new().identity()
+    }
+    fn decide<'a>(
+        &'a self,
+        request: DecisionRequest<'a>,
+        _: &'a CancellationToken,
+        deadline: Instant,
+    ) -> BoxFuture<'a, Result<DecisionResponse, DecisionError>> {
+        Box::pin(async move {
+            self.allowed
+                .lock()
+                .unwrap()
+                .push(deadline.saturating_duration_since(Instant::now()));
+            Ok(DecisionResponse {
+                answers: request
+                    .questions
+                    .keys()
+                    .map(|id| (id.clone(), Answer::Noul { noul: 1.0 }))
+                    .collect(),
+                usage: None,
+            })
+        })
+    }
+}
+#[tokio::test]
+async fn each_call_gets_four_seconds_and_an_async_run_ten() {
+    let probe = DeadlineProbe {
+        allowed: Mutex::new(Vec::new()),
+    };
+    let options = || RunOptions {
+        deadline: Instant::now() + Duration::from_secs(60),
+        run_id: "deadline".into(),
+    };
+    let blocking = validate_budget(8000).unwrap();
+    let outcome = run(
+        &blocking,
+        &event(),
+        &Inputs,
+        &probe,
+        options(),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert!(matches!(outcome.result, RunResult::Success { .. }));
+    assert_eq!(outcome.trace.budget_ms, 8000);
+    let allowed = probe.allowed.lock().unwrap().clone();
+    assert_eq!(allowed.len(), 1);
+    assert!(allowed[0] > Duration::from_millis(3500) && allowed[0] <= Duration::from_secs(4));
+    let text = (header("['a']") + &decision("a", "")).replace("blocking=true\nbudget_ms=800\n", "");
+    let background = compile(&text);
+    let outcome = run(
+        &background,
+        &event(),
+        &Inputs,
+        &probe,
+        options(),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert!(matches!(outcome.result, RunResult::Success { .. }));
+    assert_eq!(outcome.trace.budget_ms, 10_000);
+}

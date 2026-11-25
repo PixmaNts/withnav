@@ -13,22 +13,25 @@ use ulid::Ulid;
 use crate::event::TurnEndOutcome;
 pub use crate::goal::{GoalStatus, SessionGoal};
 
+// The bounds below were raised about fourfold on 2026-11-25 so the models reading the ledger get
+// more context; tighten them again if the goal check's latency or cost suffer.
+
 /// Files kept in [`SessionLedger::files_touched`], most recently changed first.
-pub const MAX_FILES_TOUCHED: usize = 50;
+pub const MAX_FILES_TOUCHED: usize = 200;
 /// Shell commands kept in [`SessionLedger::commands`]: the last ones run.
-pub const MAX_COMMANDS: usize = 20;
+pub const MAX_COMMANDS: usize = 100;
 /// Commands kept in [`SessionLedger::repeated_failures`].
-pub const MAX_REPEATED_FAILURES: usize = 10;
+pub const MAX_REPEATED_FAILURES: usize = 50;
 /// Requests kept in [`SessionLedger::open_questions`], oldest first.
-pub const MAX_OPEN_QUESTIONS: usize = 20;
+pub const MAX_OPEN_QUESTIONS: usize = 50;
 /// How many times one command must fail before it is a repeated failure.
 pub const REPEATED_FAILURE_THRESHOLD: u64 = 2;
 /// Longest command text, error excerpt, question title or path, in characters.
-pub const MAX_TEXT_CHARS: usize = 200;
+pub const MAX_TEXT_CHARS: usize = 1000;
 /// Longest [`SessionLedger::last_turn_text`], in characters.
-pub const MAX_LAST_TURN_TEXT_CHARS: usize = 300;
+pub const MAX_LAST_TURN_TEXT_CHARS: usize = 2000;
 /// Hard cap of the text digest, in bytes.
-pub const MAX_DIGEST_BYTES: usize = 4096;
+pub const MAX_DIGEST_BYTES: usize = 16384;
 
 /// What a session did, rebuilt from its stored events on every read.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

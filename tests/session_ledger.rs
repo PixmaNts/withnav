@@ -14,9 +14,11 @@ use withnav::bus::event::{
 use withnav::provider::AssistantMessage;
 use withnav::server::app;
 use withnav::session::ledger::{
-    CommandOutcome, MAX_DIGEST_BYTES, QuestionKind, SessionLedger, digest, fold,
+    CommandOutcome, MAX_COMMANDS, MAX_DIGEST_BYTES, MAX_FILES_TOUCHED, MAX_LAST_TURN_TEXT_CHARS,
+    MAX_OPEN_QUESTIONS, MAX_REPEATED_FAILURES, MAX_TEXT_CHARS, QuestionKind, SessionLedger, digest,
+    fold,
 };
-use withnav_client_api::goal::{GoalChange, GoalStatus, GoalUpdated, SessionGoal};
+use withnav_client_api::goal::{GoalChange, GoalStatus, GoalUpdated, MAX_CRITERIA, SessionGoal};
 use withnav_client_api::permissions::Scope;
 use withnav_client_api::tools::ToolStatus;
 
@@ -314,13 +316,13 @@ fn the_last_turn_text_is_the_final_assistant_text_of_the_last_settled_turn() {
 }
 
 #[test]
-fn the_last_turn_text_is_cut_to_300_characters() {
+fn the_last_turn_text_is_cut_to_its_character_bound() {
     let mut log = Log::new();
     log.turn_start();
-    log.response(&"é".repeat(400));
+    log.response(&"é".repeat(MAX_LAST_TURN_TEXT_CHARS + 100));
     log.turn_end(TurnEndOutcome::Done);
     let text = log.fold().last_turn_text.unwrap();
-    assert_eq!(text.chars().count(), 300);
+    assert_eq!(text.chars().count(), MAX_LAST_TURN_TEXT_CHARS);
     assert!(text.ends_with('…'), "{text}");
     assert!(text.starts_with("éé"));
 }
@@ -381,30 +383,30 @@ fn spellings_of_one_path_count_as_one_file_without_reading_the_disk() {
 }
 
 #[test]
-fn files_touched_keep_the_50_most_recent() {
+fn files_touched_keep_the_most_recent_up_to_their_bound() {
     let mut log = Log::new();
     log.turn_start();
-    for n in 0..60 {
+    for n in 0..MAX_FILES_TOUCHED + 10 {
         log.write("write", &format!("f{n}.rs"), ToolStatus::Ok);
     }
     let files = log.fold().files_touched;
-    assert_eq!(files.len(), 50);
-    assert_eq!(files[0].path, "f59.rs");
-    assert_eq!(files[49].path, "f10.rs");
+    assert_eq!(files.len(), MAX_FILES_TOUCHED);
+    assert_eq!(files[0].path, format!("f{}.rs", MAX_FILES_TOUCHED + 9));
+    assert_eq!(files[MAX_FILES_TOUCHED - 1].path, "f10.rs");
 }
 
 #[test]
-fn commands_keep_the_last_20_with_their_outcome_and_turn() {
+fn commands_keep_the_last_ones_up_to_their_bound_with_their_outcome_and_turn() {
     let mut log = Log::new();
     log.turn_start();
-    for n in 0..25 {
+    for n in 0..MAX_COMMANDS + 5 {
         log.bash(&format!("echo {n}"), 0, "");
     }
     log.turn_end(TurnEndOutcome::Done);
     log.turn_start();
     log.bash("cargo build", 101, "error[E0425]");
     let commands = log.fold().commands;
-    assert_eq!(commands.len(), 20);
+    assert_eq!(commands.len(), MAX_COMMANDS);
     assert_eq!(commands[0].command, "echo 6");
     assert_eq!(commands[0].outcome, CommandOutcome::Exited { code: 0 });
     assert_eq!(commands[0].turn, 1);
@@ -454,13 +456,13 @@ fn a_command_outcome_says_how_it_ended() {
 }
 
 #[test]
-fn a_command_text_is_one_line_cut_to_200_characters() {
+fn a_command_text_is_one_line_cut_to_its_character_bound() {
     let mut log = Log::new();
     log.turn_start();
-    let long = format!("cat <<EOF\n{}\nEOF", "x".repeat(300));
+    let long = format!("cat <<EOF\n{}\nEOF", "x".repeat(MAX_TEXT_CHARS + 100));
     log.bash(&long, 0, "");
     let command = &log.fold().commands[0].command;
-    assert_eq!(command.chars().count(), 200);
+    assert_eq!(command.chars().count(), MAX_TEXT_CHARS);
     assert!(command.starts_with("cat <<EOF xxx"), "{command}");
     assert!(command.ends_with('…'));
 }
@@ -501,33 +503,39 @@ fn a_refused_or_interrupted_command_is_not_a_failure() {
 }
 
 #[test]
-fn the_last_error_is_the_end_of_the_output_cut_to_200_characters() {
+fn the_last_error_is_the_end_of_the_output_cut_to_its_character_bound() {
     let mut log = Log::new();
     log.turn_start();
-    let output = format!("{}\nerror: the real cause", "noise ".repeat(100));
+    let output = format!(
+        "{}\nerror: the real cause",
+        "noise ".repeat(MAX_TEXT_CHARS / 2)
+    );
     log.bash("make", 2, &output);
     log.bash("make", 2, &output);
     let error = &log.fold().repeated_failures[0].last_error;
-    assert_eq!(error.chars().count(), 200);
+    assert_eq!(error.chars().count(), MAX_TEXT_CHARS);
     assert!(error.starts_with('…'), "{error}");
     assert!(error.ends_with("error: the real cause"), "{error}");
 }
 
 #[test]
-fn repeated_failures_keep_10_most_failed_first() {
+fn repeated_failures_keep_the_most_failed_first_up_to_their_bound() {
     let mut log = Log::new();
     log.turn_start();
-    for n in 0..12 {
+    for n in 0..MAX_REPEATED_FAILURES + 2 {
         log.bash(&format!("test {n}"), 1, "no");
         log.bash(&format!("test {n}"), 1, "no");
     }
     log.bash("test 3", 1, "no");
     let failures = log.fold().repeated_failures;
-    assert_eq!(failures.len(), 10);
+    assert_eq!(failures.len(), MAX_REPEATED_FAILURES);
     assert_eq!(failures[0].command, "test 3");
     assert_eq!(failures[0].count, 3);
     // Equal counts: the most recent failure first.
-    assert_eq!(failures[1].command, "test 11");
+    assert_eq!(
+        failures[1].command,
+        format!("test {}", MAX_REPEATED_FAILURES + 1)
+    );
 }
 
 #[test]
@@ -597,12 +605,16 @@ fn a_session_end_drops_permission_requests_but_keeps_a_question_a_resume_restore
 }
 
 #[test]
-fn an_open_question_title_is_one_line_cut_to_200_characters() {
+fn an_open_question_title_is_one_line_cut_to_its_character_bound() {
     let mut log = Log::new();
     log.turn_start();
-    log.ask("ask_1", &format!("Pick\none of {}", "y".repeat(300)), None);
+    log.ask(
+        "ask_1",
+        &format!("Pick\none of {}", "y".repeat(MAX_TEXT_CHARS + 100)),
+        None,
+    );
     let title = &log.fold().open_questions[0].title;
-    assert_eq!(title.chars().count(), 200);
+    assert_eq!(title.chars().count(), MAX_TEXT_CHARS);
     assert!(title.starts_with("Pick one of yyy"), "{title}");
 }
 
@@ -706,43 +718,49 @@ turns: 1 · last turn: yielded · compactions: 0
 fn the_goal_is_never_trimmed_before_another_section() {
     let mut log = Log::new();
     log.turn_start();
-    let criteria: Vec<String> = (0..10)
-        .map(|n| format!("{n} {}", "c".repeat(290)))
+    // Every criterion the goal may hold, the goal taking about half of the digest; the commands
+    // alone would fill it.
+    let criterion_chars = MAX_DIGEST_BYTES / 2 / MAX_CRITERIA;
+    let criteria: Vec<String> = (0..MAX_CRITERIA)
+        .map(|n| format!("{n} {}", "c".repeat(criterion_chars)))
         .collect();
     let criteria: Vec<&str> = criteria.iter().map(String::as_str).collect();
-    log.goal(1, &"o".repeat(500), &criteria, false);
-    for n in 0..20 {
+    log.goal(1, &"o".repeat(MAX_DIGEST_BYTES / 8), &criteria, false);
+    for n in 0..MAX_COMMANDS {
         log.bash(&format!("cargo test {n} {}", "x".repeat(150)), 0, "");
     }
     let text = digest(&log.fold());
     assert!(text.len() <= MAX_DIGEST_BYTES, "{} bytes", text.len());
     assert!(
-        text.contains("- criterion 10: 9 "),
+        text.contains(&format!(
+            "- criterion {MAX_CRITERIA}: {} ",
+            MAX_CRITERIA - 1
+        )),
         "every criterion stays: {text}"
     );
     assert!(
-        text.matches("- turn 1 · exit 0").count() < 20,
+        text.matches("- turn 1 · exit 0").count() < MAX_COMMANDS,
         "the commands are trimmed instead"
     );
 }
 
 #[test]
-fn the_digest_stays_under_4_kib_and_trims_the_lowest_priority_items_first() {
+fn the_digest_stays_under_its_cap_and_trims_the_lowest_priority_items_first() {
     let mut log = Log::new();
     log.turn_start();
-    for n in 0..50 {
+    for n in 0..MAX_FILES_TOUCHED {
         log.write(
             "write",
             &format!("src/{}/f{n}.rs", "deep".repeat(30)),
             ToolStatus::Ok,
         );
     }
-    for n in 0..10 {
-        log.bash(&format!("failing {n}"), 1, &"e".repeat(300));
-        log.bash(&format!("failing {n}"), 1, &"e".repeat(300));
+    for n in 0..MAX_REPEATED_FAILURES {
+        log.bash(&format!("failing {n}"), 1, &"e".repeat(100));
+        log.bash(&format!("failing {n}"), 1, &"e".repeat(100));
     }
-    // The last 20 commands, after the failing ones.
-    for n in 0..20 {
+    // The last commands the ledger keeps, after the failing ones.
+    for n in 0..MAX_COMMANDS {
         log.bash(&format!("cargo test {n}"), 0, "");
     }
     log.response(&"w".repeat(400));
@@ -752,16 +770,24 @@ fn the_digest_stays_under_4_kib_and_trims_the_lowest_priority_items_first() {
     assert!(text.len() <= MAX_DIGEST_BYTES, "{} bytes", text.len());
     // The higher sections are whole; the files go first, then the commands.
     assert!(text.contains("- ask · Which branch?"));
-    assert_eq!(text.matches("- failed 2×").count(), 10);
+    assert_eq!(text.matches("- failed 2×").count(), MAX_REPEATED_FAILURES);
     assert!(text.contains("[last turn]\n- www"));
-    assert!(text.contains("[files touched: 50, most recent first]"));
+    assert!(text.contains(&format!(
+        "[files touched: {MAX_FILES_TOUCHED}, most recent first]"
+    )));
     assert!(!text.contains("/f0.rs"), "the oldest file is trimmed first");
     let files_listed = text.matches("/f").count();
-    assert!((1..50).contains(&files_listed), "{files_listed} files");
-    assert!(text.contains("/f49.rs"), "the most recent file stays");
+    assert!(
+        (1..MAX_FILES_TOUCHED).contains(&files_listed),
+        "{files_listed} files"
+    );
+    assert!(
+        text.contains(&format!("/f{}.rs", MAX_FILES_TOUCHED - 1)),
+        "the most recent file stays"
+    );
     assert_eq!(
         text.matches("- turn 1 · exit 0").count(),
-        20,
+        MAX_COMMANDS,
         "no command is trimmed while a file is listed"
     );
 }
@@ -770,22 +796,23 @@ fn the_digest_stays_under_4_kib_and_trims_the_lowest_priority_items_first() {
 fn the_digest_never_exceeds_its_cap_even_when_the_top_sections_alone_overflow() {
     let mut log = Log::new();
     log.turn_start();
-    for n in 0..20 {
+    for n in 0..MAX_OPEN_QUESTIONS {
         log.permission(
             Ulid::generate(),
             "bash",
-            &format!("{n} {}", "é".repeat(300)),
+            &format!("{n} {}", "é".repeat(MAX_TEXT_CHARS)),
             None,
         );
     }
-    for n in 0..10 {
-        log.bash(&format!("ç{n} {}", "ç".repeat(300)), 1, &"ü".repeat(300));
-        log.bash(&format!("ç{n} {}", "ç".repeat(300)), 1, &"ü".repeat(300));
+    for n in 0..MAX_REPEATED_FAILURES {
+        let command = format!("ç{n} {}", "ç".repeat(MAX_TEXT_CHARS));
+        log.bash(&command, 1, &"ü".repeat(MAX_TEXT_CHARS));
+        log.bash(&command, 1, &"ü".repeat(MAX_TEXT_CHARS));
     }
     let text = digest(&log.fold());
     assert!(text.len() <= MAX_DIGEST_BYTES, "{} bytes", text.len());
     assert!(text.starts_with("session ledger:"));
-    assert!(text.contains("[open questions: 20]"));
+    assert!(text.contains(&format!("[open questions: {MAX_OPEN_QUESTIONS}]")));
 }
 
 #[test]

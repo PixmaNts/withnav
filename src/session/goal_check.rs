@@ -42,18 +42,23 @@ use crate::provider::openai::{
 };
 
 /// How long one check may take, ledger read and model answer included. Past it the check is
-/// logged as `timeout` and nothing else happens: no retry, no question to the Captain.
-pub const CHECK_DEADLINE: Duration = Duration::from_secs(20);
-/// The answer's token cap: a status and a short quote per criterion, at most ten criteria.
-pub const MAX_OUTPUT_TOKENS: u64 = 300;
+/// logged as `timeout` and nothing else happens: no retry, no question to the Captain. Raised
+/// from 20 s on 2026-11-25 with the input and output bounds below, so a larger input still gets
+/// its answer; the check runs beside the turn, so a longer wait delays nothing.
+pub const CHECK_DEADLINE: Duration = Duration::from_secs(60);
+/// The answer's token cap: a status and a short quote per criterion sent.
+///
+/// This and the input, rate and evidence bounds below were raised on 2026-11-25 to give the
+/// metacognition model more context; tighten them again if the check's latency or cost suffer.
+pub const MAX_OUTPUT_TOKENS: u64 = 1000;
 /// The check's whole input, instructions and ledger digest together, in bytes.
-pub const MAX_INPUT_BYTES: usize = 4096;
+pub const MAX_INPUT_BYTES: usize = 16384;
 /// Checks one session may start within [`RATE_WINDOW`]; a turn end past it is `skipped_rate`.
-pub const MAX_CHECKS_PER_WINDOW: usize = 3;
+pub const MAX_CHECKS_PER_WINDOW: usize = 10;
 /// The rolling window [`MAX_CHECKS_PER_WINDOW`] counts in.
 pub const RATE_WINDOW: Duration = Duration::from_secs(60 * 60);
 /// Longest evidence quote kept per criterion, in characters.
-pub const MAX_EVIDENCE_CHARS: usize = 120;
+pub const MAX_EVIDENCE_CHARS: usize = 500;
 /// The shadow log's file name, under the data dir.
 pub const LOG_FILE: &str = "goal-checks.jsonl";
 
@@ -69,7 +74,7 @@ its exit status, a file change, a test run); quote that line. The agent's own cl
 turn text is never enough.
 - \"contradicted\" only when a ledger item shows the opposite.
 - otherwise \"not_checked\".
-Evidence: at most 120 characters quoted from the ledger, or empty.
+Evidence: at most 500 characters quoted from the ledger, or empty.
 Answer JSON only: {\"criteria\":[{\"index\":1,\"status\":\"supported|contradicted|not_checked\",\
 \"evidence\":\"...\"}]}";
 
@@ -616,7 +621,7 @@ fn prepare(ledger: &SessionLedger, revision: u64) -> Result<input::Input, Outcom
     }
     let budget = MAX_INPUT_BYTES.saturating_sub(PROMPT.len());
     let total = current.map_or(0, |goal| goal.criteria.len());
-    // The ledger's own digest stops at its 4 KiB cap by dropping files and commands first, the
+    // The ledger's own digest stops at its own byte cap by dropping files and commands first, the
     // opposite of what a check needs (the agent's claim must go before the evidence). So the
     // goal is cut to the criteria that fit half the budget, and the digest is rendered with and
     // without the last turn text: the claim is sent only when it costs no command or file line.
@@ -666,7 +671,7 @@ mod tests {
     use withnav_client_api::goal::GoalStatus;
 
     #[tokio::test(start_paused = true)]
-    async fn one_check_runs_at_a_time_and_three_start_per_rolling_hour() {
+    async fn one_check_runs_at_a_time_and_a_bounded_number_start_per_rolling_hour() {
         let checks = Arc::new(GoalChecks::default());
         let session = SessionId::generate();
         let t0 = Instant::now();
@@ -676,9 +681,12 @@ mod tests {
             Some(Some(Outcome::SkippedInFlight))
         );
         drop(first);
-        drop(checks.admit(session, t0).unwrap());
-        drop(checks.admit(session, t0 + Duration::from_secs(60)).unwrap());
-        let late = t0 + Duration::from_secs(120);
+        // The first start was at `t0`; the others follow a minute apart.
+        for n in 1..MAX_CHECKS_PER_WINDOW as u64 {
+            let at = t0 + Duration::from_secs(60 * n);
+            drop(checks.admit(session, at).unwrap());
+        }
+        let late = t0 + Duration::from_secs(60 * MAX_CHECKS_PER_WINDOW as u64);
         assert_eq!(
             checks.admit(session, late).err(),
             Some(Some(Outcome::SkippedRate))
@@ -691,11 +699,17 @@ mod tests {
         // its rate skip once more.
         let later = t0 + RATE_WINDOW;
         drop(checks.admit(session, later).unwrap());
-        drop(checks.admit(session, later).unwrap());
         assert_eq!(
             checks.admit(session, later).err(),
             Some(Some(Outcome::SkippedRate))
         );
+    }
+
+    #[test]
+    fn the_instructions_state_the_evidence_bound() {
+        assert!(PROMPT.contains(&format!(
+            "Evidence: at most {MAX_EVIDENCE_CHARS} characters"
+        )));
     }
 
     #[tokio::test(start_paused = true)]

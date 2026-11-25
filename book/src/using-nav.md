@@ -77,7 +77,7 @@ without you. It is not part of the transcript, so compaction never summarizes it
 counted under `goal` in the context breakdown. The goal is stored in the conversation's history: it
 survives a stop, a restart and a resume. Subagents do not inherit it.
 
-An objective holds at most 500 characters, a criterion 300, and a goal at most 10 criteria; longer
+An objective holds at most 4000 characters, a criterion 1000, and a goal at most 30 criteria; longer
 text is refused, never cut. `criterion`, `pause`, `resume` and `clear` cannot start an objective.
 Only you set the goal: the agent has no tool to change it. The project's lasting intent stays in
 `.withnav/intent.md`. The terminal client shows the goal in its right column, before the ledger.
@@ -89,7 +89,7 @@ line; the agent saying so is not enough), contradicted, or not checked. A long g
 as many criteria as fit in half the check's input, so there is room left for the evidence. The
 result is written to `goal-checks.jsonl` in the data
 directory. The check never delays a turn: at most one runs at a time per
-conversation, at most three per hour, each within 20 seconds; a slower one is logged as a timeout.
+conversation, at most ten per hour, each within 60 seconds; a slower one is logged as a timeout.
 
 By default the check is only logged. Set `goal_watch.notes` to `true` (see
 [Configuration](configuration.md#settings-reference)) to let it tell the agent what it found: when

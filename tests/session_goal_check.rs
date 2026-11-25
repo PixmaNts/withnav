@@ -14,8 +14,13 @@ use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use withnav::server::AppState;
-use withnav::session::goal_check::{LOG_FILE, MAX_EVIDENCE_CHARS, MAX_INPUT_BYTES};
+use withnav::session::goal_check::{
+    CHECK_DEADLINE, LOG_FILE, MAX_CHECKS_PER_WINDOW, MAX_EVIDENCE_CHARS, MAX_INPUT_BYTES,
+    MAX_OUTPUT_TOKENS,
+};
 use withnav::session::subagents::watchdog::Clock;
+use withnav_client_api::goal::{MAX_CRITERIA, MAX_CRITERION_CHARS, MAX_OBJECTIVE_CHARS};
+use withnav_client_api::ledger::MAX_TEXT_CHARS;
 
 mod common;
 use common::server::{TestServerConfig, collect_until, send_text, temp_workspace, wait_for};
@@ -215,7 +220,7 @@ async fn a_child_turn_is_never_checked() {
 //      and the unknown entry dropped
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_valid_answer_is_logged_with_bounded_evidence() {
-    let long = "x".repeat(300);
+    let long = "x".repeat(MAX_EVIDENCE_CHARS + 180);
     let answer = format!(
         r#"Here you go: {{"criteria":[{{"index":1,"status":"contradicted","evidence":"{long}"}},{{"index":2,"status":"not_checked","evidence":"exit 101"}},{{"index":7,"status":"supported","evidence":""}}]}}"#
     );
@@ -252,7 +257,7 @@ async fn a_valid_answer_is_logged_with_bounded_evidence() {
     let requests = meta_requests(&env.server).await;
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
-    assert_eq!(request["max_tokens"], 300);
+    assert_eq!(request["max_tokens"], MAX_OUTPUT_TOKENS);
     assert!(request.get("tools").is_none());
     let messages = request["messages"].as_array().unwrap();
     let content: Vec<&str> = messages
@@ -270,9 +275,9 @@ async fn a_valid_answer_is_logged_with_bounded_evidence() {
     assert!(digest.contains("- criterion 2: the docs name the flag"));
 }
 
-// Given a goal whose objective and ten criteria fill the digest
+// Given a goal whose objective and criteria, all at their bounds, fill the digest
 // When the turn ends
-// Then the request's input stays within its 4 KiB bound and still opens with the goal
+// Then the request's input stays within its byte bound and still opens with the goal
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_large_ledger_is_cut_to_the_input_bound() {
     let env = env(meta_answer(VALID), true).await;
@@ -281,12 +286,12 @@ async fn a_large_ledger_is_cut_to_the_input_bound() {
         .create_session(&env.ws, None, false)
         .await
         .unwrap();
-    goal(&env.state, id, &"o".repeat(500)).await;
-    for n in 0..10 {
+    goal(&env.state, id, &"o".repeat(MAX_OBJECTIVE_CHARS)).await;
+    for n in 0..MAX_CRITERIA {
         goal(
             &env.state,
             id,
-            &format!("criterion {n} {}", "c".repeat(290)),
+            &format!("criterion {n} {}", "c".repeat(MAX_CRITERION_CHARS - 10)),
         )
         .await;
     }
@@ -302,7 +307,7 @@ async fn a_large_ledger_is_cut_to_the_input_bound() {
     assert!(bytes <= MAX_INPUT_BYTES, "{bytes} bytes of input");
     assert_eq!(logged[0]["input_bytes"], bytes);
     let digest = requests[0]["messages"][1]["content"].as_str().unwrap();
-    assert!(digest.contains(&format!("- objective: {}", "o".repeat(500))));
+    assert!(digest.contains(&format!("- objective: {}", "o".repeat(MAX_OBJECTIVE_CHARS))));
 }
 
 // Given an active goal with a criterion
@@ -422,17 +427,17 @@ async fn the_next_turn_never_waits_and_a_second_check_is_skipped_in_flight() {
     assert_eq!(meta_requests(&env.server).await.len(), 1);
 }
 
-// Given three checks started within the hour
-// When a fourth and a fifth turn end
-// Then the fourth is one `skipped_rate` line without a call, the fifth adds no line (one rate
-//      line per window keeps the log from growing with every turn); an hour after the first, a
-//      check runs again
+// Given as many checks started within the hour as the rate allows
+// When two more turns end
+// Then the first is one `skipped_rate` line without a call, the second adds no line (one rate
+//      line per window keeps the log from growing with every turn); an hour after the first
+//      check, a check runs again
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_fourth_check_within_the_hour_is_skipped_for_rate() {
+async fn a_check_past_the_rate_within_the_hour_is_skipped() {
     let env = env(meta_answer(VALID), true).await;
     let clock = Arc::new(ManualClock(Mutex::new(Instant::now())));
     env.state
-        .install_goal_check_test(clock.clone(), Duration::from_secs(20));
+        .install_goal_check_test(clock.clone(), CHECK_DEADLINE);
     let id = env
         .state
         .create_session(&env.ws, None, false)
@@ -441,29 +446,30 @@ async fn a_fourth_check_within_the_hour_is_skipped_for_rate() {
     goal(&env.state, id, "ship the parser").await;
     goal(&env.state, id, "criterion cargo test passes").await;
 
-    for n in 1..=3 {
+    let max = MAX_CHECKS_PER_WINDOW;
+    for n in 1..=max {
         turn(&env.state, id, &format!("turn {n}")).await;
         let logged = wait_lines(&env.log, n).await;
         assert_eq!(logged[n - 1]["outcome"], "ok");
         *clock.0.lock().unwrap() += Duration::from_secs(60);
     }
-    turn(&env.state, id, "turn 4").await;
-    let logged = wait_lines(&env.log, 4).await;
-    assert_eq!(logged[3]["outcome"], "skipped_rate");
-    assert_eq!(meta_requests(&env.server).await.len(), 3);
-    turn(&env.state, id, "turn 5").await;
+    turn(&env.state, id, "one past the rate").await;
+    let logged = wait_lines(&env.log, max + 1).await;
+    assert_eq!(logged[max]["outcome"], "skipped_rate");
+    assert_eq!(meta_requests(&env.server).await.len(), max);
+    turn(&env.state, id, "two past the rate").await;
     settle().await;
     assert_eq!(
         lines(&env.log).len(),
-        4,
+        max + 1,
         "a second rate skip in the window is not logged"
     );
 
     *clock.0.lock().unwrap() += Duration::from_secs(60 * 60);
-    turn(&env.state, id, "turn 6").await;
-    let logged = wait_lines(&env.log, 5).await;
-    assert_eq!(logged[4]["outcome"], "ok");
-    assert_eq!(meta_requests(&env.server).await.len(), 4);
+    turn(&env.state, id, "an hour later").await;
+    let logged = wait_lines(&env.log, max + 2).await;
+    assert_eq!(logged[max + 1]["outcome"], "ok");
+    assert_eq!(meta_requests(&env.server).await.len(), max + 1);
 }
 
 // Given the same two turns with and without the metacognition layer assigned, and no goal
@@ -579,8 +585,8 @@ async fn supported_needs_a_quote_of_a_command_or_a_file_change() {
     );
 }
 
-// Given a goal of ten 300-character criteria and a turn that ran twenty long commands, then
-//      claimed at length that everything is done
+// Given a goal of as many criteria as it may hold, each at its length bound, and a turn that ran
+//      twenty long commands, then claimed at length that everything is done
 // When the turn ends
 // Then the goal takes at most half of the digest (the criteria that did not fit are named as
 //      omitted), the newest commands are still there, the agent's claim is dropped before any
@@ -588,7 +594,7 @@ async fn supported_needs_a_quote_of_a_command_or_a_file_change() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_full_goal_leaves_room_for_command_evidence_and_claims_go_first() {
     let commands: Vec<String> = (0..20)
-        .map(|n| format!("echo cmd{n:02}-{}", "e".repeat(140)))
+        .map(|n| format!("echo cmd{n:02}-{}", "e".repeat(MAX_TEXT_CHARS - 20)))
         .collect();
     let claim = format!(
         "I checked everything. {}",
@@ -597,7 +603,7 @@ async fn a_full_goal_leaves_room_for_command_evidence_and_claims_go_first() {
     let newest = format!("exit 0 · {}", commands[19]);
     let answer = json!({"criteria": [
         {"index": 1, "status": "supported", "evidence": newest.chars().take(MAX_EVIDENCE_CHARS).collect::<String>()},
-        {"index": 10, "status": "supported", "evidence": newest.chars().take(MAX_EVIDENCE_CHARS).collect::<String>()},
+        {"index": MAX_CRITERIA, "status": "supported", "evidence": newest.chars().take(MAX_EVIDENCE_CHARS).collect::<String>()},
     ]})
     .to_string();
     let env = scripted_env(
@@ -612,8 +618,13 @@ async fn a_full_goal_leaves_room_for_command_evidence_and_claims_go_first() {
         .await
         .unwrap();
     goal(&env.state, id, "ship the parser").await;
-    for n in 0..10 {
-        goal(&env.state, id, &format!("criterion {n}{}", "c".repeat(299))).await;
+    for n in 0..MAX_CRITERIA {
+        goal(
+            &env.state,
+            id,
+            &format!("criterion {n}{}", "c".repeat(MAX_CRITERION_CHARS - 2)),
+        )
+        .await;
     }
     turn(&env.state, id, "go").await;
     let logged = wait_lines(&env.log, 1).await;
@@ -630,9 +641,9 @@ async fn a_full_goal_leaves_room_for_command_evidence_and_claims_go_first() {
         .sum();
     assert!(goal_bytes <= budget / 2, "goal {goal_bytes} of {budget}");
     let sent = digest.matches("- criterion ").count();
-    assert!((1..10).contains(&sent), "{sent} criteria sent");
+    assert!((1..MAX_CRITERIA).contains(&sent), "{sent} criteria sent");
     assert!(
-        digest.contains(&format!("- criteria {}-10 omitted", sent + 1)),
+        digest.contains(&format!("- criteria {}-{MAX_CRITERIA} omitted", sent + 1)),
         "{digest}"
     );
     assert!(digest.contains(&commands[19]), "{digest}");
@@ -690,15 +701,15 @@ async fn a_stopped_check_is_not_logged_and_a_resume_keeps_one_watcher() {
     assert_eq!(meta_requests(&env.server).await.len(), 2);
 }
 
-// Given three checks within the hour
-// When the session stops, is resumed and a fourth turn ends
-// Then the fourth is `skipped_rate`: a resume does not reset the window
+// Given as many checks within the hour as the rate allows
+// When the session stops, is resumed and one more turn ends
+// Then that check is `skipped_rate`: a resume does not reset the window
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_resume_keeps_the_rate_window() {
     let env = env(meta_answer(VALID), true).await;
     let clock = Arc::new(ManualClock(Mutex::new(Instant::now())));
     env.state
-        .install_goal_check_test(clock.clone(), Duration::from_secs(20));
+        .install_goal_check_test(clock.clone(), CHECK_DEADLINE);
     let id = env
         .state
         .create_session(&env.ws, None, false)
@@ -706,7 +717,8 @@ async fn a_resume_keeps_the_rate_window() {
         .unwrap();
     goal(&env.state, id, "ship the parser").await;
     goal(&env.state, id, "criterion cargo test passes").await;
-    for n in 1..=3 {
+    let max = MAX_CHECKS_PER_WINDOW;
+    for n in 1..=max {
         turn(&env.state, id, &format!("turn {n}")).await;
         wait_lines(&env.log, n).await;
     }
@@ -715,16 +727,16 @@ async fn a_resume_keeps_the_rate_window() {
         .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
-    turn(&env.state, id, "turn 4").await;
-    let logged = wait_lines(&env.log, 4).await;
-    assert_eq!(logged[3]["outcome"], "skipped_rate");
-    assert_eq!(meta_requests(&env.server).await.len(), 3);
+    turn(&env.state, id, "one past the rate").await;
+    let logged = wait_lines(&env.log, max + 1).await;
+    assert_eq!(logged[max]["outcome"], "skipped_rate");
+    assert_eq!(meta_requests(&env.server).await.len(), max);
 }
 
-// Given the largest goal (500-character objective, ten 300-character criteria)
+// Given the largest goal (objective, criteria count and criteria at their bounds)
 // When the turn ends
-// Then the request stays within 4 KiB, keeps the whole objective, and names the omitted
-//      criteria
+// Then the request stays within its byte bound, keeps the whole objective, and names the
+//      omitted criteria
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_largest_goal_stays_within_the_input_bound() {
     let env = env(meta_answer(VALID), true).await;
@@ -733,9 +745,14 @@ async fn the_largest_goal_stays_within_the_input_bound() {
         .create_session(&env.ws, None, false)
         .await
         .unwrap();
-    goal(&env.state, id, &"o".repeat(500)).await;
-    for n in 0..10 {
-        goal(&env.state, id, &format!("criterion {n}{}", "c".repeat(298))).await;
+    goal(&env.state, id, &"o".repeat(MAX_OBJECTIVE_CHARS)).await;
+    for n in 0..MAX_CRITERIA {
+        goal(
+            &env.state,
+            id,
+            &format!("criterion {n}{}", "c".repeat(MAX_CRITERION_CHARS - 2)),
+        )
+        .await;
     }
     turn(&env.state, id, "go").await;
     let logged = wait_lines(&env.log, 1).await;
@@ -744,8 +761,8 @@ async fn the_largest_goal_stays_within_the_input_bound() {
     let digest = request["messages"][1]["content"].as_str().unwrap();
     assert!(system.len() + digest.len() <= MAX_INPUT_BYTES);
     assert_eq!(logged[0]["input_bytes"], system.len() + digest.len());
-    assert!(digest.contains(&format!("- objective: {}", "o".repeat(500))));
-    assert!(digest.matches("- criterion ").count() < 10);
+    assert!(digest.contains(&format!("- objective: {}", "o".repeat(MAX_OBJECTIVE_CHARS))));
+    assert!(digest.matches("- criterion ").count() < MAX_CRITERIA);
     assert!(digest.contains("omitted"), "{digest}");
 }
 

@@ -375,7 +375,7 @@ turns: 1 · last turn: done · compactions: 0
         // Controls and newlines collapse; the evidence bound counts characters.
         let answer = format!(
             r#"{{"criteria":[{{"index":1,"status":"contradicted","evidence":"a\n\u001b[31mb{}"}}]}}"#,
-            "é".repeat(300)
+            "é".repeat(MAX_EVIDENCE_CHARS + 100)
         );
         let parsed = parse(&answer, &input()).unwrap();
         assert_eq!(parsed[0].status, Contradicted);

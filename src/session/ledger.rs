@@ -362,6 +362,14 @@ fn tail(text: &str, max: usize) -> String {
 /// the lowest-priority section first, its oldest item first, and the headers stay. Every item is
 /// one line starting with `- `, so untrusted text can neither close a section nor open one.
 pub fn digest(ledger: &SessionLedger) -> String {
+    digest_within(ledger, MAX_DIGEST_BYTES)
+}
+
+/// [`digest`] cut to at most `max_bytes` (never more than [`MAX_DIGEST_BYTES`]) by the same
+/// rules: lowest-priority items dropped first, then the headers cut at a character boundary. A
+/// caller that sends the digest with other evidence in one bounded message passes what is left.
+pub fn digest_within(ledger: &SessionLedger, max_bytes: usize) -> String {
+    let max_bytes = max_bytes.min(MAX_DIGEST_BYTES);
     let mut sections = sections(ledger);
     let render = |sections: &[Section]| {
         let mut out = String::from(DIGEST_PREAMBLE);
@@ -382,16 +390,16 @@ pub fn digest(ledger: &SessionLedger) -> String {
     let mut len = render(&sections).len();
     // Lowest priority last in `sections`, oldest item last in each section. An item takes its
     // text plus `- ` and the newline.
-    while len > MAX_DIGEST_BYTES {
+    while len > max_bytes {
         let Some(section) = sections.iter_mut().rev().find(|s| !s.items.is_empty()) else {
             break;
         };
         len -= section.items.pop().map_or(0, |item| item.len() + 3);
     }
     let mut text = render(&sections);
-    if text.len() > MAX_DIGEST_BYTES {
+    if text.len() > max_bytes {
         // Only the headers are left and they still do not fit: cut at a character boundary.
-        let mut end = MAX_DIGEST_BYTES;
+        let mut end = max_bytes;
         while !text.is_char_boundary(end) {
             end -= 1;
         }

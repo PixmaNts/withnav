@@ -142,6 +142,9 @@ pub struct RuntimeStatus {
     arrival_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     pub watchdog: watchdog::WatchdogPark,
     pub watchdog_goal: Mutex<String>,
+    /// The session this runtime runs, set when it is spawned: the root watchdog reads the
+    /// session's stored events by it to give its reviewer the ledger.
+    pub session_id: std::sync::OnceLock<Ulid>,
     /// The Captain's own messages of this session's transcript, as permission
     /// evidence (`captain_messages_with_cut`), refreshed at each turn start.
     pub captain_messages: Mutex<crate::agent::actor::CaptainEvidence>,
@@ -1170,6 +1173,7 @@ pub fn spawn_with_completion(
     completion: Option<CompletionHook>,
 ) -> tokio::task::JoinHandle<AgentActor> {
     status.init_ask(&actor);
+    let _ = status.session_id.set(session_id);
     if let Some(secrets) = &actor.tool_context.secrets {
         let _ = status.secrets.set(secrets.clone());
     }

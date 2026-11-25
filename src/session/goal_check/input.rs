@@ -189,25 +189,23 @@ fn read_back(text: String) -> Input {
     }
 }
 
-/// The statuses of a JSON-only answer, tolerant of a code fence or prose around the object:
-/// from each `{` in turn, the text up to the last `}` is tried until one reads as an object
-/// with a `criteria` list. `None` when none does.
+/// The statuses of a JSON-only answer, tolerant of a code fence or prose around the object: the
+/// last balanced object with a `criteria` list, read by the same extractor as the remark model
+/// and the root watchdog, so an example quoted earlier never wins. `None` when none does.
 ///
 /// An entry for a criterion that was not sent, with an unknown status, or for an index already
 /// given is dropped. A `supported` stands only on a quote of a command or file-change line that
 /// was sent: with no quote, a quote the input does not hold, or one of the agent's own words or
 /// of the goal, it becomes `not_checked` (the quote is kept for the log).
 pub(super) fn parse(text: &str, input: &Input) -> Option<Vec<Status>> {
-    let end = text.rfind('}')?;
-    let value = text
-        .match_indices('{')
-        .map(|(start, _)| start)
-        .take_while(|start| *start < end)
-        .find_map(|start| {
-            serde_json::from_str::<Value>(&text[start..=end])
-                .ok()
-                .filter(|v| v.get("criteria").is_some_and(Value::is_array))
-        })?;
+    let raw = crate::navigator::metacognition::answer_objects(text, |value| {
+        value.get("criteria").is_some_and(Value::is_array)
+    })
+    .pop()?;
+    let value = serde_json::from_str::<Value>(raw).ok()?;
+    if !value.get("criteria").is_some_and(Value::is_array) {
+        return None;
+    }
     let mut statuses: Vec<Status> = Vec::new();
     for entry in value["criteria"].as_array()? {
         let Some(index) = entry["index"]
@@ -372,6 +370,13 @@ turns: 1 · last turn: done · compactions: 0
             [(2, NotChecked)]
         );
         assert_eq!(parse("all good", &input()), None);
+        // A quoted example before the real answer, in a code fence: the last object wins.
+        assert_eq!(
+            statuses(
+                "e.g. {\"criteria\":[{\"index\":1,\"status\":\"contradicted\"}]}\n```json\n{\"criteria\":[{\"index\":2,\"status\":\"not_checked\"}]}\n```"
+            ),
+            [(2, NotChecked)]
+        );
         // Controls and newlines collapse; the evidence bound counts characters.
         let answer = format!(
             r#"{{"criteria":[{{"index":1,"status":"contradicted","evidence":"a\n\u001b[31mb{}"}}]}}"#,

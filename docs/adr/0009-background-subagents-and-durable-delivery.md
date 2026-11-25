@@ -24,7 +24,12 @@ They build on the separate role and permission rules of ADR 0008.
   Prompt-only restrictions and child overrides were rejected: neither prevents a forbidden call.
 - **Admission and teardown have separate locks.** The lifecycle gate stays held across runtime
   joins. A short admission gate protects reservations and lifecycle claims.
-  The lock order is lifecycle, admission, then the registry. No I/O or joins await under admission.
+  The lifecycle gate belongs to a conversation tree: a root and its children share the root's
+  gate, and different trees never wait for each other (amended 2026-11-13: one service-wide gate
+  made every other conversation's commands, stop and resume wait out a degraded teardown, up to
+  two 10-second caps). Shutdown takes a service-wide gate that excludes every tree gate.
+  The lock order is shutdown, conversation-tree lifecycle, admission, then the registry. A task
+  holds at most one tree gate. No I/O or joins await under admission.
   Admission has two phases. First reserve capacity and capture the parent's incarnation.
   Prepare outside the gates. Then revalidate that incarnation before publication.
   Child-scoped operation ownership covers publication, failed-start cleanup and watchdog teardown.

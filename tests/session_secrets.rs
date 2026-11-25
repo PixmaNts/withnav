@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! `request_secret` end to end: the agent asks, the Captain answers on the dedicated endpoint,
 //! the value reaches a command's environment, and it never appears in a model request, a tool
 //! result, the SSE stream or the stored conversation.
@@ -673,7 +674,11 @@ async fn serve_with(
     std::fs::create_dir_all(&ws).unwrap();
     let config = tune(TestServerConfig::mock(&root, provider).allow_everything()).config();
     prepare(&config);
-    let state = withnav::server::AppState::new(config).unwrap();
+    let state = withnav::server::AppState::new(
+        config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     let (addr, task) = spawn_server(state.clone()).await;
     Served {
         _tmp: tmp,

@@ -293,7 +293,8 @@ _Avoid_: allow folder, deny (deny is a rule effect)
 **Permission flow**:
 The flow on the `tool.pre_call` trigger that judges a call after the rules: it may allow an `ask`
 the Captain or a validated skill asked for, and turn a dangerous `allow` into a question. A
-written `deny` never reaches it. When it fails, the rule's result applies.
+non-`bash` call an `allow` rule covers runs without reaching it; a `bash` line under an `allow` rule
+still does. A written `deny` never reaches it. When it fails, the rule's result applies.
 _Avoid_: permission review (the per-call review it replaces), gate
 
 **Fixed floor**:

@@ -71,13 +71,16 @@ mod tests {
     #[tokio::test]
     async fn cancelled_task_never_waits_for_admission() {
         let dir = tempfile::tempdir().unwrap();
-        let service = Service::new(crate::session::SessionConfig {
-            models_path: None,
-            config_dir: dir.path().join("cfg"),
-            history_db: dir.path().join("history.db"),
-            data_dir: dir.path().join("data"),
-            rules_roots: Default::default(),
-        })
+        let service = Service::new(
+            crate::session::SessionConfig {
+                models_path: None,
+                config_dir: dir.path().join("cfg"),
+                history_db: dir.path().join("history.db"),
+                data_dir: dir.path().join("data"),
+                rules_roots: Default::default(),
+            },
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
+        )
         .unwrap();
         let task = TaskTool::new(service, ulid::Ulid::generate());
         let cancel = CancellationToken::new();

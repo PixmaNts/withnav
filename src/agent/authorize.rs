@@ -3,13 +3,17 @@
 //! session's flow runtime, the decision table, and the request the Captain
 //! answers. See docs/adr/0015-permission-rules-and-instinct-flow.md.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::actor::AgentActor;
+use crate::agent::actor::{AgentActor, ParentCaptain};
 use crate::agent::flow_hook::{
     FlowVerdict, PermissionCallContext, PermissionCommand, ProtectedCheck, RuleResult as FlowRule,
     RunScores, ToolCallContext, ToolCallFlows, ValidatedSkill, captain_messages_with_cut,
@@ -18,15 +22,15 @@ use crate::agent::flow_hook::{
 use crate::agent::permissions::{PermissionRequest, Scope};
 use crate::permission::{
     decide::{
-        self, ApprovedBy, Control, Decision, FlowAnswer, FlowQuery, Input, PermissionFlows,
-        RuleProposal, RuleResult, Verdict,
+        self, Control, Decision, FlowAnswer, FlowQuery, Input, PermissionFlows, RuleProposal,
+        RuleResult, Verdict,
     },
     decisions::{self, CallSnapshot, Outcome},
     floor::{Floor, FloorContext, Location, location, resolve_path},
     rules::{Effect, RuleOrigin, RuleScope},
     shell,
 };
-use crate::provider::ToolCall;
+use crate::provider::{ToolCall, openai::ChatMessage};
 
 /// The permission flows answer within their own budget; past this the rule applies.
 const FLOW_DEADLINE: Duration = Duration::from_millis(2500);
@@ -46,7 +50,12 @@ pub(super) enum Authorized {
 /// The session's permission flows: the flow runtime's aggregate verdict and its
 /// compiled-in protected check. Without a flow runtime the rule applies and
 /// nothing can establish a protected request.
-struct SessionFlows {
+///
+/// The conversation evidence is read from the transcript the first time a flow
+/// is asked, never before: a call a rule, the floor, a free read or bypass
+/// decides runs without scanning the whole conversation, which on a long one
+/// is the costliest step before the decision.
+struct SessionFlows<'s> {
     reason: std::sync::Mutex<Option<String>>,
     /// The flow runs that answered, kept for the decision row.
     runs: std::sync::Mutex<Vec<crate::agent::flow_hook::PermissionFlowAnswer>>,
@@ -58,17 +67,79 @@ struct SessionFlows {
     inside_project: Option<bool>,
     location: Option<&'static str>,
     skill: Option<ValidatedSkill>,
+    transcript: &'s [ChatMessage],
+    parent_captain: &'s ParentCaptain,
+    /// The skill the Captain selected in the composer, when this call loads it.
+    captain_skill: Option<String>,
+    evidence: OnceLock<Evidence>,
+    cancel: CancellationToken,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread read the conversation evidence.
+    pub(super) static EVIDENCE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// What the conversation says, as the permission flows read it.
+#[derive(Debug, Clone, PartialEq)]
+struct Evidence {
     captain_messages: Vec<String>,
     captain_messages_cut: bool,
     delegation: Vec<String>,
     delegation_cut: bool,
     recent: Vec<crate::agent::flow_hook::RecentMessage>,
     recent_cut: bool,
-    cancel: CancellationToken,
 }
 
-impl SessionFlows {
+impl Evidence {
+    fn read(
+        transcript: &[ChatMessage],
+        parent_captain: &ParentCaptain,
+        captain_skill: Option<&str>,
+    ) -> Self {
+        #[cfg(test)]
+        EVIDENCE_READS.with(|reads| reads.set(reads.get() + 1));
+        let (mut captain_messages, mut captain_messages_cut) =
+            captain_messages_with_cut(transcript);
+        if let Some((parent, cut)) = parent_captain
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            // The parent's words come first: they are older than the child.
+            captain_messages = parent.into_iter().chain(captain_messages).collect();
+            captain_messages_cut |= cut;
+        }
+        if let Some(name) = captain_skill {
+            captain_messages.push(format!("Load the skill {name}."));
+        }
+        let (delegation, delegation_cut) = delegation_with_cut(transcript);
+        let (recent, recent_cut) = recent_with_cut(transcript);
+        Self {
+            captain_messages,
+            captain_messages_cut,
+            delegation,
+            delegation_cut,
+            recent,
+            recent_cut,
+        }
+    }
+}
+
+impl SessionFlows<'_> {
+    fn evidence(&self) -> &Evidence {
+        self.evidence.get_or_init(|| {
+            Evidence::read(
+                self.transcript,
+                self.parent_captain,
+                self.captain_skill.as_deref(),
+            )
+        })
+    }
+
     fn context(&self, query: &FlowQuery<'_>) -> PermissionCallContext {
+        let evidence = self.evidence().clone();
         PermissionCallContext {
             call: ToolCallContext {
                 call_id: self.call.id.clone(),
@@ -85,18 +156,18 @@ impl SessionFlows {
             location: self.location,
             protected: matches!(query.floor, Floor::Protected(_) | Floor::NamesProtected(_)),
             skill: self.skill.clone(),
-            captain_messages: self.captain_messages.clone(),
-            captain_messages_cut: self.captain_messages_cut,
-            delegation: self.delegation.clone(),
-            delegation_cut: self.delegation_cut,
-            recent: self.recent.clone(),
-            recent_cut: self.recent_cut,
+            captain_messages: evidence.captain_messages,
+            captain_messages_cut: evidence.captain_messages_cut,
+            delegation: evidence.delegation,
+            delegation_cut: evidence.delegation_cut,
+            recent: evidence.recent,
+            recent_cut: evidence.recent_cut,
             protected_check: query.protected_check,
         }
     }
 }
 
-impl PermissionFlows for SessionFlows {
+impl PermissionFlows for SessionFlows<'_> {
     fn flow<'a>(&'a self, query: &'a FlowQuery<'a>) -> BoxFuture<'a, FlowAnswer> {
         Box::pin(async move {
             let Some(hook) = &self.hook else {
@@ -170,7 +241,7 @@ pub(super) fn floor_context(actor: &AgentActor) -> FloorContext {
             .temp
             .iter()
             .cloned()
-            .chain(actor.scratch_roots.iter().map(|root| root.path.clone()))
+            .chain(actor.scratch_roots.iter().cloned())
             .collect(),
         config_dir: actor.permission_dirs.config.clone(),
         data_dir: actor.permission_dirs.data.clone(),
@@ -227,7 +298,7 @@ fn inside_project(call: &ToolCall, cx: &FloorContext, location: Option<Location>
             .any(|root| {
                 #[cfg(windows)]
                 {
-                    crate::tools::nofollow::path_within(&target, &root)
+                    crate::tools::win_path::path_within(&target, &root)
                 }
                 #[cfg(unix)]
                 {
@@ -283,33 +354,7 @@ pub(super) async fn authorize(
     };
     let mut cx = floor_context(actor);
     let agent = agent_name(actor);
-    let (mut captain_messages, mut captain_messages_cut) =
-        captain_messages_with_cut(&actor.transcript);
-    if let Some((parent, cut)) = actor
-        .parent_captain
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-    {
-        // The parent's words come first: they are older than the child.
-        captain_messages = parent.into_iter().chain(captain_messages).collect();
-        captain_messages_cut |= cut;
-    }
-    // The host set this flag from the Captain's own selection, never from
-    // model arguments (`run_calls` refuses it there).
-    if call.name == "skill" && call.args["captain_selected"] == true {
-        captain_messages.push(format!(
-            "Load the skill {}.",
-            call.args["name"].as_str().unwrap_or_default()
-        ));
-    }
-    let (delegation, delegation_cut) = delegation_with_cut(&actor.transcript);
-    let (recent, recent_cut) = recent_with_cut(&actor.transcript);
-    let scratch: Vec<PathBuf> = actor
-        .scratch_roots
-        .iter()
-        .map(|root| root.path.clone())
-        .collect();
+    let scratch = actor.scratch_roots.clone();
     let mut place = location(call, &commands, &cx, &scratch);
     // A call that would leave the project may be in another worktree of the repository. The list
     // is read on this call, never kept: a worktree created a moment ago is already known, and a
@@ -343,12 +388,13 @@ pub(super) async fn authorize(
         skill: actor
             .active_validated_skill()
             .map(|(name, instructions)| ValidatedSkill { name, instructions }),
-        captain_messages,
-        captain_messages_cut,
-        delegation,
-        delegation_cut,
-        recent,
-        recent_cut,
+        transcript: &actor.transcript,
+        parent_captain: &actor.parent_captain,
+        // The host set this flag from the Captain's own selection, never from
+        // model arguments (`run_calls` refuses it there).
+        captain_skill: (call.name == "skill" && call.args["captain_selected"] == true)
+            .then(|| call.args["name"].as_str().unwrap_or_default().to_owned()),
+        evidence: OnceLock::new(),
         cancel: actor.cancel.clone(),
     };
     let control = control(actor);
@@ -414,19 +460,23 @@ pub(super) async fn authorize(
     }
     match decision.verdict.clone() {
         Verdict::Run { approved_by } => {
-            settle_row(
-                actor,
-                call,
-                &decision,
-                previous,
-                Outcome::Allowed,
-                Some(approved_by.as_str()),
-            )
-            .await;
+            // A read inside the roots that no rule looked at was not decided
+            // by anything, so the table gets no row for it; the call still says
+            // `approved_by: rule` on its tool events.
+            if !decision.trace.unconstrained {
+                settle_row(
+                    actor,
+                    call,
+                    &decision,
+                    previous,
+                    Outcome::Allowed,
+                    Some(approved_by.as_str()),
+                );
+            }
             Authorized::Run(approval(approved_by.as_str(), &decision))
         }
         Verdict::Deny { message, .. } => {
-            settle_row(actor, call, &decision, previous, Outcome::Denied, None).await;
+            settle_row(actor, call, &decision, previous, Outcome::Denied, None);
             let by = if decision.trace.effect == Some(Effect::Deny) {
                 "rule"
             } else {
@@ -442,7 +492,7 @@ pub(super) async fn authorize(
         }
         Verdict::AskCaptain { reason, always } => {
             if let Some(id) = previous {
-                update(actor, id, Outcome::Cancelled, None, None).await;
+                update(actor, id, Outcome::Cancelled, None, None);
             }
             let mut request = PermissionRequest::new(call, scope(call, &cx), &agent);
             // The scores behind the question, so that the card explains itself.
@@ -461,13 +511,16 @@ pub(super) async fn authorize(
                 &decision,
                 Some(&request.reason),
             )));
-            request.decision_id = record(
+            request.decision_id = record_pending(
                 actor,
-                call,
-                &decision,
-                Outcome::Pending,
-                None,
-                Some(request.id),
+                row(
+                    actor,
+                    call,
+                    &decision,
+                    Outcome::Pending,
+                    None,
+                    Some(request.id),
+                ),
             )
             .await;
             request.always = always;
@@ -654,16 +707,16 @@ pub(super) fn answered_approval(request: &PermissionRequest, approved_by: &str) 
     json!({"approved_by": approved_by, "permission_gate": gate})
 }
 
-async fn record(
+/// The row this decision becomes, before it is written.
+fn row(
     actor: &AgentActor,
     call: &ToolCall,
     decision: &Decision,
     outcome: Outcome,
     approved_by: Option<&str>,
     request_id: Option<ulid::Ulid>,
-) -> Option<i64> {
-    let store = actor.permission_store.as_ref()?;
-    let row = decisions::Decision {
+) -> decisions::Decision {
+    decisions::Decision {
         id: 0,
         time: crate::bus::event::now_rfc3339(),
         session_id: actor.permission_session.clone(),
@@ -685,7 +738,29 @@ async fn record(
         captain_answer: None,
         outcome,
         approved_by: approved_by.map(str::to_owned),
+    }
+}
+
+/// Writes the decision row of a call that has already run or been refused, off
+/// the tool path: nothing waits for the insert, so dispatch never waits on
+/// SQLite. The row is lost if the process dies first, which a history of the
+/// decisions that were made can afford.
+fn record_detached(actor: &AgentActor, row: decisions::Decision) {
+    let Some(store) = actor.permission_store.clone() else {
+        return;
     };
+    store.detach(move |store| {
+        if let Err(error) = store.record(&row) {
+            tracing::warn!(%error, "permission decision not recorded");
+        }
+    });
+}
+
+/// Writes the `pending` row of a question before the turn yields: its id is
+/// what the Captain's answer settles, so this one is awaited. No tool runs on
+/// this path.
+async fn record_pending(actor: &AgentActor, row: decisions::Decision) -> Option<i64> {
+    let store = actor.permission_store.as_ref()?;
     store
         .run(move |store| store.record(&row))
         .await
@@ -694,8 +769,8 @@ async fn record(
 }
 
 /// A bypass answer settles the pending row with the fresh decision; any
-/// other decision is a new row.
-async fn settle_row(
+/// other decision is a new row. Both leave the caller free straight away.
+fn settle_row(
     actor: &AgentActor,
     call: &ToolCall,
     decision: &Decision,
@@ -704,58 +779,37 @@ async fn settle_row(
     approved_by: Option<&str>,
 ) {
     match previous {
-        Some(id) => {
-            update(
-                actor,
-                id,
-                outcome,
-                Some(&json!({"answer": "bypass"})),
-                approved_by,
-            )
-            .await
-        }
-        None => {
-            record(actor, call, decision, outcome, approved_by, None).await;
-        }
+        Some(id) => update(
+            actor,
+            id,
+            outcome,
+            Some(&json!({"answer": "bypass"})),
+            approved_by,
+        ),
+        None => record_detached(
+            actor,
+            row(actor, call, decision, outcome, approved_by, None),
+        ),
     }
 }
 
-pub(super) async fn update(
+/// Settles a row already written, off the call path: a Captain's answer and a
+/// cancellation both reach here while a tool is about to run.
+pub(super) fn update(
     actor: &AgentActor,
     id: i64,
     outcome: Outcome,
     answer: Option<&Value>,
     approved_by: Option<&str>,
 ) {
-    let Some(store) = &actor.permission_store else {
+    let Some(store) = actor.permission_store.clone() else {
         return;
     };
     let (answer, approved_by) = (answer.cloned(), approved_by.map(str::to_owned));
-    let updated = store
-        .run(move |store| {
-            store.update_outcome(id, outcome, answer.as_ref(), approved_by.as_deref())
-        })
-        .await;
-    if let Err(error) = updated {
-        tracing::warn!(%error, "permission decision outcome not recorded");
-    }
-}
-
-/// Yolo checks nothing, and the decision table says so.
-pub(super) async fn record_yolo(actor: &AgentActor, call: &ToolCall) {
-    let decision = Decision {
-        verdict: Verdict::Run {
-            approved_by: ApprovedBy::Yolo,
-        },
-        trace: Default::default(),
-    };
-    record(
-        actor,
-        call,
-        &decision,
-        Outcome::Allowed,
-        Some(ApprovedBy::Yolo.as_str()),
-        None,
-    )
-    .await;
+    store.detach(move |store| {
+        let updated = store.update_outcome(id, outcome, answer.as_ref(), approved_by.as_deref());
+        if let Err(error) = updated {
+            tracing::warn!(%error, "permission decision outcome not recorded");
+        }
+    });
 }

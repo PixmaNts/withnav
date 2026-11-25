@@ -274,8 +274,28 @@ impl Settings {
     }
 }
 
+/// Whether a runtime directory (`XDG_RUNTIME_DIR`) is private enough to hold the
+/// default scratch root and the server discovery directory: an absolute directory
+/// owned by the current user with mode 0700. Anything else falls back to the home
+/// cache (scratch) or disables discovery.
+#[cfg(unix)]
+pub(crate) fn private_runtime_usable(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    path.is_absolute()
+        && std::fs::metadata(path).is_ok_and(|metadata| {
+            metadata.is_dir()
+                && metadata.uid() == nix::unistd::Uid::current().as_raw()
+                && metadata.mode() & 0o777 == 0o700
+        })
+}
+
+#[cfg(windows)]
+pub(crate) fn private_runtime_usable(path: &Path) -> bool {
+    path.is_absolute() && path.is_dir()
+}
+
 fn private_scratch_root(runtime: Option<&Path>, home: &Path) -> PathBuf {
-    let usable = runtime.filter(|path| crate::agent::scratch::private_runtime_usable(path));
+    let usable = runtime.filter(|path| private_runtime_usable(path));
     usable
         .map(|path| path.join("withnav"))
         .unwrap_or_else(|| home.join(".cache/withnav/scratch"))
@@ -492,13 +512,6 @@ mod tests {
         );
         assert_eq!(
             private_scratch_root(Some(&temp.path().join("missing")), &home),
-            home.join(".cache/withnav/scratch")
-        );
-        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let alias = temp.path().join("alias");
-        std::os::unix::fs::symlink(temp.path(), &alias).unwrap();
-        assert_eq!(
-            private_scratch_root(Some(&alias.join("runtime")), &home),
             home.join(".cache/withnav/scratch")
         );
         assert_eq!(

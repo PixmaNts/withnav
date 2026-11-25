@@ -86,8 +86,11 @@ async fn close_session_purges_session_secrets_and_preserves_workspace_secrets() 
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
 
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
-        .expect("service");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .expect("service");
 
     let session_a = service
         .create_session(&ws, None, false)
@@ -257,8 +260,11 @@ async fn delete_session_removes_session_and_preserves_workspace_secrets() {
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
 
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
-        .expect("service");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .expect("service");
 
     let session_c = service
         .create_session(&ws, None, false)
@@ -349,8 +355,11 @@ async fn closing_child_session_does_not_purge_root_secrets() {
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
 
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
-        .expect("service");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .expect("service");
 
     let parent = service
         .create_session(&ws, None, false)
@@ -477,8 +486,11 @@ async fn delete_session_ends_conversation_secrets_and_keeps_timed_workspace_ones
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
 
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
-        .expect("service");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .expect("service");
 
     let a = service
         .create_session(&ws, None, false)
@@ -584,8 +596,11 @@ async fn deleting_a_child_keeps_the_roots_secrets() {
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
 
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
-        .expect("service");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .expect("service");
 
     let root = service
         .create_session(&ws, None, false)

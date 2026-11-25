@@ -6,6 +6,100 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-11-24
+
+### Changed
+
+- One WithNav server owns the conversation database and serves every client. The first client
+  (the editor's `nav lsp`, `nav tui`, `nav web` or `nav run`) starts `nav serve` in the background;
+  the others connect to it, so a conversation started in VS Code is live in the terminal and the
+  browser, and the reverse. The server keeps running when its clients leave; `nav serve stop`
+  (`--force` to end running turns) stops it and `nav serve status` reports it. `nav lsp` connects
+  the editor to the server's language server, so several editors share it and closing one leaves
+  the others working. `nav permissions` and `nav doctor` ask the server instead of opening the
+  database. Session lists match a workspace reached through a symbolic link.
+- Security of the shared server: loopback only (`--allow-non-loopback` and `--bind` are removed;
+  `--port` sets the port), a token always required, written with the port to
+  `<data dir>/server/owner.json` (owner-only); a client checks the server proves it holds that
+  token before sending it; foreign `Host`/`Origin` headers are refused; requests never go
+  through a configured proxy or follow a redirect; the token-less bypass special cases are gone.
+- `nav web` no longer puts a token in the address: it opens a single-use pairing code that the
+  page exchanges for its own 12-hour browser credential, and exits at once. `--port` other than 0
+  is refused (use `nav serve --port`).
+- `--models` on a client now names the catalogue the shared server must use; a running server with
+  another one is reported instead of silently used.
+- The discovery file `nav lsp` published under `$XDG_RUNTIME_DIR/withnav-servers/` is gone.
+- The permission decision order is now stated once, in ADR 0015 ("Decision order"), and the code
+  comments of `src/permission/decide.rs`, `ARCHITECTURE.md` and the book's permissions page all
+  describe that same order — the one the code applies: yolo, a written `deny` rule, the fixed
+  floor, the protected check, the loop check, free reads and temporary writes, bypass, an `allow`
+  rule on a call other than `bash`, then the permission flow and the Captain.
+- A conversation whose stop is slow (a tool that ignores cancellation) no longer holds up the
+  others: slash commands, stop, resume, delete and archive of a conversation wait only for its own
+  tree (the conversation and its subagents), not for every conversation of the server.
+### Fixed
+
+- A resumed conversation no longer presents its tail as the whole history when
+  the stored history cannot be read. Before, the in-memory ring of a resumed
+  session answered any subscription cursor (including "everything, from the
+  start") because it was born empty with no floor, so a client received only
+  the events since the resume, labelled as the full conversation, with no
+  error. Now the ring is born with the conversation's stored head as its
+  floor: a request it cannot serve gaplessly — the whole history, or any
+  cursor below that floor — is refused with a `resync` signal, so the
+  client reloads instead of silently missing every turn from before the
+  resume. A client already at the conversation's head keeps replaying the
+  events since and following live.
+- Every durable event is stored before any client sees it. Before, events were written in the
+  background after being shown, and one failed history write (a deleted session, a busy database
+  past its timeout, a full disk) was remembered for the whole process: every conversation then
+  ended at its next turn and every resume failed until WithNav restarted. Now a failed write ends
+  only the conversation it belongs to, with a `session.end` whose reason names the failure, and
+  the other conversations keep running.
+- The session service's test seams (pause points, injected failures, watchdog doubles) live in
+  one registry compiled only under the new `test-support` cargo feature, instead of being spread
+  across the service under `debug_assertions`. Release builds no longer depend on the build
+  profile to leave them out, and CI checks the release profile with and without the feature.
+  Run the test suite with `cargo test --workspace --features test-support`.
+### Fixed
+
+- Permission flows: an Instinct outage is remembered, so the tool calls that follow the first
+  failure no longer each wait out the flow deadline. A decision that times out or fails against
+  the endpoint opens a 30-second window in which every further decision fails at once instead of
+  dialling again: the rules, the local flows and each flow's configured failure policy still
+  decide, the runs are still recorded, and the "Instinct unavailable" notice is sent once per
+  outage rather than once per call. After the window, the next decision tries the endpoint again;
+  an answer clears the outage, another failure renews the window. A tool call that needs the
+  compiled protected check records and honours the same window.
+- Permissions: a call other than `bash` that an `allow` rule covers runs at once, without asking the
+  permission flow. The rule is the Captain's own answer to the question Instinct would put, so a
+  saved **Always** on a file, search, `fetch` or MCP tool no longer waits for a model evaluation on
+  every call. `bash` keeps the flow, which judges the line a prefix rule cannot foresee. Everything
+  above stays: a written `deny` is still final, the fixed floor still asks, and a protected write
+  still needs the compiled-in check. A validated skill with no matching rule now runs as
+  `validation` without the flow too.
+### Fixed
+
+- Navigator: a cancelled editor flow evaluation no longer erases the in-flight marker of the
+  evaluation that took its place. An edit cancels the running evaluation and frees its slot
+  immediately, so the cancelled trigger's own cleanup used to wipe the marker a successor had just
+  registered; a third evaluation could then start while the successor still ran, and the next edit
+  had no handle left to cancel it. A trigger now clears the slot only if its own cancellation token
+  is still live. A predecessor that hands the slot to a remark while keeping a live token can still
+  clear a successor's marker: closing that one needs an explicit owner on the slot and is not part
+  of this change.
+- Permissions: the decision table now records the decisions that were made instead of every tool
+  call. A read inside the readable roots that no rule touches, and anything run under yolo, no longer
+  insert a row; the row of a call that something did decide (a rule, the fixed floor, the permission
+  flow, the Captain, bypass) is written off the call path, so a tool no longer waits for SQLite
+  before it starts. A row can be lost if the process dies right after a call starts; `nav permissions
+  history` therefore lists permission evaluations and interventions, not every invocation.
+- Permissions: the built-in permission flow asks its questions in one Instinct request instead of
+  one after the other. Without an allow rule it asks together whether the call was requested, only
+  reads, or is a recoverable change; under an allow rule, whether it is dangerous and whether it
+  was requested. Decisions are unchanged; a call that needed two or three round trips now needs
+  one, at the cost of asking questions that were previously skipped.
+
 ## [0.8.3] - 2026-11-11
 
 ### Added

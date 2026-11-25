@@ -100,13 +100,12 @@ use ulid::Ulid;
 use crate::bus::command::{Command, ContentBlock, DeliveryMode};
 use crate::bus::event::ROOT_ACTOR_ID;
 use crate::error::ServerError;
+use crate::provider::openai::ClientCache;
 use crate::server::session::{AppState, ServerConfig};
-
-/// Frozen health body.
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-pub struct HealthBody {
-    pub status: &'static str,
-}
+use withnav_client_api::protocol::{
+    AcceptedBody, ApiKind, CommandsBody, CreateSessionResponse, Discrepancy, HealthBody,
+    ModelEntry, ModelsBody, ServerCommand, SessionListBody, SessionListEntry, StopResponse,
+};
 
 /// Distinguishes an omitted field (`None`, by `serde(default)`) from an
 /// explicit `null` (`Some(None)`).
@@ -141,14 +140,6 @@ pub struct CreateSessionRequest {
     pub resume: Option<String>,
 }
 
-/// Frozen create-session response.
-#[derive(Debug, Serialize, PartialEq)]
-pub struct CreateSessionResponse {
-    pub session_id: String,
-    pub root_actor_id: &'static str,
-    pub actor_state: &'static str,
-}
-
 /// `POST /v1/sessions/:id/messages` request. The server — never
 /// the client — assigns `source_actor_id` (`user:http`), so the wire carries
 /// no impersonatable sender field.
@@ -162,28 +153,18 @@ pub struct PostMessageRequest {
     pub content: Vec<ContentBlock>,
 }
 
-/// The frozen 503 body.
-#[derive(Debug, Serialize, PartialEq)]
-pub struct InboxFullResponse {
-    pub accepted: bool,
-    pub reason: &'static str,
-}
-
-/// The frozen stop ack.
-#[derive(Debug, Serialize, PartialEq)]
-pub struct StopAccepted {
-    pub accepted: bool,
-    pub actor_state: &'static str,
-}
-
 /// The Axum router for this slice's routes. Tests mount it directly via
 /// `tower::ServiceExt::oneshot`.
 pub fn app(state: AppState) -> Router {
-    let token = state.http.bearer_token.clone();
     let web = state.http.web.is_some();
     let router = Router::new()
         .route("/v1/health", get(health))
+        .route("/v1/hello", get(hello))
+        .route("/v1/shutdown", post(shutdown))
         .merge(super::flows::router())
+        .merge(super::lsp_route::router())
+        .merge(super::pairing::router())
+        .merge(super::permissions::router())
         .route("/v1/models", get(list_models))
         .route("/v1/mcp", get(mcp_status))
         .route("/v1/mcp/{server}/resource", get(get_mcp_resource))
@@ -240,32 +221,108 @@ pub fn app(state: AppState) -> Router {
             "/v1/sessions/{id}/events",
             get(crate::server::sse::get_events),
         )
-        .with_state(state);
+        .with_state(state.clone());
     let router = if web {
         router.fallback(crate::server::web::serve_asset)
     } else {
         router
     };
+    let app_state = state.clone();
     router.layer(axum::middleware::from_fn(
         move |request: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
-            let token = token.clone();
+            let app_state = app_state.clone();
             async move {
+                let bound_port = app_state.http.bind.port();
+
+                // 1. Host check: when present, must equal 127.0.0.1:<bound port> or localhost:<bound port>; else 421 Misdirected Request.
+                if let Some(host) = request
+                    .headers()
+                    .get(axum::http::header::HOST)
+                    .and_then(|v| v.to_str().ok())
+                {
+                    let host = host.trim();
+                    let valid = if bound_port > 0 {
+                        host == format!("127.0.0.1:{bound_port}")
+                            || host == format!("localhost:{bound_port}")
+                    } else {
+                        host == "127.0.0.1"
+                            || host == "localhost"
+                            || host.split_once(':').is_some_and(|(h, p)| {
+                                (h == "127.0.0.1" || h == "localhost") && p.parse::<u16>().is_ok()
+                            })
+                    };
+                    if !valid {
+                        return StatusCode::MISDIRECTED_REQUEST.into_response();
+                    }
+                }
+
+                // 2. Origin check: when present, must equal http://127.0.0.1:<port> or http://localhost:<port>; null and anything else -> 403.
+                if let Some(origin) = request
+                    .headers()
+                    .get(axum::http::header::ORIGIN)
+                    .and_then(|v| v.to_str().ok())
+                {
+                    let origin = origin.trim();
+                    if origin == "null" {
+                        return StatusCode::FORBIDDEN.into_response();
+                    }
+                    let valid = if bound_port > 0 {
+                        origin == format!("http://127.0.0.1:{bound_port}")
+                            || origin == format!("http://localhost:{bound_port}")
+                    } else {
+                        origin == "http://127.0.0.1"
+                            || origin == "http://localhost"
+                            || origin
+                                .strip_prefix("http://127.0.0.1:")
+                                .or_else(|| origin.strip_prefix("http://localhost:"))
+                                .is_some_and(|p| p.parse::<u16>().is_ok())
+                    };
+                    if !valid {
+                        return StatusCode::FORBIDDEN.into_response();
+                    }
+                }
+
+                // 3. Auth check
                 let path = request.uri().path();
                 let public = path == "/v1/health"
+                    || path == "/v1/hello"
+                    || path == "/v1/pair/exchange"
                     || (web && crate::server::web::is_public_asset_path(path))
                     || super::mcp_app::is_app_load(request.method(), path);
-                if !public && let Some(token) = token {
+
+                if !public && let Some(owner_token) = app_state.http.bearer_token.as_deref() {
                     use axum::http::header::AUTHORIZATION;
-                    let expected = format!("Bearer {token}");
-                    if request
+                    let bearer = request
                         .headers()
                         .get(AUTHORIZATION)
                         .and_then(|v| v.to_str().ok())
-                        != Some(&expected)
+                        .and_then(|h| h.strip_prefix("Bearer ").map(str::trim));
+
+                    let Some(bearer) = bearer else {
+                        return StatusCode::UNAUTHORIZED.into_response();
+                    };
+
+                    let is_owner_only =
+                        path == "/v1/shutdown" || path == "/v1/pair" || path == "/v1/lsp";
+
+                    if is_owner_only {
+                        if !crate::server::owner::constant_time_eq(bearer, owner_token) {
+                            return StatusCode::UNAUTHORIZED.into_response();
+                        }
+                    } else if !crate::server::owner::constant_time_eq(bearer, owner_token)
+                        && !app_state.pairing.accepts(bearer)
                     {
                         return StatusCode::UNAUTHORIZED.into_response();
                     }
                 }
+
+                // After shutdown latched, only liveness answers: new work would start in a
+                // server that is draining its sessions.
+                if *app_state.admission.lock().await && !matches!(path, "/v1/health" | "/v1/hello")
+                {
+                    return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                }
+
                 next.run(request).await
             }
         },
@@ -278,11 +335,12 @@ pub fn app(state: AppState) -> Router {
 pub async fn serve(
     config: ServerConfig,
     hooks: std::sync::Arc<dyn crate::session::SessionHooks>,
+    client_cache: Arc<ClientCache>,
 ) -> Result<(), ServerError> {
     config.validate()?;
     let addr: SocketAddr = config.bind;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    serve_state_on(AppState::with_hooks(config, hooks)?, listener).await
+    serve_state_on(AppState::with_hooks(config, hooks, client_cache)?, listener).await
 }
 
 /// The serve body over an already-bound listener with a fresh shared state —
@@ -291,8 +349,9 @@ pub async fn serve(
 pub async fn serve_on(
     config: ServerConfig,
     listener: tokio::net::TcpListener,
+    client_cache: Arc<ClientCache>,
 ) -> Result<(), ServerError> {
-    serve_state_on(AppState::new(config)?, listener).await
+    serve_state_on(AppState::new(config, client_cache)?, listener).await
 }
 
 /// The serve body over an already-bound listener and a CALLER-SUPPLIED
@@ -359,16 +418,74 @@ async fn shutdown_signal(state: AppState) {
     };
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
+    let shutdown_requested = state.shutdown_notified();
 
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+        _ = shutdown_requested => {},
+    }
+    // Close admission first (a signal arrives without the shutdown route's latch), then end
+    // the editors' connections, so neither a new request nor an editor event can start work
+    // in a session that is being drained.
+    *state.admission.lock().await = true;
+    if let Some(navigator) = &state.navigator {
+        navigator.shutdown().await;
     }
     state.close_all().await;
 }
 
 async fn health() -> Json<HealthBody> {
-    Json(HealthBody { status: "ok" })
+    Json(HealthBody {
+        status: "ok".into(),
+    })
+}
+
+#[derive(Deserialize)]
+struct HelloQuery {
+    nonce: String,
+}
+
+async fn hello(
+    State(state): State<AppState>,
+    Query(query): Query<HelloQuery>,
+) -> Json<crate::server::owner::Hello> {
+    let token = state.http.bearer_token.as_deref().unwrap_or("");
+    let proof = crate::server::owner::hello_proof(token, &query.nonce, state.instance());
+    Json(crate::server::owner::Hello {
+        protocol: crate::server::owner::PROTOCOL,
+        build: env!("WITHNAV_VERSION").to_string(),
+        instance: state.instance().to_string(),
+        proof,
+    })
+}
+
+async fn shutdown(
+    State(state): State<AppState>,
+    body: Option<Json<crate::server::owner::ShutdownRequest>>,
+) -> Response {
+    let req = body.map(|b| b.0).unwrap_or_default();
+    let mut admission = state.admission.lock().await;
+    // The service decides under its own admission lock, which every message and session
+    // start takes: a non-forced shutdown either sees that work and refuses, or closes before it.
+    if !state.service().try_close(req.force) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "reason": "busy"
+            })),
+        )
+            .into_response();
+    }
+    *admission = true;
+    state.trigger_shutdown();
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "status": "shutting down"
+        })),
+    )
+        .into_response()
 }
 
 /// `GET /v1/mcp`: the MCP servers' status, for a client that connects after the last
@@ -507,6 +624,13 @@ async fn create_session(
             return error_response(ServerError::SessionNotFound(request.resume.unwrap()));
         }
     };
+    // A relative workspace would resolve against the owner's working directory, which is
+    // whichever directory the first client happened to start it from.
+    if !std::path::Path::new(&request.workspace).is_absolute() {
+        return error_response(ServerError::MalformedBody(
+            "workspace must be an absolute path".to_string(),
+        ));
+    }
     if resume.is_some()
         && (request.editor.is_some()
             || request.model.is_some()
@@ -549,8 +673,8 @@ async fn create_session(
             StatusCode::OK,
             Json(CreateSessionResponse {
                 session_id: id.to_string(),
-                root_actor_id: ROOT_ACTOR_ID,
-                actor_state: "idle",
+                root_actor_id: ROOT_ACTOR_ID.into(),
+                actor_state: "idle".into(),
             }),
         )
             .into_response(),
@@ -564,52 +688,6 @@ async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> R
         Err(err) => return error_response(err),
     };
     json_result(state.session_summary(parsed).await)
-}
-
-/// One row of `GET /v1/sessions?workspace=`: the stored summary plus the
-/// registry's liveness.
-#[derive(Debug, Serialize)]
-pub struct SessionListEntry {
-    pub yolo: bool,
-    pub permissions_unavailable: Option<String>,
-    pub bypass: bool,
-    pub bypass_seq: u64,
-    pub incarnation: Option<String>,
-    pub editor: bool,
-    pub read_only: bool,
-    pub resume_disabled_reason: Option<String>,
-    pub id: String,
-    pub title: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    /// Number of captain messages (`message.received` events).
-    pub message_count: u64,
-    /// The primary agent the session runs as.
-    pub agent: String,
-    pub model: String,
-    pub variant: Option<String>,
-    pub source: Option<String>,
-    pub variant_source: Option<String>,
-    pub gateway: String,
-    pub upstream_id: String,
-    pub current_seq: u64,
-    /// True when a live, active session with this id exists in this process.
-    pub live: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub child_status: Option<String>,
-    #[serde(skip_serializing_if = "is_promptable")]
-    pub promptable: bool,
-}
-
-fn is_promptable(value: &bool) -> bool {
-    *value
-}
-
-#[derive(Debug, Serialize)]
-pub struct SessionListBody {
-    pub sessions: Vec<SessionListEntry>,
 }
 
 /// `GET /v1/sessions?workspace=<abs path>`: the workspace's conversations,
@@ -626,15 +704,7 @@ async fn list_sessions(
         Ok(rows) => {
             let mut sessions = Vec::with_capacity(rows.len());
             for row in rows {
-                let summary = match state.session_summary(row.id).await {
-                    Ok(summary) => summary,
-                    Err(error) => {
-                        // A session whose stored selection cannot be read must not hide
-                        // the other conversations of the workspace.
-                        tracing::warn!(session_id = %row.id, %error, "session list: unreadable session skipped");
-                        continue;
-                    }
-                };
+                let summary = row.summary;
                 sessions.push(SessionListEntry {
                     yolo: summary.yolo,
                     permissions_unavailable: summary.permissions_unavailable,
@@ -680,70 +750,6 @@ async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => error_response(err),
     }
-}
-
-#[derive(Debug, Serialize)]
-pub struct ModelEntry {
-    pub name: String,
-    pub gateway: String,
-    pub provider_group: String,
-    pub upstream_id: String,
-    pub api: crate::provider::config::ApiKind,
-    pub supports_tools: bool,
-    pub supports_parallel_tool_calls: Option<bool>,
-    pub context_window: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub disabled_reason: Option<String>,
-    /// Where `context_window` came from: `models.json` or a `discovered.*` field.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub window_source: Option<String>,
-    /// The provider's model list could not be refreshed and the discovered
-    /// values shown are past their 24 h TTL.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stale: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stale_age_secs: Option<u64>,
-    /// Short, secret-free reason of the failed refresh.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refresh_error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reported_output: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_input_tokens: Option<u64>,
-    /// An explicit `context_window` that differs from the provider's.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub discrepancy: Option<DiscrepancyBody>,
-    /// Names of the variants the model offers; never their override objects.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub variants: Vec<String>,
-    /// The default variant, when the model sets one that it offers.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_variant: Option<String>,
-    /// The configured `default_variant`, when it names a variant that is not
-    /// on offer now (a tier the provider does not report, or could not be
-    /// asked for); `refresh_error` says why when the lookup failed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_variant_unavailable: Option<String>,
-    /// Whether the model takes images: absent when unknown.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub images: Option<bool>,
-    /// Where `images` came from: `models.json`, `discovered.vision` or `none`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub images_source: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DiscrepancyBody {
-    pub configured: u64,
-    pub discovered: u64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ModelsBody {
-    pub models: Vec<ModelEntry>,
-    pub default_agent: String,
 }
 
 /// `GET /v1/models?workspace=<abs path>`: the canonical model catalog.
@@ -804,7 +810,7 @@ async fn list_models(
                                 .map_or_else(|| m.provider.clone(), |(group, _)| group.to_string()),
                             gateway: m.provider,
                             upstream_id: m.model,
-                            api: m.api,
+                            api: wire_api(m.api),
                             supports_tools: m.supports_tools,
                             supports_parallel_tool_calls: m.supports_parallel_tool_calls,
                             context_window: m.context_window,
@@ -827,7 +833,7 @@ async fn list_models(
                 })
                 .collect::<Vec<_>>();
             for (key, entry) in &mut models {
-                if entry.api != crate::provider::config::ApiKind::Chat {
+                if entry.api != ApiKind::Chat {
                     entry.enabled = Some(true);
                     continue;
                 }
@@ -848,7 +854,7 @@ async fn list_models(
                         entry.refresh_error = resolution.refresh_error;
                         entry.reported_output = resolution.reported_output;
                         entry.max_input_tokens = resolution.max_input_tokens;
-                        entry.discrepancy = resolution.discrepancy.map(|d| DiscrepancyBody {
+                        entry.discrepancy = resolution.discrepancy.map(|d| Discrepancy {
                             configured: d.configured,
                             discovered: d.discovered,
                         });
@@ -868,7 +874,7 @@ async fn list_models(
                 StatusCode::OK,
                 Json(ModelsBody {
                     models,
-                    default_agent,
+                    default_agent: Some(default_agent),
                 }),
             )
                 .into_response()
@@ -876,6 +882,17 @@ async fn list_models(
         Err(_) => error_response(ServerError::MalformedBody(
             "model catalog configuration unavailable".into(),
         )),
+    }
+}
+
+/// The catalog's API kind as clients read it; every kind the server knows has a wire name, so a
+/// served model never decodes as `Unknown` (which clients refuse to offer).
+fn wire_api(api: crate::provider::config::ApiKind) -> ApiKind {
+    use crate::provider::config::ApiKind as Catalog;
+    match api {
+        Catalog::Chat => ApiKind::Chat,
+        Catalog::Fim => ApiKind::Fim,
+        Catalog::SystemOne => ApiKind::SystemOne,
     }
 }
 
@@ -910,12 +927,20 @@ async fn get_skills(State(state): State<AppState>, Path(id): Path<String>) -> Re
 
 /// `GET /v1/commands`: the registered session commands, then the prompts of the ready MCP
 /// servers as `<server>:<prompt>` commands.
-async fn list_commands(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let mut commands = json!(state.list_commands());
-    if let Some(list) = commands.as_array_mut() {
-        list.extend(state.prompt_commands().into_iter().map(|c| json!(c)));
-    }
-    Json(json!({ "commands": commands }))
+async fn list_commands(State(state): State<AppState>) -> Json<CommandsBody> {
+    let builtins = state.list_commands().iter().map(|c| ServerCommand {
+        name: c.name.into(),
+        description: c.description.into(),
+        args_hint: c.args_hint.into(),
+    });
+    let prompts = state.prompt_commands().into_iter().map(|c| ServerCommand {
+        name: c.name,
+        description: c.description,
+        args_hint: c.args_hint,
+    });
+    Json(CommandsBody {
+        commands: builtins.chain(prompts).collect(),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -924,25 +949,11 @@ struct PostBypassRequest {
     enabled: bool,
 }
 
-fn bypass_auth_required() -> Response {
-    (
-        StatusCode::FORBIDDEN,
-        Json(json!({
-            "reason": "auth_required",
-            "error": "bypass can only be changed by an authenticated client",
-        })),
-    )
-        .into_response()
-}
-
 async fn post_bypass(
     State(state): State<AppState>,
     Path(id): Path<String>,
     body: Result<Json<PostBypassRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    if state.http.bearer_token.is_none() {
-        return bypass_auth_required();
-    }
     let parsed = match parse_session_id(id) {
         Ok(parsed) => parsed,
         Err(err) => return error_response(err),
@@ -985,17 +996,6 @@ async fn post_command(
         Ok(parsed) => parsed,
         Err(err) => return error_response(err),
     };
-    if state.http.bearer_token.is_none()
-        && request
-            .name
-            .trim()
-            .strip_prefix('/')
-            .unwrap_or(request.name.trim())
-            == "bypass"
-        && matches!(request.arguments.trim(), "on" | "off")
-    {
-        return bypass_auth_required();
-    }
     json_result(
         state
             .run_command(parsed, &request.name, &request.arguments)
@@ -1204,7 +1204,7 @@ async fn answer_permission(
         .answer_permission(session_id, request_id, decision)
         .await
     {
-        Ok(()) => Json(json!({ "accepted": true })).into_response(),
+        Ok(()) => Json(AcceptedBody { accepted: true }).into_response(),
         Err(err) => error_response(err),
     }
 }
@@ -1355,9 +1355,9 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<String>) -> 
         Err(err) => return error_response(err),
     };
     match state.close_session(parsed).await {
-        Ok(()) => Json(StopAccepted {
+        Ok(()) => Json(StopResponse {
             accepted: true,
-            actor_state: "stopped",
+            actor_state: "stopped".into(),
         })
         .into_response(),
         Err(err) => error_response(err),
@@ -1385,7 +1385,7 @@ async fn continue_child(
         .continue_child_with_token(parent_id, child_id, token)
         .await
     {
-        Ok(()) => Json(json!({"accepted":true})).into_response(),
+        Ok(()) => Json(AcceptedBody { accepted: true }).into_response(),
         Err(error) => error_response(error),
     }
 }
@@ -1428,6 +1428,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
     let status = match &err {
         ServerError::SessionArchived { .. } => StatusCode::FORBIDDEN,
         ServerError::ChildReadOnly => StatusCode::FORBIDDEN,
+        ServerError::ShuttingDown => StatusCode::SERVICE_UNAVAILABLE,
         ServerError::SubagentCapacity { .. } => StatusCode::TOO_MANY_REQUESTS,
         ServerError::SubagentSettings(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ServerError::SessionTreeTooDeep { .. } => StatusCode::INTERNAL_SERVER_ERROR,
@@ -1476,6 +1477,7 @@ pub(crate) fn error_response(err: ServerError) -> Response {
     let reason = match &err {
         ServerError::ResumeRequired => Some("resume_required"),
         ServerError::ChildReadOnly => Some("child_read_only"),
+        ServerError::ShuttingDown => Some("shutting_down"),
         ServerError::BudgetTopupLimit => Some("budget_topup_limit"),
         ServerError::SubagentCapacity { .. } => Some("subagent_capacity"),
         ServerError::PermissionStale => Some("permission_stale"),
@@ -1524,17 +1526,20 @@ mod tests {
 
     fn test_state() -> (tempfile::TempDir, AppState) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let state = AppState::new(ServerConfig {
-            bind: "127.0.0.1:0".parse().expect("loopback bind"),
-            models_path: None,
-            config_dir: dir.path().join("cfg"),
-            allow_non_loopback: false,
-            bearer_token: None,
-            history_db: dir.path().join("history.db"),
-            data_dir: dir.path().join("data"),
-            rules_roots: Default::default(),
-            web: None,
-        })
+        let state = AppState::new(
+            ServerConfig {
+                bind: "127.0.0.1:0".parse().expect("loopback bind"),
+                models_path: None,
+                config_dir: dir.path().join("cfg"),
+                allow_non_loopback: false,
+                bearer_token: None,
+                history_db: dir.path().join("history.db"),
+                data_dir: dir.path().join("data"),
+                rules_roots: Default::default(),
+                web: None,
+            },
+            Arc::new(ClientCache::new()),
+        )
         .expect("state over a temp database");
         (dir, state)
     }

@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! The permission gate through the session service and the HTTP surface: a
 //! gated tool call yields the turn, the Captain answers with a typed decision,
 //! and the decision (never chat text) resumes it.
@@ -123,11 +124,6 @@ async fn answer(
 async fn await_persisted_transcript(state: &AppState, id: ulid::Ulid) {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            state
-                .history()
-                .flush()
-                .await
-                .expect("flush transcript writer");
             let stored = state
                 .history()
                 .load(id)
@@ -171,7 +167,11 @@ async fn mcp_resource_read_is_decided_like_any_tool() {
     let mut settings = withnav::settings::load(&cfg.config_dir).unwrap();
     settings.set_dotted("mcp", json!({"fake":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"RESOURCES":"1"}}}));
     withnav::settings::save(&cfg.config_dir, &settings).unwrap();
-    let state = AppState::new(cfg).unwrap();
+    let state = AppState::new(
+        cfg,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     common::server::wait_for("MCP discovery", || {
         state
             .service()
@@ -221,7 +221,11 @@ async fn mcp_unknown_tool_asks_always_saves_global_rule_and_yolo_runs_directly()
         withnav::settings::save(&cfg.config_dir, &settings).unwrap();
         // The mock has no instinct assignment: the built-in permission flow applies the
         // rule on unavailable judgement, asking with no rule and allowing the saved rule.
-        let state = AppState::new(cfg).unwrap();
+        let state = AppState::new(
+            cfg,
+            std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+        )
+        .unwrap();
         common::server::wait_for("MCP discovery", || {
             state
                 .service()
@@ -745,6 +749,66 @@ async fn admitted_captain_answer_keeps_captain_provenance_after_bypass() {
     state.close_session(id).await.unwrap();
 }
 
+// Given a conversation that reads files inside the project and lets a rule
+//      allow a command
+// Then the reads leave no row in the decision table, the allowed call does, and
+//      `nav permissions history` therefore lists the decisions, not every call
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_free_read_records_nothing_and_a_decided_call_records_itself() {
+    let env = Env::new();
+    let source = env.ws.join("src/main.rs");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "fn main() {}\n").unwrap();
+    let provider = provider(vec![
+        calls(&[
+            ("r1", "read", json!({"path": source.to_str().unwrap()})),
+            (
+                "g2",
+                "glob",
+                json!({"pattern": "*.rs", "path": env.ws.to_str().unwrap()}),
+            ),
+            ("b1", "bash", json!({"command": "echo decided"})),
+        ]),
+        done("done"),
+    ])
+    .await;
+    let state = config(&env, &provider)
+        .rule("bash", "echo *", withnav::permission::rules::Effect::Allow)
+        .state();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    say(&state, id, "look around").await;
+    let events = wait_events(&state, id, "tool.post_call", 3).await;
+    let approved: Vec<_> = events
+        .iter()
+        .map(|event| event.payload["metadata"]["approved_by"].clone())
+        .collect();
+    assert_eq!(approved, [json!("rule"), json!("rule"), json!("rule")]);
+    wait_events(&state, id, "task.done", 1).await;
+
+    // The row is written off the call path, so it may land a moment later.
+    let rows = common::deadline::eventually("the decision row of the bash call", || async {
+        let rows = withnav::permission::store::PermissionStore::open(env.root.join("data"))
+            .unwrap()
+            .list_decisions(
+                &withnav::permission::decisions::DecisionFilter {
+                    session_id: Some(id.to_string()),
+                    ..Default::default()
+                },
+                10,
+            )
+            .unwrap();
+        (!rows.is_empty()).then_some(rows)
+    })
+    .await;
+    assert_eq!(rows.len(), 1, "only the decided call has a row: {rows:?}");
+    assert_eq!(rows[0].tool, "bash");
+    assert_eq!(
+        rows[0].outcome,
+        withnav::permission::decisions::Outcome::Allowed
+    );
+    state.close_session(id).await.unwrap();
+}
+
 // Given allow-folder on one folder
 // Then a write below it runs without a request, a write in another folder
 //      asks, and a denial with a message reaches the model as
@@ -1022,6 +1086,7 @@ async fn withnav_run_stops_on_a_permission_request_unless_yes() {
     let cfg = config(&env, &provider);
     cfg.config();
     let models = cfg.models_path();
+    let _owner_guard = common::owner::OwnerGuard::new(&env.root.join("data/withnav"));
 
     let (root_env, models_a) = (env.root.clone(), models.clone());
     let ws = env.ws.clone();
@@ -1407,17 +1472,17 @@ async fn a_wake_held_behind_a_request_does_not_cancel_the_next_request() {
     );
 }
 
-// Given a write held for the Captain, bound to its canonical destination, and
-//       a navigator wake posted while the request waits
+// Given a write held for the Captain and a navigator wake posted while the
+//       request waits
 // When the destination file is replaced by a symlink to another file before
 //      the Captain allows the call
-// Then the bound pathname no longer opens without following a link: nothing
-//      is written through it, the call enters the decision again and asks a
-//      fresh request, the held wake does not cancel it, and the wake runs only
-//      after the turn ends
+// Then the answer runs the call once on the path the request named, with no
+//      second question (symlink races are out of scope, ADR 0015): the
+//      atomic write replaces the link itself, the linked file is untouched,
+//      and the held wake runs after the turn ends
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_destination_replaced_by_a_link_while_a_wake_is_held_is_decided_again() {
+async fn a_destination_replaced_by_a_link_while_a_wake_is_held_is_written_once() {
     let env = Env::new();
     let target = env.ws.join("notes.txt");
     let elsewhere = env.ws.join("elsewhere.txt");
@@ -1437,42 +1502,16 @@ async fn a_destination_replaced_by_a_link_while_a_wake_is_held_is_decided_again(
     wake(&state, id, "drift: look at the parser").await;
     wait_events(&state, id, "message.received", 2).await;
 
-    // The bound file becomes a link while the question waits.
     std::fs::remove_file(&target).unwrap();
     std::os::unix::fs::symlink(&elsewhere, &target).unwrap();
     allow(&state, id, first).await;
 
-    let second = nth_suspended_request(&state, id, 2).await;
-    assert_ne!(first, second, "the moved destination is decided again");
-    assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "keep");
-    assert!(
-        std::fs::symlink_metadata(&target)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
+    wait_events(&state, id, "task.done", 2).await;
+    assert_eq!(events(&state, id, "permission.requested").await.len(), 1);
     let posts = events(&state, id, "tool.post_call").await;
     assert_eq!(posts.len(), 1);
-    assert_eq!(posts[0].payload["status"], "error");
-    assert!(
-        posts[0].payload["output"]
-            .as_str()
-            .unwrap()
-            .contains("nothing was written")
-    );
-    assert_eq!(events(&state, id, "permission.resolved").await.len(), 1);
-    assert_eq!(provider.bodies().len(), 1, "the wake did not start a turn");
-
-    // Rejecting the fresh request ends the turn; the wake then runs.
-    state
-        .answer_permission(
-            id,
-            second,
-            withnav::agent::permissions::PermissionDecision::Reject { message: None },
-        )
-        .await
-        .unwrap();
-    wait_events(&state, id, "task.done", 2).await;
+    assert_eq!(posts[0].payload["status"], "ok", "{}", posts[0].payload);
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "from w1");
     assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "keep");
     let bodies = provider.bodies();
     assert_eq!(bodies.len(), 3);
@@ -1517,4 +1556,107 @@ async fn an_always_that_cannot_be_saved_says_so_and_runs_once() {
     let error = payload["always_error"].as_str().unwrap();
     assert_eq!(error, "rule write rejected");
     state.close_session(id).await.unwrap();
+}
+
+/// One settled decision row for `session`, written through the store's own
+/// insert path: the conversations this test does not need to run get their
+/// rows this way, and the deleted one gets a real one from a real call.
+fn record_decision(env: &Env, session: &str) {
+    use withnav::permission::decisions::{CallSnapshot, Decision, Outcome};
+    withnav::permission::store::PermissionStore::open(env.root.join("data"))
+        .unwrap()
+        .record(&Decision {
+            id: 0,
+            time: withnav::bus::event::now_rfc3339(),
+            session_id: session.to_string(),
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            request_id: None,
+            agent: "build".into(),
+            workspace: env.ws.clone(),
+            tool: "bash".into(),
+            call_snapshot: CallSnapshot {
+                arguments: "git status".into(),
+                truncated: false,
+            },
+            command_matches: json!([]),
+            rule_id: None,
+            effect: None,
+            flow_verdict: None,
+            flow_trace: None,
+            captain_answer: None,
+            outcome: Outcome::Allowed,
+            approved_by: None,
+        })
+        .unwrap();
+}
+
+fn decision_rows(env: &Env, session: &str) -> i64 {
+    rusqlite::Connection::open(env.root.join("data/withnav.db"))
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM permission_decisions WHERE session_id = ?1",
+            [session],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+// Given a conversation whose write call was decided and recorded, a second
+//       conversation of the same workspace and a live child of the first,
+//       each with its own decision rows
+// When the first conversation is deleted
+// Then the rows of the deleted conversation and of its child are gone from
+//      `permission_decisions`, the other conversation keeps its rows, and the
+//      history deletion still removes the conversation
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deleting_a_conversation_forgets_its_permission_decisions() {
+    let env = Env::new();
+    let target = env.ws.join("decided.txt");
+    let provider = provider(vec![one_write("w1", &target), done("written")]).await;
+    let state = config(&env, &provider).state();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    say(&state, id, "write decided.txt").await;
+    let requested = wait_events(&state, id, "permission.requested", 1).await;
+    allow(&state, id, request_id(&requested[0]).parse().unwrap()).await;
+    wait_events(&state, id, "turn.end", 1).await;
+    assert_eq!(
+        decision_rows(&env, &id.to_string()),
+        1,
+        "the answered call left one decision row"
+    );
+
+    let other = state.create_session(&env.ws, None, false).await.unwrap();
+    let child = tokio::time::timeout(
+        Duration::from_secs(5),
+        state.create_child_session(id, "vigie", "inspect"),
+    )
+    .await
+    .expect("child creation deadline")
+    .unwrap();
+    record_decision(&env, &other.to_string());
+    record_decision(&env, &child.to_string());
+
+    state.delete(id).await.unwrap();
+
+    assert_eq!(
+        decision_rows(&env, &id.to_string()),
+        0,
+        "the deleted conversation forgot its decision rows"
+    );
+    assert_eq!(
+        decision_rows(&env, &child.to_string()),
+        0,
+        "the child deleted with it forgot its rows too"
+    );
+    assert_eq!(
+        decision_rows(&env, &other.to_string()),
+        1,
+        "another conversation keeps its decision rows"
+    );
+    let listed = state.list(&env.ws.display().to_string()).await.unwrap();
+    assert!(
+        listed.iter().all(|listing| listing.id != id),
+        "the history delete still removed the conversation"
+    );
 }

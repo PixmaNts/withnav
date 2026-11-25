@@ -239,6 +239,152 @@ mod tests {
             1
         );
     }
+
+    fn decision(session_id: &str, outcome: Outcome, workspace: &std::path::Path) -> Decision {
+        Decision {
+            id: 0,
+            time: crate::bus::event::now_rfc3339(),
+            session_id: session_id.into(),
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            request_id: None,
+            agent: "build".into(),
+            workspace: workspace.to_path_buf(),
+            tool: "bash".into(),
+            call_snapshot: CallSnapshot {
+                arguments: "git status".into(),
+                truncated: false,
+            },
+            command_matches: serde_json::json!([]),
+            rule_id: None,
+            effect: None,
+            flow_verdict: None,
+            flow_trace: None,
+            captain_answer: None,
+            outcome,
+            approved_by: None,
+        }
+    }
+
+    fn sessions_and_ids(store: &PermissionStore, limit: usize) -> Vec<(String, i64)> {
+        store
+            .list_decisions(&DecisionFilter::default(), limit)
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.session_id, row.id))
+            .collect()
+    }
+
+    #[test]
+    fn forgetting_one_conversation_leaves_the_other_conversations_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PermissionStore::open(dir.path()).unwrap();
+        for session in ["a", "b", "a", "c"] {
+            store
+                .record(&decision(session, Outcome::Allowed, dir.path()))
+                .unwrap();
+        }
+
+        assert_eq!(store.forget_session("a").unwrap(), 2);
+        let mut left = sessions_and_ids(&store, 10)
+            .into_iter()
+            .map(|(session, _)| session)
+            .collect::<Vec<_>>();
+        left.sort();
+        assert_eq!(left, ["b", "c"]);
+        assert!(
+            store
+                .list_decisions(
+                    &DecisionFilter {
+                        session_id: Some("a".into()),
+                        ..Default::default()
+                    },
+                    10
+                )
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store.forget_session("a").unwrap(),
+            0,
+            "forgetting twice is not an error"
+        );
+        assert_eq!(sessions_and_ids(&store, 10).len(), 2);
+    }
+
+    #[test]
+    fn pruning_keeps_the_newest_settled_rows_and_every_pending_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PermissionStore::open(dir.path()).unwrap();
+        let oldest_pending = store
+            .record(&decision("open", Outcome::Pending, dir.path()))
+            .unwrap();
+        let settled = (0..5)
+            .map(|_| {
+                store
+                    .record(&decision("settled", Outcome::Allowed, dir.path()))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let newest_pending = store
+            .record(&decision("open", Outcome::Pending, dir.path()))
+            .unwrap();
+
+        assert_eq!(store.prune_decisions(2).unwrap(), 3);
+        let kept = sessions_and_ids(&store, 10)
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect::<Vec<_>>();
+        assert_eq!(kept.len(), 4, "two settled rows and both pending ones");
+        assert_eq!(kept.iter().filter(|id| **id == newest_pending).count(), 1);
+        assert_eq!(
+            kept.iter().filter(|id| **id == oldest_pending).count(),
+            1,
+            "an old open question is never pruned: {kept:?}"
+        );
+        for id in &settled[3..] {
+            assert_eq!(kept.iter().filter(|kept| *kept == id).count(), 1);
+        }
+        for id in &settled[..3] {
+            assert!(!kept.contains(id), "row {id} is past the ceiling");
+        }
+        // The rows that were kept are still answerable: the whole point of
+        // excluding pending rows is that the Captain's answer still lands.
+        assert!(
+            store
+                .update_outcome(oldest_pending, Outcome::Allowed, None, Some("captain"))
+                .unwrap()
+        );
+        assert!(
+            store
+                .update_outcome(newest_pending, Outcome::Denied, None, None)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn recording_past_the_ceiling_prunes_the_oldest_settled_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PermissionStore::in_memory().unwrap();
+        for _ in 0..MAX_DECISION_ROWS + 2 {
+            store
+                .record(&decision("session", Outcome::Allowed, dir.path()))
+                .unwrap();
+        }
+
+        let rows = sessions_and_ids(&store, MAX_DECISION_ROWS * 2);
+        assert_eq!(
+            rows.len(),
+            MAX_DECISION_ROWS,
+            "the table stops at the ceiling: {}",
+            rows.len()
+        );
+        let oldest = rows.iter().map(|(_, id)| *id).min().unwrap();
+        assert_eq!(
+            oldest, 3,
+            "the two rows past the ceiling were the oldest ones"
+        );
+    }
 }
 
 impl Outcome {
@@ -439,6 +585,17 @@ const MATCHES_KEPT: usize = 32;
 const ANSWER_BYTES: usize = 2048;
 const SHORT_TEXT_BYTES: usize = 256;
 
+/// How many settled decisions are kept. The table exists to show the Captain
+/// which questions could become rules, not to be a ledger of every call (owner
+/// decision of 2026-11-10), so it is bounded rather than kept for the life of
+/// the installation: a call argument the user never turns into a rule is not
+/// worth storing forever. `nav permissions history` prints the newest 100 by
+/// default and the flow captures are bounded at 1000 records a workspace, so a
+/// thousand recent decisions is well past what rule promotion reads: a row is
+/// a 4 KiB snapshot plus the bounded matches, trace and answer, which keeps
+/// the whole table to single-digit MiB.
+pub const MAX_DECISION_ROWS: usize = 1_000;
+
 /// Cut `text` at a character boundary; returns whether it was cut.
 fn cut(text: &mut String, limit: usize) -> bool {
     if text.len() <= limit {
@@ -582,7 +739,35 @@ impl PermissionStore {
                 flow_trace.as_ref().map(serde_json::to_string).transpose()?
             ],
         )?;
-        Ok(db.last_insert_rowid())
+        let id = db.last_insert_rowid();
+        // The prune runs only once a row's id passes the ceiling. Ids are
+        // AUTOINCREMENT, so they never repeat and never shrink when rows are
+        // deleted: while the newest id is at or below the ceiling no more than
+        // that many rows were ever inserted, so the ceiling cannot be exceeded
+        // yet, and the write path stays free of a whole-history walk per
+        // recorded call. Past it, the ceiling is restored immediately.
+        if id > MAX_DECISION_ROWS as i64 {
+            prune_settled(&db, MAX_DECISION_ROWS)?;
+        }
+        Ok(id)
+    }
+
+    /// Deletes every decision row of one conversation. `session_id` is the
+    /// conversation's id in the form the table stores it, the same key
+    /// `expire_pending` uses. Returns how many rows were removed.
+    pub fn forget_session(&self, session_id: &str) -> Result<usize, Error> {
+        Ok(self.db().execute(
+            "DELETE FROM permission_decisions WHERE session_id = ?1",
+            params![session_id],
+        )?)
+    }
+
+    /// Prunes the decision history down to the newest `max` settled rows, the
+    /// pass a retention bound needs. Returns how many rows were removed.
+    /// Nothing is removed while fewer settled rows exist, and a ceiling of 0
+    /// prunes nothing.
+    pub fn prune_decisions(&self, max: usize) -> Result<usize, Error> {
+        prune_settled(&self.db(), max)
     }
 
     pub fn update_outcome(
@@ -639,6 +824,34 @@ impl PermissionStore {
         let rows = statement.query_map(rusqlite::params_from_iter(values), read_decision)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
+}
+
+/// Deletes the settled decisions older than the newest `max`, and nothing
+/// else.
+///
+/// A row still `pending` is never pruned, whatever the ceiling: an open
+/// question is settled by row id once the Captain answers (`update_outcome`,
+/// `cancel_if_pending`), so pruning its row would lose the answer silently.
+/// Keeping a handful of pending rows above the ceiling costs nothing, and the
+/// ceiling is an upper bound on stored call arguments, not a target.
+///
+/// The subquery is the oldest of the kept rows, so the delete itself is a
+/// range on the primary key: it touches only the rows it removes. While fewer
+/// than `max` settled rows exist the subquery is that same oldest row and
+/// nothing is removed; with `max` at 0 the subquery is empty, so nothing is
+/// removed either.
+fn prune_settled(db: &rusqlite::Connection, max: usize) -> Result<usize, Error> {
+    let max = i64::try_from(max)
+        .map_err(|_| Error::Invalid("decision retention ceiling is too large".into()))?;
+    Ok(db.execute(
+        "DELETE FROM permission_decisions
+          WHERE outcome <> 'pending'
+            AND id < (SELECT MIN(id) FROM (
+                        SELECT id FROM permission_decisions
+                         WHERE outcome <> 'pending'
+                         ORDER BY id DESC LIMIT ?1))",
+        params![max],
+    )?)
 }
 
 #[cfg(test)]

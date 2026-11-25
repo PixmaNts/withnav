@@ -16,25 +16,39 @@ async fn legacy_ids_resolve_at_creation_delegation_task_and_resume() {
     use withnav::tools::{Tool, ToolContext};
     let env = Env::new();
     let config = TestServerConfig::unreachable(&env.root).config();
-    let state = AppState::new(config.clone()).unwrap();
+    let state = AppState::new(
+        config.clone(),
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     for old in ["review", "oracle"] {
         let id = state
             .create_session_as(&env.ws, None, false, Some(old))
             .await
             .unwrap();
-        assert_eq!(state.session_summary(id).await.unwrap().agent, "lux");
+        assert_eq!(
+            state.session_summary(id).await.unwrap().agent.as_deref(),
+            Some("lux")
+        );
         state
             .history()
             .set_primary_agent(id, Some(old))
             .await
             .unwrap();
         state.close_session(id).await.unwrap();
-        let resumed = AppState::new(config.clone()).unwrap();
+        let resumed = AppState::new(
+            config.clone(),
+            std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+        )
+        .unwrap();
         resumed
             .create_or_resume_session(&env.ws, None, false, Some(id))
             .await
             .unwrap();
-        assert_eq!(resumed.session_summary(id).await.unwrap().agent, "lux");
+        assert_eq!(
+            resumed.session_summary(id).await.unwrap().agent.as_deref(),
+            Some("lux")
+        );
         resumed.close_session(id).await.unwrap();
     }
     let parent = state.create_session(&env.ws, None, false).await.unwrap();
@@ -43,7 +57,10 @@ async fn legacy_ids_resolve_at_creation_delegation_task_and_resume() {
             .create_child_session(parent, old, "inspect")
             .await
             .unwrap();
-        assert_eq!(state.session_summary(child).await.unwrap().agent, *new);
+        assert_eq!(
+            state.session_summary(child).await.unwrap().agent.as_deref(),
+            Some(*new)
+        );
         state.close_session(child).await.unwrap();
     }
     let task = withnav::tools::task::TaskTool::new(state.service(), parent);
@@ -82,7 +99,11 @@ async fn successful_switch_fallback_warning_is_durable_and_replayed() {
             .to_string(),
     )
     .unwrap();
-    let state = AppState::new(config).unwrap();
+    let state = AppState::new(
+        config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     let result = state.run_command(id, "agent", "plan").await.unwrap();
     assert!(result.ok);
@@ -92,7 +113,6 @@ async fn successful_switch_fallback_warning_is_durable_and_replayed() {
             .unwrap()
             .contains("mock/missing")
     );
-    state.history().flush().await.unwrap();
     let loaded = state.history().load(id).await.unwrap().unwrap();
     let event = loaded
         .envelopes
@@ -110,7 +130,11 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
     let config = TestServerConfig::unreachable(&env.root)
         .variants(json!({"low":{"reasoning_effort":"low"}}), Some("low"))
         .config();
-    let state = AppState::new(config).unwrap();
+    let state = AppState::new(
+        config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     for off in [json!(null), json!("off")] {
         std::fs::write(
             env.root.join("cfg/config.json"),
@@ -155,7 +179,6 @@ async fn creation_assignment_off_named_overrides_and_fallback_notice_are_durable
         )
         .await
         .unwrap();
-    state.history().flush().await.unwrap();
     let loaded = state.history().load(id).await.unwrap().unwrap();
     assert!(loaded.envelopes.iter().any(|e| {
         e.kind == "command.result"
@@ -199,7 +222,11 @@ async fn live_agent_switch_restores_model_and_off_override_after_restart() {
             .to_string(),
     )
     .unwrap();
-    let state = AppState::new(config.clone()).unwrap();
+    let state = AppState::new(
+        config.clone(),
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     let id = state.create_session(&env.ws, None, false).await.unwrap();
     assert!(
         state
@@ -211,21 +238,25 @@ async fn live_agent_switch_restores_model_and_off_override_after_restart() {
     assert!(state.run_command(id, "variant", "off").await.unwrap().ok);
     assert!(state.run_command(id, "agent", "plan").await.unwrap().ok);
     let plan = state.session_summary(id).await.unwrap();
-    assert_eq!(plan.agent, "plan");
+    assert_eq!(plan.agent.as_deref(), Some("plan"));
     assert_eq!(plan.variant.as_deref(), Some("low"));
     assert!(state.run_command(id, "agent", "build").await.unwrap().ok);
     let build = state.session_summary(id).await.unwrap();
-    assert_eq!(build.agent, "build");
+    assert_eq!(build.agent.as_deref(), Some("build"));
     assert_eq!(build.model, "mock/plan-model");
     assert_eq!(build.variant, None);
     state.close_session(id).await.unwrap();
-    let reopened = AppState::new(config).unwrap();
+    let reopened = AppState::new(
+        config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     reopened
         .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
     let restored = reopened.session_summary(id).await.unwrap();
-    assert_eq!(restored.agent, "build");
+    assert_eq!(restored.agent.as_deref(), Some("build"));
     assert_eq!(restored.model, "mock/plan-model");
     assert_eq!(restored.variant, None);
     let provenance = reopened
@@ -275,7 +306,11 @@ async fn configured_agent_fallback_header_precedence_and_invalid_defaults() {
     );
     let settings = env.root.join("cfg/config.json");
     std::fs::write(&settings,json!({"agents":{"build":{"model":"mock/mock-model"},"custom":{"model":"mock/mock-model"},"plan":{"model":"mock/missing"}}}).to_string()).unwrap();
-    let state = AppState::new(config.clone()).unwrap();
+    let state = AppState::new(
+        config.clone(),
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     for agent in ["custom", "plan"] {
         let id = state
             .create_session_with(
@@ -362,7 +397,11 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
             .to_string(),
     )
     .unwrap();
-    let service = AppState::new(config.clone()).unwrap();
+    let service = AppState::new(
+        config.clone(),
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     let build = service.create_session(&env.ws, None, false).await.unwrap();
     assert_eq!(
         service.session_summary(build).await.unwrap().model,
@@ -410,7 +449,11 @@ async fn configured_agents_choose_models_and_persist_explicit_off_on_resume() {
     );
     assert_eq!(meta.variant, None);
     service.close_session(overridden).await.unwrap();
-    let reopened = AppState::new(config).unwrap();
+    let reopened = AppState::new(
+        config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     reopened
         .create_or_resume_session(&env.ws, None, false, Some(overridden))
         .await
@@ -511,7 +554,6 @@ fn sent(provider: &CapturingProvider, n: usize) -> Vec<(String, String)> {
 }
 
 async fn stored_agent(state: &AppState, id: ulid::Ulid) -> Option<String> {
-    state.history().flush().await.expect("flush");
     state
         .history()
         .meta(id)
@@ -538,7 +580,10 @@ async fn a_session_runs_as_build_by_default() {
         ["system", "system", "user"],
         "Nav adds its build role"
     );
-    assert_eq!(state.session_summary(id).await.unwrap().agent, "build");
+    assert_eq!(
+        state.session_summary(id).await.unwrap().agent.as_deref(),
+        Some("build")
+    );
     assert_eq!(stored_agent(&state, id).await, None);
     let listed = state.list(&env.ws.display().to_string()).await.unwrap();
     assert_eq!(listed[0].agent, "build");
@@ -571,7 +616,15 @@ async fn a_plan_session_sends_its_role_and_keeps_it_across_a_resume() {
         .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
-    assert_eq!(second.session_summary(resumed).await.unwrap().agent, "plan");
+    assert_eq!(
+        second
+            .session_summary(resumed)
+            .await
+            .unwrap()
+            .agent
+            .as_deref(),
+        Some("plan")
+    );
     converse(&second, id, "two").await;
     assert!(sent(&provider, 1)[1].1.contains("plan mode"));
 }
@@ -683,7 +736,15 @@ async fn a_legacy_row_resumes_as_build() {
         .create_or_resume_session(&env.ws, None, false, Some(id))
         .await
         .unwrap();
-    assert_eq!(state.session_summary(resumed).await.unwrap().agent, "build");
+    assert_eq!(
+        state
+            .session_summary(resumed)
+            .await
+            .unwrap()
+            .agent
+            .as_deref(),
+        Some("build")
+    );
 }
 
 // Given a conversation on build
@@ -710,7 +771,10 @@ async fn switching_changes_the_next_request_and_nothing_in_the_transcript() {
         changed[0].payload,
         json!({ "agent": "plan", "previous": "build" })
     );
-    assert_eq!(state.session_summary(id).await.unwrap().agent, "plan");
+    assert_eq!(
+        state.session_summary(id).await.unwrap().agent.as_deref(),
+        Some("plan")
+    );
 
     converse(&state, id, "second").await;
     // The estimate counts the role message the request carries.
@@ -818,7 +882,10 @@ async fn a_switch_during_a_pending_ask_is_refused() {
     let out = state.run_command(id, "agent", "plan").await.unwrap();
     assert!(!out.ok);
     assert!(out.error.unwrap().contains("waiting for an answer"));
-    assert_eq!(state.session_summary(id).await.unwrap().agent, "build");
+    assert_eq!(
+        state.session_summary(id).await.unwrap().agent.as_deref(),
+        Some("build")
+    );
     assert_eq!(stored_agent(&state, id).await, None);
 }
 
@@ -952,6 +1019,7 @@ async fn run_agent_case(
     cfg.config();
     let models = cfg.models_path();
     let (root, ws) = (env.root.clone(), env.ws.clone());
+    let _owner_guard = common::owner::OwnerGuard::new(&env.root.join("data/withnav"));
     let output = tokio::task::spawn_blocking(move || {
         run_withnav(
             &root,

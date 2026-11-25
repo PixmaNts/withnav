@@ -13,11 +13,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
-import { adoptTokenFromHash } from "./api/http";
+import { pairFromHash } from "./api/http";
 import { HttpError } from "./api/http";
 import { applyTheme, storedTheme } from "./theme/themes";
 
-adoptTokenFromHash();
+await pairFromHash();
 applyTheme(storedTheme());
 
 const queryClient = new QueryClient({

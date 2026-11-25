@@ -56,8 +56,12 @@ jobs:
           sudo install -m 0755 /usr/bin/true /usr/bin/mise
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build --workspace --bins
-      - run: cargo test --workspace
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --features test-support
+      - run: cargo clippy --workspace --all-targets --features test-support -- -D warnings
+      # The test-point registry compiles only under the feature: release builds
+      # must compile without it, and the feature must not break a release build.
+      - run: cargo check --workspace --release
+      - run: cargo check -p withnav --features test-support --release
       - run: cargo fmt --check
 
   webui:
@@ -95,8 +99,8 @@ jobs:
         with:
           key: x86_64-pc-windows-msvc
       - run: cargo build --workspace --bins --locked --target x86_64-pc-windows-msvc
-      - run: cargo test --workspace --locked --target x86_64-pc-windows-msvc
-      - run: cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+      - run: cargo test --workspace --locked --features test-support --target x86_64-pc-windows-msvc
+      - run: cargo clippy --workspace --all-targets --locked --features test-support --target x86_64-pc-windows-msvc -- -D warnings
       - run: cargo fmt --check
 
   extension:

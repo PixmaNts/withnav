@@ -173,7 +173,7 @@ pub fn resolve_read_target(path: &Path, cx: &ToolContext) -> Result<PathBuf, Too
     #[cfg(windows)]
     {
         let home = directories::BaseDirs::new();
-        crate::tools::nofollow::resolve_target(
+        crate::tools::win_path::resolve_target(
             path,
             &cx.workspace,
             home.as_ref().map(|dirs| dirs.home_dir()),
@@ -190,7 +190,7 @@ pub fn requested_path(path: &Path, cx: &ToolContext) -> Result<PathBuf, ToolErro
     #[cfg(windows)]
     {
         let home = directories::BaseDirs::new();
-        crate::tools::nofollow::requested_path(
+        crate::tools::win_path::requested_path(
             path,
             &cx.workspace,
             home.as_ref().map(|dirs| dirs.home_dir()),

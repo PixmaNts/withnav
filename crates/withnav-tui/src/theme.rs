@@ -446,6 +446,10 @@ mod tests {
             assert_eq!(theme.palette().id, theme);
         }
         assert_eq!(ThemeId::from_id("solarized"), None);
+        assert_eq!(
+            ThemeId::ALL.map(ThemeId::id),
+            withnav_client_api::settings::TUI_THEME_IDS
+        );
         assert_eq!(ThemeId::default(), ThemeId::TideDark);
         assert!(ThemeId::NordLight.is_light() && !ThemeId::NordDark.is_light());
     }

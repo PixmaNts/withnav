@@ -4,6 +4,7 @@
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
+use tower::ServiceExt;
 
 use withnav::bus::event::EventEnvelope;
 use withnav::server::{AppState, app};
@@ -53,7 +54,6 @@ async fn bypass_is_ephemeral_isolated_and_idempotently_sequenced() {
         .unwrap();
     assert!(!disabled.enabled && disabled.changed);
     assert!(disabled.bypass_seq > enabled.bypass_seq);
-    state.history().flush().await.unwrap();
     let sub = state.subscribe(first, None).await.unwrap();
     let withnav::bus::ResumeOutcome::Replay(events) = sub.replay else {
         panic!("expected replay");
@@ -94,7 +94,6 @@ async fn resume_resets_bypass_off_with_an_event_first() {
     assert_eq!(resumed, id);
     let summary = state.session_summary(id).await.unwrap();
     assert!(!summary.bypass);
-    state.history().flush().await.unwrap();
     let sub = state.subscribe(id, None).await.unwrap();
     let withnav::bus::ResumeOutcome::Replay(events) = sub.replay else {
         panic!("expected replay");
@@ -124,7 +123,6 @@ async fn resume_resets_bypass_off_with_an_event_first() {
 }
 
 async fn results(state: &AppState, id: ulid::Ulid) -> Vec<EventEnvelope> {
-    state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
         withnav::bus::ResumeOutcome::Replay(events) => events
@@ -300,7 +298,6 @@ async fn a_session_that_cannot_take_commands_is_an_error() {
         .await
         .expect("create");
     state.close_session(id).await.expect("close");
-    state.history().flush().await.expect("flush");
     let err = state.run_command(id, "help", "").await.unwrap_err();
     assert!(matches!(err, withnav::error::ServerError::ResumeRequired));
 }
@@ -343,8 +340,8 @@ async fn a_command_during_a_pending_ask_is_refused() {
     assert_eq!(state.session_count(), 1, "/new did not run");
     assert_eq!(
         state.session_summary(id).await.unwrap().actor_state,
-        "idle",
-        "/stop did not run"
+        "waiting",
+        "/stop did not run; the ask is still owed"
     );
 
     // The refused commands queued nothing: the next message answers the ask
@@ -442,39 +439,61 @@ async fn http_endpoints_list_and_run_commands() {
 #[tokio::test]
 async fn bypass_http_requires_configured_authentication() {
     let (tmp, ws) = tmp_ws();
-    let state = state(tmp.path());
+    let token = "test-owner-token";
+    let state = TestServerConfig::unreachable(tmp.path())
+        .bearer_token(token)
+        .state();
     let router = app(state.clone());
     let id = state.create_session(&ws, None, false).await.unwrap();
+
+    // 1. Refused without owner token (missing header -> 401)
     for (suffix, body) in [
         ("bypass", json!({"enabled": true})),
         ("commands", json!({"name": "bypass", "arguments": "on"})),
         ("commands", json!({"name": " /bypass ", "arguments": "off"})),
     ] {
-        let (status, body) = request_json(
-            &router,
-            "POST",
-            &format!("/v1/sessions/{id}/{suffix}"),
-            Some(&body),
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-        assert_eq!(body["reason"], "auth_required");
-        assert!(
-            body["error"]
-                .as_str()
-                .unwrap()
-                .contains("bypass can only be changed by an authenticated client")
-        );
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/v1/sessions/{id}/{suffix}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let resp = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
-    let (status, body) = request_json(
-        &router,
-        "POST",
-        &format!("/v1/sessions/{id}/commands"),
-        Some(&json!({"name": "bypass"})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["data"]["enabled"], false);
+
+    // 2. Refused with wrong token -> 401
+    for (suffix, body) in [
+        ("bypass", json!({"enabled": true})),
+        ("commands", json!({"name": "bypass", "arguments": "on"})),
+    ] {
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/v1/sessions/{id}/{suffix}"))
+            .header("authorization", "Bearer wrong-token")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let resp = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // 3. Accepted with owner token -> 200
+    for (suffix, body) in [
+        ("bypass", json!({"enabled": true})),
+        ("commands", json!({"name": "bypass", "arguments": "off"})),
+        ("commands", json!({"name": " /bypass ", "arguments": "on"})),
+    ] {
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/v1/sessions/{id}/{suffix}"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let resp = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
 }
 
 #[tokio::test]
@@ -745,6 +764,7 @@ async fn withnav_run_executes_a_command() {
     let cfg = TestServerConfig::unreachable(tmp.path());
     cfg.config();
     let (root, models) = (tmp.path().to_path_buf(), cfg.models_path());
+    let _owner_guard = common::owner::OwnerGuard::new(&root.join("data/withnav"));
     let (ok, bad) = tokio::task::spawn_blocking(move || {
         (
             run_withnav(&root, &models, &ws, "/help"),

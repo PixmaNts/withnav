@@ -1149,6 +1149,7 @@ fn actor(fx: &Fixture, registry: Registry) -> crate::agent::actor::AgentActor {
         ReasoningHistory::Preserve,
         None,
         CancellationToken::new(),
+        std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
     )
 }
 

@@ -6,8 +6,10 @@
 //! tool.post_call (interleaved as the step produces them) -> terminal
 //! turn-end events -> back to the inbox wait. `task.done` fires exactly once
 //! per task, on [`RunOutcome::Done`] only. A natural turn end returns to the
-//! inbox wait; `session.end` is sequenced ONLY at teardown via
-//! [`Sequencer::close_session`] — never on a natural turn end.
+//! inbox wait. The runtime never sequences `session.end`: when it returns,
+//! for a stop or on its own, the session's owner closes the session through
+//! [`Sequencer::close_session`] with the reason it ended
+//! ([`RuntimeStatus::exit_cause`]).
 
 pub mod bypass;
 mod compact;
@@ -24,7 +26,7 @@ pub use delivery::PendingNotice;
 pub use watchdog::PauseToken;
 pub use watchdog::TerminalOwner;
 pub(crate) mod model;
-#[cfg(debug_assertions)]
+#[cfg(any(test, feature = "test-support"))]
 pub use model::observe_selection_install;
 
 use std::sync::{Arc, Mutex};
@@ -56,8 +58,12 @@ use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::error::AgentError;
 
 /// The turn-end transcript hook: called with the actor's transcript after
-/// each turn's terminal events (the history store's snapshot seam).
-pub type TurnEndHook = Box<dyn Fn(&[crate::provider::openai::ChatMessage]) + Send>;
+/// each turn's terminal events (the history store's snapshot seam). The
+/// returned future resolves when the snapshot write is durable.
+pub type TurnEndHook = Box<
+    dyn Fn(&[crate::provider::openai::ChatMessage]) -> futures::future::BoxFuture<'static, ()>
+        + Send,
+>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompletionOutcome {
     Done,
@@ -86,10 +92,6 @@ pub enum BudgetTopupError {
     LimitReached,
 }
 
-/// Cancel reason recorded on `session.end` when the session token fires.
-const CANCEL_REASON: &str = "cancel";
-/// Cancel reason recorded on `session.end` when the inbox senders all drop.
-const END_OF_STREAM_REASON: &str = "inbox_closed";
 /// Wire cap for `turn.end{error}.message` (bounded, no secrets).
 const ERROR_SUMMARY_CAP: usize = 256;
 
@@ -127,7 +129,7 @@ pub struct RuntimeStatus {
     /// child created while the setting changes reads one value or the other
     /// and is then given every later change.
     pub bypass_gate: tokio::sync::Mutex<()>,
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) captain_task_probe: Mutex<Option<String>>,
     #[cfg(test)]
     policy_pin_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
@@ -151,7 +153,7 @@ pub struct RuntimeStatus {
     /// reaches the session without passing through the actor (steering, flow notes, host
     /// messages) is hidden with it before it is queued or published.
     secrets: std::sync::OnceLock<crate::secrets::SecretAccess>,
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     negative_eligibility_barrier:
         Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     #[cfg(test)]
@@ -185,9 +187,24 @@ pub struct RuntimeStatus {
     pub selection: crate::agent::selection::AgentSelection,
     /// Compaction requests to the runtime, and how it saves their result.
     controls: compact::Controls,
+    /// Fires once the runtime task has returned or unwound from a panic.
+    pub ended: CancellationToken,
+    /// Why the runtime returned without a stop request; `None` after a stop.
+    exit_cause: Mutex<Option<String>>,
 }
 
 impl RuntimeStatus {
+    /// Why the runtime returned on its own, once [`Self::ended`] fired.
+    /// `None` when it returned for a stop, or panicked.
+    pub fn exit_cause(&self) -> Option<String> {
+        self.exit_cause
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+    fn record_exit(&self, cause: impl Into<String>) {
+        *self.exit_cause.lock().unwrap_or_else(|e| e.into_inner()) = Some(cause.into());
+    }
     fn update_question(&self, actor: &AgentActor) {
         let question = match &actor.pending {
             Some(crate::agent::actor::PendingInteraction::Ask { tool_call_id }) => {
@@ -317,6 +334,28 @@ impl RuntimeStatus {
                 .load(std::sync::atomic::Ordering::Acquire)
             || self.watchdog.root_hold().is_some()
     }
+
+    /// What the actor is doing right now, as summaries and message acks
+    /// report it: `running` while turn work is in flight (a turn, a
+    /// compaction summary, a model-switch measurement), `waiting` while the
+    /// actor is parked for the Captain (pending `ask` answer, pending
+    /// permission, a budget or watchdog park, a resumed pause), `idle` when
+    /// nothing is in flight. A park wins over running because a mid-turn
+    /// park still faces the Captain with a decision; parks normally end the
+    /// turn, but a policy pin can re-mark it running while the pending
+    /// interaction survives until it is consumed.
+    pub fn actor_state(&self) -> &'static str {
+        if self.pending_permission().is_some() || self.pending_ask() || self.progress_parked() {
+            "waiting"
+        } else if self.selection.is_running()
+            || self.selection.compacting()
+            || self.selection.switching()
+        {
+            "running"
+        } else {
+            "idle"
+        }
+    }
     pub fn wake_continue(&self) {
         let _ = self.controls.tx.send(Control::Continue);
     }
@@ -329,7 +368,7 @@ impl RuntimeStatus {
             && !self.selection.ask_pending()
             && self.selection.is_running()
     }
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn pause_negative_eligibility(
         &self,
         reached: Arc<tokio::sync::Notify>,
@@ -357,6 +396,12 @@ impl RuntimeStatus {
             Some(callback) => callback().await.unwrap_or(false),
             None => false,
         }
+    }
+    /// A Captain message sits in the inbox and the runtime has not taken it yet.
+    pub fn has_queued_captain(&self) -> bool {
+        self.queued_captain
+            .load(std::sync::atomic::Ordering::Acquire)
+            > 0
     }
     pub(crate) fn queue_captain(&self) {
         self.queued_captain
@@ -797,7 +842,7 @@ impl RuntimeStatus {
     /// The turn is over: an agent or variant change may apply.
     fn end_turn(&self, actor: &AgentActor) {
         self.update_question(actor);
-        #[cfg(debug_assertions)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             *self
                 .captain_task_probe
@@ -891,7 +936,7 @@ impl RuntimeStatus {
     /// Records that the session starts with `actor`'s unanswered `ask`, if any.
     pub fn init_ask(&self, actor: &AgentActor) {
         self.update_question(actor);
-        #[cfg(debug_assertions)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             *self
                 .captain_task_probe
@@ -1123,7 +1168,7 @@ pub fn spawn_with_completion(
         inbox,
         sequencer,
         session_cancel,
-        on_turn_end.unwrap_or_else(|| Box::new(|_| {})),
+        on_turn_end.unwrap_or_else(|| Box::new(|_| Box::pin(async {}))),
         status,
         completion,
     ))
@@ -1140,6 +1185,9 @@ async fn runtime_loop(
     status: Arc<RuntimeStatus>,
     completion: Option<CompletionHook>,
 ) -> AgentActor {
+    // Fires on every way out of this task, a panic included, so the session's
+    // owner always learns that the runtime is gone.
+    let _ended = status.ended.clone().drop_guard();
     let on_turn_end: SharedHook = Arc::new(Mutex::new(on_turn_end));
     let mut active_task_id: Option<Ulid> = None;
     let mut control = status.controls.take_receiver();
@@ -1182,7 +1230,7 @@ async fn runtime_loop(
                         .store(true, std::sync::atomic::Ordering::Release);
                     return Ok(BoundaryResult::Interrupted);
                 }
-                #[cfg(debug_assertions)]
+                #[cfg(any(test, feature = "test-support"))]
                 {
                     let barrier = status
                         .negative_eligibility_barrier
@@ -1332,13 +1380,18 @@ async fn runtime_loop(
                 match delivery::apply(&mut actor, &status, &sequencer).await {
                     Ok(true) => Some(Inbound::Completion),
                     Ok(false) => continue,
-                    Err(error) => { tracing::error!(%error, "subagent wake delivery failed"); break; }
+                    Err(error) => {
+                        tracing::error!(%error, "subagent wake delivery failed");
+                        status.record_exit(format!("subagent wake delivery failed: {error}"));
+                        break;
+                    }
                 }
             }
 
         };
 
         let Some(inbound) = inbound else {
+            status.record_exit("inbox closed");
             break;
         };
         // Parked progress never pins policy for autonomous-only input. Captain skill
@@ -1405,6 +1458,7 @@ async fn runtime_loop(
                     if let Err(error) = status.commit_captain(actor.transcript.clone()).await {
                         tracing::error!(%error, "captain checkpoint commit failed");
                         status.release_pin(&actor);
+                        status.record_exit(format!("captain checkpoint commit failed: {error}"));
                         break;
                     }
                 }
@@ -1504,6 +1558,7 @@ async fn runtime_loop(
         if let Err(error) = delivery::apply(&mut actor, &status, &sequencer).await {
             tracing::error!(%error, "subagent transcript delivery failed");
             status.end_turn(&actor);
+            status.record_exit(format!("subagent transcript delivery failed: {error}"));
             break;
         }
         status
@@ -1512,7 +1567,12 @@ async fn runtime_loop(
         // A request that would not fit this budget is compacted first.
         actor.input_budget = status.context_snapshot().map(|s| s.input_budget);
 
-        let task_id = active_task_id.unwrap_or_default();
+        // A turn woken with no task of its own (steer, replacement, restart
+        // after a done task) still needs an identity: mint one and keep it as
+        // the active task id so its parks resume under the same id and the
+        // final Done clears it. Parked turns that already have an id are
+        // untouched.
+        let task_id = *active_task_id.get_or_insert_with(Ulid::generate);
         let turn_id = Ulid::generate();
         let mut turn = TurnPublisher::new(sequencer.clone(), status.clone(), turn_id, task_id);
         if status
@@ -1676,7 +1736,7 @@ async fn runtime_loop(
         }
         status.watchdog.bind_root_turn(turn_id);
         if let Some(hold) = status.watchdog.publish_root_hold() {
-            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript).await;
             turn.publish(EventKind::AgentYield, to_value(&AgentYield {
                 choices: None, question_call_id: None,
                 actor_id: ROOT_ACTOR_ID.into(), turn_id,
@@ -1693,7 +1753,7 @@ async fn runtime_loop(
                 None,
             );
             emit_agent_state(&mut turn, "yielded");
-            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript).await;
             if !session_cancel.is_cancelled() {
                 actor.cancel = session_cancel.child_token();
             }
@@ -1722,8 +1782,9 @@ async fn runtime_loop(
                 }),
             );
             emit_agent_state(&mut turn, "idle");
-            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+            snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript).await;
             deferred::report_cancelled(&sequencer, &deferred, compact::CANCELLED);
+            status.record_exit(format!("event publish failed: {err}"));
             break;
         }
 
@@ -1924,7 +1985,7 @@ async fn runtime_loop(
         }
 
         // Every terminal outcome saves the transcript, a cancelled turn too.
-        snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+        snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript).await;
 
         if interrupted_for_input && !session_cancel.is_cancelled() {
             actor.cancel = session_cancel.child_token();
@@ -1941,6 +2002,9 @@ async fn runtime_loop(
             // The stop wins: a `/compact` accepted during this turn is told
             // it will not happen, before `session.end`.
             deferred::report_cancelled(&sequencer, &deferred, compact::CANCELLED);
+            if !session_cancel.is_cancelled() {
+                status.record_exit("turn cancelled");
+            }
             break;
         }
 
@@ -1966,12 +2030,12 @@ async fn runtime_loop(
             &request,
             PermissionResolution::Cancelled,
         );
-        snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript);
+        snapshot_transcript(&sequencer, &on_turn_end, &actor.transcript).await;
     }
     if let Some(hold) = status.watchdog.take_root_on_exit() {
         publish_pause_resolution(&sequencer, hold.token, "expired");
     }
-    teardown(&mut actor, &sequencer);
+    actor.state = AgentState::Stopped;
     status.watchdog.supervisor_cancel.cancel();
     let supervisor = status
         .root_supervisor
@@ -2100,27 +2164,35 @@ type SharedHook = Arc<Mutex<TurnEndHook>>;
 
 /// Hands the transcript to the turn-end hook THROUGH the sequencer: the
 /// sequencer runs the hook after every event this turn already published
-/// has been emitted, so the store's FIFO writer sees the snapshot behind the
-/// turn's events, never before them. The hook is only a channel send, so the
-/// sequencer never waits on SQLite. If the session is already closed no
-/// more events can be written and the hook runs here directly.
-fn snapshot_transcript(
+/// has been emitted (and, store-first, durably written), so the store's FIFO
+/// writer sees the snapshot behind the turn's events, never before them. The
+/// hook's future is awaited here, so a caller that reaches the close path
+/// afterwards knows the snapshot is durable. If the session is already closed
+/// no more events can be written and the hook runs here directly.
+async fn snapshot_transcript(
     sequencer: &Sequencer,
     hook: &SharedHook,
     transcript: &[crate::provider::openai::ChatMessage],
 ) {
-    fn run(hook: &SharedHook, transcript: &[crate::provider::openai::ChatMessage]) {
-        let guard = match hook.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
+    async fn run(hook: SharedHook, transcript: Vec<crate::provider::openai::ChatMessage>) {
+        let future = {
+            let guard = match hook.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard(&transcript)
         };
-        (guard)(transcript);
+        future.await;
     }
     let (queued_hook, owned) = (Arc::clone(hook), transcript.to_vec());
-    let queued = sequencer.after_events(Box::new(move || run(&queued_hook, &owned)));
-    if queued.is_err() {
-        run(hook, transcript);
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let queued = sequencer.after_events(Box::new(move || {
+        let _ = done_tx.send(());
+    }));
+    if queued.is_ok() {
+        let _ = done_rx.await; // after_events reached: turn events are stored+emitted
     }
+    run(queued_hook, owned).await;
 }
 
 fn permission_requested(
@@ -2224,19 +2296,6 @@ fn error_code(err: &AgentError) -> String {
         AgentError::Server(_) => "server".to_string(),
         AgentError::Compaction(_) => "compaction".to_string(),
     }
-}
-
-/// Session teardown — the ONLY path that fires `session.end`. Permanent by
-/// construction: the sequencer task exits behind the fence and the runtime
-/// loop returns, so this session never drives the actor again.
-fn teardown(actor: &mut AgentActor, sequencer: &Sequencer) {
-    actor.state = AgentState::Stopped;
-    let reason = if actor.cancel.is_cancelled() {
-        CANCEL_REASON
-    } else {
-        END_OF_STREAM_REASON
-    };
-    let _ = sequencer.close_session(reason);
 }
 
 #[cfg(test)]
@@ -2745,7 +2804,7 @@ mod tests {
                     provenance: UserProvenance::Subagent,
                     images: Vec::new(),
                 });
-                history.save_transcript(id, transcript.clone());
+                let _ = history.save_transcript(id, transcript.clone()).await;
                 history.load_for_resume(id).await.unwrap();
                 done.notify_one();
                 Err(crate::agent::boundary::BoundaryError {
@@ -2778,10 +2837,6 @@ mod tests {
             .unwrap();
         let actor = handle.await.unwrap();
         assert!(actor.transcript.iter().any(|message| matches!(message, ChatMessage::User { content, .. } if content == "child completion")));
-        // `save_transcript` is fire-and-forget: without this barrier the reopened store can
-        // read the session before the writer thread applied the write (observed 2026-10-12:
-        // an empty transcript on a loaded CI runner, and once locally).
-        store.flush().await.unwrap();
         drop(store);
         let reopened = crate::session::store::HistoryStore::open(&path).unwrap();
         let (_, restored, _) = reopened.load_for_resume(id).await.unwrap().unwrap();
@@ -3178,6 +3233,8 @@ mod tests {
         task.await.unwrap();
         assert!(finished.load(std::sync::atomic::Ordering::Acquire));
         assert!(status.root_supervisor.lock().unwrap().is_none());
+        assert!(status.ended.is_cancelled());
+        assert_eq!(status.exit_cause().as_deref(), Some("inbox closed"));
     }
 
     #[tokio::test]
@@ -3450,6 +3507,7 @@ mod tests {
             ReasoningHistory::Preserve,
             Some(256),
             cancel,
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
         )
     }
 
@@ -3477,6 +3535,9 @@ mod tests {
         session_cancel: CancellationToken,
         session_id: Ulid,
         live: mpsc::Receiver<EventEnvelope>,
+        /// The runtime status, kept so tests can steer or top up the parked
+        /// session the way the session service does.
+        status: Arc<RuntimeStatus>,
         handle: tokio::task::JoinHandle<AgentActor>,
     }
 
@@ -3496,19 +3557,22 @@ mod tests {
         let session_id = Ulid::generate();
         let sequencer = Sequencer::spawn(session_id, crate::bus::SessionBus::default(), 0);
         let live = sequencer.subscribe_since(None).await.unwrap().live.unwrap();
-        let handle = spawn(
+        let status = Arc::new(RuntimeStatus::default());
+        let handle = spawn_with_status(
             session_id,
             actor,
             inbox,
             sequencer,
             session_cancel.clone(),
             None,
+            Arc::clone(&status),
         );
         Harness {
             inbox_tx,
             session_cancel,
             session_id,
             live,
+            status,
             handle,
         }
     }
@@ -3615,6 +3679,259 @@ mod tests {
         for env in &envelopes {
             assert_eq!(env.correlation_id, Some(task_id));
         }
+        h.take_actor().await;
+    }
+
+    // ---- (a2) Every woken turn carries a task id, never the nil one (#249) ----
+
+    /// An idle session (previous task done) woken by a steer starts a turn
+    /// with a FRESH task id: turn.start and task.done share it, and it differs
+    /// from the previous task's id.
+    #[tokio::test]
+    async fn steer_wake_after_done_starts_a_turn_with_a_fresh_task_id() {
+        let done1 =
+            r#"{"choices":[{"index":0,"delta":{"content":"first done"},"finish_reason":"stop"}]}"#;
+        let done2 = r#"{"choices":[{"index":0,"delta":{"content":"steered done"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[done1])),
+            http_sse(&sse_body(&[done2])),
+        ])
+        .await;
+        let mut h = harness(server.url.clone()).await;
+        h.send("first task");
+
+        let first = drain_until(&mut h.live, |e| {
+            kind_of(e) == "agent.state" && e.payload["to"] == "idle"
+        })
+        .await;
+        let first_id = first
+            .iter()
+            .find(|e| kind_of(e) == "task.done")
+            .expect("the first task ends in task.done")
+            .correlation_id
+            .unwrap();
+        assert_ne!(first_id, Ulid::nil());
+
+        assert!(
+            h.status.steer("pivot".into(), false),
+            "the steer is admitted"
+        );
+        let second = drain_until(&mut h.live, |e| kind_of(e) == "task.done").await;
+        let second_start = second
+            .iter()
+            .find(|e| kind_of(e) == "turn.start")
+            .expect("the steered turn starts");
+        let second_id = second
+            .iter()
+            .find(|e| kind_of(e) == "task.done")
+            .expect("the steered turn ends in task.done")
+            .correlation_id
+            .unwrap();
+        assert_ne!(
+            second_id,
+            Ulid::nil(),
+            "a steered turn never carries the nil task id"
+        );
+        assert_ne!(
+            second_id, first_id,
+            "a steered turn after a done task gets a FRESH task id"
+        );
+        assert_eq!(
+            second_start.correlation_id,
+            Some(second_id),
+            "turn.start and task.done share the steered turn's task id"
+        );
+        h.take_actor().await;
+    }
+
+    /// Same, but the wake is a replacement (interrupt): the claimed
+    /// replacement drives the next turn, which also carries a fresh task id.
+    #[tokio::test]
+    async fn replacement_wake_after_done_starts_a_turn_with_a_fresh_task_id() {
+        let done1 =
+            r#"{"choices":[{"index":0,"delta":{"content":"first done"},"finish_reason":"stop"}]}"#;
+        let done2 = r#"{"choices":[{"index":0,"delta":{"content":"replacement done"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[done1])),
+            http_sse(&sse_body(&[done2])),
+        ])
+        .await;
+        let mut h = harness(server.url.clone()).await;
+        h.send("first task");
+
+        let first = drain_until(&mut h.live, |e| {
+            kind_of(e) == "agent.state" && e.payload["to"] == "idle"
+        })
+        .await;
+        let first_id = first
+            .iter()
+            .find(|e| kind_of(e) == "task.done")
+            .expect("the first task ends in task.done")
+            .correlation_id
+            .unwrap();
+        assert_ne!(first_id, Ulid::nil());
+
+        assert!(
+            h.status.steer("replacement instruction".into(), true),
+            "the replacement is admitted"
+        );
+        let second = drain_until(&mut h.live, |e| kind_of(e) == "task.done").await;
+        let second_start = second
+            .iter()
+            .find(|e| kind_of(e) == "turn.start")
+            .expect("the replacement turn starts");
+        let second_id = second
+            .iter()
+            .find(|e| kind_of(e) == "task.done")
+            .expect("the replacement turn ends in task.done")
+            .correlation_id
+            .unwrap();
+        assert_ne!(
+            second_id,
+            Ulid::nil(),
+            "a replacement turn never carries the nil task id"
+        );
+        assert_ne!(
+            second_id, first_id,
+            "a replacement turn after a done task gets a FRESH task id"
+        );
+        assert_eq!(
+            second_start.correlation_id,
+            Some(second_id),
+            "turn.start and task.done share the replacement turn's task id"
+        );
+        h.take_actor().await;
+    }
+
+    /// A budget park keeps its task id: the top-up (a `Control::Continue`
+    /// sender) resumes the SAME task, whose resumed turn.start and task.done
+    /// keep that id.
+    #[tokio::test]
+    async fn budget_topup_resumes_with_the_same_task_id() {
+        let toolcall = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"bash","arguments":"{\"command\":\"true\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let done =
+            r#"{"choices":[{"index":0,"delta":{"content":"park done"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[toolcall])),
+            http_sse(&sse_body(&[done])),
+        ])
+        .await;
+        let mut h = harness_with_steps(server.url.clone(), Some(1)).await;
+        h.send("loop then stop");
+
+        let parked = drain_until(&mut h.live, |e| {
+            kind_of(e) == "agent.state" && e.payload["to"] == "yielded"
+        })
+        .await;
+        let parked_id = parked
+            .iter()
+            .find(|e| kind_of(e) == "turn.start")
+            .expect("the parked turn starts")
+            .correlation_id
+            .expect("the parked turn carries a task id");
+        assert_ne!(parked_id, Ulid::nil());
+        let budget_yield = parked
+            .iter()
+            .find(|e| kind_of(e) == "agent.yield")
+            .expect("the budget outcome yields");
+        assert_eq!(budget_yield.payload["kind"], "budget");
+        assert!(
+            parked.iter().all(|e| e.correlation_id == Some(parked_id)),
+            "every parked-turn event carries the task id"
+        );
+
+        assert_eq!(
+            h.status.topup_budget(),
+            Ok(1),
+            "the park is claimed and one top-up is granted"
+        );
+        let resumed = drain_until(&mut h.live, |e| kind_of(e) == "task.done").await;
+        let resumed_start = resumed
+            .iter()
+            .find(|e| kind_of(e) == "turn.start")
+            .expect("the resumed turn starts");
+        let done_id = resumed
+            .iter()
+            .find(|e| kind_of(e) == "task.done")
+            .expect("the resumed task ends in task.done")
+            .correlation_id
+            .unwrap();
+        assert_eq!(
+            resumed_start.correlation_id,
+            Some(parked_id),
+            "the resumed turn keeps the parked turn's task id"
+        );
+        assert_eq!(
+            done_id, parked_id,
+            "task_id STABLE across a budget park and its top-up"
+        );
+        h.take_actor().await;
+    }
+
+    /// A park entered by a turn that had NO task id of its own (a steer-woken
+    /// turn that yields an ask) keeps the steer-minted id across the resume:
+    /// the user's next command does not adopt a new id, and task.done carries
+    /// the same one.
+    #[tokio::test]
+    async fn steer_woken_turn_keeps_its_task_id_across_an_ask_resume() {
+        let done1 =
+            r#"{"choices":[{"index":0,"delta":{"content":"first done"},"finish_reason":"stop"}]}"#;
+        let ask = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask_1","function":{"name":"ask","arguments":"{\"question\":\"insert SD card\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let done2 = r#"{"choices":[{"index":0,"delta":{"content":"resumed after steer"},"finish_reason":"stop"}]}"#;
+        let server = spawn_mock(vec![
+            http_sse(&sse_body(&[done1])),
+            http_sse(&sse_body(&[ask])),
+            http_sse(&sse_body(&[done2])),
+        ])
+        .await;
+        let mut h = harness(server.url.clone()).await;
+        h.send("first task");
+        let _ = drain_until(&mut h.live, |e| {
+            kind_of(e) == "agent.state" && e.payload["to"] == "idle"
+        })
+        .await;
+
+        assert!(
+            h.status.steer("change of plan".into(), false),
+            "the steer is admitted"
+        );
+        let asked = drain_until(&mut h.live, |e| {
+            kind_of(e) == "agent.state" && e.payload["to"] == "yielded"
+        })
+        .await;
+        let steered_id = asked
+            .iter()
+            .find(|e| kind_of(e) == "turn.start")
+            .expect("the steered turn starts")
+            .correlation_id
+            .expect("the steered turn carries a task id");
+        assert_ne!(
+            steered_id,
+            Ulid::nil(),
+            "the steered turn never carries the nil task id"
+        );
+
+        h.send("the answer");
+        let resumed = drain_until(&mut h.live, |e| kind_of(e) == "task.done").await;
+        let resumed_start = resumed
+            .iter()
+            .find(|e| kind_of(e) == "turn.start")
+            .expect("the resumed turn starts");
+        let done_id = resumed
+            .iter()
+            .find(|e| kind_of(e) == "task.done")
+            .expect("the resumed task ends in task.done")
+            .correlation_id
+            .unwrap();
+        assert_eq!(
+            resumed_start.correlation_id,
+            Some(steered_id),
+            "the resumed turn keeps the steer-minted task id"
+        );
+        assert_eq!(
+            done_id, steered_id,
+            "task_id STABLE across a steer-woken ask and its answer"
+        );
         h.take_actor().await;
     }
 
@@ -3910,23 +4227,22 @@ mod tests {
         all.extend(drain_ready(&mut h.live));
         let kinds = assert_monotonic(&all);
         assert!(
-            kinds.contains(&"turn.end")
-                && kinds.contains(&"agent.state")
-                && kinds.contains(&"session.end"),
+            kinds.contains(&"turn.end") && kinds.contains(&"agent.state"),
             "ordered terminal events after cancel: {kinds:?}"
         );
-        let end = all
-            .iter()
-            .find(|e| kind_of(e) == "session.end")
-            .expect("session.end sequenced by teardown");
-        assert_eq!(end.seq, all.iter().map(|e| e.seq).max().unwrap());
-        assert_eq!(end.payload["reason"], "cancel");
+        assert!(
+            !kinds.contains(&"session.end"),
+            "the session's owner closes it, never the runtime: {kinds:?}"
+        );
 
         // Clone the sender BEFORE take_actor consumes the harness, so the
         // late send below really targets the torn-down session.
         let late_tx = h.inbox_tx.clone();
+        let status = h.status.clone();
         let actor = h.take_actor().await;
         assert_eq!(actor.state, AgentState::Stopped);
+        assert!(status.ended.is_cancelled(), "the runtime reports its end");
+        assert_eq!(status.exit_cause(), None, "a stop is not a failure");
 
         // PERMANENT teardown: a later try_send fails Closed — NOT "still
         // accepts".
@@ -4103,5 +4419,81 @@ mod tests {
         let queued = serde_json::to_string(&status.steering.apply(claimed)).unwrap();
         assert_eq!(queued.matches("[secret API_KEY]").count(), 5, "{queued}");
         assert!(!queued.contains(SECRET), "{queued}");
+    }
+
+    // The live actor state derives from the runtime's own flags, so the
+    // summary and the message ack report what the actor actually does: an
+    // owed interaction waits for the Captain, turn and maintenance work
+    // run, everything else is idle. Each branch is entered and left in
+    // sequence so one left-behind flag cannot mask a missing branch.
+    #[tokio::test]
+    async fn actor_state_reports_running_waiting_and_idle() {
+        use crate::agent::{definitions::Agents, selection::AgentSelection};
+        let agents = Arc::new(Agents::builtin());
+        let status = Arc::new(RuntimeStatus::with_selection(AgentSelection::new(
+            agents.clone(),
+            Arc::new((**agents.get("build").unwrap()).clone()),
+        )));
+        assert_eq!(status.actor_state(), "idle");
+
+        // A turn in flight runs.
+        status.selection.pin_turn().await;
+        assert_eq!(status.actor_state(), "running");
+        // The turn ends on an ask: the answer is owed to the Captain.
+        status.selection.end_turn(true);
+        assert_eq!(status.actor_state(), "waiting");
+        status.selection.set_ask_pending(false);
+        assert_eq!(status.actor_state(), "idle");
+
+        // A pending permission waits for the Captain's decision.
+        status.set_pending_permission(Some(Ulid::generate()));
+        assert_eq!(status.actor_state(), "waiting");
+        status.set_pending_permission(None);
+        assert_eq!(status.actor_state(), "idle");
+
+        // Maintenance work outside a turn runs: a compaction summary and a
+        // model switch each make their own model request.
+        let compaction = status.selection.begin_compaction().await;
+        assert_eq!(status.actor_state(), "running");
+        drop(compaction);
+        let switch = status.selection.begin_switch().await;
+        assert_eq!(status.actor_state(), "running");
+        drop(switch);
+        assert_eq!(status.actor_state(), "idle");
+
+        // Every Captain park waits: budget, a resumed pause, a published
+        // watchdog pause.
+        status
+            .budget_parked
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(status.actor_state(), "waiting");
+        status
+            .budget_parked
+            .store(false, std::sync::atomic::Ordering::Release);
+        status
+            .awaiting_fresh_captain
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(status.actor_state(), "waiting");
+        status
+            .awaiting_fresh_captain
+            .store(false, std::sync::atomic::Ordering::Release);
+        status.watchdog.transition(true);
+        assert!(
+            status
+                .watchdog
+                .request_root_pause(status.watchdog.generation().unwrap(), serde_json::json!({}))
+        );
+        let hold = status.watchdog.publish_root_hold().unwrap();
+        assert_eq!(status.actor_state(), "waiting");
+        assert!(status.watchdog.resolve_root(hold.token, || {}));
+        assert_eq!(status.actor_state(), "idle");
+
+        // A park may overlap a running turn: the Captain still owes an
+        // answer, so waiting wins over running.
+        status.selection.pin_turn().await;
+        status
+            .budget_parked
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(status.actor_state(), "waiting");
     }
 }

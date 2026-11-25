@@ -17,10 +17,11 @@ are installed on the Captain's machine. See
 
 ```txt
 VS Code ── vscode-withnav (TypeScript)
-   │   ├─ LSP over stdio ─────────────────┐  edits, saves, diagnostics, inline completion, remarks
-   │   └─ HTTP + SSE, bearer token ───┐   │  the conversation with the cognition
-   ▼                                  ▼   ▼
-nav lsp   (one process, two channels: ADR 0006)
+   │   ├─ LSP over stdio ── nav lsp (a bridge) ── GET /v1/lsp upgraded ─┐  edits, remarks, completion
+   │   └─ HTTP + SSE, owner token (from withnav/serverInfo) ───────────┐ │  the conversation
+   ▼                                                                   ▼ ▼
+nav serve   (the one owner of withnav.db, started in the background by the first client; ADR 0006's
+             two channels now meet in this process, one LSP connection per editor)
    ├─ navigator/   Language Server, the four layers, editor flows, log, replay
    ├─ server/      session HTTP/SSE API, SQLite conversation history
    ├─ bus/         per-session sequencer, event envelopes, inboxes, the agent runtime task
@@ -30,8 +31,8 @@ nav lsp   (one process, two channels: ADR 0006)
    ├─ mcp/         service-owned stdio and HTTP clients; root tools refreshed between turns, child tools frozen
    └─ provider/    model access, re-exported from withnav-provider (config, auth, one HTTP client, chat SSE, FIM, System One) plus the assignments and layers that read `config.json`
 
-nav tui   (the terminal client; an HTTP + SSE client of a session server: the editor's `nav lsp` one
-           for the same workspace when published, else embedded, or `--url`)
+nav tui, nav web, nav run, nav permissions, nav doctor
+          (clients of `nav serve` through `app/connect.rs`; `nav tui --url` reaches any server)
    └─ withnav-tui → withnav-client (HTTP + SSE) → withnav-client-api (wire contract)
                  └→ withnav-client-state (events → conversation state)
 ```
@@ -55,7 +56,7 @@ server (`cargo test -p withnav-tui` does not compile `withnav`); the model acces
 | `withnav-client-state` | what a client keeps of one conversation, rebuilt from the events: blocks, activity, the model selection, child agents, pending requests (`apply_envelope`, `SessionState`); no I/O, no terminal | `withnav-client-api`; no tokio, no reqwest, no ratatui |
 | `withnav-tui` | the ratatui client: input and editor, reducer, views, themes, the settings screen, the runtime loop and the effects | `withnav-client`, `withnav-client-state`, `withnav-client-api`, `ratatui`, `crossterm`; never `withnav` |
 | `withnav-provider` | the model access layer: the `models.json` catalogue and its model-list cache (`config.rs`, `catalog.rs`), canonical identities (`model_name.rs`), keys (`auth.rs`, with `auth/windows.rs` for the credential-file DACL), the config and data directories and their `WITHNAV_CONFIG_DIR` / `WITHNAV_DATA_DIR` overrides (`dirs.rs`), one `ModelClient` per endpoint (`client.rs`, `openai.rs`), the chat SSE adapter over `sse-stream` (`sse.rs`: delivers an unterminated last event, fails an event past `MAX_FRAME_BYTES`, 4 MiB) and the chat-completion accumulator (`lib.rs`), the FIM and System One wire clients (`fim.rs`, `systemone.rs`), the provider errors (`error.rs`). The `test-support` feature exposes `test_support` (scripted SSE bodies) to other crates' tests. | `withnav-client-api`, `instinct-flow`, `reqwest`, `sse-stream`, `tokio`, `serde_json`; no `withnav`, no axum, no rusqlite, no ratatui |
-| `withnav` (root) | everything else, and `nav tui` (`src/app/tui.rs`), which starts the embedded server and calls `withnav_tui::run` | all of the above |
+| `withnav` (root) | everything else, and `nav tui` (`src/app/tui.rs`), which connects to the owner and calls `withnav_tui::run` | all of the above |
 
 Dependencies point one way: `withnav` → `withnav-tui` → `withnav-client`, `withnav-client-state` →
 `withnav-client-api`, and `withnav` → `withnav-provider` → `withnav-client-api`. A crate never imports
@@ -83,7 +84,7 @@ Dependencies point down this list. A module never imports one above it.
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
 | `provider/` | `src/provider/mod.rs` re-exports the `withnav-provider` crate (the `models.json` catalogue in `config.rs`/`load_models`, `model_name.rs`, keys in `auth.rs`, `ModelClient` in `client.rs`, the chat SSE decoder, the FIM and System One clients, the provider errors) at its old paths, and adds `provider::assignments` and `provider::layers`, which live in `src/assignments.rs` and `src/layers.rs` because they read `config.json`: pure assignment resolution and the lower-layer clients built from it | the wire clients themselves, which are in `crates/withnav-provider/` |
 | `secrets/` | the Captain's secrets (`SecretStore`: session-scoped in memory, workspace-scoped also in `<data dir>/credentials/secrets.json`, 0600, plain text, with expiry), reserved names, the per-tree `SecretAccess` a `ToolContext` carries (the `bash` environment, `[secret NAME]` redaction of exact values of 8+ characters), the metadata texts the model reads (`file.rs`: the atomic private file) | the answer route (`session/secrets.rs`), the tool (`tools/secret.rs`) |
-| `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `nofollow.rs` opens the bound write/edit destination without following links; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
+| `tools/` | the tool trait, registry, path validation (`validate_path`), and eight registry tools; `glob.rs` provides bounded file search, `fetch.rs` provides bounded HTTP(S) GET, `task.rs` starts a background subagent, `win_path.rs` (Windows only) normalizes paths and refuses UNC, device and alternate-stream targets; file tools use `ToolContext`'s writable and read-only roots (`read`/`grep`/`glob` accept both, `write`/`edit` only the writable roots); `bash` starts in the workspace but is not confined to these roots | which tools a session gets; the per-session `skill` tool is installed by `agent/` |
 | `agent/` | `AgentActor` (transcript, the pending interaction (an `ask` or a permission request), the permission store, optional role prompt, the rules and skills snapshots), `run_agent` and `resolve_permission` with one `AgentEvent` observer, the permission decision of each tool call (`authorize.rs`: the input of `permission::decide`, the session's permission flows, the decision table and the `PermissionRequest`; the rules, floor and shell splitting live in `src/permission/`), the wire types of a question (`permissions.rs`: `PermissionRequest`, `PermissionDecision`, `Scope`), request building, the context budget (`context.rs`: the estimate by category, `Budget::compute`, `ContextTracker`), compaction (`compaction.rs`: plan, checkpoint, effective history; `compaction/summary.rs`: the summary request and `prepare`), the local instructions (`instructions.rs`: `AGENTS.md`/`CLAUDE.md`/`rules.md` discovery, caps, diagnostics), the skills (`skills.rs`: `SKILL.md` discovery and precedence; `skills/`: frontmatter, the bounded catalog message, the `skill` tool), the agent definitions (`definitions.rs`: built-in `build`/`plan`/`vigie`/`lux` and the `.md` loader with its precedence and reserved names; `selection.rs`: the agent a session runs as, switchable only between turns) | events, persistence |
 | `bus/` | ordering: the sequencer gives every event its `seq`; envelopes and the event catalog (`event.rs`); commands and inboxes; the runtime task that drives `run_agent` and publishes events; `runtime/bypass.rs`: the `Control::Bypass` handler (durable `session.bypass` commit, then the live state, then the eligible pending request) | HTTP, storage |
 | `session/` | the `Service` (registry/router, `service.rs`; `set_bypass` sets a root and then its live children under the root's bypass gate, which child creation also takes, and a resume appends `session.bypass` off before its runtime starts), child creation and parent policy snapshot, result delivery callbacks and owner permission routing, tree teardown (`lifecycle.rs`), actor construction (`actor.rs`), the SQLite history (`store.rs`, including `child_links`, terminal CAS and completion outbox), the shared permission store, the session's permission flows and the parent's Captain evidence for a child, primary agent selection, per-agent model/variant overrides and editor context | HTTP, SSE, lower-layer assignment ownership |
@@ -102,12 +103,12 @@ Dependencies point down this list. A module never imports one above it.
 | `metacognition/` | the one `Metacognition` implementation: remark prompt and tool loop with its budget (`mod.rs`), answer parsing (`answer.rs`), the read/grep tools (`tools.rs`), the reflex-context producer and its prompt (`reflex_context.rs`) |
 | `replay/` | offline replay of historical decision captures through built-in editor flows (`flows.rs`); no model calls or effects |
 | `log.rs` | the JSONL decision log: record types, `PendingTrigger::finish` (the only writer of trigger records) |
-| `conversation.rs` | `ConversationFeed`: the active conversation, its digest, the ask guard, wakes, Captain-turn events |
+| `conversation.rs` | `ConversationFeed`: the conversations of one workspace, their digest, the ask guard, wakes, Captain-turn events; which conversation each editor connection shows (one binding per editor, set by `withnav/conversation`, incarnation-checked) |
 | `intent.rs` | `.withnav/intent.md`: read, section-wise atomic write, and the cognition's `intent` tool |
 | `reveal.rs` | the cognition's `reveal` tool: validates a workspace file (optional symbol, line, editor-group placement), then asks the editor through the `ConversationFeed`'s editor slot, a `withnav/reveal` LSP request answered by `vscode-withnav/src/reveal.ts`; an impossible placement comes back as a tool error |
 | `ports.rs` | the model seams (`FimModel`, `Metacognition`, `ReflexContextModel`) and `ModelError` |
 | `models.rs` | adapters from the provider clients to those seams |
-| `bootstrap.rs` | process wiring: builds each lower layer from its assignment, starts the in-process session server |
+| `bootstrap.rs` | editor-connection wiring inside the owner: `Shared` (workspace feeds, model clients, tracked connections joined at shutdown) and `serve_connection`, which builds each lower layer from the connection's initialize workspace catalogue and serves the navigator over the upgraded `/v1/lsp` stream; it never starts a server of its own |
 
 ### Inside `crates/withnav-tui/`
 
@@ -166,22 +167,24 @@ are read without depending on a newer server event enum. Missing data is not gue
 
 ### The browser client (`nav web`)
 
-`nav web` (`src/app/web.rs`) starts the same private in-process server as `nav tui`
-(`src/app/embedded.rs`: preflight on every `--workspace`, loopback only, a per-process bearer token,
-graceful stop), prints `WithNav WebUI: http://127.0.0.1:<port>/#token=<token>`, opens it with
-`xdg-open`/`open` unless `--no-open`, and runs until Ctrl-C. The token rides in the URL fragment, so the
-browser never sends it to a server; the page keeps it and sends it as a bearer header.
+`nav web` (`src/app/web.rs`) connects to the owner (`app/connect.rs`, starting it if needed), mints a
+pairing code with the owner token (`POST /v1/pair`, with the launch workspaces), prints and opens
+`http://127.0.0.1:<port>/#pair=<code>` with `xdg-open`/`open` unless `--no-open`, and exits. The page
+strips the fragment at once and trades the code, single-use and valid 60 s, at the public
+`POST /v1/pair/exchange` for a browser credential (12 h, `sessionStorage`, `Cache-Control: no-store`)
+it sends as its bearer. `server/pairing.rs` keeps codes and credentials in memory, bounded; the
+middleware accepts a credential wherever the owner token is accepted except the owner-only routes
+(`/v1/shutdown`, `/v1/pair`, `/v1/lsp`). The owner token never reaches a URL, a browser or argv.
 
 The single-page app lives in `webui/`; its build output `webui/dist/` is committed and embedded in the
 binary with `include_dir`, so `cargo build` needs no Node. The files are served by `server/web.rs` only
-when `ServerConfig.web` is set (`nav web` alone; `serve`, the terminal client and the language server
-leave it `None` and answer only the API): `GET /` and any non-`/v1/` path return the file in `dist/`,
+when `ServerConfig.web` is set (always by the owner, `nav serve`; tests may leave it `None`): `GET /` and any non-`/v1/` path return the file in `dist/`,
 else `index.html`. Those paths and `/v1/health` need no token; every other `/v1/*` route still does,
 and an unknown `/v1/` path is a 404, never the page. HTML carries a strict Content-Security-Policy,
 `nosniff` and `no-referrer`.
 
 Two read endpoints serve the page, both behind the token: `GET /v1/workspaces` lists the launch
-workspaces (kept in `WebConfig`, argument order, `launched:true`) and then the workspaces of the
+workspaces of the caller's browser credential (argument order, `launched:true`) and then the workspaces of the
 history store (`HistoryStore::workspaces`: top-level conversations only, directories that no longer
 exist skipped), each with its git branch and change count; `GET /v1/intent?workspace=` returns the
 parsed `.withnav/intent.md`.
@@ -189,9 +192,9 @@ parsed `.withnav/intent.md`.
 ## Data flows
 
 Scratch roots default to private `$XDG_RUNTIME_DIR/withnav` (fallback `~/.cache/withnav/scratch`) and
-shared `<temp_dir>/withnav`, snapshotted in `permissions.scratch_dirs`. Every component is opened
-descriptor-relatively without following links. A write into one carries the root's identity (inode,
-mode), opens it again without creation and writes relative to that descriptor. Validation is read-only.
+shared `<temp_dir>/withnav`, snapshotted in `permissions.scratch_dirs`. Each is created with mode
+0700 (Unix) and kept as its canonical path: a writable root and a temp root for the decision. Its
+identity is not re-checked later; writes into it are ordinary file writes.
 
 The fixed floor (`permission/floor.rs`) protects WithNav's `config.json`, `withnav.db` and global
 flows directory: a write there needs the compiled-in protected check, asked once by the host and
@@ -199,7 +202,7 @@ passed to the flows, which never ask it again; anything else asks the Captain. L
 bash are checked too, best effort: certain writes (redirections, output options, writer operands,
 SQLite `.save`) are `Floor::Protected`; any other command naming a protected file is
 `Floor::NamesProtected` and goes through the same check, which also passes a pure read; bash retains ambient access and cannot be fully confined. Scratch choice is inherited
-from the parent's execution snapshot, and its no-follow descriptor/inode validation is repeated.
+from the parent's execution snapshot.
 
 The other git worktrees of the workspace's repository are part of the project: `authorize` reads
 them (`workspace/worktrees.rs`) on a call whose target falls outside the project or in the temp
@@ -290,11 +293,14 @@ status line shows the active tab's.
 **Permission request to answer.** Before each tool call of an assistant message, `run_loop`
 (`run_decided`) checks tool availability for the session and role and the call's arguments
 (`preflight`), then makes ONE decision through `agent/authorize.rs`, which calls
-`permission::decide` (ADR 0015). The order is fixed: yolo, the fixed floor (`permission/floor.rs`:
-credentials ask, WithNav's `config.json`, `withnav.db` and global flows directory need the protected
-check, an unresolvable path asks), free reads inside the readable roots, the rules
-(`permission/rules.rs`, the most precise match wins; a `deny` stops the call), the doom-loop check
-(`DoomTracker`, reset at each `run_agent`), bypass, the permission flows, then the Captain. No rule
+`permission::decide`. The order is fixed and stated once, authoritatively, in ADR 0015 ("Decision
+order"): yolo, a written `deny` rule, the fixed floor (`permission/floor.rs`: credentials ask, an
+unresolvable path asks), the protected check (WithNav's `config.json`, `withnav.db` and global flows
+directory), the doom-loop check (`DoomTracker`, reset at each `run_agent`), free reads inside the
+readable roots and temporary writes, bypass, an `allow` rule on a call other than `bash` (the
+call runs, `approved_by: rule`, without an Instinct evaluation; `bash` keeps the flow's judgement of
+the line the prefix rule cannot foresee), then the permission flows and the Captain. The step
+comments in `decide.rs` number the branches in this same order. No rule
 means ask; there are no default rules, and a tool the decision does not know (an MCP tool, a role-less
 actor's call) is judged like any other: no rule, ask. `bash` lines are split into commands
 (`permission/shell.rs`) and each command's `rule_text` is matched; an opaque command matches no
@@ -336,7 +342,11 @@ tool-event evidence still carries `policy_version: 2`) on `tool.pre_call` and
 Every decision is a row of `permission_decisions` in `withnav.db`, with the flow runs and scores
 behind it in `flow_trace` (`pending`, then `allowed`,
 `denied`, `cancelled` on a stop or new message, `expired` on resume), filed under the session and the
-turn. A question becomes a `PermissionRequest` with its reason, `requires_captain` (set unless a rule
+turn. The table keeps the decisions that were made, not a trace of every call: a read inside the
+readable roots that no rule looked at (`decide`'s `free_read`), and anything run under yolo, leave no
+row at all. A row for a call that ran is written off the call path (`PermissionStore::detach`), so
+dispatch never waits on the database; only a question's `pending` row is awaited, because its id is
+what the Captain's answer settles. A question becomes a `PermissionRequest` with its reason, `requires_captain` (set unless a rule
 `ask` or the flow raised it), the "Always" proposals and `always_label` (for example
 `Always (project): bash git push *`; project scope for `bash`, file tools, `fetch` and
 `external_directory`, global for the rest).
@@ -352,10 +362,12 @@ every proposal in one transaction, then runs it, and is refused when nothing can
 settles the held call and every call behind it with the Captain's message. After an allow, each
 sibling goes through the whole decision again, floor included, so a saved rule releases it. Legacy
 answers still parse: "allow folder" and "allow configuration for the session" count as Once, `deny`
-as Reject. An allowed file tool is bound to the canonical pathname the decision was made for and opens it
-without following links; when that pathname is no longer a plain file there (a link put in its
-place), nothing is written and the call goes through the decision again. The binding is the
-pathname, not the inode: a regular file swapped in at the same path is written. A stop or a chat message cancels the request; a resume expires every request that has no
+as Reject. An allowed file tool or search runs on the canonical target the decision resolved
+(`ToolContext::binding`), with ordinary file operations, once: WithNav does not bind targets
+without following links and does not decide a call again when its target changed after the
+decision (ADR 0015: symlink races are out of scope). `write` and `edit` replace the file
+atomically (temporary file and rename), so a link put at the target is replaced, not written
+through. A stop or a chat message cancels the request; a resume expires every request that has no
 `permission.resolved`, settles its calls as interrupted, and marks its decisions `expired`.
 
 **Secret request to answer.** `request_secret` (`tools/secret.rs`, never in a child or read-only
@@ -392,8 +404,8 @@ same gate from registration to the child's first prompt and commits the inherite
 checked) < bypass < normal. `Settings::yolo` is read at session start into
 `EffectiveExecution.yolo` (children inherit their parent's value; a model switch keeps it) and from there into `AgentActor::yolo` and `SessionSummary.yolo`. `run_decided`
 checks it right after `preflight`, so no rule, floor or `tool.pre_call` flow is consulted: `run_yolo`
-dispatches the call with `approved_by: yolo` (recorded as such in `permission_decisions`), and no
-Instinct request is made. Skill validation is skipped too. The role's write scope
+dispatches the call with `approved_by: yolo` (nothing is decided, so `permission_decisions` gets no
+row), and no Instinct request is made. Skill validation is skipped too. The role's write scope
 (`validate_write_scope`, Cartographe) is authorization and is not checked either. At dispatch the
 host sets `DispatchBinding::yolo` (never from arguments) and a `ToolContext` whose writable root is
 `/`: file tools are not confined to the session's roots, no scratch identity (inode, mode) is
@@ -484,7 +496,8 @@ user-facing roles.
 **Background children.** Admission reserves capacity and snapshots the parent's complete effective
 execution configuration and policy. Publication and failed-start cleanup have parent- and
 child-scoped ownership records; lifecycle callers wait outside admission, so child deletion cannot
-race registration or joining. Child work never takes the lifecycle gate. Parent stop marks and
+race registration or joining. Child work never takes the lifecycle gate; a child's stop or delete
+takes its root's gate (`session/gate.rs`: one gate per conversation tree, plus the shutdown gate). Parent stop marks and
 cancels every live member before joining; parent deletion removes stored descendants too.
 
 Terminal `child_links` CAS records a self-contained `completion_outbox` notice and only its winner
@@ -593,10 +606,11 @@ as before; no supervision state is restored. The event catalog (`bus/event.rs`,
 | `<workspace>/.withnav/agents/*.md` | project agent definitions | the Captain |
 | `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills included in agent sessions | the Captain |
 | `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `app/tui.rs`, `withnav-provider`'s `catalog.rs` |
-| `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of every permission decision (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
+| `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of the permission decisions that were made — not of undecided calls (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
 | `~/.config/withnav/flows/`, `<workspace>/.withnav/flows/` | global and workspace flow definitions; they load only once validated at their current content | the Captain, the Studio |
 | `~/.config/withnav/config.json` key `mcp` | stdio and HTTP MCP server declarations | the Captain |
-| `$XDG_RUNTIME_DIR/withnav-servers/<key>-<instance>.json` | the port and bearer token of a running `nav lsp` server, mode 0600 (directory 0700), so `nav tui` can join it; removed when the LSP exits | `server/discovery.rs` (`nav lsp`; `nav tui` removes stale ones) |
+| `~/.local/share/withnav/withnav.db.owner.lock` | the owner lock: held by the one `nav serve` for its whole life, never deleted; its identity follows the database's real path, so a symlinked data dir finds the same owner | `server/owner.rs` (`OwnerLock`) |
+| `~/.local/share/withnav/server/owner.json`, `server.log` | the owner's protocol, build, instance, pid, loopback port, token, config dir and models path, mode 0600 (directory 0700, owner-checked, refused not repaired); written after the listener is bound and removed at clean exit, only by the lock holder; the detached owner's log | `server/owner.rs` (`Record`), `app/serve.rs` |
 | `~/.local/share/withnav/credentials/secrets.json` | workspace-scoped secrets with a timed availability, in plain text, mode 0600 (directory 0700), each with its expiry; removed when empty | `secrets/` (`Service::submit_secret`, expiry, revocation) |
 
 Data and config paths come from `paths.rs` and `withnav-provider`'s `dirs.rs` (`config_dir`, `data_dir`, with `auth::default_config_dir`). On every start `paths::migrate_legacy`
@@ -839,14 +853,34 @@ the later 0.6 scope, not this contract.
 - A new MCP capability goes in `src/mcp/`; its tools reach the agent as ordinary registry tools named
   `mcp__<server>__<tool>`, so permissions, events and the context budget need no MCP-specific code.
 - Historical `pipeline.toml` parsing belongs only in `src/flows/migrate/legacy.rs`; it has no runtime engine.
-- The embedded server both clients start (`EmbeddedServer`, the bearer token, the health check) is in `app/embedded.rs`; do not copy it into a new subcommand.
-- Finding a running server for a workspace is `server/discovery.rs`: `nav lsp` publishes its
-  server there (`publish_for`, one owner-only file per process under
-  `$XDG_RUNTIME_DIR/withnav-servers/`, removed on exit) and `nav tui` joins it (`find`: pid, health
-  and an authenticated request decide live, proven-stale files are removed). Another client that
-  should join an editor's server uses the same two functions, never its own file.
+- One process owns `withnav.db`: `nav serve` (`app/serve.rs`). It takes the owner lock
+  (`server/owner.rs`, retried 1 s against a client's probe, never deleted) before it opens anything,
+  refuses while a pre-owner WithNav still holds a `.instances` lock (`session/instance.rs`), binds
+  `127.0.0.1`, publishes the record, and stops on `POST /v1/shutdown` (409 while a turn runs unless
+  `force`), SIGINT/SIGTERM, or when its lock file disappears. A new command never opens the database
+  or starts a server of its own: it calls `app/connect.rs` (`ensure_server` starts the owner
+  detached and waits; `find_server` only looks), which checks the record, proves the owner with
+  `GET /v1/hello` (HMAC of a fresh nonce with the token, `owner::hello_proof`) before sending the
+  token, and refuses a different protocol, config dir or `--models`. Anything the CLI reads or
+  changes in the database is a route (`server/permissions.rs` for `nav permissions`).
+- Route policy is one middleware in `server/routes.rs`: exact loopback `Host`, no foreign or
+  `null` `Origin`, the public list (health, hello, pair exchange, web assets, MCP app load), the
+  owner-only list, and the owner token or a browser credential elsewhere.
+- An editor connection is `GET /v1/lsp` (`server/lsp_route.rs`): owner token, the workspace in
+  `x-withnav-workspace`, preflight before `101`, then `navigator::bootstrap::serve_connection`
+  over the upgraded stream with the owner's flow host and the shared `bootstrap::Shared`
+  (feeds, client cache, tracked connections joined at shutdown). `nav lsp` (`app/lsp.rs`) is only
+  the stdio bridge to it. Which conversation an editor shows comes from its
+  `withnav/conversation` notification, bound through the incarnation-checked feed API.
+- Local loopback health checks and workspace resolution for clients are in `app/embedded.rs`.
 - A workspace's git state is read by `workspace/git.rs`, for any caller; the server must not import `withnav-tui`.
 - `crates/withnav-tui` is a server client: HTTP + SSE only, through `withnav-client`. It shares the wire types of `withnav-client-api` and never depends on the root package: anything it needs from the machine is a method of `TuiHost`. A type that must be on the wire goes in `withnav-client-api`; per-conversation state derived from events goes in `withnav-client-state`.
+- A seam an integration test needs to pause, fail or observe a session flow goes in
+  `session/test_points.rs` (`TestPoints`, one field of `Service`): a park point is a `ParkPoint`
+  variant consumed with `self.test_points.park(..).await`, a failure is a `take_*` flag. It compiles
+  only under the `test-support` feature (or `cfg(test)`); without it every helper is a no-op, so
+  release builds carry none of it. A test file that arms one starts with
+  `#![cfg(feature = "test-support")]`. Never gate a test seam on `debug_assertions`.
 - Tests use `tests/common/`: `server.rs` (configs, servers, sessions, messages), `sse.rs` (scripted
   chat streams), `navigator.rs` (the in-memory LSP client and one scripted fake per model seam). Do
   not copy a harness into a new test file.

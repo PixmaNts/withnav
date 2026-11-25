@@ -409,6 +409,8 @@ body.vscode-light, body.vscode-high-contrast-light { --nav:#036b9a; --lux:#8f5d0
 .tool-group[open] > summary::before { transform: rotate(90deg); }
 .tool-group > summary:hover { color: var(--nav-fg); }
 .tool-group-failed { color: var(--vscode-errorForeground); }
+.tool-group-interrupted { color: var(--nav-warning-text); }
+.tool-row.interrupted { color: var(--nav-warning-text); }
 .tool-group > .tool-row { margin-left: 13px; }
 .reasoning > summary { color: var(--nav-muted); font-size: 0.875rem; }
 
@@ -577,6 +579,9 @@ code { padding: 1px 5px; border-radius: 4px; background: var(--vscode-textPrefor
 .control-card { border: 1px solid var(--nav-border); background: var(--nav-softer); }
 .permission-card:not([data-resolution]), .pause-card:not([data-resolution]) { border-color: color-mix(in srgb, var(--nav-attention) 50%, transparent); border-left: 3px solid var(--nav-attention); }
 .turn-result, .control-notice, .command-error { padding-left: 8px; border-left: 2px solid var(--vscode-errorForeground); }
+/* A stopped turn was interrupted, not failed: the same warning tone as the
+   interrupted tool rows above it. */
+.turn-result[data-outcome="stopped"] { color: var(--nav-warning-text); border-left-color: var(--vscode-editorWarning-foreground, var(--vscode-focusBorder)); }
 .control-notice:not(.command-error) { border-left-color: var(--nav-border); }
 .empty { color: var(--nav-muted); }
 .chip, .pill, .seg-btn, .model-btn, .tab-overflow, .tab-close, .chip-close, .attach-btn { color: var(--nav-muted); }

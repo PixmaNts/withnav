@@ -1,5 +1,6 @@
-//! Ordinary Windows file access; classification belongs to canonical path validation.
-use std::io::{Read, Write};
+//! Windows path normalization shared by the permission decision and the file tools:
+//! one ordinary spelling per target (aliases resolved, case folded for comparison), and
+//! refusal of UNC, device-namespace, reserved-name and alternate-stream targets.
 use std::path::Path;
 
 use crate::error::ToolError;
@@ -165,89 +166,12 @@ pub(crate) fn validate_target(path: &Path) -> Result<(), ToolError> {
     Ok(())
 }
 
-pub fn open_read(destination: &Path) -> Result<std::fs::File, ToolError> {
-    validate_target(destination)?;
-    let file = std::fs::File::open(destination)?;
-    if !file.metadata()?.is_file() {
-        return Err(ToolError::DestinationChanged(destination.to_path_buf()));
-    }
-    Ok(file)
-}
-
-pub fn write_atomic(destination: &Path, content: &[u8]) -> Result<(), ToolError> {
-    validate_target(destination)?;
-    let parent = destination
-        .parent()
-        .ok_or_else(|| ToolError::DestinationChanged(destination.to_path_buf()))?;
-    std::fs::create_dir_all(parent)?;
-    match std::fs::metadata(destination) {
-        Ok(meta) if !meta.is_file() => {
-            return Err(ToolError::DestinationChanged(destination.to_path_buf()));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    temp.write_all(content)?;
-    temp.as_file().sync_all()?;
-    temp.persist(destination)
-        .map_err(|error| ToolError::Io(error.error))?;
-    Ok(())
-}
-
-pub fn edit_atomic(
-    destination: &Path,
-    change: impl FnOnce(String) -> Result<(String, String), ToolError>,
-) -> Result<String, ToolError> {
-    let file = open_read(destination).map_err(|error| match error {
-        ToolError::Io(ref io) if io.kind() == std::io::ErrorKind::NotFound => {
-            ToolError::NotFound(destination.to_path_buf())
-        }
-        other => other,
-    })?;
-    let mut text = String::new();
-    file.take(16 * 1024 * 1024 + 1).read_to_string(&mut text)?;
-    if text.len() > 16 * 1024 * 1024 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "edit target exceeds 16 MiB",
-        )
-        .into());
-    }
-    let (updated, report) = change(text)?;
-    write_atomic(destination, updated.as_bytes())?;
-    Ok(report)
-}
-
-pub fn write_scratch(
-    destination: &Path,
-    content: &[u8],
-    identity: &crate::agent::scratch::Identity,
-) -> Result<(), ToolError> {
-    if !path_within(destination, &identity.path) {
-        return Err(ToolError::DestinationChanged(destination.to_path_buf()));
-    }
-    write_atomic(destination, content)
-}
-
-pub fn edit_scratch(
-    destination: &Path,
-    identity: &crate::agent::scratch::Identity,
-    change: impl FnOnce(String) -> Result<(String, String), ToolError>,
-) -> Result<String, ToolError> {
-    if !path_within(destination, &identity.path) {
-        return Err(ToolError::DestinationChanged(destination.to_path_buf()));
-    }
-    edit_atomic(destination, change)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn short_root_contains_resolved_targets_and_allows_scratch_writes() {
+    fn short_root_contains_resolved_targets_and_allows_writes() {
         let dir = tempfile::Builder::new()
             .prefix("withnav long directory name ")
             .tempdir()
@@ -273,10 +197,7 @@ mod tests {
             crate::tools::validate_path(&cx.writable_roots, &target).unwrap(),
             target
         );
-        let identity = crate::agent::scratch::Identity {
-            path: short.clone(),
-        };
-        write_scratch(&target, b"scratch", &identity).unwrap();
+        std::fs::write(&target, b"scratch").unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"scratch");
         let floor = crate::permission::floor::FloorContext {
             workspace: short.clone(),
@@ -317,7 +238,8 @@ mod tests {
                 RuleOrigin::Manual,
             )
             .unwrap();
-        write_atomic(&before, b"long").unwrap();
+        std::fs::create_dir_all(before.parent().unwrap()).unwrap();
+        std::fs::write(&before, b"long").unwrap();
         let after = resolve_target(&target, dir.path(), None).unwrap();
         assert_eq!(before, after);
         for action in ["*", "writ*"] {
@@ -386,12 +308,7 @@ mod tests {
             assert!(!target.exists());
             std::fs::write(&target, "existing").unwrap();
             let resolved = resolve_target(&target, dir.path(), None).unwrap();
-            let mut text = String::new();
-            open_read(&resolved)
-                .unwrap()
-                .read_to_string(&mut text)
-                .unwrap();
-            assert_eq!(text, "existing");
+            assert_eq!(std::fs::read_to_string(&resolved).unwrap(), "existing");
             assert_eq!(std::fs::read_to_string(&ordinary).unwrap(), "unchanged");
         }
     }
@@ -432,30 +349,6 @@ mod tests {
         )
         .unwrap();
         assert!(path_within(&resolved, &root));
-    }
-
-    #[test]
-    fn ordinary_atomic_writes_and_exact_edit_refusals() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("new/deep/file.txt");
-        write_atomic(&path, b"one").unwrap();
-        write_atomic(&path, b"two").unwrap();
-        assert!(matches!(
-            edit_atomic(&path, |_| Err(ToolError::NoMatch)),
-            Err(ToolError::NoMatch)
-        ));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two");
-        assert_eq!(
-            edit_atomic(&path, |text| Ok((text + "!", "edited".into()))).unwrap(),
-            "edited"
-        );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two!");
-        assert!(matches!(
-            edit_atomic(&dir.path().join("missing/file"), |_| unreachable!()),
-            Err(ToolError::NotFound(_))
-        ));
-        assert!(!dir.path().join("missing").exists());
-        assert!(write_atomic(dir.path(), b"bad").is_err());
     }
 
     #[test]

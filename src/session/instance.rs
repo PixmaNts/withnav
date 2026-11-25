@@ -79,9 +79,87 @@ pub(super) fn stale_lock(directory: &Path, owner: Ulid) -> Result<Option<OwnerLo
     probe(file)
 }
 
+/// Probes for any held instance locks under `<database>.instances/`.
+/// If any lock file is held by an older WithNav process, or if the probe is uncertain,
+/// returns an error refusing startup.
+pub fn check_legacy_instances(database: &Path) -> Result<(), String> {
+    let mut directory = database.as_os_str().to_os_string();
+    directory.push(".instances");
+    let directory = PathBuf::from(directory);
+    if !directory.exists() {
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(&directory).map_err(|e| {
+        format!(
+            "cannot read legacy instances directory {}: {e}",
+            directory.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            format!(
+                "cannot inspect legacy instance entry in {}: {e}",
+                directory.display()
+            )
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("lock") {
+            let file = match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(false)
+                .truncate(false)
+                .open(&path)
+            {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Err(format!(
+                        "cannot probe legacy instance lock {}: {e}",
+                        path.display()
+                    ));
+                }
+            };
+            match probe(file) {
+                Ok(Some(lock)) => {
+                    drop(lock);
+                }
+                Ok(None) => {
+                    return Err(format!(
+                        "a legacy WithNav instance is running with lock {}; stop it before starting nav serve",
+                        path.display()
+                    ));
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "uncertain legacy instance lock probe for {}: {e}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_instance_probe_detects_held_and_stale_locks() {
+        let root = tempfile::tempdir().unwrap();
+        let database = root.path().join("history.db");
+        std::fs::write(&database, []).unwrap();
+
+        assert!(check_legacy_instances(&database).is_ok());
+
+        let instance = Instance::acquire(&database).unwrap();
+        assert!(check_legacy_instances(&database).is_err());
+
+        drop(instance);
+        assert!(check_legacy_instances(&database).is_ok());
+    }
 
     #[test]
     fn ownership_is_held_until_instance_drops() {

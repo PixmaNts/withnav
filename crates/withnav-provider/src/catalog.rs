@@ -25,11 +25,11 @@ pub async fn test_gateway(
     name: &str,
     provider: &super::config::ProviderConfig,
     key: String,
+    clients: &ClientCache,
 ) -> serde_json::Value {
     let start = Instant::now();
-    let clients = ClientCache::default();
     let result = async {
-        let client = ModelClient::for_catalog(name, provider, key, &clients)?;
+        let client = ModelClient::for_catalog(name, provider, key, clients)?;
         client
             .get_json(
                 "models",
@@ -195,7 +195,7 @@ impl ModelCatalog {
         }
     }
     /// Allow failed endpoints to retry without discarding cached metadata.
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn expire_failures(&self) {
         let endpoints = self.endpoints.lock().expect("catalog endpoints poisoned");
         for endpoint in endpoints.values() {

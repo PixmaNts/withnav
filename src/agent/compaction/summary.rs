@@ -2,6 +2,7 @@
 //! rolling requests to the selected writer, checked before they are trusted.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
@@ -81,6 +82,7 @@ pub struct PrepareInput<'a> {
     pub decision: Option<&'a dyn crate::provider::systemone::DecisionModel>,
     pub catalog: Option<&'a crate::provider::catalog::ModelCatalog>,
     pub max_message_tokens: Option<u64>,
+    pub client_cache: Arc<ClientCache>,
 }
 
 /// A checkpoint ready to persist and install. Nothing is saved yet.
@@ -386,7 +388,7 @@ async fn ask(
         "agent",
         input.provider,
         input.api_key.clone(),
-        &ClientCache::new(),
+        &input.client_cache,
     )
     .map_err(|e| CompactionError::Provider(e.to_string()))?;
     client

@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! A server's prompts become the Captain's `/<server>:<prompt>` commands: listed with the
 //! built-ins, their arguments checked before anything is asked, and their messages sent to
 //! the agent as bounded, redacted, untrusted data inside the Captain's message.
@@ -259,7 +260,11 @@ async fn a_prompt_runs_as_a_captain_command_through_the_session() {
     let mut settings = withnav::settings::load(&cfg.config_dir).unwrap();
     settings.set_dotted("mcp", json!({"fake":{"command":[common::python(),concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/mcp_server.py")],"env":{"PROMPTS":"1","SECRET":SECRET}}}));
     withnav::settings::save(&cfg.config_dir, &settings).unwrap();
-    let state = AppState::new(cfg).unwrap();
+    let state = AppState::new(
+        cfg,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     common::server::wait_for("MCP discovery", || {
         state
             .service()

@@ -6,9 +6,12 @@
 //! (the HTTP state wrapping the session service), and [`routes::serve`]
 //! (loopback bind with graceful shutdown).
 pub mod config;
-pub mod discovery;
 mod flows;
+pub(crate) mod lsp_route;
 mod mcp_app;
+pub mod owner;
+pub mod pairing;
+mod permissions;
 pub mod routes;
 pub mod session;
 mod settings;

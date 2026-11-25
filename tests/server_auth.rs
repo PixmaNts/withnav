@@ -161,3 +161,230 @@ async fn without_a_token_behaviour_is_unchanged() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(state.session_count(), 1);
 }
+
+#[tokio::test]
+async fn host_header_validation() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut state = test_state(tmp.path(), Some("tok".into()));
+    let bound_addr: std::net::SocketAddr = "127.0.0.1:7310".parse().unwrap();
+    std::sync::Arc::make_mut(&mut state.http).bind = bound_addr;
+
+    for (host, expected_status) in [
+        ("127.0.0.1:7310", StatusCode::OK),
+        ("localhost:7310", StatusCode::OK),
+        ("evil.com:7310", StatusCode::MISDIRECTED_REQUEST),
+        ("127.0.0.1:9999", StatusCode::MISDIRECTED_REQUEST),
+        ("attacker.com", StatusCode::MISDIRECTED_REQUEST),
+    ] {
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/health")
+            .header("host", host)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app(state.clone()).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), expected_status, "host {host}");
+    }
+}
+
+#[tokio::test]
+async fn origin_header_validation() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut state = test_state(tmp.path(), Some("tok".into()));
+    let bound_addr: std::net::SocketAddr = "127.0.0.1:7310".parse().unwrap();
+    std::sync::Arc::make_mut(&mut state.http).bind = bound_addr;
+
+    for (origin, expected_status) in [
+        ("http://127.0.0.1:7310", StatusCode::OK),
+        ("http://localhost:7310", StatusCode::OK),
+        ("null", StatusCode::FORBIDDEN),
+        ("http://evil.com:7310", StatusCode::FORBIDDEN),
+        ("https://127.0.0.1:7310", StatusCode::FORBIDDEN),
+    ] {
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/health")
+            .header("origin", origin)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app(state.clone()).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), expected_status, "origin {origin}");
+    }
+}
+
+#[tokio::test]
+async fn public_hello_route_answers_without_token() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = test_state(tmp.path(), Some("token123".into()));
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/hello?nonce=aabbcc")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let val: Value = body_json(resp).await;
+    assert_eq!(val["protocol"], 1);
+    assert_eq!(val["instance"], state.instance());
+    let expected_proof =
+        withnav::server::owner::hello_proof("token123", "aabbcc", state.instance());
+    assert_eq!(val["proof"], expected_proof);
+}
+
+#[tokio::test]
+async fn shutdown_route_requires_owner_token() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = test_state(tmp.path(), Some("owner-token".into()));
+
+    // Missing token -> 401
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/shutdown")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Wrong token -> 401
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/shutdown")
+        .header("authorization", "Bearer wrong-token")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Owner token -> 202
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/shutdown")
+        .header("authorization", "Bearer owner-token")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"force": true}).to_string()))
+        .unwrap();
+    let resp = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn shutdown_busy_returns_409_unless_forced() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("create ws");
+    let state = test_state(tmp.path(), Some("owner-token".into()));
+
+    let resp = request_with_auth(
+        &state,
+        Some("Bearer owner-token"),
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "workspace": ws.to_str().unwrap() })),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let session_id: ulid::Ulid = body["session_id"].as_str().unwrap().parse().unwrap();
+
+    // Mark a turn as running on the live session
+    state.pin_session_turn(session_id).await;
+    assert!(state.is_turn_running());
+
+    // Without force: 409 busy
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/shutdown")
+        .header("authorization", "Bearer owner-token")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"force": false}).to_string()))
+        .unwrap();
+    let resp = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let val = body_json(resp).await;
+    assert_eq!(val["reason"], "busy");
+
+    // With force: 202 accepted
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/shutdown")
+        .header("authorization", "Bearer owner-token")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"force": true}).to_string()))
+        .unwrap();
+    let resp = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+}
+
+// Given a server whose shutdown was accepted
+// When a client then tries to start work
+// Then the request is refused with 503 while health and the owner proof still answer
+#[tokio::test]
+async fn after_shutdown_is_accepted_new_work_is_refused() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("create ws");
+    let state = test_state(tmp.path(), Some("owner-token".into()));
+
+    let resp = request_with_auth(
+        &state,
+        Some("Bearer owner-token"),
+        "POST",
+        "/v1/shutdown",
+        Some(json!({ "force": false })),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    let resp = request_with_auth(
+        &state,
+        Some("Bearer owner-token"),
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "workspace": ws.to_str().unwrap() })),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let resp = request_with_auth(&state, None, "GET", "/v1/health", None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// Given the server that owns the database
+// When a session is requested for a relative workspace
+// Then it is refused instead of resolving against the owner's own working directory
+#[tokio::test]
+async fn a_relative_session_workspace_is_refused() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = test_state(tmp.path(), Some("owner-token".into()));
+    let resp = request_with_auth(
+        &state,
+        Some("Bearer owner-token"),
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "workspace": "." })),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+// Given a server whose sessions were drained for shutdown (a signal, without the HTTP latch)
+// When a conversation then reaches registration
+// Then it is refused with 503 instead of appearing after the drain
+#[tokio::test]
+async fn a_conversation_reaching_registration_after_the_drain_is_refused() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("create ws");
+    let state = test_state(tmp.path(), Some("owner-token".into()));
+    state.close_all().await;
+    let resp = request_with_auth(
+        &state,
+        Some("Bearer owner-token"),
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "workspace": ws.to_str().unwrap() })),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_json(resp).await["reason"], "shutting_down");
+}

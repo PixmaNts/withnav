@@ -485,7 +485,6 @@ mod tests {
         assert!(refused.to_string().contains("sensitive search root"));
         cx.binding = Some(crate::tools::DispatchBinding {
             destination: ssh.canonicalize().unwrap(),
-            scratch: None,
             yolo: false,
         });
         assert!(run(&cx, args.clone()).await.is_err());

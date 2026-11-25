@@ -1,6 +1,6 @@
 //! Session ownership: the registry and router (`service`), what it needs
 //! to run (`config`), listing and deletion (`catalog`), teardown and close
-//! (`lifecycle`), command acceptance (`message`), the host's posting handle
+//! (`lifecycle`), the per-tree lifecycle gates (`gate`), command acceptance (`message`), the host's posting handle
 //! (`sender`), subscriptions (`subscription`), the host's editor policy and
 //! lifecycle callbacks (`hooks`), the instructions log (`rules_log`), actor construction (`actor`) and the SQLite
 //! history (`store`). Transport-free: HTTP and SSE live in `server/`.
@@ -10,6 +10,7 @@ mod catalog;
 mod commands;
 mod config;
 mod flows;
+mod gate;
 mod hooks;
 mod instance;
 mod lifecycle;
@@ -22,9 +23,10 @@ mod run_command;
 mod secrets;
 mod sender;
 pub(crate) mod service;
-#[cfg(debug_assertions)]
+pub(crate) mod test_points;
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-pub use service::ChildPreparationBarrier;
+pub use test_points::ChildPreparationBarrier;
 pub mod store;
 pub mod subagents;
 mod subscription;
@@ -36,6 +38,6 @@ pub use hooks::{NoHooks, SessionHooks, StartedSession};
 pub use message::MessageAccepted;
 pub use sender::SessionSender;
 pub use service::{
-    CLEAR_WORD, Service, SessionId, SessionSummary, SkillEntry, SkillsBody, VariantChoice,
+    CLEAR_WORD, Service, SessionId, SessionMetadata, SkillEntry, SkillsBody, VariantChoice,
 };
 pub use subscription::Subscription;

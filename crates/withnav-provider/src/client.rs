@@ -562,4 +562,129 @@ mod tests {
         assert_eq!(sent, expected);
         assert!(!String::from_utf8_lossy(&sent).contains("signature"));
     }
+
+    #[tokio::test]
+    async fn two_model_clients_sharing_cache_reuse_connection() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let accepts_clone = accepts.clone();
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        let server = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel_clone.cancelled() => break,
+                    accept_res = listener.accept() => {
+                        let Ok((mut sock, _)) = accept_res else { break; };
+                        accepts_clone.fetch_add(1, Ordering::SeqCst);
+                        let cancel_sock = cancel_clone.clone();
+                        tokio::spawn(async move {
+                            let mut buf = Vec::new();
+                            let mut tmp = [0u8; 1024];
+                            loop {
+                                let body_end = loop {
+                                    if let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                        let header = String::from_utf8_lossy(&buf[..idx]);
+                                        let content_len = header
+                                            .lines()
+                                            .find_map(|l| {
+                                                l.to_lowercase()
+                                                    .strip_prefix("content-length:")
+                                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                                            })
+                                            .unwrap_or(0);
+                                        let body_start = idx + 4;
+                                        if buf.len() >= body_start + content_len {
+                                            break body_start + content_len;
+                                        }
+                                    }
+                                    tokio::select! {
+                                        _ = cancel_sock.cancelled() => return,
+                                        n = sock.read(&mut tmp) => {
+                                            match n {
+                                                Ok(0) | Err(_) => return,
+                                                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                                            }
+                                        }
+                                    }
+                                };
+                                buf.drain(..body_end);
+                                let resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}";
+                                if sock.write_all(resp).await.is_err() || sock.flush().await.is_err() {
+                                    return;
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        });
+
+        let shared_cache = Arc::new(ClientCache::new());
+        let provider = ProviderConfig {
+            base_url: format!("http://{addr}/v1/"),
+            api_key_env: None,
+            headers: Default::default(),
+            connect_timeout_ms: 1_000,
+            request_timeout_ms: 600_000,
+            catalog_format: None,
+        };
+        let client1 = ModelClient::new("p", &provider, "key".into(), &shared_cache).unwrap();
+        let client2 = ModelClient::new("p", &provider, "key".into(), &shared_cache).unwrap();
+
+        let _ = client1
+            .post_json(
+                "test",
+                &serde_json::json!({}),
+                Duration::from_secs(5),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let _ = client2
+            .post_json(
+                "test",
+                &serde_json::json!({}),
+                Duration::from_secs(5),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(accepts.load(Ordering::SeqCst), 1);
+
+        let cache_a = ClientCache::new();
+        let cache_b = ClientCache::new();
+        let client_a = ModelClient::new("p", &provider, "key".into(), &cache_a).unwrap();
+        let client_b = ModelClient::new("p", &provider, "key".into(), &cache_b).unwrap();
+
+        let _ = client_a
+            .post_json(
+                "test",
+                &serde_json::json!({}),
+                Duration::from_secs(5),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let _ = client_b
+            .post_json(
+                "test",
+                &serde_json::json!({}),
+                Duration::from_secs(5),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(accepts.load(Ordering::SeqCst), 3);
+
+        cancel.cancel();
+        let _ = server.await;
+    }
 }

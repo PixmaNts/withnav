@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -84,7 +85,6 @@ async fn verdict_for_a_turn_that_parked_on_permission_is_discarded() {
     drop(stream);
     async {
         loop {
-            service.history().flush().await.unwrap();
             if service
                 .history()
                 .replay(child, None, u64::MAX)
@@ -102,12 +102,6 @@ async fn verdict_for_a_turn_that_parked_on_permission_is_discarded() {
     .await;
     judge.release.notify_one();
     let _next = sleeps.recv().bounded(file!(), line!()).await.unwrap();
-    service
-        .history()
-        .flush()
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
     assert!(
         !service
             .history()
@@ -196,7 +190,6 @@ impl Fixture {
         drop(std::mem::replace(&mut self.stream, unused));
         async {
             loop {
-                self.service.history().flush().await.unwrap();
                 if self
                     .service
                     .history()
@@ -285,12 +278,6 @@ async fn doubt_boundary_interrupt_cancels_hold_and_runs_replacement_without_pend
             .await
             .is_err()
     );
-    f.service
-        .history()
-        .flush()
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
     let events = f
         .service
         .history()
@@ -438,12 +425,6 @@ async fn doubt_boundary_captain_continue_releases_the_same_turn() {
         .await
         .unwrap();
     assert!(request.contains("\"role\":\"tool\""));
-    f.service
-        .history()
-        .flush()
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
     let events = f
         .service
         .history()
@@ -647,7 +628,6 @@ async fn failed_stop_write_restores_doubt_and_captain_continue_releases_waiter()
     drop(f.stream);
     async {
         loop {
-            f.service.history().flush().await.unwrap();
             if f.service
                 .history()
                 .replay(f.child, None, u64::MAX)
@@ -769,6 +749,7 @@ async fn parent_stop_joins_its_preclaimed_child_before_releasing_capacity() {
             .chat_tools(128000)
             .config(),
         Arc::new(HeldToolHooks(tool.clone())),
+        Arc::new(withnav_provider::openai::ClientCache::new()),
     )
     .unwrap();
     let parent = service
@@ -866,12 +847,6 @@ async fn shutdown_reclaims_the_child_after_a_provisional_watchdog_stop_rolls_bac
         .unwrap()
         .unwrap();
     assert_eq!(link.status, "stopped");
-    f.service
-        .history()
-        .flush()
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
     let events = f
         .service
         .history()
@@ -931,12 +906,6 @@ async fn shutdown_snapshot_retains_ownership_when_stop_rolls_back_before_waiting
             .status,
         "stopped"
     );
-    f.service
-        .history()
-        .flush()
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
     assert_eq!(
         f.service
             .history()
@@ -963,6 +932,7 @@ async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
             .chat_tools(128000)
             .config(),
         Arc::new(HeldToolHooks(tool.clone())),
+        Arc::new(withnav_provider::openai::ClientCache::new()),
     )
     .unwrap();
     std::fs::write(
@@ -1026,12 +996,6 @@ async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
             .await
             .is_err()
     );
-    service
-        .history()
-        .flush()
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
     assert!(
         !service
             .history()
@@ -1123,12 +1087,6 @@ impl Fixture {
         waiter.send(()).unwrap();
     }
     async fn events(&self) -> Vec<withnav::bus::event::EventEnvelope> {
-        self.service
-            .history()
-            .flush()
-            .bounded(file!(), line!())
-            .await
-            .unwrap();
         self.service
             .history()
             .replay(self.parent, None, u64::MAX)
@@ -1278,7 +1236,6 @@ async fn doubt_holds_next_request_and_model_decision_continues_same_turn() {
     // Child tool completion proves the safe boundary is reached, without another provider request.
     async {
         loop {
-            f.service.history().flush().await.unwrap();
             if f.service
                 .history()
                 .replay(f.child, None, u64::MAX)
@@ -1527,7 +1484,6 @@ async fn budget_parked_child_is_skipped_without_asking_instinct() {
     }
     async {
         loop {
-            f.service.history().flush().await.unwrap();
             if f.service
                 .history()
                 .replay(f.child, None, u64::MAX)
@@ -1611,7 +1567,6 @@ async fn permission_parked_child_is_skipped_and_decision_cannot_approve_it() {
     drop(stream);
     async {
         loop {
-            service.history().flush().await.unwrap();
             if service
                 .history()
                 .replay(child, None, u64::MAX)

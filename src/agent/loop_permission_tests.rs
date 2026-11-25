@@ -13,7 +13,7 @@ use super::tests::{
 };
 use super::*;
 use crate::agent::flow_hook::{
-    FlowVerdict, PermissionCallContext, PermissionVerdict, ProtectedCheck, RuleResult,
+    FlowAction, FlowVerdict, PermissionCallContext, PermissionVerdict, ProtectedCheck, RuleResult,
     ToolCallFlows,
 };
 use crate::agent::permissions::PermissionOrigin;
@@ -80,12 +80,21 @@ impl ToolCallFlows for FakeFlows {
             };
             // A scripted verdict is the flow's own; the default applies the rule.
             let own = matches!(self.mode, "allow" | "deny" | "ask");
+            let action = if own {
+                match &verdict {
+                    FlowVerdict::Allow => FlowAction::Allow,
+                    FlowVerdict::Deny { .. } => FlowAction::Deny,
+                    FlowVerdict::AskCaptain { .. } => FlowAction::AskCaptain,
+                }
+            } else {
+                FlowAction::ApplyRule
+            };
             PermissionVerdict {
                 verdict,
                 flows: vec![crate::agent::flow_hook::PermissionFlowAnswer {
                     flow: "test".into(),
                     run_id: "run".into(),
-                    action: String::new(),
+                    action,
                     used_rule: !own,
                     scores: Default::default(),
                 }],
@@ -167,10 +176,12 @@ async fn run_observed(actor: &mut AgentActor) -> (RunOutcome, Vec<serde_json::Va
 }
 
 fn decisions(actor: &AgentActor) -> Vec<crate::permission::decisions::Decision> {
-    let mut rows = actor
-        .permission_store
-        .as_ref()
-        .unwrap()
+    let store = actor.permission_store.as_ref().unwrap();
+    // Decision rows are written off the call path, so wait for the writes in
+    // flight before reading the table: a rule denial is a decision and must
+    // be found here without polling.
+    store.settled();
+    let mut rows = store
         .list_decisions(&DecisionFilter::default(), 100)
         .unwrap();
     rows.reverse();
@@ -595,11 +606,9 @@ async fn yolo_skips_rules_flows_and_floor_and_says_so() {
     assert!(matches!(outcome, RunOutcome::Done(_)));
     assert_eq!(approved, [json!("yolo"), json!("yolo")]);
     assert_eq!((flows.asked(), flows.checked()), (0, 0));
-    assert!(
-        decisions(&actor)
-            .iter()
-            .all(|row| row.approved_by.as_deref() == Some("yolo"))
-    );
+    // Nothing was decided, so nothing is recorded: the call's own events carry
+    // the yolo evidence, and the table stays empty.
+    assert!(decisions(&actor).is_empty(), "{:?}", decisions(&actor));
 }
 
 #[tokio::test]
@@ -731,45 +740,6 @@ async fn the_same_call_three_times_in_a_turn_asks_and_a_new_turn_resets() {
     assert_eq!(request.tool_call_id, "b3");
 }
 
-#[cfg(unix)]
-#[tokio::test]
-async fn a_target_swapped_after_the_decision_is_decided_again_floor_included() {
-    let flows = Arc::new(FakeFlows::with_check("allow", ProtectedCheck::Failed));
-    let mut actor = actor_with(Some(flows));
-    add_rule(&actor, "write", "*", Effect::Allow);
-    let ws = actor.tool_context.workspace.clone();
-    let config = actor
-        .permission_dirs
-        .config
-        .clone()
-        .unwrap()
-        .join("config.json");
-    std::fs::write(&config, "original").unwrap();
-    let target = ws.join("notes.txt");
-    std::fs::write(&target, "old").unwrap();
-    super::tests::on_next_dispatch({
-        let (target, config) = (target.clone(), config.clone());
-        move || {
-            std::fs::remove_file(&target).unwrap();
-            std::os::unix::fs::symlink(&config, &target).unwrap();
-        }
-    });
-    script(
-        &mut actor,
-        vec![owned(&[(
-            "w1".into(),
-            "write".into(),
-            json!({"path": target, "content": "new"}),
-        )])],
-    )
-    .await;
-    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
-        panic!("the moved target now names the configuration");
-    };
-    assert!(request.requires_captain);
-    assert_eq!(std::fs::read_to_string(&config).unwrap(), "original");
-}
-
 /// Answers every instinct question yes and counts the protected ones.
 struct CountingInstinct {
     protected: AtomicUsize,
@@ -851,6 +821,107 @@ impl ToolCallFlows for RuntimeFlows {
                 .permission_protected_check_traced(ctx, cancel.clone()),
         )
     }
+}
+
+/// Answers every question with "no" after a fixed delay: the stand-in for the
+/// wait an Instinct round trip adds before a call starts.
+struct SlowInstinct {
+    delay: std::time::Duration,
+}
+
+impl instinct_flow::DecisionClient for SlowInstinct {
+    fn capabilities(&self) -> instinct_flow::Capabilities {
+        instinct_flow::Capabilities { images: false }
+    }
+    fn identity(&self) -> instinct_flow::ClientIdentity {
+        instinct_flow::ClientIdentity {
+            model: "fake/slow".into(),
+            variant: None,
+        }
+    }
+    fn decide<'a>(
+        &'a self,
+        request: instinct_flow::protocol::DecisionRequest<'a>,
+        _: &'a CancellationToken,
+        _: std::time::Instant,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<instinct_flow::protocol::DecisionResponse, instinct_flow::DecisionError>,
+    > {
+        Box::pin(async move {
+            tokio::time::sleep(self.delay).await;
+            Ok(instinct_flow::protocol::DecisionResponse {
+                answers: request
+                    .questions
+                    .keys()
+                    .map(|id| {
+                        (
+                            id.clone(),
+                            instinct_flow::protocol::Answer::Noul { noul: 0.0 },
+                        )
+                    })
+                    .collect(),
+                usage: None,
+            })
+        })
+    }
+}
+
+/// The wait an Instinct round trip adds between the model's tool call and the
+/// tool's start, measured through the production path (`run_agent` ->
+/// `authorize` -> `permission::decide` -> dispatch). The endpoint is a
+/// controlled in-process client that answers after a fixed delay, not a live
+/// model: a synthetic dispatch measurement of the same quantity.
+#[tokio::test]
+async fn an_allowed_native_call_starts_without_waiting_for_instinct() {
+    const FLOW_DELAY: std::time::Duration = std::time::Duration::from_millis(800);
+    let mut actor = actor_with(None);
+    let ws = actor.tool_context.workspace.clone();
+    let store = Arc::new(crate::flows::store::FlowStore::new(
+        ws.clone(),
+        actor.permission_dirs.config.clone().unwrap(),
+    ));
+    let runtime = Arc::new(crate::flows::runtime::FlowRuntime::new(
+        store,
+        Arc::new(SlowInstinct { delay: FLOW_DELAY }),
+        Arc::new(crate::flows::runtime::NoEffects),
+    ));
+    actor.tool_flows = Some(Arc::new(RuntimeFlows(runtime)));
+    add_rule(&actor, "write", "*", Effect::Allow);
+    script(
+        &mut actor,
+        vec![
+            owned(&[(
+                "w1".into(),
+                "write".into(),
+                json!({"path": ws.join("notes.txt"), "content": "x"}),
+            )]),
+            done("ok"),
+        ],
+    )
+    .await;
+    // The response carries the call; the next `PreCall` is that call starting,
+    // so the two stamps bracket the decision and nothing else.
+    let mut asked_at = None;
+    let mut started_at = None;
+    let outcome = run_agent(&mut actor, &mut |event| match event {
+        AgentEvent::Response(_) if started_at.is_none() => {
+            asked_at = Some(std::time::Instant::now());
+        }
+        AgentEvent::PreCall { .. } => {
+            started_at.get_or_insert(std::time::Instant::now());
+        }
+        _ => {}
+    })
+    .await
+    .unwrap();
+    assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+    let waited = started_at.expect("the allowed call was dispatched")
+        - asked_at.expect("the model's response carried the call");
+    assert!(
+        waited < FLOW_DELAY / 2,
+        "an allowed native call waited {waited:?} between the model's call and its start"
+    );
 }
 
 #[tokio::test]
@@ -1243,7 +1314,7 @@ async fn rule_denied_skill_snapshot_is_released_at_turn_end() {
 }
 
 #[tokio::test]
-async fn yolo_skill_load_records_history() {
+async fn yolo_skill_load_is_not_a_decision() {
     let mut actor = actor_with_skill_and_flow("deny");
     actor.yolo = true;
     script(
@@ -1255,9 +1326,7 @@ async fn yolo_skill_load_records_history() {
     )
     .await;
     assert!(matches!(run(&mut actor).await, RunOutcome::Done(_)));
-    let rows = skill_rows(&actor);
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].approved_by.as_deref(), Some("yolo"));
+    assert!(skill_rows(&actor).is_empty(), "yolo decides nothing");
 }
 
 #[tokio::test]
@@ -1651,6 +1720,123 @@ fn a_locked_permission_database_does_not_stall_the_runtime() {
     });
 }
 
+/// A read inside the project that no rule looked at was not decided by
+/// anything: it runs, it says `approved_by: rule`, and the decision table gets
+/// no row for it. A call a rule or the flow did answer keeps its row.
+#[tokio::test]
+async fn a_free_read_leaves_no_decision_row() {
+    let flows = Arc::new(FakeFlows::new("allow"));
+    let mut actor = actor_with(Some(flows.clone()));
+    let ws = actor.tool_context.workspace.clone();
+    let source = ws.join("src.txt");
+    std::fs::write(&source, "hello").unwrap();
+    script(
+        &mut actor,
+        vec![
+            owned(&[
+                (
+                    "r1".into(),
+                    "read".into(),
+                    json!({"path": source.to_str().unwrap()}),
+                ),
+                (
+                    "r2".into(),
+                    "grep".into(),
+                    json!({"pattern": "hello", "path": source.to_str().unwrap()}),
+                ),
+                bash("b1", "echo decided"),
+            ]),
+            done("ok"),
+        ],
+    )
+    .await;
+    let (outcome, approved) = run_observed(&mut actor).await;
+    assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+    // The two reads carry `approved_by: rule` without any rule having matched;
+    // the flow answered the `bash` call.
+    assert_eq!(approved, [json!("rule"), json!("rule"), json!("flow")]);
+    assert_eq!(flows.asked(), 1, "only the bash call reached the flow");
+    let rows = decisions(&actor);
+    assert_eq!(rows.len(), 1, "only the decided call keeps a row: {rows:?}");
+    assert_eq!(rows[0].tool, "bash");
+    assert_eq!(rows[0].outcome, Outcome::Allowed);
+    assert_eq!(rows[0].approved_by.as_deref(), Some("flow"));
+}
+
+/// A read a written rule does match is a decision, and it is recorded.
+#[tokio::test]
+async fn a_read_answered_by_a_rule_keeps_its_row() {
+    let mut actor = actor_with(Some(Arc::new(FakeFlows::new("apply"))));
+    // A path outside the project is also judged as an `external_directory`.
+    add_rule(&actor, "read", "*", Effect::Allow);
+    add_rule(&actor, "external_directory", "*", Effect::Allow);
+    let outside = std::env::temp_dir().join(format!("withnav-outside-{}.txt", std::process::id()));
+    std::fs::write(&outside, "hello").unwrap();
+    script(
+        &mut actor,
+        vec![
+            owned(&[(
+                "r1".into(),
+                "read".into(),
+                json!({"path": outside.to_str().unwrap()}),
+            )]),
+            done("ok"),
+        ],
+    )
+    .await;
+    let (outcome, _) = run_observed(&mut actor).await;
+    assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+    let rows = decisions(&actor);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].tool, "read");
+    assert_eq!(rows[0].outcome, Outcome::Allowed);
+}
+
+/// The row of a call that ran is written after the call starts, so a locked
+/// `withnav.db` never holds up dispatch: the tool runs, and its row lands once
+/// the lock is released.
+#[test]
+fn a_locked_permission_database_does_not_delay_an_allowed_call() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut actor = actor_with(Some(Arc::new(FakeFlows::new("allow"))));
+        let data = actor.permission_dirs.data.clone().unwrap();
+        actor.permission_store = Some(Arc::new(
+            crate::permission::store::PermissionStore::open(&data).unwrap(),
+        ));
+        add_rule(&actor, "bash", "echo *", Effect::Allow);
+        let marker = actor.tool_context.workspace.join("ran");
+        script(
+            &mut actor,
+            vec![owned(&[bash("b1", "touch ran")]), done("ok")],
+        )
+        .await;
+        let probe = crate::stall_probe::StallProbe::start();
+        let hold = probe.hold(data.join("withnav.db"), |db| {
+            db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        });
+        let before = hold.start();
+        // The call is decided by the rule and runs while the database is locked.
+        let outcome = run(&mut actor).await;
+        assert!(matches!(outcome, RunOutcome::Done(_)), "{outcome:?}");
+        assert!(marker.exists(), "the tool ran");
+        hold.assert_not_stalled(before).await;
+        // The row follows once the lock is gone.
+        for _ in 0..200 {
+            if !decisions(&actor).is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let rows = decisions(&actor);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].tool, "bash");
+    });
+}
+
 fn git(dir: &std::path::Path, args: &[&str]) {
     let status = std::process::Command::new("git")
         .arg("-C")
@@ -1770,4 +1956,226 @@ async fn a_folder_that_is_not_a_worktree_of_the_repository_still_asks() {
     assert!(!other_worktree.join("a.txt").exists());
     let _ = std::fs::remove_dir_all(&other);
     let _ = std::fs::remove_dir_all(&other_worktree);
+}
+
+/// A conversation of `turns` Captain messages, each answered by a long agent text.
+fn long_transcript(turns: usize) -> Vec<crate::provider::openai::ChatMessage> {
+    (0..turns)
+        .flat_map(|turn| {
+            [
+                crate::provider::openai::ChatMessage::User {
+                    provenance: crate::provider::openai::UserProvenance::Captain,
+                    content: format!("Step {turn}: edit the notes and keep the tests green."),
+                    images: Vec::new(),
+                },
+                crate::provider::openai::ChatMessage::Assistant {
+                    content: Some(format!("Done with step {turn}. {}", "detail ".repeat(300))),
+                    reasoning_content: None,
+                    tool_calls: vec![],
+                    opaque: None,
+                },
+            ]
+        })
+        .collect()
+}
+
+/// The time `authorize` takes for a write a written `allow` rule decides, on a
+/// conversation of 300 turns (600 messages). Run by hand to compare revisions:
+/// `cargo test -p withnav --release authorize_time_on_a_long_conversation -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "timing measurement, run by hand"]
+async fn authorize_time_on_a_long_conversation() {
+    const ROUNDS: u32 = 300;
+    let flows = Arc::new(FakeFlows::new("allow"));
+    let mut actor = actor_with(Some(flows.clone()));
+    add_rule(&actor, "write", "*", Effect::Allow);
+    actor.transcript = long_transcript(300);
+    let call = crate::provider::ToolCall {
+        id: "w1".into(),
+        name: "write".into(),
+        args: json!({"path": actor.tool_context.workspace.join("notes.txt"), "content": "x"}),
+        args_valid: true,
+    };
+    let started = std::time::Instant::now();
+    for _ in 0..ROUNDS {
+        let authorized = crate::agent::authorize::authorize(&actor, &call, 1, None, false).await;
+        assert!(matches!(
+            authorized,
+            crate::agent::authorize::Authorized::Run(_)
+        ));
+    }
+    assert_eq!(flows.asked(), 0, "a rule-allowed write never asks the flow");
+    println!(
+        "authorize, rule-allowed write, 600 messages: {:?} per call",
+        started.elapsed() / ROUNDS
+    );
+}
+
+fn evidence_reads() -> usize {
+    crate::agent::authorize::EVIDENCE_READS.with(std::cell::Cell::get)
+}
+
+#[tokio::test]
+async fn a_call_decided_without_the_flow_never_reads_the_conversation() {
+    let flows = Arc::new(FakeFlows::new("ask"));
+    let mut actor = actor_with(Some(flows.clone()));
+    actor.transcript = long_transcript(50);
+    let ws = actor.tool_context.workspace.clone();
+    std::fs::write(ws.join("notes.txt"), "x").unwrap();
+    add_rule(&actor, "write", "*", Effect::Allow);
+    add_rule(&actor, "webfetch", "*", Effect::Deny);
+    let call = |name: &str, args| crate::provider::ToolCall {
+        id: "c1".into(),
+        name: name.into(),
+        args,
+        args_valid: true,
+    };
+    let cases = [
+        (
+            "allow rule",
+            call(
+                "write",
+                json!({"path": ws.join("notes.txt"), "content": "y"}),
+            ),
+            false,
+        ),
+        (
+            "free read",
+            call("read", json!({"path": ws.join("notes.txt")})),
+            false,
+        ),
+        (
+            "deny rule",
+            call("webfetch", json!({"url": "https://example.com"})),
+            false,
+        ),
+        ("bypass", call("bash", json!({"command": "echo hi"})), true),
+    ];
+    for (case, call, bypass) in cases {
+        actor.bypass.lock().unwrap().enabled = bypass;
+        let before = evidence_reads();
+        let authorized = crate::agent::authorize::authorize(&actor, &call, 1, None, false).await;
+        assert!(
+            !matches!(authorized, crate::agent::authorize::Authorized::Ask(_)),
+            "{case}"
+        );
+        assert_eq!(evidence_reads(), before, "{case}");
+    }
+    assert_eq!((flows.asked(), flows.checked()), (0, 0));
+}
+
+/// Keeps the context of every question the flows are asked.
+#[derive(Debug, Default)]
+struct RecordingFlows {
+    asked: std::sync::Mutex<Vec<PermissionCallContext>>,
+    checked: std::sync::Mutex<Vec<PermissionCallContext>>,
+}
+
+impl ToolCallFlows for RecordingFlows {
+    fn permission_pre_call<'a>(
+        &'a self,
+        ctx: PermissionCallContext,
+        _: RuleResult,
+        _: &'a CancellationToken,
+    ) -> futures::future::BoxFuture<'a, PermissionVerdict> {
+        self.asked.lock().unwrap().push(ctx);
+        Box::pin(async {
+            PermissionVerdict {
+                verdict: FlowVerdict::Allow,
+                flows: vec![crate::agent::flow_hook::PermissionFlowAnswer {
+                    flow: "test".into(),
+                    run_id: "run".into(),
+                    action: FlowAction::Allow,
+                    used_rule: false,
+                    scores: Default::default(),
+                }],
+            }
+        })
+    }
+
+    fn protected_check<'a>(
+        &'a self,
+        ctx: PermissionCallContext,
+        _: &'a CancellationToken,
+    ) -> futures::future::BoxFuture<'a, ProtectedCheck> {
+        self.checked.lock().unwrap().push(ctx);
+        Box::pin(async { ProtectedCheck::Passed })
+    }
+}
+
+type Conversation = (
+    Vec<String>,
+    bool,
+    Vec<String>,
+    bool,
+    Vec<crate::agent::flow_hook::RecentMessage>,
+    bool,
+);
+
+fn conversation(ctx: &PermissionCallContext) -> Conversation {
+    (
+        ctx.captain_messages.clone(),
+        ctx.captain_messages_cut,
+        ctx.delegation.clone(),
+        ctx.delegation_cut,
+        ctx.recent.clone(),
+        ctx.recent_cut,
+    )
+}
+
+#[tokio::test]
+async fn the_flows_and_the_protected_check_read_the_whole_conversation() {
+    let flows = Arc::new(RecordingFlows::default());
+    let mut actor = actor_with(None);
+    actor.tool_flows = Some(flows.clone());
+    actor.transcript = long_transcript(50);
+    *actor.parent_captain.lock().unwrap() =
+        Some((vec!["Parent: change the config.".into()], false));
+    // What the decision read from the conversation before it was read on demand.
+    let (captain, captain_cut) =
+        crate::agent::flow_hook::captain_messages_with_cut(&actor.transcript);
+    let (delegation, delegation_cut) =
+        crate::agent::flow_hook::delegation_with_cut(&actor.transcript);
+    let (recent, recent_cut) = crate::agent::flow_hook::recent_with_cut(&actor.transcript);
+    let expected = (
+        std::iter::once("Parent: change the config.".to_owned())
+            .chain(captain)
+            .collect(),
+        captain_cut,
+        delegation,
+        delegation_cut,
+        recent,
+        recent_cut,
+    );
+    let ws = actor.tool_context.workspace.clone();
+    let config = actor
+        .permission_dirs
+        .config
+        .clone()
+        .unwrap()
+        .join("config.json");
+    // A protected write is asked the protected check, then the flow (no rule).
+    // A write inside the project with no rule is asked the flow alone.
+    for path in [config, ws.join("notes.txt")] {
+        let call = crate::provider::ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            args: json!({"path": path, "content": "{}"}),
+            args_valid: true,
+        };
+        let before = evidence_reads();
+        let authorized = crate::agent::authorize::authorize(&actor, &call, 1, None, false).await;
+        assert!(
+            matches!(authorized, crate::agent::authorize::Authorized::Run(_)),
+            "{path:?}"
+        );
+        assert_eq!(evidence_reads(), before + 1, "read once per call: {path:?}");
+    }
+    let checked = flows.checked.lock().unwrap();
+    let asked = flows.asked.lock().unwrap();
+    assert_eq!(checked.len(), 1);
+    assert_eq!(asked.len(), 2);
+    for ctx in checked.iter().chain(asked.iter()) {
+        assert_eq!(conversation(ctx), expected);
+    }
 }

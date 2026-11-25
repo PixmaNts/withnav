@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use ulid::Ulid;
 
 use super::commands::{self, CommandOutcome, CommandSpec};
+use super::gate::LifecycleGuard;
 use super::service::{CLEAR_WORD, Service, SessionHandle, SessionId, VariantChoice, exact_variant};
 use crate::agent::selection::SwitchError;
 use crate::bus::event::{CommandResult, EventKind, SessionAgentChanged};
@@ -74,7 +75,7 @@ impl Service {
         name: &str,
         arguments: &str,
     ) -> Result<CommandOutcome, ServerError> {
-        let mut gate = Some(self.lifecycle_gate().await);
+        let mut gate = Some(self.lifecycle_gate(session_id).await?);
         let handle = self.routable_handle(session_id).await?;
         if handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
@@ -149,8 +150,12 @@ impl Service {
             .await
             .is_err()
         {
+            // The conversation `/new` created is its own tree: close it under
+            // that tree's gate, after letting go of this one (a task never
+            // holds two tree gates).
+            drop(gate.take());
             if let Some(id) = created
-                && let Err(err) = self.close_session_gated(id).await
+                && let Err(err) = self.close_session(id).await
             {
                 tracing::warn!(session_id = %id, error = %err, "closing the session of a failed /new");
             }
@@ -175,7 +180,7 @@ impl Service {
         spec: &'static CommandSpec,
         arguments: &str,
         operation_id: Ulid,
-        gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
+        gate: &mut Option<LifecycleGuard>,
     ) -> Result<Done, CommandFailure> {
         // A waiting permission request also reads as a waiting actor; `/stop`
         // goes through it and cancels the request.
@@ -273,7 +278,7 @@ impl Service {
         handle: &SessionHandle,
         arguments: &str,
         operation_id: Ulid,
-        gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
+        gate: &mut Option<LifecycleGuard>,
     ) -> Result<Done, CommandFailure> {
         if handle.status.selection.switching() {
             return Err(CommandFailure::Refused(SWITCHING_ERROR.to_string()));
@@ -310,7 +315,7 @@ impl Service {
         handle: &SessionHandle,
         arguments: &str,
         operation_id: Ulid,
-        gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
+        gate: &mut Option<LifecycleGuard>,
     ) -> Result<Done, CommandFailure> {
         let mut words = arguments.split_whitespace();
         let (Some(alias), None) = (words.next(), words.next()) else {
@@ -671,7 +676,7 @@ impl Service {
         command: &str,
         arguments: &str,
         operation_id: Ulid,
-        gate: &mut Option<tokio::sync::MutexGuard<'_, ()>>,
+        gate: &mut Option<LifecycleGuard>,
     ) -> Result<Done, CommandFailure> {
         if arguments.split_whitespace().count() != 1 {
             return Err(CommandFailure::Refused(format!("usage: /{command} <name>")));
@@ -769,13 +774,16 @@ mod tests {
             r#"{"agents":{"build":{"model":"mock/m"},"plan":{"model":"mock/m"}}}"#,
         )
         .unwrap();
-        Service::new(SessionConfig {
-            models_path: Some(dir.join("models.json")),
-            config_dir: dir.join("cfg"),
-            history_db: dir.join("history.db"),
-            data_dir: dir.join("data"),
-            rules_roots: Default::default(),
-        })
+        Service::new(
+            SessionConfig {
+                models_path: Some(dir.join("models.json")),
+                config_dir: dir.join("cfg"),
+                history_db: dir.join("history.db"),
+                data_dir: dir.join("data"),
+                rules_roots: Default::default(),
+            },
+            Arc::new(crate::provider::openai::ClientCache::new()),
+        )
         .expect("service")
     }
 
@@ -821,7 +829,6 @@ mod tests {
         assert!(out.ok, "{out:?}");
         stop.await.unwrap().expect("stop");
 
-        service.history().flush().await.unwrap();
         let kinds = stored_kinds(&service, id).await;
         let result = kinds.iter().position(|k| k == "command.result").unwrap();
         let end = kinds.iter().position(|k| k == "session.end").unwrap();
@@ -889,7 +896,15 @@ mod tests {
 
         let err = run.await.unwrap().unwrap_err();
         assert!(matches!(err, ServerError::SessionStopping), "{err:?}");
-        assert_eq!(service.session_count(), 1, "the created session is closed");
+        // The first session left the registry on its own when its sequencer
+        // closed, so nothing is left once the created one is closed too.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while service.session_count() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both sessions are closed: the created one and the one that ended");
     }
 
     /// A provider that answers its one request with `text`.
@@ -931,7 +946,6 @@ mod tests {
         use crate::provider::openai::ChatMessage;
         let id = service.create_session(dir, None, false).await.unwrap();
         service.close_session(id).await.unwrap();
-        service.history().flush().await.unwrap();
         let turns: Vec<ChatMessage> = (0..4)
             .flat_map(|n| {
                 [
@@ -949,8 +963,7 @@ mod tests {
                 ]
             })
             .collect();
-        service.history().save_transcript(id, turns);
-        service.history().flush().await.unwrap();
+        service.history().save_transcript(id, turns).await.unwrap();
         service
             .create_or_resume_session(dir, None, false, Some(id))
             .await
@@ -988,7 +1001,6 @@ mod tests {
         assert_eq!(out.data.as_ref().unwrap()["applies"], "now");
         stop.await.unwrap().expect("stop");
 
-        service.history().flush().await.unwrap();
         let kinds = stored_kinds(&service, id).await;
         let result = kinds.iter().position(|k| k == "command.result").unwrap();
         let compacted = kinds.iter().position(|k| k == "context.compacted").unwrap();

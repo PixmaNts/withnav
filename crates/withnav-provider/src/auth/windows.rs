@@ -63,7 +63,17 @@ fn current_sid() -> Result<String, ProviderError> {
     }
 }
 pub(super) fn protect(path: &Path) -> Result<(), ProviderError> {
-    let sddl = format!("D:P(A;;FA;;;{})(A;;FA;;;SY)(A;;FA;;;BA)", current_sid()?);
+    protect_with(
+        path,
+        &format!("D:P(A;;FA;;;{})(A;;FA;;;SY)(A;;FA;;;BA)", current_sid()?),
+    )
+}
+/// A protected DACL granting the current user alone: for a secret that only this user's own
+/// processes may read, such as the WithNav server's token.
+pub(super) fn protect_owner_only(path: &Path) -> Result<(), ProviderError> {
+    protect_with(path, &format!("D:P(A;;FA;;;{})", current_sid()?))
+}
+fn protect_with(path: &Path, sddl: &str) -> Result<(), ProviderError> {
     let text: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
     unsafe {
         let mut sd = ptr::null_mut();
@@ -101,10 +111,20 @@ pub(super) fn protect(path: &Path) -> Result<(), ProviderError> {
     Ok(())
 }
 pub(super) fn check_perms_or_fail(path: &Path) -> Result<(), ProviderError> {
-    let allowed = [current_sid()?, "S-1-5-18".into(), "S-1-5-32-544".into()];
+    check_allowed(
+        path,
+        &[current_sid()?, "S-1-5-18".into(), "S-1-5-32-544".into()],
+        "the current user, SYSTEM and Administrators",
+    )
+}
+/// Fails unless every ACE on `path` grants the current user alone.
+pub(super) fn check_owner_only(path: &Path) -> Result<(), ProviderError> {
+    check_allowed(path, &[current_sid()?], "the current user")
+}
+fn check_allowed(path: &Path, allowed: &[String], who: &str) -> Result<(), ProviderError> {
     let insecure = || {
         ProviderError::Auth(format!(
-            "auth.json at {} has insecure permissions; restrict its DACL to the current user, SYSTEM and Administrators",
+            "{} has insecure permissions; restrict its DACL to {who}",
             path.display()
         ))
     };

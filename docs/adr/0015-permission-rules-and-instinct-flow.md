@@ -29,7 +29,7 @@ expensive to maintain:
 | Threat | Stance |
 |---|---|
 | The model acting against the Captain | Not defended against. The model works for the Captain. |
-| An honest but destructive mistake (`rm -rf`, force push, overwrite outside the project) | Judged by Instinct; the Captain decides when Instinct objects. |
+| An honest but destructive mistake (`rm -rf`, force push, overwrite outside the project) | Judged by Instinct, except a non-`bash` call the Captain has already covered by an `allow` rule; the Captain decides when Instinct objects. |
 | A tool, MCP server, skill or flow the Captain installed doing what it is meant to do | The Captain's responsibility. Validated once, then trusted. |
 | **Prompt injection**: instructions hidden in a skill, a fetched page, an MCP result, a repository file | **The main threat.** Untrusted text never authorises anything (see "What counts as the Captain's request"). |
 | Local tricks: a fake `cargo` in `PATH`, symlink races, shell expansion games | Out of scope. They need an attacker who already controls the machine or the repository. WithNav is not a sandbox. |
@@ -40,8 +40,8 @@ expensive to maintain:
 
 1. **Yolo**: `"yolo": true` in `~/.config/withnav/config.json`. Nothing is checked: no rule, no
    flow, no Instinct request, no fixed floor, no role restriction beyond the tools an agent has.
-   Every call records `approved_by: yolo`, and every client shows that yolo is on. Only the
-   Captain's settings file turns it on; it is not a session toggle.
+   Every call carries `approved_by: yolo` on its tool events, and every client shows that yolo is on.
+   Only the Captain's settings file turns it on; it is not a session toggle.
 2. **Bypass**: the existing per-session switch (`/bypass on`, `nav run --yes`). `ask` rules and the
    flow are skipped and the call runs; a written `deny` rule and the fixed floor still apply.
 3. **Normal**: rules, then the permission flow, then the Captain.
@@ -65,9 +65,14 @@ Rules are rows in a new table of `~/.local/share/withnav/withnav.db`, not a list
   stricter effect (`deny`, then `ask`, then `allow`).
 - **No rule means `ask`.** WithNav ships with no default rule: on a new project the Captain
   answers often at first, and each "Always" makes the list of questions shorter.
-- **History is kept**: a rule is revoked, never deleted. A second table records every decision:
-  the call, the matching rule, the flow's verdict, the Captain's answer, the session. It measures
-  how many questions a day of work costs and shows which answers could become rules.
+- **History is kept**: a rule is revoked, never deleted. A second table records the decisions that
+  were made: the call, the matching rule, the flow's verdict, the Captain's answer, the session. It
+  measures how many questions a day of work costs and shows which answers could become rules. It is
+  not a log of every tool invocation: a call no rule, flow, floor, Captain or bypass looked at (a
+  read inside the project, a read-only listing) leaves no row, and neither does anything run under
+  yolo, where nothing is decided. The row of a call that did run is written asynchronously, off the
+  call path, so dispatch never waits on the database; a row can therefore be lost if the process
+  dies right after the call starts, which a decision history can afford.
 - **Managed with `nav permissions list | add | revoke | history`.** A web screen comes later.
 
 `grants.json`, `skill-grants.json` and `flows-trust.json` are replaced by tables of the same
@@ -99,17 +104,39 @@ spaces removed), and a line that cannot be parsed is checked as one opaque comma
 
 ### Decision order
 
-For each tool call:
+This section is the single authoritative statement of the order in which a tool call is decided —
+the one `src/permission/decide.rs` executes. The step comments in `decide_with`/`run`, the summary
+in `ARCHITECTURE.md` and the permissions page of the book describe the same order and point back
+here.
 
-1. **Yolo**: run.
-2. **Fixed floor** (below): handled as described there.
-3. **Reads inside the project** (`read`, `grep`, `glob` within readable roots): run. No rule, no
-   flow.
-4. **Rules**: a `deny` stops the call. Nothing later can change it, not the flow, not a skill.
-5. **Bypass**: run.
-6. **Permission flow** with the rule's result (`allow`, `ask`, or no rule). It answers `allow`,
-   `ask_captain` or `deny`.
-7. **Captain**: Once, Always or Reject.
+For each tool call, in this order:
+
+1. **Yolo**: run. Nothing is checked.
+2. **Written `deny` rule**: stop the call. It is checked before the floor, so a `deny` on a
+   credential path denies it; nothing later can change the verdict, not the floor, not the flow,
+   not a skill.
+3. **Fixed floor** (below): a credential, or a path that cannot be resolved the way execution
+   would resolve it, asks and nothing can allow it.
+4. **Protected check**: a write to WithNav's own `config.json`, database or global flows folder,
+   or a command that names them, runs only if the compiled-in protected check answers that the
+   Captain explicitly asked for it; otherwise it asks. Rules, bypass and a generic flow `allow`
+   never stand in for it.
+5. **Loop check**: from the third identical call in a row, the call asks, unless a doom-loop rule
+   allows or denies it, or the session is in bypass with a permission store.
+6. **Free read or temporary write**: a `read`, `grep` or `glob` inside the readable roots, or a
+   native `write`/`edit` inside a temporary directory, runs without the flow. Today the rules are
+   not read for a free read, so a written rule does not apply to it yet; a decision of 2026-11-10
+   will make written rules apply to reads inside the project as well, which will move this check
+   after the rules.
+7. **Bypass**: run (with a permission store; a written `deny`, the floor and the loop check above
+   still applied).
+8. **`allow` rule on a call other than `bash`**: run. The Captain wrote the rule, and a native file,
+   search, `fetch` or MCP call is not a shell line whose effect the rule cannot foresee; no Instinct
+   evaluation is made. Under `bash` the rule is a prefix only, so the line still goes to the flow.
+   A validated skill with no matching rule also runs here, recorded as `approved_by: validation`.
+9. **Permission flow, then the Captain**: the flow answers with the rule's result (`allow`, `ask`,
+   or no rule): `allow`, `ask_captain` or `deny`. Only `bash` reaches it under an `allow` rule.
+   When the flow does not decide, the Captain answers Once, Always or Reject.
 
 ### The permission flow
 
@@ -123,11 +150,14 @@ The built-in flow starts with three questions:
   - "Did the Captain, or the validated skill in use, ask for this action?" Yes ≥ 0.6: `allow`.
   - Otherwise, "Is it a read, or a recoverable change inside the project?" Yes ≥ 0.7: `allow`.
   - Otherwise: `ask_captain`.
-- Rule `allow`:
+- Rule `allow` on `bash`:
   - "Is this exact call destructive, irreversible, does it publish something, or touch
     credentials?" Yes ≥ 0.5: `ask_captain` (a `git push --force origin main` under a saved
     `git push *`).
   - Otherwise: `allow`.
+
+A non-`bash` call with an effective `allow` result never reaches these questions: the rule runs it
+(decision order, step 8).
 
 The thresholds are flow constants. The decision table is what tunes them.
 
@@ -241,8 +271,9 @@ Decisions taken while implementing this ADR that refine it:
 - **Protected writes.** A write to `config.json`, `withnav.db` or the global flows directory runs
   automatically only when the protected check compiled into the binary answers that the Captain
   asked for it, or explicitly accepted an agent proposal to do it. Otherwise the Captain is asked and can approve once. A flow on disk,
-  even a copy of the built-in one, can make that answer stricter but never grant it. The check is
-  asked once per call and its answer is passed to the flows.
+  even a copy of the built-in one, can make that answer stricter but never grant it — for a call
+  that still reaches the ordinary flows, which a non-`bash` call an `allow` rule covers does not.
+  The check is asked once per call and its answer is passed to the flows.
 - **General protected check for bash.** The floor no longer guesses whether a program that names a
   protected file writes it (the `sqlite3 -readonly` exception and the "`sqlite3` or opaque line
   naming `withnav.db`" fallback are gone). It keeps as protected writes only certain ones:
@@ -279,14 +310,25 @@ Decisions taken while implementing this ADR that refine it:
   Yolo remains unchecked.
 - **Skills.** Validation proves which content the Captain trusted; it does not override rules.
   Loading a validated skill is decided with action `skill` and the skill's name: a `deny` rule
-  refuses it. With no matching rule it gets an effective allow, but the permission flow still runs
-  and can ask or deny; `approved_by: validation` is recorded when that default applies. An `ask`
-  rule can also be allowed by the flow. A skill the Captain selects counts as the Captain's request.
+  refuses it. With no matching rule it gets an effective allow and runs without the permission
+  flow, recorded as `approved_by: validation`: the Captain's validation of that exact content is the
+  decision, so only a written `deny` or `ask` rule on the skill stands in its way. An `ask` rule can
+  also be allowed by the flow when the Captain's request covers it. A skill the Captain selects
+  counts as the Captain's request.
 - **Subagents.** A child's permission flow sees its parent's Captain messages, captured when the
   child is created and refreshed when the parent steers it. The delegated prompt and the steering
   text are supplied separately as `conversation.delegation`, with attachments removed and a 16 KiB
   whole-message budget. The ordinary permission flow may treat delegation as a request; the
   protected check never reads delegation.
+- **`allow` rules and the flow.** A call other than `bash` that an `allow` rule covers runs without
+  the permission flow, recorded as `approved_by: rule` (or `validation` for a validated skill no
+  rule covers). The Captain's rule is the answer to the same question the flow would put, and a
+  native file, search, `fetch` or MCP call does what its arguments name; asking Instinct again on
+  every call the Captain already allowed is a wait paid for nothing. `bash` is kept apart: a rule is
+  a command prefix, not the line, so a destructive command under it still meets the flow's danger
+  question. Every step above is untouched, so a written `deny` is still final, the fixed floor still
+  asks, a protected write still needs the compiled-in check, the doom-loop check still runs, and
+  bypass still records its own provenance.
 - **Temporary writes.** A native `write` or `edit` whose resolved file is inside the system
   temporary directory (`std::env::temp_dir()`, plus `/tmp` on Unix) or a scratch directory runs
   without the flow, recorded as `approved_by: rule`, next to free reads. The fixed floor, a written
@@ -317,10 +359,10 @@ Decisions taken while implementing this ADR that refine it:
   editing files inside the project, its scratch directories or the system temp directory, or
   building, testing, formatting or linting the project?" (≥ 0.7; the question also says that
   deleting, discarding uncommitted work, rewriting or pushing history, publishing or changing
-  anything elsewhere is not). Under an `allow` rule, a call judged dangerous now goes to the same
-  `requested` question: an explicitly requested `rm` runs under `bash rm *` as it would with no
-  rule, and an unrequested one asks. The thresholds were checked by replaying the Captain's test
-  session against the live model.
+  anything elsewhere is not). Under an `allow` rule on a `bash` call, a call judged dangerous now goes
+  to the same `requested` question: an explicitly requested `rm` runs under `bash rm *` as it would
+  with no rule, and an unrequested one asks. The thresholds were checked by replaying the Captain's
+  test session against the live model.
 - **Recent exchanges.** The permission flow and the protected check both receive
   `conversation.recent`: the last 4 messages between the Captain and the agent, in order, each
   labelled `captain` or `agent`, Captain text stripped of attachments like the Captain's messages,

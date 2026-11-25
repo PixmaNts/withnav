@@ -22,8 +22,8 @@ use tower_lsp_server::{Client, ClientSocket, LanguageServer, LspService, Server}
 use crate::navigator::NavigatorDeps;
 use crate::navigator::runtime::Runtime;
 use protocol::{
-    DiagnosticsParams, FeedbackParams, InlineCompletionParams, InlineCompletionResult,
-    IntentParams, ReflexShownParams,
+    ConversationParams, DiagnosticsParams, FeedbackParams, InlineCompletionParams,
+    InlineCompletionResult, IntentParams, ReflexShownParams,
 };
 use uri::uri_to_path;
 
@@ -31,11 +31,22 @@ pub struct NavigatorBackend {
     runtime: Arc<Runtime>,
 }
 
+impl Drop for NavigatorBackend {
+    fn drop(&mut self) {
+        self.runtime.detach();
+    }
+}
+
 impl NavigatorBackend {
     pub fn new(client: Client, deps: NavigatorDeps) -> Self {
         Self {
             runtime: Runtime::new(client, deps),
         }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn runtime(&self) -> &Arc<Runtime> {
+        &self.runtime
     }
 }
 
@@ -53,6 +64,7 @@ impl LanguageServer for NavigatorBackend {
             .filter_map(|f| uri_to_path(&f.uri))
             .collect();
         self.runtime.set_workspace(from_root, from_folders).await;
+        self.runtime.register_after_initialize().await;
         self.runtime.report_disabled_layers().await;
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -77,6 +89,7 @@ impl LanguageServer for NavigatorBackend {
     }
 
     async fn shutdown(&self) -> Result<()> {
+        self.runtime.detach();
         Ok(())
     }
 
@@ -149,6 +162,10 @@ impl NavigatorBackend {
     pub async fn reflex_shown(&self, params: ReflexShownParams) {
         self.runtime.on_reflex_shown(params).await;
     }
+
+    pub async fn conversation(&self, params: ConversationParams) {
+        self.runtime.on_conversation(params).await;
+    }
 }
 
 /// Builds the [`LspService`] for a navigator backend. Split from [`serve`] so
@@ -171,7 +188,49 @@ pub fn build_service(deps: NavigatorDeps) -> (LspService<NavigatorBackend>, Clie
             NavigatorBackend::inline_completion,
         )
         .custom_method("withnav/reflexShown", NavigatorBackend::reflex_shown)
+        .custom_method("withnav/conversation", NavigatorBackend::conversation)
         .finish()
+}
+
+struct ServeDetachGuard {
+    runtime: Arc<Runtime>,
+}
+
+impl Drop for ServeDetachGuard {
+    fn drop(&mut self) {
+        self.runtime.detach();
+    }
+}
+
+struct EofReader<R> {
+    inner: R,
+    runtime: Arc<Runtime>,
+    seen_eof: bool,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for EofReader<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let res = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if !self.seen_eof {
+            let finished = match &res {
+                std::task::Poll::Ready(Err(_)) => true,
+                std::task::Poll::Ready(Ok(())) => {
+                    buf.remaining() > 0 && buf.filled().len() == before
+                }
+                std::task::Poll::Pending => false,
+            };
+            if finished {
+                self.seen_eof = true;
+                self.runtime.detach();
+            }
+        }
+        res
+    }
 }
 
 /// Serves the navigator over the given in/out streams until the client exits.
@@ -182,5 +241,14 @@ where
     O: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (service, socket) = build_service(deps);
+    let runtime = Arc::clone(service.inner().runtime());
+    let _guard = ServeDetachGuard {
+        runtime: runtime.clone(),
+    };
+    let input = EofReader {
+        inner: input,
+        runtime,
+        seen_eof: false,
+    };
     Server::new(input, output, socket).serve(service).await;
 }

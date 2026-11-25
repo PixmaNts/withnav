@@ -7,6 +7,8 @@ export interface TabBackend extends ChatBackend {
   setServerInfo(info: ServerInfoParams): void;
 }
 
+export type ConversationBindingSender = (params: { sessionId: string; incarnation?: string; focus: boolean }) => void;
+
 /** What survives a reload of the window: the sessions open in tabs (an empty tab has no id) and the focused one. */
 export interface SavedTabs { sessions: (string | null)[]; active: number }
 export interface TabStore { load(): SavedTabs | undefined; save(value: SavedTabs): void }
@@ -24,6 +26,7 @@ interface Tab { id: string; backend: TabBackend; title: string; sessionId?: stri
 export class ChatHub implements ChatTabs {
   private readonly order: Tab[] = [];
   private activeId: string | undefined;
+  private boundSessionId: string | undefined;
   private nextId = 0;
   private endpoint: ServerInfoParams | undefined;
   private list: ConversationSummary[] = [];
@@ -39,6 +42,7 @@ export class ChatHub implements ChatTabs {
     private readonly lister: TabBackend,
     private readonly store?: TabStore,
     private readonly notifyError: (error: unknown) => void = () => undefined,
+    private readonly notifyBinding?: ConversationBindingSender,
   ) {
     this.listerOff = lister.subscribe(message => this.acceptList(message));
     const saved = store?.load();
@@ -46,6 +50,7 @@ export class ChatHub implements ChatTabs {
     if (!this.order.length) this.open();
     const index = saved?.active ?? 0;
     if (this.order[index]) this.activeId = this.order[index].id;
+    this.bindActive();
   }
 
   tabs(): TabInfo[] { return this.order.map(tab => ({ id: tab.id, title: tab.title, ...(tab.sessionId ? { sessionId: tab.sessionId } : {}) })); }
@@ -76,7 +81,10 @@ export class ChatHub implements ChatTabs {
     this.activeId = id;
     if (this.endpoint) backend.setServerInfo(this.endpoint);
     if (sessionId) void backend.openConversation(sessionId).catch(this.notifyError);
-    if (!restoring) this.changed();
+    if (!restoring) {
+      this.changed();
+      this.bindActive();
+    }
     return id;
   }
 
@@ -86,7 +94,16 @@ export class ChatHub implements ChatTabs {
     const [tab] = this.order.splice(index, 1);
     tab.off();
     tab.backend.dispose();
-    if (this.activeId === id) this.activeId = (this.order[index] ?? this.order[index - 1])?.id;
+    // Only the conversation this editor is bound to is unbound: a background tab was never
+    // bound, and an unfocus for it would cancel the active tab's bind still in progress.
+    if (tab.sessionId && this.boundSessionId === tab.sessionId) {
+      this.notifyBinding?.({ sessionId: tab.sessionId, focus: false });
+      this.boundSessionId = undefined;
+    }
+    if (this.activeId === id) {
+      this.activeId = (this.order[index] ?? this.order[index - 1])?.id;
+      this.bindActive();
+    }
     this.changed();
   }
 
@@ -94,6 +111,7 @@ export class ChatHub implements ChatTabs {
     if (this.activeId === id || !this.order.some(tab => tab.id === id)) return;
     this.activeId = id;
     this.changed();
+    this.bindActive();
   }
 
   /** Forwards an endpoint announcement to every backend; tabs that lost their server reopen their session. */
@@ -105,6 +123,24 @@ export class ChatHub implements ChatTabs {
       tab.backend.setServerInfo(info);
       if (restarted && tab.sessionId) void tab.backend.openConversation(tab.sessionId).catch(this.notifyError);
     }
+    this.bindActive();
+  }
+
+  private bindActive(): void {
+    const active = this.order.find(tab => tab.id === this.activeId);
+    const targetSessionId = active?.sessionId;
+    if (this.boundSessionId && this.boundSessionId !== targetSessionId) {
+      this.notifyBinding?.({ sessionId: this.boundSessionId, focus: false });
+      this.boundSessionId = undefined;
+    }
+    if (!targetSessionId) return;
+    const incarnation = active?.backend.currentIncarnation?.() ?? undefined;
+    this.notifyBinding?.({
+      sessionId: targetSessionId,
+      ...(incarnation ? { incarnation } : {}),
+      focus: true,
+    });
+    this.boundSessionId = targetSessionId;
   }
 
   settingsRequest(path: string, init?: RequestInit, signal?: AbortSignal): Promise<Response> {
@@ -130,6 +166,10 @@ export class ChatHub implements ChatTabs {
     this.disposed = true;
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.listerOff();
+    if (this.boundSessionId) {
+      this.notifyBinding?.({ sessionId: this.boundSessionId, focus: false });
+      this.boundSessionId = undefined;
+    }
     for (const tab of this.order.splice(0)) { tab.off(); tab.backend.dispose(); }
     this.lister.dispose();
     this.tabListeners.clear(); this.messageListeners.clear(); this.listListeners.clear();
@@ -145,6 +185,11 @@ export class ChatHub implements ChatTabs {
         tab.sessionId = sessionId;
         tab.title = title;
         this.changed();
+      }
+      // Also for a new, still empty conversation: the server must drop the binding of the
+      // conversation this tab showed before.
+      if (tab.id === this.activeId) {
+        this.bindActive();
       }
     }
     // A finished turn changes the list (message counts, ordering): refresh it, coalesced.

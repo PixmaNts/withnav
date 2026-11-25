@@ -32,7 +32,9 @@ use std::sync::Arc;
 
 pub use config::NavigatorConfig;
 pub use conversation::{
-    ConversationEvent, ConversationFeed, NAVIGATOR_ACTOR_ID, SessionPost, WakeOutcome,
+    BindingError, ConversationEvent, ConversationFeed, ConversationTarget, DigestSnapshot,
+    EditorId, EditorRegistration, EditorSelectionError, NAVIGATOR_ACTOR_ID, SelectedEditor,
+    SessionPost, WakeOutcome, WorkspaceFeedRegistry,
 };
 pub use intent::{IntentRecord, read_intent};
 pub use log::new_ulid_string;
@@ -73,6 +75,8 @@ pub struct NavigatorDeps {
     /// `wake_cognition` action posts through. `None` keeps wakes logged as
     /// `cognition_unavailable` (no active conversation to wake).
     pub conversation: Option<ConversationFeed>,
+    pub registry: Option<WorkspaceFeedRegistry>,
+    pub flow_host: Option<Arc<crate::flows::host::Host>>,
     /// The workspace root (upgraded from `rootUri` at initialize when the
     /// client sends one).
     pub workspace: Option<PathBuf>,
@@ -87,6 +91,13 @@ pub struct NavigatorDeps {
     /// Flow conversion failures, shown once after the editor initializes.
     pub startup_warnings: Vec<String>,
     pub log_path: PathBuf,
+    /// The primary workspace root's resolved models catalogue path.
+    pub primary_models_path: Option<PathBuf>,
+    /// The configuration directory for resolving fallback models catalogue.
+    pub config_dir: Option<PathBuf>,
+    /// The catalogue the owner was started with (`nav serve --models`); it applies to every
+    /// root, so secondary roots resolve to it too.
+    pub explicit_models_path: Option<PathBuf>,
 }
 
 impl NavigatorDeps {
@@ -100,13 +111,34 @@ impl NavigatorDeps {
             instinct_model: None,
             metacognition_model: None,
             conversation: None,
+            registry: None,
+            flow_host: None,
             workspace: None,
             user_dir: None,
             server_info: None,
             disabled_layers: Vec::new(),
             startup_warnings: Vec::new(),
             log_path: log_path.into(),
+            primary_models_path: None,
+            config_dir: None,
+            explicit_models_path: None,
         }
+    }
+
+    pub fn with_models_catalogue(
+        mut self,
+        primary_models_path: Option<PathBuf>,
+        config_dir: Option<PathBuf>,
+    ) -> Self {
+        self.primary_models_path = primary_models_path;
+        self.config_dir = config_dir;
+        self
+    }
+
+    /// Builder-style: the catalogue the owner was started with, shared by every root.
+    pub fn with_explicit_models(mut self, path: Option<PathBuf>) -> Self {
+        self.explicit_models_path = path;
+        self
     }
 
     /// Builder-style: attaches the reflex layer's model seam.
@@ -117,6 +149,16 @@ impl NavigatorDeps {
 
     pub fn with_flows(mut self, factory: Arc<FlowFactory>) -> Self {
         self.flows = Some(factory);
+        self
+    }
+
+    pub fn with_host(mut self, host: Arc<crate::flows::host::Host>) -> Self {
+        self.flow_host = Some(host);
+        self
+    }
+
+    pub fn with_registry(mut self, registry: WorkspaceFeedRegistry) -> Self {
+        self.registry = Some(registry);
         self
     }
 

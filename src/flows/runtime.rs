@@ -1,33 +1,18 @@
 //! Per-workspace evaluation; asynchronous effects never change an admitted event.
 use super::{catalogue::catalogue, store::FlowStore};
 pub use crate::agent::flow_hook::{
-    PermissionCallContext, PermissionFlowAnswer, PermissionVerdict, ProtectedCheck, RuleResult,
-    RunScores,
+    FlowAction, FlowVerdict, PermissionCallContext, PermissionFlowAnswer, PermissionVerdict,
+    ProtectedCheck, RuleResult, RunScores,
 };
 use instinct_flow::*;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
-
-impl From<VerdictLike> for crate::agent::flow_hook::FlowVerdict {
-    fn from(value: VerdictLike) -> Self {
-        match value {
-            VerdictLike::Allow => Self::Allow,
-            VerdictLike::Deny { note } => Self::Deny { note },
-            VerdictLike::AskCaptain { note, flow, run_id } => {
-                Self::AskCaptain { note, flow, run_id }
-            }
-        }
-    }
-}
 
 /// Keep complete Captain messages, newest last, including JSON framing in the budget.
 fn bounded_captain_messages(messages: Vec<String>) -> InputValue {
@@ -74,7 +59,7 @@ fn run_scores(outcome: &RunOutcome) -> RunScores {
 fn grants_protected(outcome: &RunOutcome, action: &ProposedAction) -> bool {
     matches!(outcome.result, RunResult::Success { .. })
         && action.node_id.as_deref() == Some("protected_allow")
-        && action.action == "allow"
+        && FlowAction::parse(&action.action) == Some(FlowAction::Allow)
         && action.params.get("protected_ok") == Some(&json!(true))
         && outcome
             .trace
@@ -89,14 +74,14 @@ fn resolve_permissions(
     protected: bool,
     protected_runs: &std::collections::BTreeSet<String>,
     host_passed: bool,
-) -> (VerdictLike, Vec<PermissionFlowAnswer>) {
+) -> (FlowVerdict, Vec<PermissionFlowAnswer>) {
     let rule_action = if rule == RuleResult::Allow {
-        "allow"
+        FlowAction::Allow
     } else {
-        "ask_captain"
+        FlowAction::AskCaptain
     };
     let mut answers = vec![];
-    let mut candidates = vec![];
+    let mut candidates: Vec<(FlowAction, String, String, String)> = vec![];
     let mut protected_ok = host_passed;
     for outcome in outcomes {
         let actions = match &outcome.result {
@@ -108,18 +93,43 @@ fn resolve_permissions(
         };
         let verdicts: Vec<_> = actions
             .iter()
-            .filter(|a| {
-                matches!(
-                    a.action.as_str(),
-                    "allow" | "ask_captain" | "deny" | "apply_rule"
-                )
-            })
+            .filter_map(|a| FlowAction::parse(&a.action).map(|action| (action, a)))
             .collect();
-        if verdicts.is_empty() {
+        // A run that proposed an action outside the declared verdict set fails
+        // safe: it can never widen the verdict to allow, so it asks the
+        // Captain. Effect actions (log, wake, …) are not verdicts and are
+        // ignored as before. Validated flow definitions reject unknown
+        // actions at load time, so this is defense in depth for a malformed
+        // runtime outcome.
+        let unrecognized = actions.iter().any(|a| {
+            FlowAction::parse(&a.action).is_none()
+                && !catalogue()
+                    .action(&a.action)
+                    .is_some_and(|spec| spec.kind == ActionKind::Effect)
+        });
+        if unrecognized {
+            let note = format!(
+                "Flow '{}' proposed an unrecognized action; the Captain decides.",
+                outcome.trace.flow_name
+            );
             answers.push(PermissionFlowAnswer {
                 flow: outcome.trace.flow_name.clone(),
                 run_id: outcome.trace.run_id.clone(),
-                action: rule_action.into(),
+                action: FlowAction::AskCaptain,
+                used_rule: false,
+                scores: run_scores(outcome).scores,
+            });
+            candidates.push((
+                FlowAction::AskCaptain,
+                note,
+                outcome.trace.flow_name.clone(),
+                outcome.trace.run_id.clone(),
+            ));
+        } else if verdicts.is_empty() {
+            answers.push(PermissionFlowAnswer {
+                flow: outcome.trace.flow_name.clone(),
+                run_id: outcome.trace.run_id.clone(),
+                action: rule_action,
                 used_rule: true,
                 scores: run_scores(outcome).scores,
             });
@@ -130,19 +140,15 @@ fn resolve_permissions(
                 outcome.trace.run_id.clone(),
             ));
         }
-        for action in verdicts {
+        for (parsed, action) in verdicts {
             protected_ok |=
                 protected_runs.contains(&outcome.trace.run_id) && grants_protected(outcome, action);
-            let used_rule = action.action == "apply_rule";
-            let resolved = if used_rule {
-                rule_action
-            } else {
-                action.action.as_str()
-            };
+            let used_rule = parsed == FlowAction::ApplyRule;
+            let resolved = if used_rule { rule_action } else { parsed };
             answers.push(PermissionFlowAnswer {
                 flow: outcome.trace.flow_name.clone(),
                 run_id: outcome.trace.run_id.clone(),
-                action: resolved.into(),
+                action: resolved,
                 used_rule,
                 scores: run_scores(outcome).scores,
             });
@@ -163,15 +169,13 @@ fn resolve_permissions(
         candidates.push((rule_action, String::new(), String::new(), String::new()));
     }
     if protected && !protected_ok {
-        candidates.push(("ask_captain", "Only the Captain can request changes to WithNav's configuration, permission rules or database.".into(), String::new(), String::new()));
+        candidates.push((FlowAction::AskCaptain, "Only the Captain can request changes to WithNav's configuration, permission rules or database.".into(), String::new(), String::new()));
     }
-    let priority = |action: &str| match action {
-        "deny" => 2,
-        "ask_captain" => 1,
-        _ => 0,
-    };
-    let strictest = candidates.iter().map(|c| priority(c.0)).max().unwrap_or(0);
-    candidates.retain(|c| priority(c.0) == strictest);
+    let strictest = candidates
+        .iter()
+        .map(|c| c.0)
+        .fold(FlowAction::Allow, FlowAction::strictest);
+    candidates.retain(|c| c.0 == strictest);
     candidates.sort_by(|a, b| a.2.cmp(&b.2));
     let note = candidates
         .iter()
@@ -179,14 +183,14 @@ fn resolve_permissions(
         .filter(|n| !n.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    let verdict = match candidates[0].0 {
-        "deny" => VerdictLike::Deny { note },
-        "ask_captain" => VerdictLike::AskCaptain {
+    let verdict = match strictest {
+        FlowAction::Deny => FlowVerdict::Deny { note },
+        FlowAction::AskCaptain => FlowVerdict::AskCaptain {
             note,
             flow: candidates[0].2.clone(),
             run_id: candidates[0].3.clone(),
         },
-        _ => VerdictLike::Allow,
+        FlowAction::Allow | FlowAction::ApplyRule => FlowVerdict::Allow,
     };
     (verdict, answers)
 }
@@ -235,6 +239,7 @@ mod tests {
     use super::*;
     use crate::agent::flow_hook::{FlowVerdict, ToolCallContext};
     use crate::flows::store::Location;
+    use std::sync::atomic::Ordering;
 
     /// A disabled global copy of the built-in permission flow shadows it, so a
     /// test sees only the flows it saves itself.
@@ -321,7 +326,7 @@ mod tests {
                     CancellationToken::new()
                 )
                 .await,
-            VerdictLike::Allow
+            FlowVerdict::Allow
         );
         for (rule, allowed) in [
             (RuleResult::Allow, true),
@@ -384,7 +389,7 @@ mod tests {
                     CancellationToken::new()
                 )
                 .await,
-            VerdictLike::AskCaptain { .. }
+            FlowVerdict::AskCaptain { .. }
         ));
         store
             .save(
@@ -955,6 +960,136 @@ mod tests {
         }
     }
 
+    /// Records the question ids of every request and answers each from its table (0 otherwise).
+    struct BatchClient(
+        BTreeMap<&'static str, f64>,
+        std::sync::Mutex<Vec<Vec<String>>>,
+    );
+    impl DecisionClient for BatchClient {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/batch".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            self.1
+                .lock()
+                .unwrap()
+                .push(request.questions.keys().cloned().collect());
+            Box::pin(async move {
+                Ok(instinct_flow::protocol::DecisionResponse {
+                    answers: request
+                        .questions
+                        .keys()
+                        .map(|id| {
+                            let noul = self.0.get(id.as_str()).copied().unwrap_or(0.0);
+                            (id.clone(), instinct_flow::protocol::Answer::Noul { noul })
+                        })
+                        .collect(),
+                    usage: None,
+                })
+            })
+        }
+    }
+
+    /// Each round trip to Instinct adds its latency to the permission decision, and the overall
+    /// flow deadline can cut a second or third one: the questions of one path are asked together.
+    #[tokio::test]
+    async fn the_builtin_flow_asks_the_questions_of_a_path_in_one_request() {
+        let ask_path = ["read_only", "recoverable", "requested"];
+        let allow_path = ["danger", "requested"];
+        for (rule, answers, batch, allowed) in [
+            (RuleResult::None, vec![], &ask_path[..], false),
+            (
+                RuleResult::Ask,
+                vec![("requested", 0.6)],
+                &ask_path[..],
+                true,
+            ),
+            (
+                RuleResult::None,
+                vec![("read_only", 0.6)],
+                &ask_path[..],
+                true,
+            ),
+            (
+                RuleResult::None,
+                vec![("recoverable", 0.7)],
+                &ask_path[..],
+                true,
+            ),
+            (
+                RuleResult::Ask,
+                vec![
+                    ("requested", 0.59),
+                    ("read_only", 0.59),
+                    ("recoverable", 0.69),
+                ],
+                &ask_path[..],
+                false,
+            ),
+            // A danger answer is not read without an allow rule.
+            (
+                RuleResult::None,
+                vec![("danger", 1.0)],
+                &ask_path[..],
+                false,
+            ),
+            (RuleResult::Allow, vec![], &allow_path[..], true),
+            (
+                RuleResult::Allow,
+                vec![("danger", 0.49)],
+                &allow_path[..],
+                true,
+            ),
+            (
+                RuleResult::Allow,
+                vec![("danger", 0.5)],
+                &allow_path[..],
+                false,
+            ),
+            (
+                RuleResult::Allow,
+                vec![("danger", 0.5), ("requested", 0.6)],
+                &allow_path[..],
+                true,
+            ),
+        ] {
+            let client = Arc::new(BatchClient(
+                answers.into_iter().collect(),
+                Default::default(),
+            ));
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+            let runtime = FlowRuntime::new(store, client.clone(), Arc::new(NoEffects));
+            let result = runtime
+                .permission_pre_call(
+                    permission_call(dir.path().into(), false),
+                    rule,
+                    CancellationToken::new(),
+                )
+                .await;
+            assert_eq!(
+                matches!(result.verdict, FlowVerdict::Allow),
+                allowed,
+                "{rule:?} {:?}",
+                result.verdict
+            );
+            let requests = client.1.lock().unwrap().clone();
+            assert_eq!(requests, vec![batch.to_vec()], "{rule:?}");
+        }
+    }
+
     /// Records the state of every question it is asked and answers `answer`.
     struct StateClient(std::sync::Mutex<Vec<(String, String)>>, f64);
     impl DecisionClient for StateClient {
@@ -1153,7 +1288,7 @@ mod tests {
                 CancellationToken::new(),
             )
             .await;
-        assert_eq!(verdict, VerdictLike::Allow);
+        assert_eq!(verdict, FlowVerdict::Allow);
         assert_eq!(handles.len(), 1);
         let outcome = handles.into_iter().next().unwrap().await.unwrap();
         let RunResult::Failure {
@@ -1176,6 +1311,161 @@ mod tests {
         assert_eq!(failure.kind, FailureKind::Limit);
         assert_eq!(failure.message, message);
     }
+    /// One synthetic run outcome proposing `actions`, as a flow run would.
+    fn synthetic_outcome(flow: &str, actions: Vec<ProposedAction>) -> RunOutcome {
+        RunOutcome {
+            result: RunResult::Success { actions },
+            trace: RunRecord {
+                version: 1,
+                run_id: format!("run-{flow}"),
+                flow_name: flow.into(),
+                definition_digest: String::new(),
+                mode: "test".into(),
+                started_at: String::new(),
+                duration_ms: 0,
+                budget_ms: 100,
+                event: Event {
+                    trigger: "tool.pre_call".into(),
+                    payload: json!({}),
+                },
+                redacted_event_paths: vec![],
+                identity: ClientIdentity {
+                    model: "fake/test".into(),
+                    variant: None,
+                },
+                inputs: BTreeMap::new(),
+                nodes: vec![],
+                batches: vec![],
+                status: "success".into(),
+                failure: None,
+                actions: vec![],
+                fallback_actions: vec![],
+                usage: None,
+                cost_usd: None,
+                application: Default::default(),
+            },
+            provider_outage: false,
+        }
+    }
+
+    fn proposed(action: &str, note: &str) -> ProposedAction {
+        ProposedAction {
+            node_id: None,
+            action: action.into(),
+            params: BTreeMap::from([("note".into(), json!(note))]),
+        }
+    }
+
+    #[test]
+    fn flow_action_round_trips_and_stays_closed() {
+        // The wire spelling is the serialized spelling, and the parse covers
+        // exactly the declared verdict actions: anything else is `None`, so
+        // aggregation fails safe instead of allowing.
+        for action in [
+            FlowAction::Allow,
+            FlowAction::AskCaptain,
+            FlowAction::Deny,
+            FlowAction::ApplyRule,
+        ] {
+            assert_eq!(FlowAction::parse(action.as_str()), Some(action));
+            assert_eq!(
+                serde_json::to_value(action).unwrap(),
+                json!(action.as_str())
+            );
+        }
+        assert_eq!(FlowAction::parse("no_objection"), None);
+        assert_eq!(FlowAction::parse("ask_driver"), None);
+        assert_eq!(FlowAction::parse(""), None);
+        // Strictest wins: deny, then ask_captain, then allow.
+        assert_eq!(
+            FlowAction::Allow.strictest(FlowAction::AskCaptain),
+            FlowAction::AskCaptain
+        );
+        assert_eq!(
+            FlowAction::AskCaptain.strictest(FlowAction::Deny),
+            FlowAction::Deny
+        );
+        assert_eq!(
+            FlowAction::Deny.strictest(FlowAction::Allow),
+            FlowAction::Deny
+        );
+    }
+
+    #[test]
+    fn an_unrecognized_flow_action_fails_safe_to_ask_captain() {
+        let outcomes = vec![
+            synthetic_outcome("typo", vec![proposed("alow", "meant allow")]),
+            synthetic_outcome("good", vec![proposed("allow", "")]),
+        ];
+        let (verdict, answers) = resolve_permissions(
+            &outcomes,
+            RuleResult::None,
+            false,
+            &std::collections::BTreeSet::new(),
+            false,
+        );
+        assert!(
+            matches!(verdict, FlowVerdict::AskCaptain { .. }),
+            "an unrecognized action must never allow: {verdict:?}"
+        );
+        let FlowVerdict::AskCaptain { note, .. } = &verdict else {
+            unreachable!()
+        };
+        assert!(note.contains("unrecognized action"), "{note}");
+        assert!(
+            answers
+                .iter()
+                .any(|a| a.flow == "typo" && a.action == FlowAction::AskCaptain && !a.used_rule)
+        );
+    }
+
+    #[test]
+    fn apply_rule_resolves_to_the_rule_and_deny_still_wins() {
+        let outcomes = vec![
+            synthetic_outcome("b", vec![proposed("apply_rule", "")]),
+            synthetic_outcome("a", vec![proposed("deny", "no")]),
+        ];
+        let (verdict, answers) = resolve_permissions(
+            &outcomes,
+            RuleResult::Allow,
+            false,
+            &std::collections::BTreeSet::new(),
+            false,
+        );
+        assert!(matches!(verdict, FlowVerdict::Deny { .. }));
+        assert_eq!(
+            answers
+                .iter()
+                .find(|a| a.flow == "b")
+                .map(|a| (a.action, a.used_rule)),
+            Some((FlowAction::Allow, true))
+        );
+        // No flow verdict at all: the rule applies.
+        let (verdict, _) = resolve_permissions(
+            &[],
+            RuleResult::Ask,
+            false,
+            &std::collections::BTreeSet::new(),
+            false,
+        );
+        assert!(matches!(verdict, FlowVerdict::AskCaptain { .. }));
+    }
+
+    #[test]
+    fn permission_flow_answer_serializes_the_wire_spelling() {
+        let answer = PermissionFlowAnswer {
+            flow: "f".into(),
+            run_id: "r".into(),
+            action: FlowAction::AskCaptain,
+            used_rule: false,
+            scores: Default::default(),
+        };
+        assert_eq!(
+            serde_json::to_value(&answer).unwrap()["action"],
+            json!("ask_captain")
+        );
+    }
+
     struct Fake;
     impl DecisionClient for Fake {
         fn capabilities(&self) -> Capabilities {
@@ -1259,11 +1549,15 @@ mod tests {
         store.validate_test_documents();
         store.reload().unwrap();
         let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
-        let runtime = FlowRuntime::new(
+        let mut runtime = FlowRuntime::new(
             store,
             Arc::new(Recovering(std::sync::atomic::AtomicUsize::new(0))),
             effects.clone(),
         );
+        // This test pins the notice and clear cycle, so it must be able to reach
+        // a successful call: a zero cooldown leaves every call dialling. The
+        // window itself is exercised by the outage tests below.
+        runtime.outage = Arc::new(Outage::new(Duration::ZERO));
         let ctx = ToolCallContextLike {
             call_id: "x".into(),
             tool: "read".into(),
@@ -1280,6 +1574,400 @@ mod tests {
             }
         }
         assert_eq!(effects.0.load(Ordering::SeqCst), 2);
+    }
+    /// A blocking flow with one Instinct node, using the `tool.pre_call` trigger's
+    /// default fallback, so a failed decision applies the rule.
+    const DECISION_TOML: &str = "[flow]\nversion=1\nname='decision'\non='tool.pre_call'\nblocking=true\nbudget_ms=100\nstart=['a']\n[[node]]\nid='a'\ntype='noul'\ninstructions='test'\nthreshold=0.5\n[node.inputs]\nx='session.agent'\n";
+    /// A store whose only enabled flow asks Instinct, so a call either dials the
+    /// client or does not.
+    fn decision_only_runtime(
+        dir: &std::path::Path,
+        client: Arc<dyn DecisionClient>,
+        effects: Arc<dyn FlowEffects>,
+    ) -> FlowRuntime {
+        let store = Arc::new(FlowStore::new(dir.into(), dir.join("config")));
+        without_builtin(&store);
+        store
+            .save(
+                "decision",
+                Location::Global,
+                None,
+                super::super::store::Content::Toml {
+                    toml: DECISION_TOML.into(),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        store.validate_test_documents();
+        store.reload().unwrap();
+        FlowRuntime::new(store, client, effects)
+    }
+    /// Counts every dial and fails with a provider error, like an endpoint that
+    /// is unreachable and answers nothing. A non-zero `delay` stalls like a dead
+    /// transport first, so a test can measure the wait it costs.
+    struct Unreachable {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        delay: Duration,
+    }
+    impl DecisionClient for Unreachable {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/unreachable".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            _: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                if !self.delay.is_zero() {
+                    tokio::time::sleep(self.delay).await;
+                }
+                Err(DecisionError::ProviderError)
+            })
+        }
+    }
+    /// Answers one call and fails every other, so a probe's outcome is scripted.
+    struct Scripted {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        answer_at: usize,
+    }
+    impl DecisionClient for Scripted {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/scripted".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            Box::pin(async move {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if call == self.answer_at {
+                    Ok(instinct_flow::protocol::DecisionResponse {
+                        answers: request
+                            .questions
+                            .keys()
+                            .map(|id| {
+                                (
+                                    id.clone(),
+                                    instinct_flow::protocol::Answer::Noul { noul: 1.0 },
+                                )
+                            })
+                            .collect(),
+                        usage: None,
+                    })
+                } else {
+                    Err(DecisionError::ProviderError)
+                }
+            })
+        }
+    }
+    /// Move the outage window into the past, as waiting out the cooldown does.
+    fn expire_outage(runtime: &FlowRuntime) {
+        let mut state = runtime
+            .outage
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        state.until = Some(Instant::now() - Duration::from_millis(1));
+    }
+    #[tokio::test]
+    async fn outage_short_circuits_later_tool_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Unreachable {
+                calls: calls.clone(),
+                delay: Duration::from_millis(50),
+            }),
+            effects.clone(),
+        );
+        let call = || permission_call(dir.path().into(), false);
+        let first = Instant::now();
+        let verdict = runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await
+            .verdict;
+        let first_wait = first.elapsed();
+        assert!(matches!(verdict, FlowVerdict::AskCaptain { .. }));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(effects.0.load(Ordering::SeqCst), 1);
+        assert!(
+            first_wait >= Duration::from_millis(50),
+            "the first call waits for the endpoint: {first_wait:?}"
+        );
+        let rest = Instant::now();
+        for _ in 0..4 {
+            let verdict = runtime
+                .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+                .await
+                .verdict;
+            assert!(matches!(verdict, FlowVerdict::AskCaptain { .. }));
+        }
+        let remaining = rest.elapsed();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a remembered outage must not dial Instinct again"
+        );
+        assert_eq!(
+            effects.0.load(Ordering::SeqCst),
+            1,
+            "the notice is sent once per outage"
+        );
+        assert!(
+            remaining < first_wait / 2,
+            "four calls during the outage waited {remaining:?}; the first alone waited {first_wait:?}"
+        );
+    }
+    #[tokio::test]
+    async fn a_suppressed_call_does_not_push_the_window_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Unreachable {
+                calls: calls.clone(),
+                delay: Duration::ZERO,
+            }),
+            effects.clone(),
+        );
+        let call = || permission_call(dir.path().into(), false);
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        let deadline = runtime
+            .outage
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .until;
+        assert!(deadline.is_some(), "the failure opened the window");
+        for _ in 0..3 {
+            runtime
+                .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+                .await;
+        }
+        assert_eq!(
+            runtime
+                .outage
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .until,
+            deadline,
+            "a call that dialled nothing is not evidence about the endpoint, so the \
+             window keeps the deadline the real failure set"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // The window a real failure opened still governs the probe, so a turn
+        // that keeps calling never hides a recovered endpoint forever.
+        expire_outage(&runtime);
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+    #[tokio::test]
+    async fn outage_cooldown_expiry_probes_and_an_answer_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Scripted {
+                calls: calls.clone(),
+                answer_at: 1,
+            }),
+            effects.clone(),
+        );
+        let call = || permission_call(dir.path().into(), false);
+        for _ in 0..2 {
+            runtime
+                .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+                .await;
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the window hides the endpoint from the call behind it"
+        );
+        assert_eq!(effects.0.load(Ordering::SeqCst), 1);
+        expire_outage(&runtime);
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "an expired window dials once to test the endpoint"
+        );
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "the answer cleared the outage, so the next call dials"
+        );
+        assert_eq!(
+            effects.0.load(Ordering::SeqCst),
+            2,
+            "a cleared outage reports the next failure as a new one"
+        );
+    }
+    #[tokio::test]
+    async fn outage_a_failed_probe_renews_without_a_second_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Unreachable {
+                calls: calls.clone(),
+                delay: Duration::ZERO,
+            }),
+            effects.clone(),
+        );
+        let call = || permission_call(dir.path().into(), false);
+        for _ in 0..2 {
+            runtime
+                .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+                .await;
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(effects.0.load(Ordering::SeqCst), 1);
+        expire_outage(&runtime);
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "the failed probe dialled once"
+        );
+        assert_eq!(
+            effects.0.load(Ordering::SeqCst),
+            1,
+            "a renewed window does not repeat the notice"
+        );
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "the probe renewed the window"
+        );
+    }
+    #[tokio::test]
+    async fn a_local_deny_flow_still_decides_during_an_outage() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let effects = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        without_builtin(&store);
+        for (name, toml) in [
+            ("decision", DECISION_TOML.to_string()),
+            ("deny", text("deny", "deny")),
+        ] {
+            store
+                .save(
+                    name,
+                    Location::Global,
+                    None,
+                    super::super::store::Content::Toml {
+                        toml,
+                        templates: BTreeMap::new(),
+                    },
+                )
+                .unwrap();
+        }
+        store.validate_test_documents();
+        store.reload().unwrap();
+        let runtime = FlowRuntime::new(
+            store,
+            Arc::new(Unreachable {
+                calls: calls.clone(),
+                delay: Duration::ZERO,
+            }),
+            effects,
+        );
+        let call = || permission_call(dir.path().into(), false);
+        runtime
+            .permission_pre_call(call(), RuleResult::Allow, CancellationToken::new())
+            .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let verdict = runtime
+            .permission_pre_call(call(), RuleResult::Allow, CancellationToken::new())
+            .await
+            .verdict;
+        assert!(
+            matches!(verdict, FlowVerdict::Deny { .. }),
+            "a local deny flow still decides while Instinct is hidden"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "nothing is dialled during the outage"
+        );
+    }
+    #[tokio::test]
+    async fn an_outage_records_from_the_protected_check_and_reports_to_the_caller() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // The session asks the protected check through the workspace runtime,
+        // whose own sink is a no-op: the notice has to reach the hook's sink.
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Unreachable {
+                calls: calls.clone(),
+                delay: Duration::ZERO,
+            }),
+            Arc::new(NoEffects),
+        );
+        let hook = Arc::new(Notices(std::sync::atomic::AtomicUsize::new(0)));
+        let call = || permission_call(dir.path().into(), true);
+        let first = runtime
+            .permission_protected_check_with_effects(call(), CancellationToken::new(), hook.clone())
+            .await;
+        assert_eq!(first, ProtectedCheck::Unavailable);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the first check dials");
+        assert_eq!(
+            hook.0.load(Ordering::SeqCst),
+            1,
+            "the outage is reported through the sink the caller passed"
+        );
+        let second = runtime
+            .permission_protected_check_with_effects(call(), CancellationToken::new(), hook.clone())
+            .await;
+        assert_eq!(second, ProtectedCheck::Unavailable);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the check that asks first records the outage for the checks behind it"
+        );
+        assert_eq!(hook.0.load(Ordering::SeqCst), 1);
     }
     #[tokio::test]
     async fn asynchronous_effect_does_not_delay_blocking_verdict() {
@@ -1323,7 +2011,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(matches!(verdict, VerdictLike::Deny { .. }));
+        assert!(matches!(verdict, FlowVerdict::Deny { .. }));
         assert_eq!(handles.len(), 1);
         handles[0].abort();
     }
@@ -1465,7 +2153,7 @@ mod tests {
             runtime
                 .tool_pre_call(ctx.clone(), CancellationToken::new())
                 .await,
-            VerdictLike::Deny { .. }
+            FlowVerdict::Deny { .. }
         ));
         for name in ["ask", "deny"] {
             let d = store.get(name, Location::Global).unwrap();
@@ -1490,23 +2178,11 @@ mod tests {
                 runtime
                     .tool_pre_call(ctx.clone(), CancellationToken::new())
                     .await,
-                VerdictLike::AskCaptain { .. }
+                FlowVerdict::AskCaptain { .. }
             ));
         }
         assert_eq!(effects.0.load(Ordering::SeqCst), 1);
     }
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VerdictLike {
-    Allow,
-    Deny {
-        note: String,
-    },
-    AskCaptain {
-        note: String,
-        flow: String,
-        run_id: String,
-    },
 }
 pub trait FlowEffects: Send + Sync {
     fn effect<'a>(
@@ -1536,12 +2212,13 @@ pub struct ContextSnapshot {
     pub workspace: Option<PathBuf>,
 }
 impl ContextSnapshot {
-    pub fn session(&mut self, session: &crate::session::SessionSummary) {
+    pub fn session(&mut self, session: &crate::session::SessionMetadata) {
+        let agent = session.agent.as_deref().unwrap_or_default();
         for (name, value) in [
-            ("session.id", &session.session_id),
-            ("session.agent", &session.agent),
-            ("session.model", &session.model),
-            ("session.workspace", &session.workspace),
+            ("session.id", session.session_id.as_str()),
+            ("session.agent", agent),
+            ("session.model", session.model.as_str()),
+            ("session.workspace", session.workspace.as_str()),
         ] {
             self.values.insert(
                 name.into(),
@@ -1665,11 +2342,116 @@ impl InputSource for ContextSnapshot {
         })
     }
 }
+/// How long an Instinct outage is remembered before an evaluation may dial the
+/// endpoint again. Long enough to cover a turn's worth of tool calls, short
+/// enough that a transient hiccup does not hide Instinct for long.
+const OUTAGE_COOLDOWN: Duration = Duration::from_secs(30);
+
+#[derive(Default)]
+struct OutageState {
+    /// End of the window in which no evaluation dials Instinct.
+    until: Option<Instant>,
+    /// Whether this episode was already reported, so the notice is sent once per
+    /// outage and not once per call: a second failure inside the window renews it
+    /// silently, and only an answer from Instinct reports the next one.
+    notified: bool,
+}
+
+/// Keeps an Instinct outage between evaluations, so a turn whose first decision
+/// fails does not pay the flow deadline (2 500 ms in `agent::authorize`) once
+/// per later tool call: measured 2026-11-13 behind a stalling fake at the
+/// decision-client seam (50 ms, then a provider error), the four calls after the
+/// first waited 209.8 ms before this and 1.98 ms with the window.
+struct Outage {
+    state: std::sync::Mutex<OutageState>,
+    cooldown: Duration,
+}
+
+impl Outage {
+    fn new(cooldown: Duration) -> Self {
+        Self {
+            state: std::sync::Mutex::new(OutageState::default()),
+            cooldown,
+        }
+    }
+
+    /// Whether an evaluation must not dial Instinct right now.
+    fn active(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.until.is_some_and(|until| Instant::now() < until)
+    }
+
+    /// Keep the memory of the endpoint from one evaluation's outcome. An answer
+    /// proves Instinct spoke, so it clears the outage; a timeout or a provider
+    /// outage opens the window again, reporting it only once per episode.
+    ///
+    /// `suppressed` marks a run whose decisions never left the process: its
+    /// failure is this window's own echo, not new evidence, so it neither renews
+    /// the window (that would push the probe back on every call and hide a
+    /// recovered endpoint for as long as the turn keeps calling) nor reports it.
+    fn observe(&self, outcome: &RunOutcome, effects: &dyn FlowEffects, suppressed: bool) {
+        if suppressed {
+            return;
+        }
+        if outcome.trace.nodes.iter().any(|n| n.answer.is_some()) {
+            self.clear();
+        }
+        if (matches!(
+            outcome.result,
+            RunResult::Failure {
+                kind: FailureKind::Timeout,
+                ..
+            }
+        ) || outcome.provider_outage)
+            && self.record()
+        {
+            effects.instinct_unavailable();
+        }
+    }
+
+    /// Open the window for the configured cooldown; true when this is the first
+    /// failure reported in the episode.
+    fn record(&self) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let first = !state.notified;
+        state.notified = true;
+        state.until = Some(Instant::now() + self.cooldown);
+        first
+    }
+
+    fn clear(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        *state = OutageState::default();
+    }
+}
+
+/// Fails a decision at once while an outage window is open. The flow still runs
+/// its local nodes and applies the failure policy it configured, so the verdict
+/// is the one a dead endpoint produces, but nothing is dialled and no later call
+/// waits for the flow deadline again.
+struct OutageClient(Arc<dyn DecisionClient>);
+impl DecisionClient for OutageClient {
+    fn capabilities(&self) -> Capabilities {
+        self.0.capabilities()
+    }
+    fn identity(&self) -> ClientIdentity {
+        self.0.identity()
+    }
+    fn decide<'a>(
+        &'a self,
+        _: instinct_flow::protocol::DecisionRequest<'a>,
+        _: &'a CancellationToken,
+        _: Instant,
+    ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>> {
+        Box::pin(async { Err(DecisionError::ProviderError) })
+    }
+}
+
 pub struct FlowRuntime {
     pub store: Arc<FlowStore>,
     client: Arc<dyn DecisionClient>,
     effects: std::sync::RwLock<Arc<dyn FlowEffects>>,
-    outage: Arc<AtomicBool>,
+    outage: Arc<Outage>,
     records: Option<Arc<super::records::Records>>,
 }
 impl FlowRuntime {
@@ -1695,6 +2477,19 @@ impl FlowRuntime {
     }
     pub fn client(&self) -> Arc<dyn DecisionClient> {
         self.client.clone()
+    }
+
+    /// The client an evaluation may dial, with whether it is the suppressed one:
+    /// while an Instinct outage is remembered, that client fails at once, so a
+    /// later call does not pay the flow deadline for an endpoint already known
+    /// unreachable. Its outcome must not be read as fresh evidence about the
+    /// endpoint (see [`Outage::observe`]).
+    fn dialable_client(&self) -> (Arc<dyn DecisionClient>, bool) {
+        if self.outage.active() {
+            (Arc::new(OutageClient(self.client.clone())), true)
+        } else {
+            (self.client.clone(), false)
+        }
     }
 
     /// Bind the hook to a session, not the instinct provider's identity.
@@ -1732,7 +2527,7 @@ impl FlowRuntime {
             store,
             client,
             effects: std::sync::RwLock::new(effects),
-            outage: Arc::new(AtomicBool::new(false)),
+            outage: Arc::new(Outage::new(OUTAGE_COOLDOWN)),
             records: None,
         }
     }
@@ -1745,7 +2540,7 @@ impl FlowRuntime {
         event: Event,
         context: ContextSnapshot,
         cancel: CancellationToken,
-    ) -> (VerdictLike, Vec<tokio::task::JoinHandle<RunOutcome>>) {
+    ) -> (FlowVerdict, Vec<tokio::task::JoinHandle<RunOutcome>>) {
         let effects = self
             .effects
             .read()
@@ -1760,7 +2555,7 @@ impl FlowRuntime {
         context: ContextSnapshot,
         cancel: CancellationToken,
         effects: Arc<dyn FlowEffects>,
-    ) -> (VerdictLike, Vec<tokio::task::JoinHandle<RunOutcome>>) {
+    ) -> (FlowVerdict, Vec<tokio::task::JoinHandle<RunOutcome>>) {
         let (verdict, handles, _) = self
             .evaluate_inner(event, context, cancel, effects, None, None)
             .await;
@@ -1776,7 +2571,7 @@ impl FlowRuntime {
         permission: Option<(RuleResult, bool)>,
         host_check: Option<ProtectedCheck>,
     ) -> (
-        VerdictLike,
+        FlowVerdict,
         Vec<tokio::task::JoinHandle<RunOutcome>>,
         Vec<PermissionFlowAnswer>,
     ) {
@@ -1814,7 +2609,7 @@ impl FlowRuntime {
                 run_id: ulid::Ulid::generate().to_string(),
             };
             let flow = flow.clone();
-            let client = self.client.clone();
+            let (client, suppressed) = self.dialable_client();
             let event = event.clone();
             let context = context.clone();
             let cancel = cancel.clone();
@@ -1863,20 +2658,7 @@ impl FlowRuntime {
                         outcome.trace.fallback_actions = fallback_actions.clone();
                     }
                 }
-                if outcome.trace.nodes.iter().any(|n| n.answer.is_some()) {
-                    outage.store(false, Ordering::SeqCst);
-                }
-                if (matches!(
-                    outcome.result,
-                    RunResult::Failure {
-                        kind: FailureKind::Timeout,
-                        ..
-                    }
-                ) || outcome.provider_outage)
-                    && !outage.swap(true, Ordering::SeqCst)
-                {
-                    effects.instinct_unavailable();
-                }
+                outage.observe(&outcome, effects.as_ref(), suppressed);
                 if !is_blocking && !cancel.is_cancelled() {
                     let actions = match &outcome.result {
                         RunResult::Success { actions } => actions,
@@ -1951,15 +2733,17 @@ impl FlowRuntime {
             if !evidence_cut {
                 protected_runs.insert(options.run_id.clone());
             }
+            let (client, suppressed) = self.dialable_client();
             let outcome = run(
                 &compiled,
                 &event,
                 &context,
-                self.client.as_ref(),
+                client.as_ref(),
                 options,
                 &cancel,
             )
             .await;
+            self.outage.observe(&outcome, effects.as_ref(), suppressed);
             outcomes.push(outcome);
         }
         outcomes.sort_by(|a, b| a.trace.flow_name.cmp(&b.trace.flow_name));
@@ -1976,18 +2760,25 @@ impl FlowRuntime {
             })
             .unwrap_or((None, vec![]));
         let verdict = permission_verdict.unwrap_or_else(|| {
-            match combine_verdicts(&outcomes, &catalogue()).ok().flatten() {
-                None => VerdictLike::Allow,
-                Some(action) => {
+            // `combine_verdicts` reports unknown actions as an error; a failed
+            // or empty aggregation must not default to allow, so it asks.
+            let combined = combine_verdicts(&outcomes, &catalogue());
+            let parsed = combined
+                .as_ref()
+                .ok()
+                .and_then(|action| action.as_ref())
+                .and_then(|action| FlowAction::parse(&action.action));
+            match (combined, parsed) {
+                (Ok(Some(action)), Some(flow_action)) => {
                     let note = action
                         .params
                         .get("note")
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_owned();
-                    match action.action.as_str() {
-                        "deny" => VerdictLike::Deny { note },
-                        "ask_captain" => {
+                    match flow_action {
+                        FlowAction::Deny => FlowVerdict::Deny { note },
+                        FlowAction::AskCaptain => {
                             let origin = outcomes.iter().find(|o| {
                                 o.trace
                                     .actions
@@ -1995,7 +2786,7 @@ impl FlowRuntime {
                                     .chain(&o.trace.fallback_actions)
                                     .any(|a| a.action == "ask_captain")
                             });
-                            VerdictLike::AskCaptain {
+                            FlowVerdict::AskCaptain {
                                 note,
                                 flow: origin
                                     .map(|o| o.trace.flow_name.clone())
@@ -2003,9 +2794,20 @@ impl FlowRuntime {
                                 run_id: origin.map(|o| o.trace.run_id.clone()).unwrap_or_default(),
                             }
                         }
-                        _ => VerdictLike::Allow,
+                        FlowAction::Allow | FlowAction::ApplyRule => FlowVerdict::Allow,
                     }
                 }
+                (Ok(None), _) => FlowVerdict::Allow,
+                (Err(_), _) => FlowVerdict::AskCaptain {
+                    note: "A flow proposed an unrecognized action; the Captain decides.".into(),
+                    flow: String::new(),
+                    run_id: String::new(),
+                },
+                (Ok(Some(_)), None) => FlowVerdict::AskCaptain {
+                    note: "A flow proposed an unrecognized action; the Captain decides.".into(),
+                    flow: String::new(),
+                    run_id: String::new(),
+                },
             }
         });
         for outcome in &mut outcomes {
@@ -2150,10 +2952,7 @@ impl FlowRuntime {
                 host_check,
             )
             .await;
-        PermissionVerdict {
-            verdict: verdict.into(),
-            flows,
-        }
+        PermissionVerdict { verdict, flows }
     }
     /// Run only the compiled-in protected check, the one authority for a write
     /// to WithNav's own configuration or database. Flows on disk, their names
@@ -2168,6 +2967,20 @@ impl FlowRuntime {
             .await
     }
 
+    /// [`Self::permission_protected_check`] reporting through the caller's
+    /// effects sink: a session's outage notice belongs to the session, not to
+    /// the workspace runtime's sink.
+    pub async fn permission_protected_check_with_effects(
+        &self,
+        ctx: PermissionCallContext,
+        cancel: CancellationToken,
+        effects: Arc<dyn FlowEffects>,
+    ) -> ProtectedCheck {
+        self.protected_check_with_effects(compiled_protected_check(), ctx, cancel, effects)
+            .await
+            .0
+    }
+
     /// [`Self::permission_protected_check`] with the run that answered it.
     pub async fn permission_protected_check_traced(
         &self,
@@ -2175,6 +2988,18 @@ impl FlowRuntime {
         cancel: CancellationToken,
     ) -> (ProtectedCheck, Option<RunScores>) {
         self.protected_check_traced_with(compiled_protected_check(), ctx, cancel)
+            .await
+    }
+
+    /// [`Self::permission_protected_check_traced`] reporting through the
+    /// caller's effects sink.
+    pub async fn permission_protected_check_traced_with_effects(
+        &self,
+        ctx: PermissionCallContext,
+        cancel: CancellationToken,
+        effects: Arc<dyn FlowEffects>,
+    ) -> (ProtectedCheck, Option<RunScores>) {
+        self.protected_check_with_effects(compiled_protected_check(), ctx, cancel, effects)
             .await
     }
 
@@ -2195,6 +3020,18 @@ impl FlowRuntime {
         ctx: PermissionCallContext,
         cancel: CancellationToken,
     ) -> (ProtectedCheck, Option<RunScores>) {
+        let effects = self.effects();
+        self.protected_check_with_effects(compiled, ctx, cancel, effects)
+            .await
+    }
+
+    async fn protected_check_with_effects(
+        &self,
+        compiled: Option<CompiledDefinition>,
+        ctx: PermissionCallContext,
+        cancel: CancellationToken,
+        effects: Arc<dyn FlowEffects>,
+    ) -> (ProtectedCheck, Option<RunScores>) {
         let Some(compiled) = compiled else {
             return (ProtectedCheck::Unavailable, None);
         };
@@ -2214,11 +3051,12 @@ impl FlowRuntime {
         {
             return (ProtectedCheck::Unavailable, None);
         }
+        let (client, suppressed) = self.dialable_client();
         let outcome = run(
             &compiled,
             &event,
             &context,
-            self.client.as_ref(),
+            client.as_ref(),
             RunOptions {
                 deadline: Instant::now() + Duration::from_millis(2000),
                 run_id: ulid::Ulid::generate().to_string(),
@@ -2226,6 +3064,7 @@ impl FlowRuntime {
             &cancel,
         )
         .await;
+        self.outage.observe(&outcome, effects.as_ref(), suppressed);
         let result = match &outcome.result {
             RunResult::Success { actions }
                 if actions.iter().any(|a| grants_protected(&outcome, a)) =>
@@ -2252,7 +3091,7 @@ impl FlowRuntime {
         &self,
         ctx: ToolCallContextLike,
         cancel: CancellationToken,
-    ) -> VerdictLike {
+    ) -> FlowVerdict {
         let mut context = ContextSnapshot {
             workspace: Some(ctx.workspace.clone()),
             ..Default::default()
@@ -2339,17 +3178,22 @@ impl crate::agent::flow_hook::ToolCallFlows for SessionToolFlows {
         ctx: PermissionCallContext,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, ProtectedCheck> {
-        Box::pin(self.runtime.permission_protected_check(ctx, cancel.clone()))
+        Box::pin(self.runtime.permission_protected_check_with_effects(
+            ctx,
+            cancel.clone(),
+            self.effects.clone(),
+        ))
     }
     fn protected_check_traced<'a>(
         &'a self,
         ctx: PermissionCallContext,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, (ProtectedCheck, Option<RunScores>)> {
-        Box::pin(
-            self.runtime
-                .permission_protected_check_traced(ctx, cancel.clone()),
-        )
+        Box::pin(self.runtime.permission_protected_check_traced_with_effects(
+            ctx,
+            cancel.clone(),
+            self.effects.clone(),
+        ))
     }
 }
 

@@ -51,9 +51,11 @@ fn state(tmp: &std::path::Path, provider: &CapturingProvider) -> AppState {
 async fn seeded(state: &AppState, ws: &std::path::Path, turns: usize) -> ulid::Ulid {
     let id = state.create_session(ws, None, false).await.expect("create");
     state.close_session(id).await.expect("close");
-    state.history().flush().await.expect("flush");
-    state.history().save_transcript(id, history(turns));
-    state.history().flush().await.expect("flush");
+    state
+        .history()
+        .save_transcript(id, history(turns))
+        .await
+        .unwrap();
     state
         .create_or_resume_session(ws, None, false, Some(id))
         .await
@@ -77,7 +79,6 @@ async fn estimate(state: &AppState, id: ulid::Ulid) -> u64 {
 }
 
 async fn stored(state: &AppState, id: ulid::Ulid, kind: &str) -> Vec<EventEnvelope> {
-    state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
         withnav::bus::ResumeOutcome::Replay(events) => {
@@ -173,7 +174,6 @@ async fn a_resume_after_a_compaction_keeps_the_effective_prompt() {
     let after = estimate(&state, id).await;
 
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
     state
         .create_or_resume_session(&ws, None, false, Some(id))
         .await
@@ -271,7 +271,6 @@ async fn nothing_to_compact_and_a_tail_that_cannot_fit_are_clear_errors() {
     // Turns so long that the last two cannot fit the budget with a summary.
     let big = state.create_session(&ws, None, false).await.unwrap();
     state.close_session(big).await.unwrap();
-    state.history().flush().await.unwrap();
     let huge: Vec<ChatMessage> = (0..4)
         .flat_map(|n| {
             [
@@ -289,8 +288,7 @@ async fn nothing_to_compact_and_a_tail_that_cannot_fit_are_clear_errors() {
             ]
         })
         .collect();
-    state.history().save_transcript(big, huge);
-    state.history().flush().await.unwrap();
+    state.history().save_transcript(big, huge).await.unwrap();
     state
         .create_or_resume_session(&ws, None, false, Some(big))
         .await
@@ -337,7 +335,6 @@ async fn a_summary_in_flight_never_holds_up_a_stop_or_another_session() {
         .await
         .expect("the command is released");
     release.notify_one();
-    state.history().flush().await.unwrap();
     let (_, _, checkpoint) = state.history().load_for_resume(id).await.unwrap().unwrap();
     assert!(checkpoint.is_none(), "a stopped session commits nothing");
     assert!(stored(&state, id, "context.compacted").await.is_empty());
@@ -370,7 +367,6 @@ async fn a_deferred_compact_is_cancelled_with_its_own_id_when_the_session_stops(
     assert_eq!(accepted.data.as_ref().unwrap()["accepted"], true);
 
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
 
     let results = compact_results(&state, id).await;
     assert_eq!(results.len(), 2, "{results:?}");

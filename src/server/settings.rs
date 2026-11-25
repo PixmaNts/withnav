@@ -208,7 +208,8 @@ pub(super) async fn test(
         return failure(StatusCode::NOT_FOUND, format!("unknown gateway {name}"));
     };
     let key = match auth::resolve_key(&state.config.config_dir,&name,provider.api_key_env.as_deref()) { Ok(k) => k, Err(crate::error::ProviderError::MissingApiKey) => String::new(), Err(_) => return Json(json!({"ok":false,"status":null,"latency_ms":0,"model_count":null,"error":"cannot read credentials"})).into_response() };
-    Json(crate::provider::catalog::test_gateway(&name, provider, key).await).into_response()
+    Json(crate::provider::catalog::test_gateway(&name, provider, key, &state.client_cache).await)
+        .into_response()
 }
 
 fn tiers(state: &AppState, catalog: &ModelsConfig, value: &Value) -> Vec<String> {

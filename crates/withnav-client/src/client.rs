@@ -119,19 +119,28 @@ impl Client {
         )
         .await
     }
-    pub fn new(base_url: impl Into<String>, token: Option<String>) -> Self {
+    pub fn try_new(
+        base_url: impl Into<String>,
+        token: Option<String>,
+    ) -> Result<Self, reqwest::Error> {
         let base_url = base_url.into().trim_end_matches('/').to_string();
-        let mut builder = reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT);
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none());
         if is_loopback(&base_url) {
             builder = builder.no_proxy();
         }
-        let http = builder.build().unwrap_or_default();
-        Self {
+        let http = builder.build()?;
+        Ok(Self {
             base_url,
             token,
             http,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
-        }
+        })
+    }
+
+    pub fn new(base_url: impl Into<String>, token: Option<String>) -> Self {
+        Self::try_new(base_url, token).expect("failed to construct HTTP client")
     }
 
     /// Overrides the time a short request may take before it fails.

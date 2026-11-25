@@ -519,7 +519,6 @@ async fn a_wake_never_cancels_an_open_permission_request() {
     send_text(&state, id, "write the note").await;
     let requested = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            state.history().flush().await.expect("flush");
             let sub = subscribe(&state, id).await;
             if let withnav::bus::ResumeOutcome::Replay(all) = sub.replay
                 && let Some(found) = all.into_iter().find(|e| e.kind == "permission.requested")
@@ -541,7 +540,6 @@ async fn a_wake_never_cancels_an_open_permission_request() {
         "the feed posts it; the runtime holds it behind the request"
     );
     tokio::time::sleep(Duration::from_millis(200)).await;
-    state.history().flush().await.expect("flush");
     let sub = subscribe(&state, id).await;
     let withnav::bus::ResumeOutcome::Replay(all) = sub.replay else {
         panic!("expected a replay");
@@ -581,7 +579,6 @@ async fn wait_for_completed_message_turn(
     let mut seen = Vec::new();
     let result = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            state.history().flush().await.expect("flush");
             let sub = subscribe(state, id).await;
             if let withnav::bus::ResumeOutcome::Replay(events) = sub.replay {
                 seen = events;

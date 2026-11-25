@@ -1,16 +1,19 @@
-//! CLI adapter for the browser client: starts the private session server with the embedded web
-//! app, prints the address (the token travels in the URL fragment, which a browser never sends to
-//! a server), opens it, and runs until Ctrl-C.
+//! CLI adapter for the browser client: connects to the background session server, mints a pairing
+//! code for the requested launch workspaces, prints and opens the WebUI address with the single-use
+//! pairing code, and exits immediately.
 
 use std::path::PathBuf;
 
 use anyhow::Context as _;
 
-use super::embedded::{EmbeddedServer, resolve_workspace};
+use super::connect;
+use super::embedded::resolve_workspace;
 use super::{EXIT_DONE, WebArgs};
-use crate::server::WebConfig;
 
 pub async fn run(args: WebArgs) -> anyhow::Result<i32> {
+    if args.port != 0 {
+        anyhow::bail!("the shared WithNav server picks its port; use `nav serve --port` to set it");
+    }
     let requested = if args.workspaces.is_empty() {
         vec![std::env::current_dir().context("cannot read the current directory")?]
     } else {
@@ -23,25 +26,47 @@ pub async fn run(args: WebArgs) -> anyhow::Result<i32> {
             workspaces.push(resolved);
         }
     }
-    let server = EmbeddedServer::start(
-        args.models.as_deref(),
-        &workspaces,
-        Some(WebConfig {
-            launch_workspaces: workspaces.clone(),
-        }),
-        args.port,
-    )
-    .await?;
-    let address = format!("{}/#token={}", server.url, server.token);
+    let wanted = connect::Wanted::from_env(args.models.as_deref())?;
+    let owner = connect::ensure_server(&wanted).await?;
+    let pair_url = format!("{}/v1/pair", owner.url);
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("cannot build HTTP client")?;
+    let response = client
+        .post(&pair_url)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", owner.token),
+        )
+        .json(&serde_json::json!({ "workspaces": workspaces }))
+        .send()
+        .await
+        .context("cannot contact WithNav server to mint pairing code")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("failed to mint pairing code (HTTP {status}): {body}");
+    }
+
+    let pair_resp: serde_json::Value = response
+        .json()
+        .await
+        .context("cannot parse pairing response")?;
+    let code = pair_resp
+        .get("code")
+        .and_then(|c| c.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing pairing code in response"))?;
+
+    let address = format!("{}/#pair={code}", owner.url);
     println!("WithNav WebUI: {address}");
     if !args.no_open
         && let Err(error) = open_browser(&address)
     {
         println!("Could not open a browser ({error}); open the address above yourself.");
     }
-    let waited = tokio::signal::ctrl_c().await;
-    server.stop().await;
-    waited.context("cannot listen for Ctrl-C")?;
     Ok(EXIT_DONE)
 }
 

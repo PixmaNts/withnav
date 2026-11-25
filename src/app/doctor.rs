@@ -365,6 +365,7 @@ pub async fn inspect(
                     "agent",
                     "tui",
                     "compaction",
+                    "goal_watch",
                     "yolo",
                     "mcp",
                 ],
@@ -374,6 +375,7 @@ pub async fn inspect(
             ("subagents", &["max_concurrent", "watchdog_interval_secs"]),
             ("agent", &["watchdog_interval_secs"]),
             ("compaction", &["writer", "chunk_tokens"]),
+            ("goal_watch", &["notes"]),
             ("tui", &["theme", "favorite_models"]),
         ],
     );

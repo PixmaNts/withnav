@@ -75,6 +75,16 @@ impl Settings {
                 .ok_or_else(|| "compaction.chunk_tokens must be a positive integer".into()),
         }
     }
+    /// `goal_watch.notes`: whether a goal check's findings reach the agent as a passive note.
+    /// Off when absent: the check stays a shadow log until its findings have proved useful.
+    pub fn goal_watch_notes(&self) -> Result<bool, String> {
+        match self.get_dotted("goal_watch.notes") {
+            None => Ok(false),
+            Some(value) => value
+                .as_bool()
+                .ok_or_else(|| "goal_watch.notes must be a boolean".into()),
+        }
+    }
     /// Reads a dotted settings key without dropping unknown sibling keys.
     pub fn get_dotted(&self, key: &str) -> Option<&Value> {
         let mut parts = key.split('.');
@@ -603,6 +613,25 @@ mod tests {
         for bad in [serde_json::json!("true"), serde_json::json!(1), Value::Null] {
             settings.root.insert("yolo".into(), bad);
             assert_eq!(settings.yolo(), Err("yolo must be a boolean".into()));
+        }
+    }
+
+    #[test]
+    fn goal_watch_notes_defaults_to_off_and_must_be_a_boolean() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.goal_watch_notes(), Ok(false));
+        for on in [true, false] {
+            settings.set_dotted("goal_watch.notes", serde_json::json!(on));
+            assert_eq!(settings.goal_watch_notes(), Ok(on));
+        }
+        for bad in [serde_json::json!("true"), serde_json::json!(1), Value::Null] {
+            settings
+                .root
+                .insert("goal_watch".into(), serde_json::json!({ "notes": bad }));
+            assert_eq!(
+                settings.goal_watch_notes(),
+                Err("goal_watch.notes must be a boolean".into())
+            );
         }
     }
 

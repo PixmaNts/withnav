@@ -15,6 +15,7 @@ pub fn keys(agents: &Agents) -> Vec<String> {
         "layers.metacognition",
         "compaction.writer",
         "compaction.chunk_tokens",
+        "goal_watch.notes",
         "default_agent",
         "permissions.scratch_dirs",
         "subagents.max_concurrent",
@@ -33,6 +34,7 @@ pub fn default_value(key: &str) -> Value {
     match key {
         "compaction.writer" => json!("metacognition"),
         "compaction.chunk_tokens" => json!(64_000),
+        "goal_watch.notes" => json!(false),
         "default_agent" => json!("build"),
         "permissions.scratch_dirs" => json!(
             Settings::default()
@@ -59,6 +61,7 @@ pub fn label(key: &str) -> &str {
     match key {
         "compaction.writer" => "Compaction summary writer",
         "compaction.chunk_tokens" => "Compaction chunk tokens",
+        "goal_watch.notes" => "Goal watch notes",
         "layers.reflex" => "Reflex · Completion",
         "layers.instinct" => "Instinct · Triage",
         "layers.metacognition" => "Metacognition · Beacon",
@@ -74,6 +77,9 @@ pub fn description(key: &str) -> &'static str {
         }
         "compaction.chunk_tokens" => {
             "Rolling summary chunk size, capped at half the writer input budget."
+        }
+        "goal_watch.notes" => {
+            "Passes goal check findings to Nav as a note at its next turn; off by default."
         }
         "layers.reflex" => "Completes as you type from code around the cursor.",
         "layers.instinct" => "Triages events and judges the permission flow's questions.",
@@ -138,6 +144,9 @@ pub fn validate(
             return Err(invalid());
         }
         "compaction.chunk_tokens" if !value.as_u64().is_some_and(|n| n > 0) => {
+            return Err(invalid());
+        }
+        "goal_watch.notes" if !value.is_boolean() => {
             return Err(invalid());
         }
         "permissions.scratch_dirs"

@@ -308,3 +308,88 @@ async fn gateway_probe_never_returns_credentials_or_upstream_body() {
     assert_eq!(body["status"], 401);
     assert!(!body.to_string().contains("test-key"));
 }
+
+// Given a settings file that does not name `goal_watch.notes`
+// When a client reads the settings, then sets the key to true, to a non-boolean, and removes it
+// Then the field is listed off by default, `true` is stored, a non-boolean is refused without a
+//      write, and removing it brings the default back
+#[tokio::test]
+async fn goal_watch_notes_is_listed_off_by_default_and_takes_only_a_boolean() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = TestServerConfig::unreachable(dir.path())
+        .bearer_token("secret")
+        .state();
+    let app = withnav::server::app(state);
+    let mut url = reqwest::Url::parse("http://localhost/v1/settings").unwrap();
+    url.query_pairs_mut()
+        .append_pair("workspace", &dir.path().to_string_lossy());
+    let uri = format!("{}?{}", url.path(), url.query().unwrap());
+    let field = |body: &Value| {
+        body["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["key"] == "goal_watch.notes")
+            .cloned()
+            .expect("goal_watch.notes is listed")
+    };
+    let (_, current) = request(&app, "GET", &uri, Value::Null, true).await;
+    let listed = field(&current);
+    assert_eq!(listed["default"], json!(false));
+    assert_eq!(listed["value"], Value::Null);
+    assert_eq!(listed["set"], json!(false));
+    assert_eq!(listed["error"], Value::Null);
+    assert_eq!(listed["label"], "Goal watch notes");
+    assert!(
+        listed["description"]
+            .as_str()
+            .unwrap()
+            .contains("off by default")
+    );
+
+    let (status, current) = request(
+        &app,
+        "PUT",
+        &uri,
+        json!({"revision":current["revision"],"key":"goal_watch.notes","value":true}),
+        true,
+    )
+    .await;
+    assert_eq!(status, 200, "{current}");
+    assert_eq!(field(&current)["value"], json!(true));
+    let path = dir.path().join("cfg/config.json");
+    let raw: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(raw["goal_watch"]["notes"], json!(true));
+
+    for bad in [json!("yes"), json!(1), json!({"on":true})] {
+        let (status, error) = request(
+            &app,
+            "PUT",
+            &uri,
+            json!({"revision":current["revision"],"key":"goal_watch.notes","value":bad}),
+            true,
+        )
+        .await;
+        assert_eq!(status, 400, "{error}");
+        assert_eq!(error["reason"], "invalid");
+        assert_eq!(error["key"], "goal_watch.notes");
+    }
+    let raw: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        raw["goal_watch"]["notes"],
+        json!(true),
+        "a refused value writes nothing"
+    );
+
+    let (status, current) = request(
+        &app,
+        "PUT",
+        &uri,
+        json!({"revision":current["revision"],"key":"goal_watch.notes","value":null}),
+        true,
+    )
+    .await;
+    assert_eq!(status, 200, "{current}");
+    assert_eq!(field(&current)["set"], json!(false));
+    assert_eq!(field(&current)["default"], json!(false));
+}

@@ -38,9 +38,9 @@ answers prompts, and hands you images. Every check ends with a verdict backed by
    (`Yes` / `No` / `Not shown`), one observation per question.
 7. A verdict is **PASS**, **FAIL** or **SKIP** (prerequisite missing, or the Captain chose to skip).
    FAIL quotes the evidence: the tool output, the error text, the Captain's answer. A FAIL stays a
-   FAIL; retry only after an obvious slip of yours, and report both runs. A check that depends on the
-   model's behaviour (a subagent that stops early, a batched call) is **SKIP — invalid run**, not a
-   product FAIL.
+   FAIL; retry only after an obvious slip of yours, or the accidental acceptance in P1 described
+   below, and report both attempts. A check that depends on the model's behaviour (a subagent that
+   stops early, a batched call) is **SKIP — invalid run**, not a product FAIL.
 8. Finish with the report, then clean up.
 9. Once the client's last check (if it has one) is in the report, read `post-analysis.md` in this
    skill's `base_dir` and follow it to turn the findings into proposed changes to these skills.
@@ -61,7 +61,8 @@ are SKIP) or a rule of the Captain's denies it (record the denial and SKIP).
 - **P1** Before acting, ask the Captain to **Reject** the coming question with the message
   `rejected for the test: answer BANANA`. Then `write` `KEY=placeholder` to `<run>/.env`. PASS when
   the rejection reaches you with the message the Captain typed (the relay is exact; a typo of theirs
-  is not a FAIL — quote what you received).
+  is not a FAIL — quote what you received). If the Captain accidentally accepts instead of rejecting,
+  record the first attempt and allow one explicitly labelled retry; report both attempts.
 - **P2** Ask the Captain to accept once (**Once** or **Allow**, depending on the client), then
   repeat the call. PASS when it runs. Ask whether **Always** was offered on either question:
   FAIL if it was.
@@ -95,14 +96,14 @@ Act on that name only.
 
 - **S1** `request_secret` with `name: "NAV_SELFTEST_KEY"`, `label: "Self-test key"`,
   `reason: "WithNav self-test"`. The Captain enters a throwaway value of at least 8 characters
-  (e.g. `wnst-` plus random letters), availability 1 h, scope this session. PASS when the tool
-  answers `stored as $NAV_SELFTEST_KEY …`.
+  (e.g. `wnst-` plus random letters), availability 1 h, scope this session. Ask the Captain to
+  confirm the selected availability and scope without revealing the value. Compare the expiry in the
+  response with the call time, allowing for clock and interaction delay. PASS when the tool answers
+  `stored as $NAV_SELFTEST_KEY …`, session scope and an expiry consistent with 1 h. If the selection
+  or time cannot be verified, record it as unverified; report a verified mismatch as FAIL.
 - **S2** `bash`: `test -n "$NAV_SELFTEST_KEY" && echo present`. PASS on `present`.
-- **S3** `bash`: `printf '%s\n' "$NAV_SELFTEST_KEY"`. PASS when the output reads
-  `[secret NAV_SELFTEST_KEY]`, and the Captain confirms the tool row on screen shows that too.
-- **S4** Ask the Captain to send the value in a message. PASS when you receive
-  `[secret NAV_SELFTEST_KEY]` instead of the value, and the Captain confirms their message in the
-  transcript shows the placeholder.
+- **S3 / S4** SKIP output and chat redaction unless a separate safe test interface is available
+  and explicitly authorized. Never print a secret or ask the Captain to send its value in chat.
 - **S5** The Captain opens the secrets list (client skill says where) and finds the
   `NAV_SELFTEST_KEY` row: scope session, the last four characters of their value, a use count
   above 0. They revoke that row only; you rerun S2. PASS when it now prints nothing.
@@ -138,8 +139,13 @@ If the child ends or batches before a park, record A as SKIP — invalid run.
 - **M0** Run `nav doctor`. PASS when each configured MCP server is listed with its state; an HTTP
   server (`"type": "http"`) shows whether it was reached and its tool count. Compare with the
   `mcp__*` tools you have.
-- **M1** Call a tool that returns an image or a screenshot. PASS when you get the image and the
-  Captain sees it (client skill says how), or you get a note naming a limit and nothing is shown.
+- **M0-health** Record `nav doctor`'s exit status and each failed check separately from the MCP
+  verdict. PASS when it exits successfully with no failed checks; FAIL with the failed check and
+  its output otherwise.
+- **M1** Call a tool that returns an image block or structured preview. Record separately whether
+  you received image bytes and whether the Captain saw a thumbnail or board preview. PASS only for
+  the capability observed; a text response does not prove an image block was received. A note
+  naming an image limit with nothing shown also counts as PASS for the limit.
 - **M2** If a tool offers an app (**Open App**; browser and VS Code), the Captain opens it and uses
   one control that calls the server. PASS when it works.
 - **M3** (SKIP when no server offers prompts) The Captain runs `/<server>:<prompt>`, with its

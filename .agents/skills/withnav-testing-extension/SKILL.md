@@ -10,9 +10,10 @@ Same protocol as `withnav-testing`. `<run>` is the run folder.
 ## Hooks in the shared scenarios
 
 - **V1**: ask for the expected extension version during the briefing. The Captain reads the
-  installed version in the Extensions view; compare it separately from `nav --version`. The
-  extension may run its bundled `nav`: if you cannot verify which binary it launched, mark the
-  running server's identity unverified rather than inferring it from PATH.
+  installed version in the Extensions view; compare it separately from `nav --version`. Record the
+  installed bundled binary's `--version` when its path is known and the running server's build from
+  `nav doctor` when available, separately. Neither an installed binary nor its pathname proves the
+  active server's build. Mark any identity that cannot be verified as unverified.
 - **P**: cards show Allow (accept once) and Reject. An Always choice is conditional and must be
   absent on P1/P2's credential-file questions.
 - **I1 / M1**: a stored image shows as a thumbnail; a click opens it beside the chat.
@@ -43,9 +44,11 @@ Same protocol as `withnav-testing`. `<run>` is the run folder.
   many images?" (PASS on two), then sends "and now?" with nothing attached (PASS on none). Smoke
   check: tiny images load before Send, so the wait-for-reads path is not forced.
 - **E4 First message of a new conversation.** You cannot see another conversation, so the Captain
-  reports: `WithNav: New Conversation`, attach `ok.png`, send "how many images in this message?
-  answer with a number", then send "and in this one?" with nothing attached. They come back to this
-  tab and give both answers. PASS on 1 then 0. They may close the new conversation.
+  reports: `WithNav: New Conversation`, attach only `ok.png` and confirm exactly one pending
+  thumbnail before sending; remove any others. Send "how many images in this message? answer with
+  a number", then "and in this one?" with nothing attached. They come back to this tab and give both
+  answers. PASS on 1 then 0; SKIP as invalid if the pending count was not one. They may close the
+  new conversation.
 - **E5 Thumbnails by keyboard.** On I1's and C1's thumbnails: Tab to it, Enter or Space. PASS when
   each opens in an editor group beside the chat and the focus outline stays visible. Distinguish
   an editor group in the same VS Code window from a separate OS window; record the latter as a

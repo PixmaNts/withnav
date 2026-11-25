@@ -24,6 +24,17 @@ requests land in `develop`.
   shows it before the ledger. Bounds: 500 characters for the objective, 300 per criterion, 10
   criteria; longer text is refused. Only the Captain sets it; it authorizes nothing.
 
+### Changed
+
+- The root watchdog's review of a doubtful turn reads the session goal and its criteria while one
+  is active (otherwise the Captain's last message, as before) and the session ledger digest, besides
+  the timers, the step count and the last tool call and result, in one message of at most 16 KiB
+  (the last tool call and result are cut first). It answers within 1000 output tokens instead of
+  128 and may give a reason of at most 500 characters, which is logged and added to the stop notice
+  (`data.reason`) or the held evidence (`review_reason`). Reading the ledger (at most 10 seconds)
+  and the review share the review's 60-second deadline (20 seconds before); a review without the ledger goes on as
+  before. A timeout or an unavailable reviewer still asks the Captain.
+
 ## [0.8.4] - 2026-11-24
 
 ### Changed

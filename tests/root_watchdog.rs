@@ -3,6 +3,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
+use withnav::session::subagents::root_watchdog::{
+    GoalSource, ProgressReviewer, REVIEW_INPUT_BYTES, Review, ReviewOutcome, ReviewRequest,
+};
 use withnav::session::subagents::watchdog::Verdict;
 mod common;
 use common::deadline::Deadline;
@@ -541,4 +544,143 @@ async fn stuck_root_settles_tool_results_without_requesting_another_step() {
             .is_some_and(|m| m.contains("Stopped by watchdog"))
     }));
     service.close_all().await;
+}
+
+/// Records each review request and answers with one fixed outcome.
+struct CapturingReviewer {
+    seen: mpsc::UnboundedSender<ReviewRequest>,
+    outcome: ReviewOutcome,
+}
+
+impl ProgressReviewer for CapturingReviewer {
+    fn review<'a>(
+        &'a self,
+        request: &'a ReviewRequest,
+        _: &'a tokio_util::sync::CancellationToken,
+    ) -> futures::future::BoxFuture<'a, ReviewOutcome> {
+        Box::pin(async move {
+            self.seen.send(request.clone()).unwrap();
+            self.outcome.clone()
+        })
+    }
+}
+
+/// Starts a root session whose instinct always doubts, optionally sets a goal, sends
+/// `find files`, and fires one watchdog check while the provider still streams. Returns the
+/// request the reviewer read and the events up to the first watchdog notice when `outcome` stops.
+async fn one_review(
+    goal: Option<(&str, &str)>,
+    outcome: ReviewOutcome,
+) -> (ReviewRequest, Vec<withnav::bus::event::EventEnvelope>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let mut provider = spawn_streaming_provider().await;
+    let service = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128000)
+        .state();
+    let (tx, mut sleeps) = mpsc::unbounded_channel();
+    let clock = Arc::new(FakeClock {
+        now: Mutex::new(Instant::now()),
+        sleeps: tx,
+    });
+    let (seen, mut requests) = mpsc::unbounded_channel();
+    let stops = outcome.decision == Review::Stop;
+    service.install_root_watchdog_test(
+        clock.clone(),
+        Arc::new(ConstantJudge(Verdict::Doubt)),
+        Some(Arc::new(CapturingReviewer { seen, outcome })),
+    );
+    let id = service.create_session(&ws, None, false).await.unwrap();
+    if let Some((objective, criterion)) = goal {
+        for arguments in [objective.to_owned(), format!("criterion {criterion}")] {
+            assert!(
+                service
+                    .run_command(id, "goal", &arguments)
+                    .await
+                    .unwrap()
+                    .ok
+            );
+        }
+    }
+    let sub = service.subscribe(id, None).await.unwrap();
+    send_text(&service, id, "find files").await;
+    let (_, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    // The reviewer folds the stored events, which the store writes after they are streamed:
+    // wait until the turn's start is stored so the ledger it reads is fixed, not a race.
+    common::deadline::eventually("the stored turn.start", || async {
+        let events = service.history().replay(id, None, u64::MAX).await.unwrap();
+        events.iter().any(|e| e.kind == "turn.start").then_some(())
+    })
+    .await;
+    let tick = sleeps.recv().bounded(file!(), line!()).await.unwrap();
+    *clock.now.lock().unwrap() += Duration::from_secs(300);
+    tick.send(()).unwrap();
+    let request = requests.recv().bounded(file!(), line!()).await.unwrap();
+    let events = if stops {
+        collect_until(sub, |e| e.payload["name"] == "watchdog").await
+    } else {
+        Vec::new()
+    };
+    stream.send(text_chunk("done")).unwrap();
+    drop(stream);
+    service.close_all().await;
+    (request, events)
+}
+
+#[tokio::test]
+async fn the_root_reviewer_reads_the_active_goal_and_the_session_ledger() {
+    let (request, _) = one_review(
+        Some(("ship the parser", "tests pass")),
+        Review::Continue.into(),
+    )
+    .await;
+    assert_eq!(request.goal_source, GoalSource::SessionGoal);
+    assert_eq!(
+        request.evidence.goal,
+        "Objective: ship the parser\n1. tests pass"
+    );
+    let ledger = request.ledger.as_ref().expect("the ledger was read");
+    assert_eq!(
+        ledger.turns.count, 1,
+        "the running turn is folded: its start was stored before the check"
+    );
+    assert_eq!(ledger.goal, None, "the goal field already carries it");
+    let content = request.user_content();
+    assert!(content.len() <= REVIEW_INPUT_BYTES);
+    assert!(content.contains("session ledger: facts folded from the event log"));
+}
+
+#[tokio::test]
+async fn without_a_goal_the_reviewer_reads_the_last_request_and_its_reason_reaches_the_stop() {
+    let (request, events) = one_review(
+        None,
+        ReviewOutcome {
+            decision: Review::Stop,
+            reason: Some("the same search keeps failing".into()),
+        },
+    )
+    .await;
+    assert_eq!(request.goal_source, GoalSource::LastCaptainMessage);
+    assert_eq!(request.evidence.goal, "find files");
+    assert!(request.ledger.is_some());
+    let notice = events
+        .iter()
+        .find(|e| e.payload["name"] == "watchdog")
+        .unwrap();
+    assert_eq!(
+        notice.payload["data"]["reason"],
+        "the same search keeps failing"
+    );
+    assert!(
+        notice.payload["data"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Stopped by watchdog")
+    );
 }

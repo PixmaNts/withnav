@@ -29,6 +29,13 @@ pub fn decision_log() -> Option<PathBuf> {
     data_dir().map(|dir| dir.join("withnav.jsonl"))
 }
 
+/// The shadow log of the goal completion checks, `<data_dir>/goal-checks.jsonl`, beside the
+/// decision log. Takes the data dir the session service runs with, so a test server writes in
+/// its own directory.
+pub fn goal_check_log(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join(crate::session::goal_check::LOG_FILE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

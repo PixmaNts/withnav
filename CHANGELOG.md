@@ -8,13 +8,13 @@ requests land in `develop`.
 
 ### Fixed
 
-- A rejected Instinct request now says why: the flow run record carries the provider's reason
-  after "provider rejected the request (HTTP 400)", and `nav doctor` shows it
-  after "HTTP 400 rejected" (one line, at most 300 characters; a reason that echoes a credential,
-  whole or in part, is left out).
-- The root watchdog reviewer reads a decision wrapped in a code fence or in prose, as the remark
-  parser does, instead of asking the Captain. A reply holding two decisions that disagree still
-  asks the Captain.
+- A rejected Instinct request now says why, on one line of at most 300 characters. The flow run
+  record shows the provider's reason after "provider rejected the request (HTTP 400)" and leaves
+  the whole reason out when it echoes a credential, whole or in part. `nav doctor` shows it after
+  "HTTP 400 rejected" with credentials replaced by `[redacted]` and URLs by `[url omitted]`.
+- The root watchdog reviewer reads a decision wrapped in a code fence or after prose, as the
+  remark parser does, instead of asking the Captain. It still asks the Captain when the decision
+  is followed by more text or when two decisions in the reply disagree.
 - The Cognition prompt points at `.withnav/intent.md` instead of the old `.navigator/intent.md`.
 - Editor-flow trigger records name the flow runs they started (`flow_run_ids`), so they join the
   flow run records that hold the Instinct answers.

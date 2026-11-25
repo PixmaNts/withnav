@@ -801,6 +801,11 @@ async fn a_flow_wake_while_the_cognition_yields_is_held_behind_the_ask_answer() 
         flow_wake(&feed, "second wake"),
         Err("wake cooldown".to_string())
     );
+    // Holding a flow wake publishes no event (a flow note never becomes a
+    // `message.received`), so this check can only give a wrongly started
+    // turn time to reach the provider. The ordering check below backs it:
+    // in the request that carries the wake, the Captain's answer is already
+    // the ask's tool result, which a turn started by the wake could not hold.
     tokio::time::sleep(Duration::from_millis(200)).await;
     let before: Vec<_> = server.received_requests().await.expect("wiremock retains");
     assert!(
@@ -908,6 +913,10 @@ async fn a_flow_wake_never_cancels_an_open_permission_request() {
     })
     .await;
     assert_eq!(flow_wake(&feed, "a wake while asking"), Ok(()));
+    // Holding the wake publishes no event to wait on, so the check below
+    // gives a wrongly delivered wake time to cancel the request. Backing it:
+    // the request carrying the wake must also carry a tool result (the
+    // permission's answer), and the allowed write must have happened.
     tokio::time::sleep(Duration::from_millis(200)).await;
     let sub = subscribe(&state, id).await;
     let withnav::bus::ResumeOutcome::Replay(all) = sub.replay else {

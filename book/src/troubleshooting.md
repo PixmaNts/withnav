@@ -47,9 +47,9 @@ Each line is `status id: value`, then a hint when there is one. Statuses are `ok
 
 In `--json`, each check has an id, a status, the measured value, an optional sanitised error
 category, a hint and the elapsed milliseconds. A rejected request (HTTP 4xx) shows the provider's
-reason, cut to 300 characters on one line and left out when it holds a credential, whole or in
-part; otherwise neither mode prints response bodies. Neither
-mode prints URLs, keys or environment values. Attach `nav doctor --offline --json` to a bug
+reason on one line of at most 300 characters, after keys are replaced by `[redacted]` and URLs by
+`[url omitted]`; otherwise neither mode prints response bodies. Neither mode prints URLs, keys or
+environment values. Attach `nav doctor --offline --json` to a bug
 report when configuration may be involved.
 
 **Exit code:** `0` means no failed check (warnings are allowed). `1` means at least one failure.

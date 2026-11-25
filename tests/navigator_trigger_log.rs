@@ -4,7 +4,7 @@ use std::sync::Arc;
 mod common;
 use common::navigator::{
     EditorFlowsExt, Nav, RemarkAnswer, ScriptedCommenter, ScriptedDecision, URI,
-    with_recorded_decision,
+    with_recorded_decision, with_recorded_flow_client,
 };
 fn triggers(nav: &Nav) -> Vec<Value> {
     nav.log_text()
@@ -99,28 +99,21 @@ fn captured_run_ids(records: &withnav::flows::records::Records) -> Vec<String> {
 // writes no run record, so its trigger names none.
 #[tokio::test]
 async fn flow_trigger_records_name_the_flow_runs_they_started() {
-    for (answer, edit, delivered) in [
-        (Some(RemarkAnswer::Remark(1, "observation")), true, "remark"),
-        (Some(RemarkAnswer::Silent), true, "silent"),
+    for (answer, delivered) in [
+        (RemarkAnswer::Remark(1, "observation"), "remark"),
+        (RemarkAnswer::Silent, "silent"),
     ] {
         let mut recorded = None;
-        let mut nav = Nav::start_as_is(
-            ScriptedCommenter::new(answer.into_iter().collect()),
-            |deps, _| {
-                let (deps, records) = with_recorded_decision(
-                    deps,
-                    Arc::new(ScriptedDecision::routing_to_metacognition()),
-                );
-                recorded = Some(records);
-                deps
-            },
-        )
+        let mut nav = Nav::start_as_is(ScriptedCommenter::new(vec![answer]), |deps, _| {
+            let (deps, records) = with_recorded_decision(
+                deps,
+                Arc::new(ScriptedDecision::routing_to_metacognition()),
+            );
+            recorded = Some(records);
+            deps
+        })
         .await;
-        if edit {
-            nav.open_and_edit().await;
-        } else {
-            nav.open_base().await;
-        }
+        nav.open_and_edit().await;
         nav.did_save(URI).await;
         nav.expect_status("idle").await;
         let records = triggers(&nav);
@@ -227,7 +220,16 @@ async fn remark_call_records_carry_the_reported_tokens() {
         ),
         (RemarkAnswer::Silent, Some(usage), "silent"),
         (RemarkAnswer::Remark(1, "observation"), None, "remark"),
+        // Rounds completed before the budget ran out or a round failed
+        // still cost tokens, and the call record says so.
+        (RemarkAnswer::OverBudget, Some(usage), "none"),
+        (RemarkAnswer::Fail("boom"), Some(usage), "provider_error"),
     ] {
+        let delivery_status = if delivered == "provider_error" {
+            "error"
+        } else {
+            "idle"
+        };
         let mut commenter = ScriptedCommenter::new(vec![answer]);
         if let Some(usage) = reported {
             commenter = commenter.with_usage(usage);
@@ -235,7 +237,7 @@ async fn remark_call_records_carry_the_reported_tokens() {
         let mut nav = Nav::start(commenter).await;
         nav.open_and_edit().await;
         nav.did_save(URI).await;
-        nav.expect_status("idle").await;
+        nav.expect_status(delivery_status).await;
         nav.expect_status("idle").await;
         assert_eq!(triggers(&nav)[0]["delivered"], delivered);
         let call: Value = nav
@@ -254,5 +256,75 @@ async fn remark_call_records_carry_the_reported_tokens() {
                 assert!(call.get("output_tokens").is_none(), "{call}");
             }
         }
+    }
+}
+
+/// A flow decision client whose every call is refused by the provider.
+struct RejectingInstinct;
+impl instinct_flow::DecisionClient for RejectingInstinct {
+    fn capabilities(&self) -> instinct_flow::Capabilities {
+        instinct_flow::Capabilities { images: false }
+    }
+    fn identity(&self) -> instinct_flow::ClientIdentity {
+        instinct_flow::ClientIdentity {
+            model: "test/rejected".into(),
+            variant: None,
+        }
+    }
+    fn decide<'a>(
+        &'a self,
+        _: instinct_flow::protocol::DecisionRequest<'a>,
+        _: &'a tokio_util::sync::CancellationToken,
+        _: std::time::Instant,
+    ) -> instinct_flow::BoxFuture<
+        'a,
+        Result<instinct_flow::protocol::DecisionResponse, instinct_flow::DecisionError>,
+    > {
+        Box::pin(async {
+            Err(instinct_flow::DecisionError::ProviderRejected {
+                status: 400,
+                reason: Some("model jev-router is not served".into()),
+            })
+        })
+    }
+}
+
+// A failed flow run is the one a Captain most needs to look up: its trigger
+// names it, and its run record holds the provider's reason.
+#[tokio::test]
+async fn a_failed_flow_trigger_names_the_run_that_holds_the_rejection() {
+    let mut recorded = None;
+    let mut nav = Nav::start_as_is(ScriptedCommenter::default(), |deps, _| {
+        let (deps, records) = with_recorded_flow_client(deps, Arc::new(RejectingInstinct));
+        recorded = Some(records);
+        deps
+    })
+    .await;
+    nav.open_and_edit().await;
+    nav.did_save(URI).await;
+    nav.expect_status("error").await;
+    let records = triggers(&nav);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["delivered"], "provider_error");
+    assert_eq!(records[0]["reason"], "flow");
+    let named: Vec<String> =
+        serde_json::from_value(records[0]["flow_run_ids"].clone()).expect("flow_run_ids");
+    assert!(!named.is_empty(), "{}", records[0]);
+    let recorded = recorded.unwrap();
+    recorded.shutdown(std::time::Duration::from_secs(2));
+    let runs = recorded.read().unwrap();
+    for run_id in &named {
+        let run = runs
+            .iter()
+            .find(|run| &run.run_id == run_id)
+            .unwrap_or_else(|| panic!("no run record {run_id}"));
+        let failure = run.failure.as_ref().expect("a failed run");
+        assert!(
+            failure.message.contains(
+                "provider rejected the request (HTTP 400): model jev-router is not served"
+            ),
+            "{}",
+            failure.message
+        );
     }
 }

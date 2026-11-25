@@ -880,3 +880,93 @@ async fn a_remark_reports_the_usage_of_all_its_rounds() {
         assert_eq!(call.usage, expected, "reported={reported}");
     }
 }
+
+// Given a tool round that reports usage, then a second round that never
+//       answers in time or fails
+// When the metacognition remarks
+// Then the remark ends unjudged or with the provider error, and the usage of
+//      the completed round is still reported: those tokens were spent
+#[tokio::test]
+async fn usage_of_completed_rounds_survives_a_timeout_or_a_failing_round() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().to_path_buf();
+    std::fs::create_dir_all(ws.join("src")).unwrap();
+    std::fs::write(ws.join("src/other.rs"), "fn helper() {}\n").unwrap();
+    // The failing round runs first: once the clock is paused for the
+    // timeout case it stays paused for the rest of this runtime.
+    for times_out in [false, true] {
+        let server = isolated_server().await;
+        let round1 = sse_stream(vec![
+            sse_data(&delta_tool_call(
+                "call-1",
+                "read",
+                &json!({"path": "src/other.rs"}),
+            )),
+            usage_chunk(100, 10),
+        ]);
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_partial_json(json!({"tools": [{"type": "function"}]})))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(round1, "text/event-stream"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        let round2 = if times_out {
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(60))
+                .set_body_raw(
+                    sse_stream(vec![sse_data(&delta_text(r#"{"silent": true}"#))]),
+                    "text/event-stream",
+                )
+        } else {
+            ResponseTemplate::new(500).set_body_string(r#"{"error":{"message":"boom"}}"#)
+        };
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(round2)
+            .mount(&server)
+            .await;
+        let c = commenter(server.uri(), None);
+        let mut ctx = remark_ctx(&ws, vec![]);
+        ctx.tool_rounds = 1;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let call = if times_out {
+            // Paused clock: the 60 s delay and the 20 s budget run in
+            // virtual time once the first round has been answered.
+            let pending = c.remark_with_usage(&ctx, &cancel);
+            tokio::pin!(pending);
+            tokio::select! {
+                biased;
+                call = &mut pending => call,
+                _ = async {
+                    while server.received_requests().await.map_or(0, |r| r.len()) < 2 {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    tokio::time::pause();
+                    std::future::pending::<()>().await
+                } => unreachable!(),
+            }
+        } else {
+            c.remark_with_usage(&ctx, &cancel).await
+        };
+        if times_out {
+            assert!(
+                matches!(call.result, Err(ModelError::OverBudget { .. })),
+                "{:?}",
+                call.result
+            );
+        } else {
+            assert!(
+                matches!(call.result, Err(ModelError::Provider(_))),
+                "{:?}",
+                call.result
+            );
+        }
+        let usage = call.usage.expect("the completed round's usage");
+        assert_eq!(
+            (usage.prompt_tokens, usage.completion_tokens),
+            (100, 10),
+            "times_out={times_out}"
+        );
+    }
+}

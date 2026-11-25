@@ -1040,7 +1040,7 @@ impl instinct_flow::DecisionClient for FlowDecision {
 }
 impl EditorFlowsExt for NavigatorDeps {
     fn with_decision(self, model: Arc<dyn DecisionModel>) -> Self {
-        with_decision_and_records(self, model, None)
+        with_decision_and_records(self, Arc::new(FlowDecision(model)), None)
     }
 }
 
@@ -1051,6 +1051,15 @@ pub fn with_recorded_decision(
     deps: NavigatorDeps,
     model: Arc<dyn DecisionModel>,
 ) -> (NavigatorDeps, Arc<withnav::flows::records::Records>) {
+    with_recorded_flow_client(deps, Arc::new(FlowDecision(model)))
+}
+
+/// [`with_recorded_decision`] over a raw flow decision client, for scenarios
+/// that need a transport error (a provider rejection) rather than an answer.
+pub fn with_recorded_flow_client(
+    deps: NavigatorDeps,
+    client: Arc<dyn instinct_flow::DecisionClient>,
+) -> (NavigatorDeps, Arc<withnav::flows::records::Records>) {
     let workspace = deps
         .workspace
         .clone()
@@ -1060,14 +1069,14 @@ pub fn with_recorded_decision(
         &workspace,
     ));
     (
-        with_decision_and_records(deps, model, Some(records.clone())),
+        with_decision_and_records(deps, client, Some(records.clone())),
         records,
     )
 }
 
 fn with_decision_and_records(
     deps: NavigatorDeps,
-    model: Arc<dyn DecisionModel>,
+    model: Arc<dyn instinct_flow::DecisionClient>,
     records: Option<Arc<withnav::flows::records::Records>>,
 ) -> NavigatorDeps {
     let workspace = deps
@@ -1079,7 +1088,6 @@ fn with_decision_and_records(
         workspace.join("config"),
         workspace.join("data"),
     ));
-    let model = Arc::new(FlowDecision(model));
     deps.with_flows(Arc::new(move |effects| {
         let runtime =
             withnav::flows::runtime::FlowRuntime::new(store.clone(), model.clone(), effects);

@@ -47,8 +47,9 @@ fn reason_suffix(reason: &Option<String>) -> String {
 pub const REASON_MAX_CHARS: usize = 300;
 
 /// A provider's error text made safe to show on one diagnostic line: every
-/// whitespace run becomes one space, other control characters are dropped
-/// (an escape sequence cannot restyle a terminal), and the result is cut at
+/// whitespace run becomes one space, other control characters and format
+/// characters are dropped (an escape sequence cannot restyle a terminal, a
+/// bidi override cannot reorder the line), and the result is cut at
 /// [`REASON_MAX_CHARS`] with a trailing `…`. `None` when nothing is left.
 pub fn reason_excerpt(text: &str) -> Option<String> {
     let mut line = String::new();
@@ -57,7 +58,7 @@ pub fn reason_excerpt(text: &str) -> Option<String> {
             if !line.is_empty() && !line.ends_with(' ') {
                 line.push(' ');
             }
-        } else if !c.is_control() {
+        } else if !c.is_control() && !is_format_char(c) {
             line.push(c);
         }
     }
@@ -71,6 +72,38 @@ pub fn reason_excerpt(text: &str) -> Option<String> {
         excerpt.push('…');
     }
     Some(excerpt)
+}
+
+/// Unicode general category Cf (format characters, Unicode 15.1): bidi
+/// overrides and isolates, zero-width characters, the byte order mark, tag
+/// characters. Invisible, yet they reorder or hide the text around them, so
+/// a provider's reason shown on a terminal line could read as something
+/// else. The table is spelled out because std exposes no general category.
+fn is_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
 }
 
 /// Error bodies larger than this are read only this far: the reason is
@@ -249,6 +282,8 @@ impl DecisionClient for SystemOneClient {
                                 Ok(None) | Err(_) => break,
                             }
                         }
+                        // The endpoint URL holds no credential to add here:
+                        // `new` refuses a URL with userinfo or a query.
                         let credentials: Vec<&str> = std::iter::once(self.key.as_str())
                             .chain(self.header_values.iter().map(String::as_str))
                             .collect();
@@ -468,6 +503,73 @@ mod tests {
         let empty = wiremock::ResponseTemplate::new(400);
         assert_eq!(
             rejection(empty).await.to_string(),
+            "provider rejected the request (HTTP 400)"
+        );
+    }
+
+    // Invisible format characters can reorder or hide what a terminal shows
+    // (a right-to-left override makes "evil.exe" read differently); a reason
+    // must show only what it says.
+    #[test]
+    fn a_reason_drops_bidi_overrides_and_zero_width_characters() {
+        assert_eq!(
+            reason_excerpt(
+                "model\u{202E}gnp.exe\u{202C} not\u{200B}found\u{FEFF}\u{2066}x\u{2069}"
+            ),
+            Some("modelgnp.exe notfoundx".into())
+        );
+        assert_eq!(reason_excerpt("\u{200B}\u{202E}"), None);
+        assert_eq!(
+            reason_excerpt("caf\u{e9} \u{1F600}"),
+            Some("caf\u{e9} \u{1F600}".into())
+        );
+    }
+
+    // A credential in the endpoint URL (userinfo, a query `key=`) could be
+    // echoed back in a rejection without being on the redaction list; such
+    // an endpoint is refused when the client is built, so none can be sent.
+    #[test]
+    fn an_endpoint_carrying_credentials_is_refused() {
+        for endpoint in [
+            "https://user:pw-secret-123@host/v1/systemone",
+            "https://user@host/v1/systemone",
+            "https://host/v1/systemone?key=qk-secret-456",
+        ] {
+            let built = SystemOneClient::new(
+                endpoint.parse().unwrap(),
+                "model".into(),
+                "key".into(),
+                Duration::from_secs(1),
+                BTreeMap::new(),
+            );
+            assert!(built.is_err(), "{endpoint}");
+        }
+    }
+
+    // The reason comes from the first 4 KiB of the body: past it the rest is
+    // never read, so a JSON body cut there is shown as text, and a reason
+    // that only starts after it is not shown.
+    #[tokio::test]
+    async fn a_rejection_reads_only_the_first_4_kib_of_the_body() {
+        let json = serde_json::json!({
+            "error": {"message": "short reason"},
+            "padding": "p".repeat(REJECTION_BODY_BYTES),
+        })
+        .to_string();
+        let message = rejection(wiremock::ResponseTemplate::new(400).set_body_string(json))
+            .await
+            .to_string();
+        assert!(
+            message.starts_with(
+                r#"provider rejected the request (HTTP 400): {"error":{"message":"short reason"}"#
+            ),
+            "{message}"
+        );
+        let late = format!("{}late reason", " ".repeat(REJECTION_BODY_BYTES));
+        assert_eq!(
+            rejection(wiremock::ResponseTemplate::new(400).set_body_string(late))
+                .await
+                .to_string(),
             "provider rejected the request (HTTP 400)"
         );
     }

@@ -84,8 +84,10 @@ Only you set the goal: the agent has no tool to change it. The project's lasting
 
 When a turn ends while the goal is active with at least one criterion, and a metacognition model
 is assigned, that model checks each criterion against the conversation's ledger: supported (a
-command with its exit status, a file change or a test run shows it; the agent saying so is not
-enough), contradicted, or not checked. The result is written to `goal-checks.jsonl` in the data
+command with its exit status, a file change or a test run shows it, and the model quotes that
+line; the agent saying so is not enough), contradicted, or not checked. A long goal is sent with
+as many criteria as fit in half the check's input, so there is room left for the evidence. The
+result is written to `goal-checks.jsonl` in the data
 directory and nothing is shown yet. The check never delays a turn: at most one runs at a time per
 conversation, at most three per hour, each within 20 seconds; a slower one is logged as a timeout.
 

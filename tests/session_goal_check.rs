@@ -19,7 +19,7 @@ use withnav::session::subagents::watchdog::Clock;
 
 mod common;
 use common::server::{TestServerConfig, collect_until, send_text, temp_workspace, wait_for};
-use common::sse::{sse_response, text_chunk};
+use common::sse::{sse_response, text_chunk, tool_calls_chunk};
 
 /// The upstream id of the metacognition model; the cognition runs `mock-model`.
 const META: &str = "meta-model";
@@ -35,6 +35,12 @@ struct Env {
 /// A server whose cognition answers "done" and whose metacognition answers `meta` (when
 /// `layer` assigns it).
 async fn env(meta: ResponseTemplate, layer: bool) -> Env {
+    scripted_env(meta, layer, Vec::new()).await
+}
+
+/// [`env`] whose cognition first gives the `script` answers, one per request, in order, with
+/// every tool call allowed; "done" after them.
+async fn scripted_env(meta: ResponseTemplate, layer: bool, script: Vec<ResponseTemplate>) -> Env {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -43,6 +49,16 @@ async fn env(meta: ResponseTemplate, layer: bool) -> Env {
         .with_priority(1)
         .mount(&server)
         .await;
+    let scripted = !script.is_empty();
+    for answer in script {
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(answer)
+            .up_to_n_times(1)
+            .with_priority(2)
+            .mount(&server)
+            .await;
+    }
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(sse_response(&[&text_chunk("done: all tests pass")]))
@@ -50,6 +66,9 @@ async fn env(meta: ResponseTemplate, layer: bool) -> Env {
         .await;
     let (tmp, ws) = temp_workspace();
     let mut config = TestServerConfig::mock(tmp.path(), &server.uri());
+    if scripted {
+        config = config.allow_everything();
+    }
     if layer {
         config = config.extra_alias("metacognition", META);
     }
@@ -198,7 +217,7 @@ async fn a_child_turn_is_never_checked() {
 async fn a_valid_answer_is_logged_with_bounded_evidence() {
     let long = "x".repeat(300);
     let answer = format!(
-        r#"Here you go: {{"criteria":[{{"index":1,"status":"supported","evidence":"{long}"}},{{"index":2,"status":"contradicted","evidence":"exit 101"}},{{"index":7,"status":"supported","evidence":""}}]}}"#
+        r#"Here you go: {{"criteria":[{{"index":1,"status":"contradicted","evidence":"{long}"}},{{"index":2,"status":"not_checked","evidence":"exit 101"}},{{"index":7,"status":"supported","evidence":""}}]}}"#
     );
     let env = env(meta_answer(&answer), true).await;
     let id = env
@@ -225,8 +244,8 @@ async fn a_valid_answer_is_logged_with_bounded_evidence() {
     assert_eq!(
         line["statuses"],
         json!([
-            {"index": 1, "status": "supported", "evidence": "x".repeat(MAX_EVIDENCE_CHARS)},
-            {"index": 2, "status": "contradicted", "evidence": "exit 101"},
+            {"index": 1, "status": "contradicted", "evidence": "x".repeat(MAX_EVIDENCE_CHARS)},
+            {"index": 2, "status": "not_checked", "evidence": "exit 101"},
         ])
     );
 
@@ -404,8 +423,10 @@ async fn the_next_turn_never_waits_and_a_second_check_is_skipped_in_flight() {
 }
 
 // Given three checks started within the hour
-// When a fourth turn ends
-// Then it is `skipped_rate` without a call; an hour after the first, a check runs again
+// When a fourth and a fifth turn end
+// Then the fourth is one `skipped_rate` line without a call, the fifth adds no line (one rate
+//      line per window keeps the log from growing with every turn); an hour after the first, a
+//      check runs again
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_fourth_check_within_the_hour_is_skipped_for_rate() {
     let env = env(meta_answer(VALID), true).await;
@@ -430,9 +451,16 @@ async fn a_fourth_check_within_the_hour_is_skipped_for_rate() {
     let logged = wait_lines(&env.log, 4).await;
     assert_eq!(logged[3]["outcome"], "skipped_rate");
     assert_eq!(meta_requests(&env.server).await.len(), 3);
+    turn(&env.state, id, "turn 5").await;
+    settle().await;
+    assert_eq!(
+        lines(&env.log).len(),
+        4,
+        "a second rate skip in the window is not logged"
+    );
 
     *clock.0.lock().unwrap() += Duration::from_secs(60 * 60);
-    turn(&env.state, id, "turn 5").await;
+    turn(&env.state, id, "turn 6").await;
     let logged = wait_lines(&env.log, 5).await;
     assert_eq!(logged[4]["outcome"], "ok");
     assert_eq!(meta_requests(&env.server).await.len(), 4);
@@ -464,4 +492,286 @@ async fn a_session_without_a_goal_sends_the_same_requests_as_before() {
     }
     assert_eq!(seen[0], seen[1]);
     assert_eq!(seen[0], vec![json!("mock-model"), json!("mock-model")]);
+}
+
+/// One assistant message calling `bash` once per command, in order.
+fn bash_calls(commands: &[String]) -> ResponseTemplate {
+    let calls: Vec<(String, Value)> = commands
+        .iter()
+        .enumerate()
+        .map(|(n, command)| (format!("call{n}"), json!({ "command": command })))
+        .collect();
+    let calls: Vec<(&str, &str, Value)> = calls
+        .iter()
+        .map(|(id, args)| (id.as_str(), "bash", args.clone()))
+        .collect();
+    sse_response(&[&tool_calls_chunk(&calls)])
+}
+
+/// The ledger digest the metacognition request carried.
+async fn sent_digest(server: &MockServer) -> String {
+    meta_requests(server).await[0]["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+// Given a turn that ran `echo cargo-test-passed` and then claimed that all tests pass
+// When the model marks five criteria supported: with no evidence, with a quote the ledger does
+//      not hold, with a quote of the agent's claim, with a quote of the goal itself, and with a
+//      quote of the command line
+// Then only the last stays supported; the others are logged as not checked, their quote kept
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn supported_needs_a_quote_of_a_command_or_a_file_change() {
+    let answer = json!({"criteria": [
+        {"index": 1, "status": "supported", "evidence": ""},
+        {"index": 2, "status": "supported", "evidence": "pytest exited 0"},
+        {"index": 3, "status": "supported", "evidence": "all tests pass, everything is done"},
+        {"index": 4, "status": "supported", "evidence": "criterion 1: cargo test passes"},
+        {"index": 5, "status": "supported", "evidence": "exit 0 · echo cargo-test-passed"},
+    ]})
+    .to_string();
+    let env = scripted_env(
+        meta_answer(&answer),
+        true,
+        vec![
+            bash_calls(&["echo cargo-test-passed".to_string()]),
+            sse_response(&[&text_chunk("all tests pass, everything is done")]),
+        ],
+    )
+    .await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    goal(&env.state, id, "ship the parser").await;
+    for criterion in [
+        "cargo test passes",
+        "pytest passes",
+        "lint",
+        "docs",
+        "release",
+    ] {
+        goal(&env.state, id, &format!("criterion {criterion}")).await;
+    }
+    turn(&env.state, id, "go").await;
+    let logged = wait_lines(&env.log, 1).await;
+    assert_eq!(logged[0]["outcome"], "ok");
+    let digest = sent_digest(&env.server).await;
+    assert!(
+        digest.contains("- turn 1 · exit 0 · echo cargo-test-passed"),
+        "{digest}"
+    );
+    assert!(
+        digest.contains("- all tests pass, everything is done"),
+        "{digest}"
+    );
+    assert_eq!(
+        logged[0]["statuses"],
+        json!([
+            {"index": 1, "status": "not_checked", "evidence": ""},
+            {"index": 2, "status": "not_checked", "evidence": "pytest exited 0"},
+            {"index": 3, "status": "not_checked", "evidence": "all tests pass, everything is done"},
+            {"index": 4, "status": "not_checked", "evidence": "criterion 1: cargo test passes"},
+            {"index": 5, "status": "supported", "evidence": "exit 0 · echo cargo-test-passed"},
+        ])
+    );
+}
+
+// Given a goal of ten 300-character criteria and a turn that ran twenty long commands, then
+//      claimed at length that everything is done
+// When the turn ends
+// Then the goal takes at most half of the digest (the criteria that did not fit are named as
+//      omitted), the newest commands are still there, the agent's claim is dropped before any
+//      command, and a status for a criterion that was not sent is dropped
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_goal_leaves_room_for_command_evidence_and_claims_go_first() {
+    let commands: Vec<String> = (0..20)
+        .map(|n| format!("echo cmd{n:02}-{}", "e".repeat(140)))
+        .collect();
+    let claim = format!(
+        "I checked everything. {}",
+        "All criteria are met. ".repeat(12)
+    );
+    let newest = format!("exit 0 · {}", commands[19]);
+    let answer = json!({"criteria": [
+        {"index": 1, "status": "supported", "evidence": newest.chars().take(MAX_EVIDENCE_CHARS).collect::<String>()},
+        {"index": 10, "status": "supported", "evidence": newest.chars().take(MAX_EVIDENCE_CHARS).collect::<String>()},
+    ]})
+    .to_string();
+    let env = scripted_env(
+        meta_answer(&answer),
+        true,
+        vec![bash_calls(&commands), sse_response(&[&text_chunk(&claim)])],
+    )
+    .await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    goal(&env.state, id, "ship the parser").await;
+    for n in 0..10 {
+        goal(&env.state, id, &format!("criterion {n}{}", "c".repeat(299))).await;
+    }
+    turn(&env.state, id, "go").await;
+    let logged = wait_lines(&env.log, 1).await;
+    let requests = meta_requests(&env.server).await;
+    let system = requests[0]["messages"][0]["content"].as_str().unwrap();
+    let digest = sent_digest(&env.server).await;
+    assert!(system.len() + digest.len() <= MAX_INPUT_BYTES);
+    let budget = MAX_INPUT_BYTES - system.len();
+    let goal_bytes: usize = digest
+        .lines()
+        .skip_while(|line| !line.starts_with("[goal:"))
+        .take_while(|line| line.starts_with("[goal:") || line.starts_with("- "))
+        .map(|line| line.len() + 1)
+        .sum();
+    assert!(goal_bytes <= budget / 2, "goal {goal_bytes} of {budget}");
+    let sent = digest.matches("- criterion ").count();
+    assert!((1..10).contains(&sent), "{sent} criteria sent");
+    assert!(
+        digest.contains(&format!("- criteria {}-10 omitted", sent + 1)),
+        "{digest}"
+    );
+    assert!(digest.contains(&commands[19]), "{digest}");
+    assert!(!digest.contains("All criteria are met"), "{digest}");
+    assert_eq!(
+        logged[0]["statuses"],
+        json!([{"index": 1, "status": "supported",
+            "evidence": newest.chars().take(MAX_EVIDENCE_CHARS).collect::<String>()}])
+    );
+}
+
+// Given a check waiting on a slow model
+// When the session stops, then is resumed and runs a turn
+// Then the stopped check is never logged, its slot is free (the next check calls the model),
+//      and the resumed session has one watcher (one line, one call per turn end)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stopped_check_is_not_logged_and_a_resume_keeps_one_watcher() {
+    let env = env(
+        meta_answer(VALID).set_delay(Duration::from_millis(1500)),
+        true,
+    )
+    .await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    goal(&env.state, id, "ship the parser").await;
+    goal(&env.state, id, "criterion cargo test passes").await;
+    turn(&env.state, id, "one").await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while meta_requests(&env.server).await.is_empty() {
+        assert!(Instant::now() < deadline, "the first check never called");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    env.state.close_session(id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    assert!(lines(&env.log).is_empty(), "{:?}", lines(&env.log));
+    let (resumed_id, resumed) = env
+        .state
+        .create_or_resume_session(&env.ws, None, false, Some(id))
+        .await
+        .unwrap();
+    assert!(resumed);
+    assert_eq!(resumed_id, id);
+    turn(&env.state, id, "two").await;
+    let logged = wait_lines(&env.log, 1).await;
+    assert_eq!(logged[0]["outcome"], "ok");
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(
+        lines(&env.log).len(),
+        1,
+        "one line per turn end after resume"
+    );
+    assert_eq!(meta_requests(&env.server).await.len(), 2);
+}
+
+// Given three checks within the hour
+// When the session stops, is resumed and a fourth turn ends
+// Then the fourth is `skipped_rate`: a resume does not reset the window
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resume_keeps_the_rate_window() {
+    let env = env(meta_answer(VALID), true).await;
+    let clock = Arc::new(ManualClock(Mutex::new(Instant::now())));
+    env.state
+        .install_goal_check_test(clock.clone(), Duration::from_secs(20));
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    goal(&env.state, id, "ship the parser").await;
+    goal(&env.state, id, "criterion cargo test passes").await;
+    for n in 1..=3 {
+        turn(&env.state, id, &format!("turn {n}")).await;
+        wait_lines(&env.log, n).await;
+    }
+    env.state.close_session(id).await.unwrap();
+    env.state
+        .create_or_resume_session(&env.ws, None, false, Some(id))
+        .await
+        .unwrap();
+    turn(&env.state, id, "turn 4").await;
+    let logged = wait_lines(&env.log, 4).await;
+    assert_eq!(logged[3]["outcome"], "skipped_rate");
+    assert_eq!(meta_requests(&env.server).await.len(), 3);
+}
+
+// Given the largest goal (500-character objective, ten 300-character criteria)
+// When the turn ends
+// Then the request stays within 4 KiB, keeps the whole objective, and names the omitted
+//      criteria
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_largest_goal_stays_within_the_input_bound() {
+    let env = env(meta_answer(VALID), true).await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    goal(&env.state, id, &"o".repeat(500)).await;
+    for n in 0..10 {
+        goal(&env.state, id, &format!("criterion {n}{}", "c".repeat(298))).await;
+    }
+    turn(&env.state, id, "go").await;
+    let logged = wait_lines(&env.log, 1).await;
+    let request = &meta_requests(&env.server).await[0];
+    let system = request["messages"][0]["content"].as_str().unwrap();
+    let digest = request["messages"][1]["content"].as_str().unwrap();
+    assert!(system.len() + digest.len() <= MAX_INPUT_BYTES);
+    assert_eq!(logged[0]["input_bytes"], system.len() + digest.len());
+    assert!(digest.contains(&format!("- objective: {}", "o".repeat(500))));
+    assert!(digest.matches("- criterion ").count() < 10);
+    assert!(digest.contains("omitted"), "{digest}");
+}
+
+// Given eight sessions whose checks end at about the same time
+// When their lines are appended to the one log
+// Then every line stays one whole JSON object
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_sessions_keep_log_lines_whole() {
+    let env = env(meta_answer(VALID), true).await;
+    let mut ids = Vec::new();
+    for _ in 0..8 {
+        let id = env
+            .state
+            .create_session(&env.ws, None, false)
+            .await
+            .unwrap();
+        goal(&env.state, id, "ship the parser").await;
+        goal(&env.state, id, "criterion cargo test passes").await;
+        ids.push(id);
+    }
+    let mut set = tokio::task::JoinSet::new();
+    for id in ids {
+        let state = env.state.clone();
+        set.spawn(async move { turn(&state, id, "go").await });
+    }
+    while set.join_next().await.is_some() {}
+    let logged = wait_lines(&env.log, 8).await;
+    assert_eq!(logged.len(), 8);
 }

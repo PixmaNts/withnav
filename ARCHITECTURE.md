@@ -788,15 +788,20 @@ the later 0.6 scope, not this contract.
   `session/goal_check.rs`. The service starts one watcher per root session (none for a child, none
   without a usable metacognition layer), subscribed to the live events like `session/flows.rs`.
   On a `turn.end` that did not yield, with `RuntimeStatus::goal` active and holding a criterion,
-  it spawns one check off the turn's path: `Service::ledger` and `digest`, cut by whole lines so
-  instructions and digest stay within `MAX_INPUT_BYTES` (4 KiB), one tool-free chat call to the
-  metacognition model (`MAX_OUTPUT_TOKENS` 300, the layer's variant, `CHECK_DEADLINE` 20 s, no
-  retry, cancelled with the session). `GoalChecks` (one field of `Service`, by session id so a
-  resume keeps the rate) holds one check in flight per session and `MAX_CHECKS_PER_WINDOW` (3)
-  starts per `RATE_WINDOW` (one hour). Every check or skip is one line of
-  `<data dir>/goal-checks.jsonl` (`paths::goal_check_log`); nothing reaches the session, its
-  events or a client. `Service::install_goal_check_test` (test-support) replaces its clock and
-  deadline.
+  it spawns one check off the turn's path. One `Service::ledger` fold gives both the goal
+  (a different revision is `goal_changed`, no call) and the `digest`, which `goal_check/input.rs`
+  shapes line by line to `MAX_INPUT_BYTES` (4 KiB) with the instructions: the goal at most half
+  (whole criteria, the rest named as omitted), then the agent's last turn text dropped before
+  files and commands. One tool-free chat call to the metacognition model follows
+  (`MAX_OUTPUT_TOKENS` 300, the layer's variant, `CHECK_DEADLINE` 20 s, no retry, cancelled with
+  the session). The answer is read against what was sent: a status for a criterion not sent is
+  dropped, and `supported` stands only on a quote of a command or file-change line sent.
+  `GoalChecks` (one field of `Service`, by session id so a resume keeps the rate) holds one check
+  in flight per session and `MAX_CHECKS_PER_WINDOW` (3) starts per `RATE_WINDOW` (one hour). Every
+  check or skip is one line of `<data dir>/goal-checks.jsonl` (`paths::goal_check_log`), a rate
+  skip once per window; nothing reaches the session, its events or a client. A watcher whose
+  event stream the bus drops logs a warning. `Service::install_goal_check_test` (test-support)
+  replaces its clock and deadline.
 - Compaction (a summary standing for the start of a long conversation): `agent/compaction.rs` plans
   it (pure: the protected tail, which old tool outputs become markers, the boundary `through_message`,
   sized with `context::estimate`), `agent/compaction/summary.rs` builds and validates the summary

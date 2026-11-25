@@ -322,7 +322,7 @@ async fn tool_loop_is_capped_then_forces_the_answer() {
 }
 
 // Given a provider whose first response never arrives in time
-// When the whole remark exceeds its 20 s budget
+// When the whole remark exceeds its 60 s budget
 // Then the metacognition reports the budget ran out (not silence: nothing
 //      was judged) and the log records the cancelled round.
 #[tokio::test]
@@ -338,7 +338,7 @@ async fn over_budget_is_reported_not_silence() {
         .and(path("/chat/completions"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_delay(Duration::from_secs(60))
+                .set_delay(Duration::from_secs(120))
                 .set_body_raw(slow, "text/event-stream"),
         )
         .mount(&server)
@@ -348,13 +348,13 @@ async fn over_budget_is_reported_not_silence() {
     let c = commenter(server.uri(), Some(log_path.clone()));
     let cancel = tokio_util::sync::CancellationToken::new();
     let ctx = remark_ctx(&ws, vec![]);
-    // Paused clock: the mock's 60 s delay and the 20 s budget both advance
+    // Paused clock: the mock's 120 s delay and the 60 s budget both advance
     // in virtual time, so the test itself is instant.
     tokio::time::pause();
     let started = std::time::Instant::now();
     let out = c.remark(&ctx, &cancel).await;
     assert!(
-        matches!(out, Err(ModelError::OverBudget { budget_ms: 20_000 })),
+        matches!(out, Err(ModelError::OverBudget { budget_ms: 60_000 })),
         "over budget is not silence: {out:?}"
     );
     assert!(

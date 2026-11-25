@@ -98,7 +98,7 @@ async fn a_change_under_the_pipelines_size_limit_never_triggers() {
         with_min_changed_lines(d, ws, 3)
     })
     .await;
-    let uri = format!("file://{}/src/main.rs", client.tmp.path().display());
+    let uri = common::uri::file_uri(&client.tmp.path().join("src/main.rs"));
     client.did_open(&uri, &base_text(), 1).await;
     // only one line changed
     client
@@ -120,7 +120,7 @@ async fn skips_logs_light_or_not_at_all() {
         |d, ws| with_min_changed_lines(d, ws, 3),
     )
     .await;
-    let uri = format!("file://{}/src/main.rs", client.tmp.path().display());
+    let uri = common::uri::file_uri(&client.tmp.path().join("src/main.rs"));
     client.did_open(&uri, &base_text(), 1).await;
     client
         .notify("withnav/diagnostics", json!({"uri": uri, "items": []}))
@@ -555,13 +555,13 @@ async fn secondary_catalogue_disabled_status_reaches_editor_with_root_name() {
             "method": "workspace/didChangeWorkspaceFolders",
             "params": {
                 "event": {
-                    "added": [{ "uri": format!("file://{}", secondary_root.display()), "name": "secondary" }],
+                    "added": [{ "uri": common::uri::file_uri(&secondary_root), "name": "secondary" }],
                     "removed": []
                 }
             }
         }))
         .await;
-    let uri = format!("file://{}/src.rs", secondary_root.display());
+    let uri = common::uri::file_uri(&secondary_root.join("src.rs"));
     client.client.did_open(&uri, "fn main() {}", 1).await;
     // The status may arrive before or after the completion's answer; `request` hands back the
     // notifications it read before the answer, so look there first.
@@ -583,11 +583,14 @@ async fn secondary_catalogue_disabled_status_reaches_editor_with_root_name() {
         None => client.client.expect("withnav/status", &mut seen).await,
     };
     assert_eq!(status["params"]["state"], "error");
+    // Compared without case: the URI carries a lowercase drive letter on Windows, as VS Code
+    // sends it, so the path in the message reads `c:\…` where `display()` reads `C:\…`.
     assert!(
         status["params"]["message"]
             .as_str()
             .unwrap()
-            .contains(&secondary_root.display().to_string())
+            .to_lowercase()
+            .contains(&secondary_root.display().to_string().to_lowercase())
     );
 }
 
@@ -1230,7 +1233,7 @@ async fn initialize_frame_replay_delivers_first_request_to_serve() {
         "method": "initialize",
         "params": {
             "capabilities": {},
-            "rootUri": format!("file://{}", root.display())
+            "rootUri": common::uri::file_uri(&root)
         }
     }));
     use tokio::io::AsyncWriteExt as _;
@@ -1575,7 +1578,7 @@ async fn two_editor_connections_route_by_session_binding_and_focus_switch_clears
         "method": "initialize",
         "params": {
             "capabilities": {},
-            "rootUri": format!("file://{}", root.display())
+            "rootUri": common::uri::file_uri(&root)
         }
     }));
     let init_frame_b = common::lsp::frame(json!({
@@ -1584,7 +1587,7 @@ async fn two_editor_connections_route_by_session_binding_and_focus_switch_clears
         "method": "initialize",
         "params": {
             "capabilities": {},
-            "rootUri": format!("file://{}", root.display())
+            "rootUri": common::uri::file_uri(&root)
         }
     }));
 

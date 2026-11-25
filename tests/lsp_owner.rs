@@ -80,7 +80,7 @@ async fn two_editors_share_owner_and_one_closing_does_not_stop_the_other() {
         "method": "initialize",
         "params": {
             "capabilities": {},
-            "rootUri": format!("file://{}", ws_a.display())
+            "rootUri": common::uri::file_uri(&ws_a)
         }
     }));
     let init_b = frame(json!({
@@ -89,7 +89,7 @@ async fn two_editors_share_owner_and_one_closing_does_not_stop_the_other() {
         "method": "initialize",
         "params": {
             "capabilities": {},
-            "rootUri": format!("file://{}", ws_b.display())
+            "rootUri": common::uri::file_uri(&ws_b)
         }
     }));
 
@@ -305,7 +305,7 @@ async fn killing_the_owner_ends_bridge_whose_stdin_stays_open() {
         "method": "initialize",
         "params": {
             "capabilities": {},
-            "rootUri": format!("file://{}", ws.display())
+            "rootUri": common::uri::file_uri(&ws)
         }
     }));
     bridge
@@ -363,7 +363,7 @@ async fn failing_preflight_makes_bridge_exit_nonzero_with_stderr_message() {
         "method": "initialize",
         "params": {
             "capabilities": {},
-            "rootUri": format!("file://{}", ws.display())
+            "rootUri": common::uri::file_uri(&ws)
         }
     }));
     bridge

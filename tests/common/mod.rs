@@ -12,6 +12,8 @@ pub mod deadline;
 
 pub mod lsp;
 
+pub mod uri;
+
 pub mod owner;
 
 pub mod navigator;

@@ -2,7 +2,6 @@
 //! `AppState` on the same database file answers GET, SSE and POST over HTTP
 //! from the stored history, and an unknown or deleted id stays a 404.
 
-use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -252,7 +251,7 @@ async fn posting_to_a_stopped_conversation_says_to_resume_first() {
     // Resumed and stopped again: the store answers the same way.
     let resumed: Value = common::server::post_create_session(
         &restarted.base,
-        &json!({ "workspace": Path::new("/ignored"), "resume": restarted.id }),
+        &json!({ "workspace": std::env::temp_dir().join("ignored"), "resume": restarted.id }),
     )
     .await
     .json()

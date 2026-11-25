@@ -79,9 +79,9 @@ async fn two_independent_lsp_connections_equal_request_ids_different_contents_an
     let init_params = json!({
         "processId": null,
         "capabilities": {},
-        "rootUri": format!("file://{}", tmp.path().display()),
+        "rootUri": common::uri::file_uri(tmp.path()),
         "workspaceFolders": [
-            { "uri": format!("file://{}", tmp.path().display()), "name": "tmp" }
+            { "uri": common::uri::file_uri(tmp.path()), "name": "tmp" }
         ]
     });
 
@@ -103,7 +103,7 @@ async fn two_independent_lsp_connections_equal_request_ids_different_contents_an
         .send(&json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}))
         .await;
 
-    let uri = format!("file://{}/src/main.rs", tmp.path().display());
+    let uri = common::uri::file_uri(&tmp.path().join("src/main.rs"));
 
     // Both connections open the exact same document URI with different unsaved contents
     client_a.did_open(&uri, "fn main() { /* A */ }\n", 1).await;
@@ -238,10 +238,10 @@ async fn fake_fim_verifies_exact_input_text_prompt_and_context_isolation() {
             "params": {
                 "processId": null,
                 "capabilities": {},
-                "rootUri": format!("file://{}", root_a.display()),
+                "rootUri": common::uri::file_uri(&root_a),
                 "workspaceFolders": [
-                    { "uri": format!("file://{}", root_a.display()), "name": "root_a" },
-                    { "uri": format!("file://{}", root_b.display()), "name": "root_b" },
+                    { "uri": common::uri::file_uri(&root_a), "name": "root_a" },
+                    { "uri": common::uri::file_uri(&root_b), "name": "root_b" },
                 ]
             }
         }))
@@ -256,7 +256,7 @@ async fn fake_fim_verifies_exact_input_text_prompt_and_context_isolation() {
     let file_a = root_a.join("src/parser.rs");
     std::fs::create_dir_all(file_a.parent().unwrap()).unwrap();
     std::fs::write(&file_a, "fn parse() {\n    let token = 1;\n}\n").unwrap();
-    let uri_a = format!("file://{}", file_a.display());
+    let uri_a = common::uri::file_uri(&file_a);
 
     client
         .did_open(&uri_a, "fn parse() {\n    let token = 1;\n}\n", 1)
@@ -304,7 +304,7 @@ async fn fake_fim_verifies_exact_input_text_prompt_and_context_isolation() {
     // 2. Completion in Root B: prompt must NOT contain Root A's intent
     let file_b = root_b.join("src/other.rs");
     std::fs::write(&file_b, "fn other() {\n    let x = 2;\n}\n").unwrap();
-    let uri_b = format!("file://{}", file_b.display());
+    let uri_b = common::uri::file_uri(&file_b);
 
     client
         .did_open(&uri_b, "fn other() {\n    let x = 2;\n}\n", 1)
@@ -368,9 +368,9 @@ async fn lsp_serve_detach_guard_cleans_up_on_eof_or_drop() {
             "params": {
                 "processId": null,
                 "capabilities": {},
-                "rootUri": format!("file://{}", tmp.path().display()),
+                "rootUri": common::uri::file_uri(tmp.path()),
                 "workspaceFolders": [
-                    { "uri": format!("file://{}", tmp.path().display()), "name": "tmp" },
+                    { "uri": common::uri::file_uri(tmp.path()), "name": "tmp" },
                 ]
             }
         }))
@@ -581,7 +581,7 @@ async fn lsp_input_error_cancels_blocked_fim_and_detaches_editor() {
     let server = tokio::spawn(withnav::navigator::serve(reader, server_output, deps));
     let mut client = common::navigator::LspClient::from_streams(client_write, client_read);
     client.initialize(json!({})).await;
-    let uri = format!("file://{}/blocked.rs", dir.path().display());
+    let uri = common::uri::file_uri(&dir.path().join("blocked.rs"));
     client.did_open(&uri, "fn x() {}", 1).await;
     client
         .send(
@@ -693,9 +693,9 @@ async fn cross_editor_bound_and_unbound_reflex_input_and_context_isolation() {
     let init_params = json!({
         "processId": null,
         "capabilities": {},
-        "rootUri": format!("file://{}", tmp.path().display()),
+        "rootUri": common::uri::file_uri(tmp.path()),
         "workspaceFolders": [
-            { "uri": format!("file://{}", tmp.path().display()), "name": "workspace" }
+            { "uri": common::uri::file_uri(tmp.path()), "name": "workspace" }
         ]
     });
 
@@ -725,7 +725,7 @@ async fn cross_editor_bound_and_unbound_reflex_input_and_context_isolation() {
     assert_eq!(feed.active_session(), Some(session_b));
 
     // Client A opens file and requests inline completion
-    let uri_a = format!("file://{}/src/file_a.rs", tmp.path().display());
+    let uri_a = common::uri::file_uri(&tmp.path().join("src/file_a.rs"));
     client_a
         .did_open(&uri_a, "fn fa() {\n    let a = 1;\n}\n", 1)
         .await;
@@ -766,7 +766,7 @@ async fn cross_editor_bound_and_unbound_reflex_input_and_context_isolation() {
     );
 
     // Client B opens file and requests inline completion
-    let uri_b = format!("file://{}/src/file_b.rs", tmp.path().display());
+    let uri_b = common::uri::file_uri(&tmp.path().join("src/file_b.rs"));
     client_b
         .did_open(&uri_b, "fn fb() {\n    let b = 2;\n}\n", 1)
         .await;
@@ -846,9 +846,9 @@ async fn eof_and_serve_future_abort_with_blocked_work_cancels_and_deregisters() 
     let init_params = json!({
         "processId": null,
         "capabilities": {},
-        "rootUri": format!("file://{}", tmp.path().display()),
+        "rootUri": common::uri::file_uri(tmp.path()),
         "workspaceFolders": [
-            { "uri": format!("file://{}", tmp.path().display()), "name": "workspace" }
+            { "uri": common::uri::file_uri(tmp.path()), "name": "workspace" }
         ]
     });
 
@@ -864,7 +864,7 @@ async fn eof_and_serve_future_abort_with_blocked_work_cancels_and_deregisters() 
     assert!(feed.select_editor(None).is_ok());
 
     // Send inline completion to trigger blocked model call
-    let uri = format!("file://{}/src/blocked.rs", tmp.path().display());
+    let uri = common::uri::file_uri(&tmp.path().join("src/blocked.rs"));
     client
         .did_open(&uri, "fn b() {\n    let x = 1;\n}\n", 1)
         .await;
@@ -928,7 +928,7 @@ async fn eof_and_serve_future_abort_with_blocked_work_cancels_and_deregisters() 
 
     assert!(feed.select_editor(None).is_ok());
 
-    let uri_2 = format!("file://{}/src/blocked2.rs", tmp.path().display());
+    let uri_2 = common::uri::file_uri(&tmp.path().join("src/blocked2.rs"));
     client_2
         .did_open(&uri_2, "fn b2() {\n    let x = 2;\n}\n", 1)
         .await;

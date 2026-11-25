@@ -23,6 +23,14 @@ requests land in `develop`.
   context breakdown. The ledger and its digest list it first; the terminal client's right column
   shows it before the ledger. Bounds: 500 characters for the objective, 300 per criterion, 10
   criteria; longer text is refused. Only the Captain sets it; it authorizes nothing.
+- A shadow check of the goal's criteria: after a turn of a top-level conversation whose goal is
+  active with at least one criterion, the metacognition model (when assigned) reads the ledger
+  digest, within 4 KiB of input and 300 output tokens, and marks each criterion supported,
+  contradicted or not checked, never on the agent's word alone. Each check is one line of
+  `goal-checks.jsonl` in the data directory (outcome, statuses with a short evidence quote,
+  latency, size, tokens, model) and is shown nowhere yet. It runs beside the turn, never delaying
+  it: one at a time per conversation, at most three per hour, 20 seconds each; a skipped or
+  timed-out check is logged as such.
 
 ## [0.8.4] - 2026-11-24
 

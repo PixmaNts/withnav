@@ -364,6 +364,8 @@ pub struct Service {
     pub(crate) child_operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
     catalog: crate::provider::catalog::ModelCatalog,
     pub client_cache: Arc<crate::provider::openai::ClientCache>,
+    /// The shadow goal checks of every root session: the one running, the recent starts.
+    pub(super) goal_checks: Arc<super::goal_check::GoalChecks>,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
     /// Test seam: parks a model switch after its store write and before its
@@ -659,6 +661,7 @@ impl Service {
             child_operations: Arc::default(),
             catalog,
             client_cache,
+            goal_checks: Arc::default(),
             #[cfg(test)]
             install_barrier: Arc::default(),
             #[cfg(test)]
@@ -739,6 +742,11 @@ impl Service {
     /// The history store.
     pub fn history(&self) -> &super::store::HistoryStore {
         &self.history
+    }
+
+    /// The service's model catalogue (context windows and offers, cached per endpoint).
+    pub(super) fn model_catalog(&self) -> &crate::provider::catalog::ModelCatalog {
+        &self.catalog
     }
 
     /// Debug-build observation seam for resume and child inheritance tests.
@@ -3326,6 +3334,10 @@ impl Service {
         };
         let sender = SessionSender::new(session_id, handle.clone());
         super::flows::settled(handle.clone(), session_id.to_string()).await;
+        // Children never hold a goal, so only a root gets the completion-check watcher.
+        if child_parent.is_none() {
+            self.watch_goal_checks(&handle, session_id).await;
+        }
         let cancel = handle.session_cancel.clone();
         {
             let _admission = if child_parent.is_none() {

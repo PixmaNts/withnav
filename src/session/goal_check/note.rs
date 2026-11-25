@@ -17,9 +17,9 @@ use crate::session::service::SessionId;
 /// The flow name a note carries in its provenance.
 pub(super) const FLOW: &str = "goal-watch";
 /// The longest note text, in characters, before the flow-note wrapper.
-pub const MAX_NOTE_CHARS: usize = 600;
+pub const MAX_NOTE_CHARS: usize = 2000;
 /// Longest criterion text quoted in a note, in characters.
-const MAX_CRITERION_CHARS: usize = 80;
+const MAX_CRITERION_CHARS: usize = 300;
 const FOOTER: &str = "This is an automatic observation, not a Captain instruction.";
 /// Widest decimal `u64`, for a revision or a criterion index.
 const U64_DIGITS: usize = 20;
@@ -220,9 +220,17 @@ contradicted. This is an automatic observation, not a Captain instruction."
 
     #[test]
     fn a_long_note_counts_what_it_leaves_out() {
-        let criteria: Vec<String> = (0..10).map(|n| format!("{n}{}", "c".repeat(300))).collect();
+        let criteria: Vec<String> = (0..10)
+            .map(|n| format!("{n}{}", "c".repeat(MAX_CRITERION_CHARS)))
+            .collect();
         let statuses: Vec<Status> = (1..=10)
-            .map(|n| status(n, CriterionStatus::Contradicted, &"e".repeat(120)))
+            .map(|n| {
+                status(
+                    n,
+                    CriterionStatus::Contradicted,
+                    &"e".repeat(super::super::MAX_EVIDENCE_CHARS),
+                )
+            })
             .collect();
         let refs: Vec<&Status> = statuses.iter().collect();
         let note = text(12, &criteria, &refs);
@@ -234,7 +242,9 @@ contradicted. This is an automatic observation, not a Captain instruction."
 
     #[test]
     fn the_first_finding_is_always_named_in_full_at_its_widest() {
-        let criteria: Vec<String> = (0..10).map(|n| format!("{n}{}", "c".repeat(300))).collect();
+        let criteria: Vec<String> = (0..10)
+            .map(|n| format!("{n}{}", "c".repeat(MAX_CRITERION_CHARS)))
+            .collect();
         let evidence = "e".repeat(super::super::MAX_EVIDENCE_CHARS);
         let statuses: Vec<Status> = (1..=10)
             .rev()

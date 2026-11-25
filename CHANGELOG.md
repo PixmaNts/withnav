@@ -11,7 +11,7 @@ requests land in `develop`.
 - The session ledger: what a conversation did (turns and how the last one ended, files changed,
   shell commands with their exit code, commands that failed more than once, the last answer, the
   questions still waiting), rebuilt from the conversation's stored events on each read, with every
-  list bounded and a text digest of at most 4 KiB. Served by `GET /v1/sessions/{id}/ledger` for
+  list bounded and a text digest of at most 16 KiB. Served by `GET /v1/sessions/{id}/ledger` for
   every session, stopped ones and subagents included; the terminal client's right column shows its
   turns, files and repeated failures.
 - The session goal: `/goal <objective>` records what counts as done for a conversation, `/goal
@@ -21,23 +21,28 @@ requests land in `develop`.
   a stop, a restart and a resume. While it is active, each request carries it as a labelled block
   (not a transcript message, so compaction never summarizes it), counted under `goal` in the
   context breakdown. The ledger and its digest list it first; the terminal client's right column
-  shows it before the ledger. Bounds: 500 characters for the objective, 300 per criterion, 10
+  shows it before the ledger. Bounds: 4000 characters for the objective, 1000 per criterion, 30
   criteria; longer text is refused. Only the Captain sets it; it authorizes nothing.
 - A shadow check of the goal's criteria: after a turn of a top-level conversation whose goal is
   active with at least one criterion, the metacognition model (when assigned) reads the ledger
-  digest, within 4 KiB of input and 300 output tokens, and marks each criterion supported,
+  digest, within 16 KiB of input and 1000 output tokens, and marks each criterion supported,
   contradicted or not checked; "supported" stands only on a quoted command or file-change line,
   never on the agent's word, and a long goal takes at most half of the input. Each check is one line of
   `goal-checks.jsonl` in the data directory (outcome, statuses with a short evidence quote,
   latency, size, tokens, model) and is shown nowhere yet. It runs beside the turn, never delaying
-  it: one at a time per conversation, at most three per hour (the first skip of each hour is
-  logged), 20 seconds each; a skipped, timed-out or outdated check is logged as such.
+  it: one at a time per conversation, at most ten per hour (the first skip of each hour is
+  logged), 60 seconds each; a skipped, timed-out or outdated check is logged as such.
 - Goal watch notes, off by default: with `goal_watch.notes` set to `true`, a goal check that finds a
   contradicted criterion, or a criterion still not checked after a turn the agent ended on its
-  own, passes it to the agent as one short note (at most 600 characters, marked as an automatic
+  own, passes it to the agent as one short note (at most 2000 characters, marked as an automatic
   observation, not your instruction) with its next turn. A note never starts a turn, is sent once
   per goal revision for the same findings, never goes to a subagent, and each line of
   `goal-checks.jsonl` says whether a note was sent (`note_sent`) and, if not, why (`note_skipped`).
+
+### Changed
+
+- Goal-watch limits raised, about fourfold, so the models get more context: the bounds above are
+  the new ones (ledger lists and texts, goal, check input, output, rate and time, note).
 
 ## [0.8.4] - 2026-11-24
 

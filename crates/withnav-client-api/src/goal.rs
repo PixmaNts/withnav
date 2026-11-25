@@ -13,12 +13,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::{EventEnvelope, EventKind};
 
+// The bounds below were raised on 2026-11-25 so a goal can state more; every request carries the
+// goal, so tighten them again if its context share, latency or cost suffer.
+
 /// Longest objective, in characters. A longer one is refused, never cut.
-pub const MAX_OBJECTIVE_CHARS: usize = 500;
+pub const MAX_OBJECTIVE_CHARS: usize = 4000;
 /// Most success criteria one goal holds.
-pub const MAX_CRITERIA: usize = 10;
+pub const MAX_CRITERIA: usize = 30;
 /// Longest criterion, in characters. A longer one is refused, never cut.
-pub const MAX_CRITERION_CHARS: usize = 300;
+pub const MAX_CRITERION_CHARS: usize = 1000;
 
 /// Whether the goal is shown to the agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

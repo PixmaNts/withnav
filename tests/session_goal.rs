@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use withnav::provider::openai::ChatMessage;
 use withnav::server::AppState;
 use withnav::session::CommandOutcome;
+use withnav_client_api::goal::{MAX_CRITERIA, MAX_CRITERION_CHARS, MAX_OBJECTIVE_CHARS};
 
 mod common;
 use common::server::{
@@ -137,37 +138,50 @@ async fn a_bound_is_an_error_never_a_silent_cut() {
     let id = state.create_session(&ws, None, false).await.unwrap();
 
     assert_eq!(
-        refused(&state, id, &"o".repeat(501)).await,
-        "the objective is 501 characters long; the limit is 500"
+        refused(&state, id, &"o".repeat(MAX_OBJECTIVE_CHARS + 1)).await,
+        format!(
+            "the objective is {} characters long; the limit is {MAX_OBJECTIVE_CHARS}",
+            MAX_OBJECTIVE_CHARS + 1
+        )
     );
     assert_eq!(shown(&state, id).await, Value::Null);
     assert!(goal_events(&state, id).await.is_empty());
 
-    let at_bound = "é".repeat(500);
+    let at_bound = "é".repeat(MAX_OBJECTIVE_CHARS);
     assert_eq!(
         ok(&state, id, &at_bound).await["goal"]["objective"],
         at_bound
     );
+    let over = "c".repeat(MAX_CRITERION_CHARS + 1);
     assert_eq!(
-        refused(&state, id, &format!("criterion {}", "c".repeat(301))).await,
-        "the criterion is 301 characters long; the limit is 300"
+        refused(&state, id, &format!("criterion {over}")).await,
+        format!(
+            "the criterion is {} characters long; the limit is {MAX_CRITERION_CHARS}",
+            MAX_CRITERION_CHARS + 1
+        )
     );
-    ok(&state, id, &format!("criterion {}", "c".repeat(300))).await;
-    for n in 2..=10 {
+    ok(
+        &state,
+        id,
+        &format!("criterion {}", "c".repeat(MAX_CRITERION_CHARS)),
+    )
+    .await;
+    for n in 2..=MAX_CRITERIA {
         ok(&state, id, &format!("criterion number {n}")).await;
     }
     let before = shown(&state, id).await;
-    assert_eq!(before["criteria"].as_array().unwrap().len(), 10);
+    assert_eq!(before["criteria"].as_array().unwrap().len(), MAX_CRITERIA);
     assert_eq!(
         refused(&state, id, "criterion one too many").await,
-        "a goal holds at most 10 criteria"
+        format!("a goal holds at most {MAX_CRITERIA} criteria")
     );
     assert_eq!(
         shown(&state, id).await,
         before,
         "the refused changes left it as it was"
     );
-    assert_eq!(goal_events(&state, id).await.len(), 11);
+    // The objective, then one event per criterion.
+    assert_eq!(goal_events(&state, id).await.len(), 1 + MAX_CRITERIA);
 }
 
 // Given a session

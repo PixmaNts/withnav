@@ -6,6 +6,11 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- Instinct calls may take 4 s (flow budgets 8 s), metacognition remarks and reflex context 60 s;
+  raised to give the models room, to be tightened if latency hurts.
+
 ## [0.8.4] - 2026-11-24
 
 ### Changed

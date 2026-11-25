@@ -2358,7 +2358,7 @@ struct OutageState {
 }
 
 /// Keeps an Instinct outage between evaluations, so a turn whose first decision
-/// fails does not pay the flow deadline (2 500 ms in `agent::authorize`) once
+/// fails does not pay the flow deadline (8 500 ms in `agent::authorize`) once
 /// per later tool call: measured 2026-11-13 behind a stalling fake at the
 /// decision-client seam (50 ms, then a provider error), the four calls after the
 /// first waited 209.8 ms before this and 1.98 ms with the window.
@@ -2600,9 +2600,11 @@ impl FlowRuntime {
                 continue;
             }
             let budget = if header.blocking {
-                header.budget_ms.unwrap_or(2000)
+                header
+                    .budget_ms
+                    .unwrap_or(instinct_flow::BLOCKING_BUDGET_MS)
             } else {
-                5000
+                instinct_flow::ASYNC_DEADLINE_MS
             };
             let options = RunOptions {
                 deadline: started + Duration::from_millis(budget),
@@ -2722,8 +2724,10 @@ impl FlowRuntime {
             // Overrides can tighten this verdict but never supply protected authority.
             // This compiled object and its template come solely from binary resources,
             // not from the active snapshot or a same-name disk definition.
+            // The protected check shares the blocking budget of the flows that
+            // already ran on this call, measured from the same start.
             let options = RunOptions {
-                deadline: started + Duration::from_millis(2000),
+                deadline: started + Duration::from_millis(instinct_flow::BLOCKING_BUDGET_MS),
                 run_id: ulid::Ulid::generate().to_string(),
             };
             let evidence_cut = context
@@ -3058,7 +3062,7 @@ impl FlowRuntime {
             &context,
             client.as_ref(),
             RunOptions {
-                deadline: Instant::now() + Duration::from_millis(2000),
+                deadline: Instant::now() + Duration::from_millis(instinct_flow::BLOCKING_BUDGET_MS),
                 run_id: ulid::Ulid::generate().to_string(),
             },
             &cancel,

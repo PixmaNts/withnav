@@ -354,7 +354,7 @@ function Studio({ api, route, navigate, flowsDrawer, inspectorDrawer }: { api: S
             </Center>
           ) : (
             <>
-              <FlowHeader doc={doc} def={def} edit={edit} dirty={dirty} state={state} canBlock={!!trigger?.can_block} cap={catalogue.data?.limits.blocking_budget_ms ?? 2000} health={health.data?.flows.find((h) => h.name === doc.name)} onSave={onSave} onDiscard={editor.discard} onReload={onReload} reloading={reload.busy} />
+              <FlowHeader doc={doc} def={def} edit={edit} dirty={dirty} state={state} canBlock={!!trigger?.can_block} cap={catalogue.data?.limits.blocking_budget_ms ?? 8000} health={health.data?.flows.find((h) => h.name === doc.name)} onSave={onSave} onDiscard={editor.discard} onReload={onReload} reloading={reload.busy} />
               {state.saveError && (
                 <Banner tone="bad" onClose={undefined}>
                   {state.saveError.message}

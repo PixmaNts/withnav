@@ -79,4 +79,16 @@ mod tests {
                 .unwrap();
         }
     }
+
+    #[test]
+    fn permission_flow_uses_the_whole_blocking_budget() {
+        let (definition, _) = super::all_definitions()
+            .into_iter()
+            .find(|(d, _)| d.flow.name == "permission-default")
+            .expect("embedded permission definition");
+        assert_eq!(
+            definition.flow.budget_ms,
+            Some(instinct_flow::BLOCKING_BUDGET_MS)
+        );
+    }
 }

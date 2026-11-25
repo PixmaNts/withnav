@@ -152,7 +152,7 @@ async fn execute(cli: Cli) -> Result<(), String> {
                 endpoint,
                 model,
                 key,
-                Duration::from_secs(2),
+                Duration::from_millis(CALL_DEADLINE_MS),
                 BTreeMap::new(),
             )
             .map_err(|e| e.to_string())?;
@@ -162,7 +162,9 @@ async fn execute(cli: Cli) -> Result<(), String> {
                 &AbsentInputs,
                 &client,
                 RunOptions {
-                    deadline: Instant::now() + Duration::from_secs(5),
+                    // The engine narrows this to the flow's own budget.
+                    deadline: Instant::now()
+                        + Duration::from_millis(BLOCKING_BUDGET_MS.max(ASYNC_DEADLINE_MS)),
                     run_id: ulid::Ulid::generate().to_string(),
                 },
                 &CancellationToken::new(),

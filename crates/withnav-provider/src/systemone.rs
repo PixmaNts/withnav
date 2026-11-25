@@ -2,7 +2,7 @@
 //! `{model, state, questions}` and the answer in `answers` (shape captured in
 //! `tests/fixtures/navigator/systemone_multi.json`).
 //!
-//! One HTTP client per provider via [`ClientCache`], one ~2 s deadline
+//! One HTTP client per provider via [`ClientCache`], one ~4 s deadline
 //! covering send and body, cancellation honoured between send and body.
 
 use std::time::Duration;
@@ -15,8 +15,10 @@ use crate::error::ProviderError;
 use crate::openai::ClientCache;
 
 /// The instinct's wall-clock budget for one System One call, covering send
-/// and body (spec: ~2 s).
-pub const SYSTEMONE_DEADLINE: Duration = Duration::from_millis(2_000);
+/// and body: the flow engine's per-call ceiling. At 2 s a permission run timed
+/// out at 2001 ms with no room for its fallback (observed 2026-11, while calls
+/// usually answer at p50 ≈ 265 ms, p95 ≈ 434 ms), so it was raised to 4 s.
+pub const SYSTEMONE_DEADLINE: Duration = Duration::from_millis(instinct_flow::CALL_DEADLINE_MS);
 
 pub use instinct_flow::protocol::{
     Answer, Answers, DecisionRequest, DecisionResponse, DecisionUsage, Question, Questions,
@@ -163,7 +165,7 @@ impl SystemOneClient {
     ) -> Result<Self, ProviderError> {
         let base_url = provider.base_url.trim_end_matches('/').to_string();
         // The per-layer deadline overrides the configured request timeout, so
-        // a slow-configured provider still answers within ~2 s.
+        // a slow-configured provider still answers within ~4 s.
         let deadline_ms = SYSTEMONE_DEADLINE.as_millis() as u64;
         let layer_config = ProviderConfig {
             base_url: base_url.clone(),

@@ -336,7 +336,8 @@ pub async fn prune(
         let result = tokio::select! {
             biased;
             _ = cancel.cancelled() => return None,
-            result = tokio::time::timeout(std::time::Duration::from_millis(2500), decision.decide(&batch.state, &batch.questions, cancel)) => result,
+            // One instinct call plus the same 500 ms margin the watchdog keeps.
+            result = tokio::time::timeout(crate::provider::systemone::SYSTEMONE_DEADLINE + std::time::Duration::from_millis(500), decision.decide(&batch.state, &batch.questions, cancel)) => result,
         };
         answers.extend(result.ok()?.ok()?);
     }

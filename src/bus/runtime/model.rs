@@ -480,11 +480,13 @@ async fn compact_for_target(
     };
     let message = destination_message(actor, role);
     let tools = actor.effective_tool_schemas_for_role(role.map(Arc::as_ref));
+    let session_goal = actor.goal_message();
     let components = || crate::agent::compaction::Components {
         system_prompt: message.as_deref(),
         rules: actor.rules.message(),
         skills: actor.effective_skills_catalog_for_role(role.map(Arc::as_ref)),
         tools: &tools,
+        goal: session_goal.as_deref(),
     };
     let mut written =
         summarize_with_components(actor, status, cancel, &seen_by_target, goal, components()).await;
@@ -533,13 +535,16 @@ fn destination_breakdown(
     let message = destination_message(actor, role);
     let transcript = actor.planning_transcript(floor, destination);
     let history = crate::agent::compaction::effective_history(&transcript, compaction);
-    crate::agent::context::estimate(
-        message.as_deref(),
-        actor.rules.message(),
-        actor.effective_skills_catalog_for_role(role.map(Arc::as_ref)),
-        &history,
-        &actor.effective_tool_schemas_for_role(role.map(Arc::as_ref)),
-    )
+    let goal = actor.goal_message();
+    let tools = actor.effective_tool_schemas_for_role(role.map(Arc::as_ref));
+    crate::agent::compaction::Components {
+        system_prompt: message.as_deref(),
+        rules: actor.rules.message(),
+        skills: actor.effective_skills_catalog_for_role(role.map(Arc::as_ref)),
+        tools: &tools,
+        goal: goal.as_deref(),
+    }
+    .estimate(&history)
 }
 
 fn destination_message(

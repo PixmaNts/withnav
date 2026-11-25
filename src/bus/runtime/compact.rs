@@ -294,6 +294,7 @@ pub(super) async fn summarize(
     goal: Goal<'_>,
 ) -> Result<Summarized, Failure> {
     let role = actor.role_message();
+    let session_goal = actor.goal_message();
     let tools = actor.effective_tool_schemas();
     summarize_with_components(
         actor,
@@ -301,7 +302,7 @@ pub(super) async fn summarize(
         cancel,
         transcript,
         goal,
-        actor.components(role.as_deref(), &tools),
+        actor.components(role.as_deref(), session_goal.as_deref(), &tools),
     )
     .await
 }

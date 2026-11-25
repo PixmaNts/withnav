@@ -1,5 +1,5 @@
-//! When the terminal client reads the session ledger: on each stream connection and after each
-//! turn, one read at a time.
+//! When the terminal client reads the session ledger: on each stream connection, after each
+//! turn and after each goal change, one read at a time.
 use serde_json::json;
 use withnav_client_api::event::{EventEnvelope, EventKind};
 use withnav_client_api::ledger::SessionLedger;
@@ -108,4 +108,29 @@ fn nothing_is_read_before_the_conversation_has_a_session() {
     let mut s = State::default();
     let ev = turn_end(&s, 1);
     assert_eq!(ledger_reads(&update(&mut s, ev).unwrap()), 0);
+}
+
+#[test]
+fn a_goal_change_reads_the_ledger_again() {
+    for (kind, payload) in [
+        (
+            EventKind::GoalUpdated,
+            json!({"revision": 1, "objective": "ship", "criteria": [], "status": "active",
+                   "change": "set"}),
+        ),
+        (EventKind::GoalCleared, json!({"revision": 1})),
+    ] {
+        let mut s = with_session("S1");
+        let envelope = EventEnvelope::new(ulid::Ulid::generate(), 1, kind, payload);
+        let ev = ClientEvent::Envelope {
+            generation: s.generation.clone(),
+            envelope,
+        };
+        assert_eq!(
+            ledger_reads(&update(&mut s, ev).unwrap()),
+            1,
+            "{}",
+            kind.as_str()
+        );
+    }
 }

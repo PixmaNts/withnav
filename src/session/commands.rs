@@ -18,7 +18,7 @@ pub struct CommandSpec {
 
 /// Every registered command, in listing order. A command that is listed but
 /// not built answers [`NOT_AVAILABLE`].
-pub const COMMANDS: [CommandSpec; 9] = [
+pub const COMMANDS: [CommandSpec; 10] = [
     CommandSpec {
         name: "help",
         description: "List the available commands",
@@ -63,6 +63,11 @@ pub const COMMANDS: [CommandSpec; 9] = [
         name: "bypass",
         description: "Bypass ordinary permission prompts; protected requests still ask",
         args_hint: "[on|off]",
+    },
+    CommandSpec {
+        name: "goal",
+        description: "Show or set the session goal; add a success criterion, pause, resume or clear it",
+        args_hint: "[objective|criterion <text>|pause|resume|clear]",
     },
 ];
 
@@ -258,6 +263,7 @@ impl CommandOutcome {
                 }
             }
             "agent" => render_agent(data),
+            "goal" => super::goal::render(data),
             "compact" => {
                 if data["accepted"].as_bool() == Some(true) {
                     return "accepted, runs after this turn".to_string();
@@ -314,7 +320,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "help", "model", "new", "stop", "context", "variant", "compact", "agent", "bypass"
+                "help", "model", "new", "stop", "context", "variant", "compact", "agent", "bypass",
+                "goal"
             ]
         );
         assert!(NOT_AVAILABLE.iter().all(|n| find(n).is_some()));

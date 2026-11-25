@@ -1,8 +1,9 @@
-//! Frozen `EventEnvelope` shape and the 25-kind `EventKind`
+//! Frozen `EventEnvelope` shape and the 27-kind `EventKind`
 //! catalog (the twelve original kinds plus `command.result`,
 //! `context.updated`, `context.compacting`, `session.agent_changed`, `context.compacted`,
 //! `permission.requested`, `permission.resolved`, `model.changed`,
-//! `subagent.spawned`, `subagent.done`, `subagent.watchdog`, `session.bypass` and `mcp.status`).
+//! `subagent.spawned`, `subagent.done`, `subagent.watchdog`, `session.bypass`, `mcp.status`,
+//! `goal.updated` and `goal.cleared`).
 //!
 //! Reserved-but-deferred kind names (NOT in the enum, never emitted this slice):
 //! `prompt.pre_llm`, `tool.progress`, `context.pre_compact` (Phase 3),
@@ -16,6 +17,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 use ulid::Ulid;
 
+pub use crate::goal::{GoalCleared, GoalUpdated};
 use crate::provider::{AssistantMessage, StreamDelta, Usage};
 use crate::tools::ToolStatus;
 
@@ -25,15 +27,16 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// The single root actor id for this slice (all events are published by it).
 pub const ROOT_ACTOR_ID: &str = "agent:main";
 
-/// The catalog emits EXACTLY 25 kinds: 3 session +
+/// The catalog emits EXACTLY 27 kinds: 3 session +
 /// message + 2 turn + 2 llm + 2 tool + 2 agent + task + command result +
 /// context update + context compacting + agent change + context compacted +
-/// 2 permission + model change + 3 subagent + MCP status = 25. The first twelve are frozen;
-/// `command.result`, `context.updated`, `context.compacting`, `session.agent_changed`,
+/// 2 permission + model change + 3 subagent + MCP status + 2 goal = 27. The first twelve are
+/// frozen; `command.result`, `context.updated`, `context.compacting`, `session.agent_changed`,
 /// `context.compacted`, `permission.requested`, `permission.resolved`, `model.changed`,
-/// `subagent.spawned`, `subagent.done`, `subagent.watchdog`, `session.bypass` and `mcp.status`
-/// were added without changing the envelope version.
-pub const EVENT_KIND_COUNT: usize = 25;
+/// `subagent.spawned`, `subagent.done`, `subagent.watchdog`, `session.bypass`, `mcp.status`,
+/// `goal.updated` and `goal.cleared` were added without changing the envelope version: every
+/// client ignores a kind it does not know.
+pub const EVENT_KIND_COUNT: usize = 27;
 
 /// Durable kinds are retained in the reconnect ring and the history store;
 /// `llm.delta`, `context.updated`, `context.compacting` and `mcp.status` are live-only (the
@@ -85,7 +88,9 @@ impl EventKind {
             | Self::SubagentDone
             | Self::SubagentWatchdog
             | Self::SessionBypass
-            | Self::McpStatus => [
+            | Self::McpStatus
+            | Self::GoalUpdated
+            | Self::GoalCleared => [
                 Self::SessionStart,
                 Self::SessionEnd,
                 Self::MessageReceived,
@@ -111,11 +116,13 @@ impl EventKind {
                 Self::SubagentWatchdog,
                 Self::SessionBypass,
                 Self::McpStatus,
+                Self::GoalUpdated,
+                Self::GoalCleared,
             ],
         }
     }
 
-    /// The 25 emitted kinds, in catalog order. The bus iterates this to seed
+    /// The 27 emitted kinds, in catalog order. The bus iterates this to seed
     /// the ring/fan-out.
     pub const ALL: [EventKind; EVENT_KIND_COUNT] = Self::all_variants();
 }
@@ -124,7 +131,7 @@ const _: () = assert!(EventKind::ALL.len() == EVENT_KIND_COUNT);
 
 macro_rules! event_kinds {
     ($($variant:ident => $wire:literal),+ $(,)?) => {
-        /// Typed catalog of the 25 emitted event kinds; the wire name is the dotted
+        /// Typed catalog of the 27 emitted event kinds; the wire name is the dotted
         /// string (serialized verbatim, e.g. `"llm.delta"`).
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         pub enum EventKind {
@@ -168,6 +175,8 @@ event_kinds! {
     SubagentDone => "subagent.done",
     SubagentWatchdog => "subagent.watchdog",
     McpStatus => "mcp.status",
+    GoalUpdated => "goal.updated",
+    GoalCleared => "goal.cleared",
 }
 
 impl EventKind {
@@ -742,11 +751,19 @@ pub struct Breakdown {
     /// The history: user and assistant text, reasoning, tool calls, tool
     /// outputs and loaded skill bodies.
     pub messages: u64,
+    /// The session goal message, sent while the Captain's goal is active. Absent from the wire
+    /// when zero, so a session without a goal serializes as it did before goals existed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub goal: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl Breakdown {
     pub fn total(&self) -> u64 {
-        self.system + self.rules + self.skills_catalog + self.tools + self.messages
+        self.system + self.rules + self.skills_catalog + self.tools + self.messages + self.goal
     }
 }
 
@@ -842,6 +859,9 @@ impl ContextSnapshot {
         ] {
             out.push_str(&format!("\n  {name:<15} ~{}", tokens_k(n)));
         }
+        if b.goal > 0 {
+            out.push_str(&format!("\n  {:<15} ~{}", "goal", tokens_k(b.goal)));
+        }
         out.push_str(&format!(
             "\noutput reserve {} · margin {} · window from {}",
             tokens_k(self.output_reserve),
@@ -910,7 +930,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const KIND_NAMES: [&str; 25] = [
+    const KIND_NAMES: [&str; 27] = [
         "session.start",
         "session.end",
         "message.received",
@@ -936,13 +956,15 @@ mod tests {
         "subagent.watchdog",
         "session.bypass",
         "mcp.status",
+        "goal.updated",
+        "goal.cleared",
     ];
 
     #[test]
     fn event_kind_catalog_is_exactly_the_twenty_one() {
         let kinds = EventKind::ALL;
-        assert_eq!(EVENT_KIND_COUNT, 25);
-        assert_eq!(kinds.len(), 25);
+        assert_eq!(EVENT_KIND_COUNT, 27);
+        assert_eq!(kinds.len(), 27);
         assert_eq!(SCHEMA_VERSION, 1);
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, KIND_NAMES);
@@ -1306,6 +1328,23 @@ mod tests {
                 }],
             })
             .unwrap(),
+        ));
+        cases.push((
+            "goal.updated",
+            serde_json::to_value(GoalUpdated {
+                goal: crate::goal::SessionGoal {
+                    revision: 1,
+                    objective: "ship the parser".into(),
+                    criteria: vec!["tests pass".into()],
+                    status: crate::goal::GoalStatus::Active,
+                },
+                change: crate::goal::GoalChange::Set,
+            })
+            .unwrap(),
+        ));
+        cases.push((
+            "goal.cleared",
+            serde_json::to_value(GoalCleared { revision: 1 }).unwrap(),
         ));
         assert_eq!(cases.len(), EVENT_KIND_COUNT);
 

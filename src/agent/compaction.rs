@@ -138,12 +138,28 @@ pub struct Components<'a> {
     pub rules: Option<&'a str>,
     pub skills: Option<&'a str>,
     pub tools: &'a [ToolDef],
+    /// The Captain's session goal message, while the goal is active. A component, not a
+    /// transcript message: a compaction never summarizes it away.
+    pub goal: Option<&'a str>,
 }
 
 impl Components<'_> {
     /// What the request weighs with an empty history.
     pub fn fixed_tokens(&self) -> u64 {
-        estimate(self.system_prompt, self.rules, self.skills, &[], self.tools).total()
+        self.estimate(&[]).total()
+    }
+
+    /// The estimate, by category, of the request these components send with `history`.
+    pub fn estimate(&self, history: &[ChatMessage]) -> Breakdown {
+        let mut breakdown = estimate(
+            self.system_prompt,
+            self.rules,
+            self.skills,
+            history,
+            self.tools,
+        );
+        breakdown.goal = crate::agent::context::goal_tokens(self.goal);
+        breakdown
     }
 }
 
@@ -755,13 +771,7 @@ pub fn estimate_effective(
     transcript: &[ChatMessage],
     compaction: Option<&Compaction>,
 ) -> Breakdown {
-    estimate(
-        components.system_prompt,
-        components.rules,
-        components.skills,
-        &effective_history(transcript, compaction),
-        components.tools,
-    )
+    components.estimate(&effective_history(transcript, compaction))
 }
 
 #[cfg(test)]

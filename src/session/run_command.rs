@@ -263,6 +263,7 @@ impl Service {
             // The stop itself is done by `run_command` after the result is
             // published: the stream ends with the session.
             "stop" => Ok(Done::data(json!({ "stopped": true }))),
+            "goal" => self.goal_command(handle, arguments).await,
             other => Err(CommandFailure::Refused(commands::not_available_error(
                 other,
             ))),

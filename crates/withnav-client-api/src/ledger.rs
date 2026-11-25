@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::event::TurnEndOutcome;
+pub use crate::goal::{GoalStatus, SessionGoal};
 
 /// Files kept in [`SessionLedger::files_touched`], most recently changed first.
 pub const MAX_FILES_TOUCHED: usize = 50;
@@ -55,10 +56,10 @@ pub struct SessionLedger {
     /// How many times the conversation was compacted.
     #[serde(default)]
     pub compactions: u64,
-    /// The goal the Captain set for the session. Nothing sets it yet: the field is part of the
-    /// contract so readers already accept it.
+    /// The goal the Captain set for the session (`/goal`), paused or active; `None` when none is
+    /// set or it was cleared. The same fold of the goal events a resume uses.
     #[serde(default)]
-    pub goal: Option<LedgerGoal>,
+    pub goal: Option<SessionGoal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -150,12 +151,4 @@ pub struct OpenQuestion {
     /// Set when the request is a child's, mirrored on its parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_session_id: Option<Ulid>,
-}
-
-/// A session goal and its success criteria.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct LedgerGoal {
-    pub text: String,
-    #[serde(default)]
-    pub criteria: Vec<String>,
 }

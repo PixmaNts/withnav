@@ -54,7 +54,14 @@ pub fn outcome_text(name: &str, ok: bool, data: Option<&Value>, error: Option<&s
                     out.push_str(&format!(" · input budget {}", tokens(budget)));
                 }
                 let b = &data["breakdown"];
-                for key in ["system", "rules", "skills_catalog", "tools", "messages"] {
+                for key in [
+                    "system",
+                    "rules",
+                    "skills_catalog",
+                    "tools",
+                    "messages",
+                    "goal",
+                ] {
                     if let Some(n) = b[key].as_u64() {
                         out.push_str(&format!("\n  {:<15} ~{}", key.replace('_', " "), tokens(n)));
                     }
@@ -128,8 +135,43 @@ pub fn outcome_text(name: &str, ok: bool, data: Option<&Value>, error: Option<&s
                 .join("\n")
         }
         "new" => format!("new conversation {}", text("session_id")),
+        "goal" => goal_text(data),
         _ => data.to_string(),
     }
+}
+
+/// `/goal`: the goal (status, revision, objective, numbered criteria), or what ended.
+fn goal_text(data: &Value) -> String {
+    let goal = &data["goal"];
+    let Some(objective) = goal["objective"].as_str() else {
+        return match data["revision"].as_u64() {
+            Some(revision) => format!("goal cleared (revision {revision})"),
+            None => "no goal is set".into(),
+        };
+    };
+    let line = |text: &str| {
+        crate::strip_controls(text)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut out = format!(
+        "goal {} · revision {}\n{}",
+        goal["status"].as_str().unwrap_or("active"),
+        goal["revision"].as_u64().unwrap_or_default(),
+        line(objective)
+    );
+    let criteria: Vec<&str> = goal["criteria"]
+        .as_array()
+        .map(|l| l.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if criteria.is_empty() {
+        out.push_str("\nno success criteria yet");
+    }
+    for (n, criterion) in criteria.iter().enumerate() {
+        out.push_str(&format!("\n{}. {}", n + 1, line(criterion)));
+    }
+    out
 }
 
 /// `842`, `42k`, `1M`, `1.5M`: rounded for a one-line summary.
@@ -164,6 +206,45 @@ mod tests {
             "MCP tools added: mcp__a__x\nMCP tools removed: mcp__a__y, mcp__a__z, and 3 more\n\
              MCP tools warnings: mcp__b__x from b is not installed: a already holds the name"
         );
+    }
+
+    #[test]
+    fn a_goal_outcome_shows_the_goal_with_numbered_criteria_or_says_what_ended() {
+        let data = serde_json::json!({"goal": {"revision": 3, "objective": "ship \u{1b}[2Jit",
+            "criteria": ["tests pass", "docs"], "status": "paused"}, "change": "paused"});
+        assert_eq!(
+            outcome_text("goal", true, Some(&data), None),
+            "goal paused · revision 3\nship it\n1. tests pass\n2. docs"
+        );
+        let set = serde_json::json!({"goal": {"revision": 1, "objective": "ship",
+            "criteria": [], "status": "active"}, "change": "set"});
+        assert_eq!(
+            outcome_text("goal", true, Some(&set), None),
+            "goal active · revision 1\nship\nno success criteria yet"
+        );
+        let none = serde_json::json!({"goal": null});
+        assert_eq!(
+            outcome_text("goal", true, Some(&none), None),
+            "no goal is set"
+        );
+        let cleared = serde_json::json!({"goal": null, "change": "cleared", "revision": 4});
+        assert_eq!(
+            outcome_text("goal", true, Some(&cleared), None),
+            "goal cleared (revision 4)"
+        );
+    }
+
+    #[test]
+    fn the_context_outcome_lists_the_goal_only_when_requests_carry_it() {
+        let data = serde_json::json!({"estimate_total": 1300, "window": 100000, "percent": 1,
+            "breakdown": {"system": 1000, "rules": 0, "skills_catalog": 0, "tools": 0,
+            "messages": 0, "goal": 300}});
+        assert!(
+            outcome_text("context", true, Some(&data), None).ends_with("\n  goal            ~300")
+        );
+        let mut without = data.clone();
+        without["breakdown"].as_object_mut().unwrap().remove("goal");
+        assert!(!outcome_text("context", true, Some(&without), None).contains("goal"));
     }
 
     #[test]

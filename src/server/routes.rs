@@ -49,7 +49,7 @@
 //!   `{"error","reason":"secret_stale"}` to a decline, and stores a value given with its `name`.
 //! - `GET  /v1/sessions/:id/secrets` -> `{secrets:[…]}`, metadata only;
 //!   `DELETE /v1/sessions/:id/secrets/:name` -> 204, or 404 when there is none.
-//! - `GET  /v1/sessions/:id/context` -> the context snapshot (`alias, variant?, window, window_source, estimate_total, breakdown{system,rules,skills_catalog,tools,messages}, output_reserve, margin, input_budget, percent, last_usage?{prompt_tokens,completion_tokens,step}, revision`); an estimate of the NEXT request, `last_usage` is the provider's count for the last one
+//! - `GET  /v1/sessions/:id/context` -> the context snapshot (`alias, variant?, window, window_source, estimate_total, breakdown{system,rules,skills_catalog,tools,messages,goal?}, output_reserve, margin, input_budget, percent, last_usage?{prompt_tokens,completion_tokens,step}, revision`); an estimate of the NEXT request, `last_usage` is the provider's count for the last one
 //! - `GET  /v1/sessions/:id/ledger` -> the session ledger (`through_seq, turns{count,last?{turn_id,outcome}}, files_touched[{path,changes,last_turn}], commands[{command,outcome{status,code?|error?},turn}], repeated_failures[{command,count,last_error}], last_turn_text, open_questions[{kind,id,title,child_session_id?}], compactions, goal`),
 //!   folded on every read from the stored events, so a stopped session has one too; every list
 //!   and text is bounded (`withnav_client_api::ledger`); unknown id 404 like `/context`

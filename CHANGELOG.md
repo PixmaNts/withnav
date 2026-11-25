@@ -38,6 +38,15 @@ requests land in `develop`.
   provider reports them.
 - Instinct calls may take 4 s (flow budgets 8 s), metacognition remarks and reflex context 60 s;
   raised to give the models room, to be tightened if latency hurts.
+- The session goal: `/goal <objective>` records what counts as done for a conversation, `/goal
+  criterion <text>` adds a numbered success criterion, and `/goal pause`, `resume` and `clear`
+  manage it (`/goal` alone shows it). Every client gets the command. Each change is a stored
+  `goal.updated` or `goal.cleared` event with a revision number, so the goal survives compaction,
+  a stop, a restart and a resume. While it is active, each request carries it as a labelled block
+  (not a transcript message, so compaction never summarizes it), counted under `goal` in the
+  context breakdown. The ledger and its digest list it first; the terminal client's right column
+  shows it before the ledger. Bounds: 500 characters for the objective, 300 per criterion, 10
+  criteria; longer text is refused. Only the Captain sets it; it authorizes nothing.
 
 ## [0.8.4] - 2026-11-24
 

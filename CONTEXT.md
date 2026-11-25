@@ -354,6 +354,15 @@ The durable part of the shared context: current intent, plan and decisions, read
 the Captain and kept under version control.
 _Avoid_: plan file, notes
 
+**Goal**:
+What the Captain recorded as done for one conversation, with `/goal`: an objective, numbered
+success criteria, a revision number and a status (active or paused). It lives in the
+conversation's own event log, so it survives compaction, resume and restart, and while it is
+active every request carries it. It is per conversation, unlike the intent record
+(`.withnav/intent.md`), which is the project's durable intent. Only the Captain sets it, and
+recording it neither delegates work nor authorizes the agent to go on alone.
+_Avoid_: task, objective file, intent (the intent record is the project's)
+
 **Live state**:
 The ephemeral part of the shared context: recent edits, compiler diagnostics, a running summary of
 the conversation. It is not persisted.

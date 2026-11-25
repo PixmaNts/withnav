@@ -2634,6 +2634,15 @@ impl Service {
                 .latest_captain_message(session_id)
                 .await
                 .map_err(ServerError::History)?;
+            // The Captain's goal survives a stop and a restart: it is the fold of the stored
+            // goal events, the same fold the ledger reads.
+            let goal_events = self
+                .history
+                .goal_events(session_id)
+                .await
+                .map_err(ServerError::History)?;
+            *actor.goal.lock().unwrap_or_else(|e| e.into_inner()) =
+                withnav_client_api::goal::GoalLog::fold(&goal_events);
         }
         actor.rules = self
             .load_rules(&workspace, session_id, resumed.is_some())

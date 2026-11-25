@@ -12,18 +12,18 @@ expression: snapshot
                      │                                                                                                      │ CONTEXT                           
                      │                                                                                                      │  —                                
                      │                                                                                                      │                                   
-                     │                                                                                                      │ LEDGER                            
+                     │                                                                                                      │ GOAL                              
                      │                    ┌───────────────────────────── Conversations ──────────────────────────────┐      │  —                                
                      │                    │ ❯ filter…                                                                │      │                                   
-                     │                    │▌enter/esc · Delete this session and its 1 subagent sessions? This cannot │      │ SKILLS · MCP · PLUGINS            
-                     │                    │ Fix parser  ·  2026-10-02  ·  child                                      │      │  skills                         — 
-                     │                    │                                                                          │      │  mcp                            — 
-                     │                    │ enter delete permanently  esc cancel                                     │      │                                   
-                     │                    └──────────────────────────────────────────────────────────────────────────┘      │ LAYERS                            
+                     │                    │▌enter/esc · Delete this session and its 1 subagent sessions? This cannot │      │ LEDGER                            
+                     │                    │ Fix parser  ·  2026-10-02  ·  child                                      │      │  —                                
+                     │                    │                                                                          │      │                                   
+                     │                    │ enter delete permanently  esc cancel                                     │      │ SKILLS · MCP · PLUGINS            
+                     │                    └──────────────────────────────────────────────────────────────────────────┘      │  skills                         — 
+                     │                                                                                                      │  mcp                            — 
+                     │                                                                                                      │                                   
+                     │                                                                                                      │ LAYERS                            
                      │                                                                                                      │  ● nav  idle                      
-                     │                                                                                                      │                                   
-                     │                                                                                                      │                                   
-                     │                                                                                                      │                                   
                      │                                                                                                      │                                   
                      │                                                                                                      │                                   
                      │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

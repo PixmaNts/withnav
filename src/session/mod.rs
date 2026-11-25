@@ -3,7 +3,8 @@
 //! (`lifecycle`), the per-tree lifecycle gates (`gate`), command acceptance (`message`), the host's posting handle
 //! (`sender`), subscriptions (`subscription`), the host's editor policy and
 //! lifecycle callbacks (`hooks`), the instructions log (`rules_log`), actor construction (`actor`), the SQLite
-//! history (`store`) and the session ledger folded from it (`ledger`). Transport-free: HTTP and SSE live in `server/`.
+//! history (`store`), the session ledger folded from it (`ledger`) and the Captain's `/goal`
+//! (`goal`). Transport-free: HTTP and SSE live in `server/`.
 mod actor;
 pub mod attachments;
 mod catalog;
@@ -11,6 +12,7 @@ mod commands;
 mod config;
 mod flows;
 mod gate;
+mod goal;
 mod hooks;
 mod instance;
 pub mod ledger;

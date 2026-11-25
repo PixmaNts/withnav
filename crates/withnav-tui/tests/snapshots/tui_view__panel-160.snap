@@ -19,6 +19,9 @@ expression: snapshot
                      │                                                                                                      │  input budget                182k 
                      │                                                                                                      │  compacted ×1 · ~150k → ~38k      
                      │                                                                                                      │                                   
+                     │                                                                                                      │ GOAL                              
+                     │                                                                                                      │  —                                
+                     │                                                                                                      │                                   
                      │                                                                                                      │ LEDGER                            
                      │                                                                                                      │  —                                
                      │                                                                                                      │                                   
@@ -32,10 +35,7 @@ expression: snapshot
                      │                                                                                                      │                                   
                      │                                                                                                      │ CHANGES                           
                      │                                                                                                      │  M src/tui/view/file_0.rs         
-                     │                                                                                                      │  A src/tui/view/file_1.rs         
-                     │                                                                                                      │  D src/tui/view/file_2.rs         
-                     │                                                                                                      │  ? src/tui/view/file_3.rs         
-                     │                                                                                                      │    10 more                        
+                     │                                                                                                      │    13 more                        
                      │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                      │ ready                                                                                                                  session 31.2k tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐

@@ -100,6 +100,9 @@ pub struct AgentActor {
     /// delegated prompt or the parent's steering text.
     pub parent_captain: ParentCaptain,
     pub bypass: Arc<std::sync::Mutex<BypassState>>,
+    /// The Captain's session goal, shared with the session runtime the way `bypass` is: the
+    /// `/goal` command changes it once its event is stored, and the next request reads it.
+    pub goal: SharedGoal,
     /// Private temporary storage offered to the model; a write there is bound
     /// to the directory's identity (inode and mode).
     pub scratch_roots: Vec<std::path::PathBuf>,
@@ -267,6 +270,7 @@ impl AgentActor {
             scratch_roots: Vec::new(),
             yolo: false,
             bypass: Arc::default(),
+            goal: Arc::default(),
             compaction_decision: None,
             transcript: Vec::new(),
             compaction: None,
@@ -369,10 +373,12 @@ impl AgentActor {
     }
 
     /// The parts of the request besides the history. `role` is
-    /// [`AgentActor::role_message`], which the caller keeps alive.
+    /// [`AgentActor::role_message`] and `goal` [`AgentActor::goal_message`], which the caller
+    /// keeps alive.
     pub fn components<'a>(
         &'a self,
         role: Option<&'a str>,
+        goal: Option<&'a str>,
         tools: &'a [crate::provider::openai::ToolDef],
     ) -> Components<'a> {
         Components {
@@ -380,7 +386,18 @@ impl AgentActor {
             rules: self.rules.message(),
             skills: self.effective_skills_catalog(),
             tools,
+            goal,
         }
+    }
+
+    /// The session goal message every request carries while the Captain's goal is active;
+    /// `None` when no goal is set, or it is paused.
+    pub fn goal_message(&self) -> Option<String> {
+        self.goal
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .active()
+            .map(goal_message)
     }
 
     /// The history the next request carries: the transcript as it is, or,
@@ -439,13 +456,10 @@ impl AgentActor {
         // The same role message `build_request` sends: the selected agent's
         // prompt composed with the editor's.
         let role = self.role_message();
-        crate::agent::context::estimate(
-            role.as_deref(),
-            self.rules.message(),
-            self.effective_skills_catalog(),
-            &self.request_history(self.effective_history_at(floor, destination)),
-            &self.effective_tool_schemas(),
-        )
+        let goal = self.goal_message();
+        let tools = self.effective_tool_schemas();
+        self.components(role.as_deref(), goal.as_deref(), &tools)
+            .estimate(&self.request_history(self.effective_history_at(floor, destination)))
     }
 
     /// `history` as a request would carry it: images the model cannot see, or that exceed the
@@ -701,6 +715,32 @@ impl AgentActor {
             });
         }
     }
+}
+
+/// The goal state an actor shares with its session runtime.
+pub type SharedGoal = Arc<std::sync::Mutex<withnav_client_api::goal::GoalLog>>;
+
+/// The sentence that closes the goal message: the goal states what counts as done and grants
+/// nothing. Without it a model reads a recorded goal as a standing order to keep working
+/// unattended, which recording a goal must never mean.
+pub const GOAL_AUTHORITY: &str = "The Captain recorded this goal. It describes what counts as done; it does not authorize you to continue or to act without the Captain.";
+
+/// The system message that carries `goal` to the model: a labelled block with the revision,
+/// the objective, the numbered criteria and [`GOAL_AUTHORITY`].
+pub fn goal_message(goal: &withnav_client_api::goal::SessionGoal) -> String {
+    let mut text = format!(
+        "[session goal · revision {}]\nObjective: {}\nSuccess criteria:",
+        goal.revision, goal.objective
+    );
+    if goal.criteria.is_empty() {
+        text.push_str(" none recorded");
+    }
+    for (n, criterion) in goal.criteria.iter().enumerate() {
+        text.push_str(&format!("\n{}. {criterion}", n + 1));
+    }
+    text.push('\n');
+    text.push_str(GOAL_AUTHORITY);
+    text
 }
 
 /// Composes the role system message from the agent's prompt and the

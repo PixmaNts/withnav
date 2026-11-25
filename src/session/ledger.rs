@@ -14,7 +14,9 @@
 //!   paths `write` and `edit` changed, spelled one way (`./a` and `a` are one file);
 //! - `agent.yield` with a `question_call_id`, `permission.requested` / `permission.resolved`,
 //!   `message.received`, `session.end`: what still waits for the Captain;
-//! - `context.compacted`: the compaction count.
+//! - `context.compacted`: the compaction count;
+//! - `goal.updated` / `goal.cleared`: the Captain's goal, through [`GoalLog`], the fold a resume
+//!   uses too.
 //!
 //! Every text is model or tool output, so it is untrusted: control characters are stripped
 //! before it is kept, and the digest prints each item on its own `- ` line, so no text can start a
@@ -23,6 +25,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use serde_json::Value;
+pub use withnav_client_api::goal::GoalLog;
 pub use withnav_client_api::ledger::*;
 use withnav_client_state::strip_controls;
 
@@ -76,11 +79,13 @@ struct Folder {
     commands: VecDeque<CommandRun>,
     failures: HashMap<String, Failure>,
     failures_seen: usize,
+    goal: GoalLog,
 }
 
 impl Folder {
     fn apply(&mut self, event: &EventEnvelope) {
         self.ledger.through_seq = Some(event.seq);
+        self.goal.apply(event);
         let payload = &event.payload;
         let Some(kind) = EventKind::from_wire(&event.kind) else {
             return;
@@ -278,6 +283,7 @@ impl Folder {
     }
 
     fn finish(mut self) -> SessionLedger {
+        self.ledger.goal = self.goal.current;
         self.ledger.commands = self.commands.into();
         let mut repeated: Vec<(String, Failure)> = self
             .failures
@@ -303,7 +309,7 @@ impl Folder {
 }
 
 /// `text` without control characters, on one line, with whitespace runs collapsed.
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     strip_controls(text)
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -349,8 +355,9 @@ fn tail(text: &str, max: usize) -> String {
 
 /// The ledger as plain text of at most [`MAX_DIGEST_BYTES`], for a model to read.
 ///
-/// Two header lines, then the sections in a fixed priority order: open questions, repeated
-/// failures, the last turn's text, commands (newest first), files touched (most recent first).
+/// Two header lines, then the sections in a fixed priority order: the Captain's goal (objective
+/// then numbered criteria), open questions, repeated failures, the last turn's text, commands
+/// (newest first), files touched (most recent first).
 /// Each section header gives its full count; when the text is too long, items are dropped from
 /// the lowest-priority section first, its oldest item first, and the headers stay. Every item is
 /// one line starting with `- `, so untrusted text can neither close a section nor open one.
@@ -425,6 +432,33 @@ fn outcome_word(outcome: TurnEndOutcome) -> &'static str {
 }
 
 fn sections(ledger: &SessionLedger) -> Vec<Section> {
+    // The goal comes first so it is the last section trimmed: a later reader judges the rest of
+    // the ledger against it, and a digest without it cannot say what counts as done.
+    let goal = match &ledger.goal {
+        Some(goal) => {
+            let status = match goal.status {
+                GoalStatus::Active => "active",
+                GoalStatus::Paused => "paused",
+            };
+            let mut items = vec![format!("objective: {}", one_line(&goal.objective))];
+            items.extend(
+                goal.criteria
+                    .iter()
+                    .enumerate()
+                    .map(|(n, c)| format!("criterion {}: {}", n + 1, one_line(c))),
+            );
+            Section {
+                header: format!("[goal: revision {}, {status}]", goal.revision),
+                total: items.len(),
+                items,
+            }
+        }
+        None => Section {
+            header: String::new(),
+            total: 0,
+            items: Vec::new(),
+        },
+    };
     let questions: Vec<String> = ledger
         .open_questions
         .iter()
@@ -484,6 +518,7 @@ fn sections(ledger: &SessionLedger) -> Vec<Section> {
         })
         .collect();
     vec![
+        goal,
         Section {
             header: format!("[open questions: {}]", questions.len()),
             total: questions.len(),

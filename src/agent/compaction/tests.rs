@@ -50,6 +50,7 @@ fn components() -> Components<'static> {
         rules: None,
         skills: None,
         tools: &[],
+        goal: None,
     }
 }
 

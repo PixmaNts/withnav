@@ -39,6 +39,7 @@ Type `/` in any chat. A palette lists the commands. These work in every client:
 | `/context` | Show how the context window is used. |
 | `/compact [focus]` | Summarise the older part of a long conversation. |
 | `/bypass [on\|off]` | Skip ordinary permission prompts. See [Permissions](permissions.md). |
+| `/goal [<objective>\|criterion <text>\|pause\|resume\|clear]` | Show or set the session goal. See [Session goal](#session-goal). |
 
 Type `//text` to send the literal text `/text` as a message.
 
@@ -60,10 +61,30 @@ asked for that is not done or not checked yet, and the next check to run.
 
 Every conversation, subagents included, keeps a ledger of what it did: the turns and how the last
 one ended, the files `write` and `edit` changed, the last shell commands with their exit code,
-the commands that failed more than once, the last answer, and the questions still waiting for you.
+the commands that failed more than once, the last answer, the questions still waiting for you, and
+the [session goal](#session-goal).
 WithNav rebuilds it from the conversation's history whenever it is read, so it costs no model call
 and a stopped conversation has one too. Every list and text is bounded. The terminal client shows
 it in the right column; a client reads it at `GET /v1/sessions/{id}/ledger`.
+
+## Session goal
+
+`/goal <objective>` records what counts as done for this conversation. `/goal criterion <text>`
+adds a success criterion; criteria are numbered in the order you add them. `/goal` alone shows the
+goal. Setting a new objective revises it: the criteria stay, and the revision number goes up by one
+with each change of the objective or the criteria. `/goal pause` keeps the goal but stops sending
+it, `/goal resume` sends it again, and `/goal clear` removes it.
+
+While the goal is active, every request of the conversation carries it as a labelled block, with
+the reminder that the goal says what counts as done and does not let the agent continue or act
+without you. It is not part of the transcript, so compaction never summarizes it away, and it is
+counted under `goal` in the context breakdown. The goal is stored in the conversation's history: it
+survives a stop, a restart and a resume. Subagents do not inherit it.
+
+An objective holds at most 500 characters, a criterion 300, and a goal at most 10 criteria; longer
+text is refused, never cut. `criterion`, `pause`, `resume` and `clear` cannot start an objective.
+Only you set the goal: the agent has no tool to change it. The project's lasting intent stays in
+`.withnav/intent.md`. The terminal client shows the goal in its right column, before the ledger.
 
 ## The terminal client: `nav tui`
 

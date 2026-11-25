@@ -249,6 +249,7 @@ fn input<'a>(
             rules: None,
             skills: None,
             tools: &[],
+            goal: None,
         },
         destination_budget: 100_000,
         aim: Aim::Fit,

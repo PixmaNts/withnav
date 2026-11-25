@@ -56,6 +56,7 @@ versions and clients can share the file. The Settings screens write the same fil
 | `agents.<id>.model`, `agents.<id>.variant` | none | Model and variant of an agent. See [Agents](agents.md). |
 | `compaction.writer` | `metacognition` | Who writes compaction summaries: `metacognition`, or `session` for the session's own model. If Metacognition is unavailable, the session model is used. |
 | `compaction.chunk_tokens` | `64000` | Size of one rolling summary chunk, capped at half of the writer's input budget. A positive integer. |
+| `goal_watch.notes` | `false` | `true` lets the [goal check](using-nav.md#session-goal) pass a contradicted criterion, or one still not checked after a turn the agent ended on its own, to the agent as a note with its next turn. Read at each check, so it also applies to running sessions. A value that is not a boolean counts as `false`, and the Settings screen shows it as invalid. |
 | `permissions.scratch_dirs` | private runtime directory, then a shared temp one | Absolute paths the agent may use for temporary files; they count as part of the project for your rules. `[]` turns it off. See [Permissions](permissions.md#scratch-folders). |
 | `mcp.<id>` | none | A stdio or Streamable HTTP MCP server whose tools Nav may call. See [MCP servers](mcp-servers.md). |
 | `yolo` | `false` | **Unsafe.** `true` turns off all permission control for sessions started or resumed afterwards, and their subagents: nothing is asked or checked. See [Permissions](permissions.md#yolo). |

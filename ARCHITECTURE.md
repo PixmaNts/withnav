@@ -615,7 +615,7 @@ client ignores a kind it does not know.
 | `<workspace>/.withnav/agents/*.md` | project agent definitions | the Captain |
 | `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills included in agent sessions | the Captain |
 | `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `app/tui.rs`, `withnav-provider`'s `catalog.rs` |
-| `~/.local/share/withnav/goal-checks.jsonl` | the shadow completion checks of session goals, one line per check or skip | `session/goal_check.rs` |
+| `~/.local/share/withnav/goal-checks.jsonl` | the completion checks of session goals, one line per check or skip, with whether a goal-watch note was sent | `session/goal_check.rs` |
 | `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of the permission decisions that were made — not of undecided calls (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
 | `~/.config/withnav/flows/`, `<workspace>/.withnav/flows/` | global and workspace flow definitions; they load only once validated at their current content | the Captain, the Studio |
 | `~/.config/withnav/config.json` key `mcp` | stdio and HTTP MCP server declarations | the Captain |
@@ -807,7 +807,20 @@ the later 0.6 scope, not this contract.
   `GoalChecks` (one field of `Service`, by session id so a resume keeps the rate) holds one check
   in flight per session and `MAX_CHECKS_PER_WINDOW` (3) starts per `RATE_WINDOW` (one hour). Every
   check or skip is one line of `<data dir>/goal-checks.jsonl` (`paths::goal_check_log`), a rate
-  skip once per window; nothing reaches the session, its events or a client. A watcher whose
+  skip once per window. With `goal_watch.notes` off (the default, `Settings::goal_watch_notes`,
+  read at each check) nothing reaches the session, its events or a client. On, a finished `ok`
+  check passes its findings (`goal_check/note.rs`: every `contradicted`, plus every `not_checked`
+  when the turn ended `done`) as one note of at most `MAX_NOTE_CHARS` (600) built from the
+  statuses alone, criterion and evidence text through `ledger::one_line` with angle brackets
+  replaced so a quote cannot close the wrapper, to `RuntimeStatus::queue_flow_note_report` with
+  `wake = false` (provenance `FlowSource::Flow`, flow `goal-watch`, run id the turn id): it waits
+  in the steering queue for the next boundary and starts nothing. `GoalChecks::noted` keeps, per
+  session and for its current goal revision only, the finding sets already sent, so one set is
+  noted once per revision. The log line carries `note_sent` and, when false, `note_skipped`
+  (`setting_off`; `nothing_to_report` when the check ran without a finding; `check_skipped` for
+  an in-flight or rate skip, where no check ran; `duplicate`; `delivery_refused`, the findings
+  then left unmarked so a later check sends them). The note always names its first finding in
+  full: a const assertion in `note.rs` keeps the widest first clause within the bound. A watcher whose
   event stream the bus drops logs a warning. `Service::install_goal_check_test` (test-support)
   replaces its clock and deadline.
 - Compaction (a summary standing for the start of a long conversation): `agent/compaction.rs` plans

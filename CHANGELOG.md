@@ -56,6 +56,12 @@ requests land in `develop`.
   latency, size, tokens, model) and is shown nowhere yet. It runs beside the turn, never delaying
   it: one at a time per conversation, at most three per hour (the first skip of each hour is
   logged), 20 seconds each; a skipped, timed-out or outdated check is logged as such.
+- Goal watch notes, off by default: with `goal_watch.notes` set to `true`, a goal check that finds a
+  contradicted criterion, or a criterion still not checked after a turn the agent ended on its
+  own, passes it to the agent as one short note (at most 600 characters, marked as an automatic
+  observation, not your instruction) with its next turn. A note never starts a turn, is sent once
+  per goal revision for the same findings, never goes to a subagent, and each line of
+  `goal-checks.jsonl` says whether a note was sent (`note_sent`) and, if not, why (`note_skipped`).
 
 ### Changed
 

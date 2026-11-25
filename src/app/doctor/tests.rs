@@ -72,3 +72,43 @@ fn redacts_credentials_urls_and_controls() {
         "[redacted] [url omitted] [31m"
     );
 }
+
+// Given a config.json that sets `goal_watch.notes` and a misspelled sibling
+// When `nav doctor` inspects it offline
+// Then the setting raises no unknown-key warning, while the sibling still does
+#[tokio::test]
+async fn goal_watch_notes_is_a_known_config_key() {
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("cfg");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("config.json"),
+        json!({"goal_watch": {"notes": true, "notez": true}}).to_string(),
+    )
+    .unwrap();
+    let args = super::super::DoctorArgs {
+        offline: true,
+        json: false,
+        workspace: root.path().to_path_buf(),
+        layer: None,
+    };
+    let report = inspect(
+        &args,
+        &config,
+        Some(root.path()),
+        Some(root.path().join("data")),
+    )
+    .await;
+    let unknown: Vec<&str> = report
+        .checks
+        .iter()
+        .map(|c| c.id.as_str())
+        .filter(|id| id.starts_with("unknown.config"))
+        .collect();
+    assert_eq!(
+        unknown,
+        ["unknown.config.goal_watch.notez"],
+        "{}",
+        report.human()
+    );
+}

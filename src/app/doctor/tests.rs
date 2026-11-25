@@ -3,7 +3,9 @@ use serde_json::json;
 
 #[test]
 fn errors_are_categories_not_provider_bodies() {
-    for (status, category) in [(401, "http_rejected"), (503, "http_server"), (0, "timeout")] {
+    // A rejection shows the provider's reason (sanitized at report level);
+    // server errors and deadlines stay categories only.
+    for (status, category) in [(503, "http_server"), (0, "timeout")] {
         let error = ProviderError::Api {
             status,
             message: "secret-key https://user:password@host/ response".into(),

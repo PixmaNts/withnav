@@ -32,6 +32,11 @@ pub enum ModelError {
     /// is shown to the Captain as is.
     #[error("{0}")]
     Unavailable(String),
+    /// The remark ran out of its time budget before the model answered. Not
+    /// a judgement: the change it was about was never looked at, so it must
+    /// stay eligible for a later trigger instead of being recorded as silence.
+    #[error("metacognition remark over its {budget_ms} ms budget")]
+    OverBudget { budget_ms: u64 },
 }
 
 /// A provider response that is not the expected shape is `Malformed`; every
@@ -110,6 +115,31 @@ pub trait Metacognition: Send + Sync {
         ctx: &'a RemarkContext,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Option<Remark>, ModelError>>;
+
+    /// [`Metacognition::remark`] with the tokens the provider reported for
+    /// the whole remark, for the delivery's call record. The default reports
+    /// none; an implementation that calls a model, and any wrapper around
+    /// one, overrides it so the counts reach the log.
+    fn remark_with_usage<'a>(
+        &'a self,
+        ctx: &'a RemarkContext,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, RemarkCall> {
+        Box::pin(async move {
+            RemarkCall {
+                result: self.remark(ctx, cancel).await,
+                usage: None,
+            }
+        })
+    }
+}
+
+/// One remark call: its result and the provider's token usage summed over
+/// its rounds, `None` when no round reported any.
+#[derive(Debug)]
+pub struct RemarkCall {
+    pub result: Result<Option<Remark>, ModelError>,
+    pub usage: Option<crate::provider::Usage>,
 }
 
 #[cfg(test)]

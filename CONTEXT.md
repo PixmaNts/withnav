@@ -360,14 +360,17 @@ the conversation. It is not persisted.
 _Avoid_: session state, cache
 
 **Wake**:
-The metacognition bringing something to the cognition's attention, turning a fast observation into a
-deliberate discussion.
+A flow's `wake` action bringing something to the cognition's attention, turning a fast observation
+into a deliberate discussion: its note is queued on the conversation and starts a cognition turn when
+the conversation is idle. A flow's `inject_note` action queues the same kind of note without starting
+a turn; the cognition reads it at its next turn. Wakes are rate-limited: at most one every two
+minutes, and none from a turn's end again until the Captain speaks.
 _Avoid_: escalate, trigger (a trigger is an instinct input)
 
 **Wake hold**:
 The rule that, while a conversation waits for an answer to an `ask` or for a permission decision, a
-wake from the navigator is kept back instead of delivered. Only the latest held wake is kept, and it
-is delivered once nothing is pending. Captain text, unlike a wake, still cancels a permission request.
+wake is kept back instead of starting a turn, and starts one once nothing is pending. Captain text,
+unlike a wake, still cancels a permission request.
 _Avoid_: mute, queue
 
 **Trigger**:

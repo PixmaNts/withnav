@@ -97,7 +97,7 @@ Dependencies point down this list. A module never imports one above it.
 | File | Responsibility |
 | --- | --- |
 | `lsp/` | the `LanguageServer` adapter and custom `withnav/*` methods (`mod.rs`), wire types (`protocol.rs`), URI to path (`uri.rs`). Thin: it delegates to `runtime`. |
-| `runtime/` | the shared state behind the LSP: idle timers, the conversation-turn listener, trigger evaluation (`trigger.rs`), remark and wake delivery (`delivery.rs`, the wake text in `wake.rs`), reflex-facing calls (`inline.rs`) |
+| `runtime/` | the shared state behind the LSP: idle timers, the conversation-turn listener, trigger evaluation (`trigger.rs`), the editor flows and their effects (`flows.rs`: a remark, or a `wake` / `inject_note` note posted to the conversation through the feed), remark delivery (`delivery.rs`), reflex-facing calls (`inline.rs`) |
 | `document.rs` | one `OpenDocument` per uri (text, baseline, version, diagnostics, edit history) and the `snapshot` a trigger reads |
 | `reflex.rs` | inline suggestions: position conversion, prefix and suffix caps, debounce, staleness, and the reflex-context cache |
 | `metacognition/` | the one `Metacognition` implementation: remark prompt and tool loop with its budget (`mod.rs`), answer parsing (`answer.rs`), the read/grep tools (`tools.rs`), the reflex-context producer and its prompt (`reflex_context.rs`) |

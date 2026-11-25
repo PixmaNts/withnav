@@ -1508,7 +1508,10 @@ mod tests {
             Box::pin(async move {
                 let call = self.0.fetch_add(1, Ordering::SeqCst);
                 if call == 0 {
-                    Err(DecisionError::ProviderRejected(400))
+                    Err(DecisionError::ProviderRejected {
+                        status: 400,
+                        reason: None,
+                    })
                 } else if call == 3 {
                     Ok(instinct_flow::protocol::DecisionResponse {
                         answers: request

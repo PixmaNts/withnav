@@ -780,6 +780,9 @@ pub async fn inspect(
     for check in &mut report.checks {
         check.id = sanitize(&check.id, &secrets);
         check.value = sanitize(&check.value, &secrets);
+        if check.category.as_deref() == Some("http_rejected") {
+            check.value = bound_rejection(&check.value, &secrets);
+        }
         check.hint = check.hint.as_ref().map(|h| sanitize(h, &secrets));
     }
     report
@@ -1398,14 +1401,46 @@ fn sanitize(text: &str, secrets: &[String]) -> String {
         .join(" ")
 }
 
+/// Separates a rejection's status from the provider's reason in a check value.
+const REJECTION_REASON: &str = " rejected: ";
+
+/// Bounds a sanitized `http_rejected` value: the reason is cut to one short
+/// line, and dropped when what is left still holds a fragment of a secret.
+fn bound_rejection(value: &str, secrets: &[String]) -> String {
+    let Some((status, reason)) = value.split_once(REJECTION_REASON) else {
+        return value.to_owned();
+    };
+    let status = format!("{status} rejected");
+    match instinct_flow::reason_excerpt(reason) {
+        Some(reason)
+            if !secrets
+                .iter()
+                .any(|secret| instinct_flow::credential_leaks(&reason, secret)) =>
+        {
+            format!("{status}: {reason}")
+        }
+        _ => status,
+    }
+}
+
 fn error_category(error: &ProviderError) -> (&'static str, String, &'static str) {
     match error {
+        // The provider's reason is the only clue to why a request is refused
+        // (a 400 for a reassigned model looked like any other 400). It is
+        // kept whole here: the report removes credentials and URLs from it
+        // first and only then cuts it (`bound_rejection`), so a key at the
+        // cut cannot survive as a fragment the redaction no longer matches.
         ProviderError::Api {
             status: status @ 400..=499,
+            message,
             ..
         } => (
             "http_rejected",
-            format!("HTTP {status} rejected"),
+            if message.trim().is_empty() {
+                format!("HTTP {status} rejected")
+            } else {
+                format!("HTTP {status}{REJECTION_REASON}{message}")
+            },
             "Check provider authentication, model id and API support.",
         ),
         ProviderError::Api {

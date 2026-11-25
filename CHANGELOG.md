@@ -20,6 +20,22 @@ requests land in `develop`.
   list bounded and a text digest of at most 4 KiB. Served by `GET /v1/sessions/{id}/ledger` for
   every session, stopped ones and subagents included; the terminal client's right column shows its
   turns, files and repeated failures.
+### Fixed
+
+- A rejected Instinct request now says why, on one line of at most 300 characters. The flow run
+  record shows the provider's reason after "provider rejected the request (HTTP 400)" and leaves
+  the whole reason out when it echoes a credential, whole or in part. `nav doctor` shows it after
+  "HTTP 400 rejected" with credentials replaced by `[redacted]` and URLs by `[url omitted]`.
+- The root watchdog reviewer reads a decision wrapped in a code fence or after prose, as the
+  remark parser does, instead of asking the Captain. It still asks the Captain when the decision
+  is followed by more text or when two decisions in the reply disagree.
+- The Cognition prompt points at `.withnav/intent.md` instead of the old `.navigator/intent.md`.
+- Editor-flow trigger records name the flow runs they started (`flow_run_ids`), so they join the
+  flow run records that hold the Instinct answers.
+- A remark that runs out of its 20-second budget no longer counts as a silence: the edit stays
+  unjudged, the next trigger looks at it again, and the trigger record says `over_budget`.
+- Remark call records in the navigator log carry the input and output token counts when the
+  provider reports them.
 
 ## [0.8.4] - 2026-11-24
 

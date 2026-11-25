@@ -71,6 +71,7 @@ impl FlowEffects for EditorEffects {
             if self.delivered.swap(true, Ordering::SeqCst) {
                 pending.trigger_id = crate::navigator::new_ulid_string();
             }
+            pending.flow_run_ids = vec![run_id.to_string()];
             match action.action.as_str() {
                 "remark" => {
                     let prompt = action
@@ -409,6 +410,7 @@ impl Runtime {
             .await;
         let mut failed = false;
         let mut skipped = true;
+        let mut run_ids = Vec::new();
         for handle in handles {
             if self.connection_cancel.is_cancelled() {
                 cancel.cancel();
@@ -416,7 +418,13 @@ impl Runtime {
             match handle.await {
                 Ok(outcome) => {
                     failed |= matches!(outcome.result, instinct_flow::RunResult::Failure { .. });
-                    skipped &= matches!(outcome.result, instinct_flow::RunResult::Skipped);
+                    let run_skipped = matches!(outcome.result, instinct_flow::RunResult::Skipped);
+                    skipped &= run_skipped;
+                    // A skipped run writes no run record: naming it would
+                    // point the trigger at a record that never exists.
+                    if !run_skipped {
+                        run_ids.push(outcome.trace.run_id);
+                    }
                 }
                 Err(error) => {
                     failed = true;
@@ -431,6 +439,7 @@ impl Runtime {
             .take()
             .filter(|_| !effects.delivered.load(Ordering::SeqCst))
         {
+            pending.flow_run_ids = run_ids;
             pending.requested_action = if failed || skipped {
                 None
             } else {

@@ -778,7 +778,7 @@ the later 0.6 scope, not this contract.
 - What a session did, as facts (turns, files changed, shell commands and their exit code, repeated
   failures, the last answer, open questions): `session/ledger.rs`. `fold` is a pure function of the
   stored events (`HistoryStore::replay`, the same events a stream replay serves), so the ledger has
-  no table, no live state and no model call; `digest` renders it in at most 4 KiB for a bounded
+  no table, no live state and no model call; `digest` renders it in at most 16 KiB for a bounded
   model call, sections in a fixed priority order, each item on its own `- ` line so untrusted text
   cannot open or close a section. The bounds and the wire type live in `withnav-client-api`'s
   `ledger.rs`; readers go through `Service::ledger` (`GET /v1/sessions/{id}/ledger`).
@@ -798,19 +798,19 @@ the later 0.6 scope, not this contract.
   On a `turn.end` that did not yield, with `RuntimeStatus::goal` active and holding a criterion,
   it spawns one check off the turn's path. One `Service::ledger` fold gives both the goal
   (a different revision is `goal_changed`, no call) and the `digest`, which `goal_check/input.rs`
-  shapes line by line to `MAX_INPUT_BYTES` (4 KiB) with the instructions: the goal at most half
+  shapes line by line to `MAX_INPUT_BYTES` (16 KiB) with the instructions: the goal at most half
   (whole criteria, the rest named as omitted), then the agent's last turn text dropped before
   files and commands. One tool-free chat call to the metacognition model follows
-  (`MAX_OUTPUT_TOKENS` 300, the layer's variant, `CHECK_DEADLINE` 20 s, no retry, cancelled with
+  (`MAX_OUTPUT_TOKENS` 1000, the layer's variant, `CHECK_DEADLINE` 60 s, no retry, cancelled with
   the session). The answer is read against what was sent: a status for a criterion not sent is
   dropped, and `supported` stands only on a quote of a command or file-change line sent.
   `GoalChecks` (one field of `Service`, by session id so a resume keeps the rate) holds one check
-  in flight per session and `MAX_CHECKS_PER_WINDOW` (3) starts per `RATE_WINDOW` (one hour). Every
+  in flight per session and `MAX_CHECKS_PER_WINDOW` (10) starts per `RATE_WINDOW` (one hour). Every
   check or skip is one line of `<data dir>/goal-checks.jsonl` (`paths::goal_check_log`), a rate
   skip once per window. With `goal_watch.notes` off (the default, `Settings::goal_watch_notes`,
   read at each check) nothing reaches the session, its events or a client. On, a finished `ok`
   check passes its findings (`goal_check/note.rs`: every `contradicted`, plus every `not_checked`
-  when the turn ended `done`) as one note of at most `MAX_NOTE_CHARS` (600) built from the
+  when the turn ended `done`) as one note of at most `MAX_NOTE_CHARS` (2000) built from the
   statuses alone, criterion and evidence text through `ledger::one_line` with angle brackets
   replaced so a quote cannot close the wrapper, to `RuntimeStatus::queue_flow_note_report` with
   `wake = false` (provenance `FlowSource::Flow`, flow `goal-watch`, run id the turn id): it waits

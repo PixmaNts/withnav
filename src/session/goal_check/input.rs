@@ -7,8 +7,8 @@
 
 use serde_json::Value;
 
-use super::{CriterionStatus, MAX_EVIDENCE_CHARS, Status};
-use crate::session::ledger::one_line;
+use super::{ClaimCheck, ClaimStatus, CriterionCheck, CriterionStatus, MAX_EVIDENCE_CHARS};
+use crate::session::ledger::{MAX_CLAIM_CHARS, MAX_CLAIMS, one_line};
 
 /// The digest as sent, with what the answer is checked against.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,24 +189,36 @@ fn read_back(text: String) -> Input {
     }
 }
 
-/// The statuses of a JSON-only answer, tolerant of a code fence or prose around the object: the
-/// last balanced object with a `criteria` list, read by the same extractor as the remark model
-/// and the root watchdog, so an example quoted earlier never wins. `None` when none does.
-///
-/// An entry for a criterion that was not sent, with an unknown status, or for an index already
-/// given is dropped. A `supported` stands only on a quote of a command or file-change line that
-/// was sent: with no quote, a quote the input does not hold, or one of the agent's own words or
-/// of the goal, it becomes `not_checked` (the quote is kept for the log).
-pub(super) fn parse(text: &str, input: &Input) -> Option<Vec<Status>> {
+/// The answer object of a JSON-only reply, tolerant of a code fence or prose around it: the last
+/// balanced object with a `criteria` list, read by the same extractor as the remark model and the
+/// root watchdog, so an example quoted earlier never wins. `None` when none does.
+fn answer(text: &str) -> Option<Value> {
     let raw = crate::navigator::metacognition::answer_objects(text, |value| {
         value.get("criteria").is_some_and(Value::is_array)
     })
     .pop()?;
     let value = serde_json::from_str::<Value>(raw).ok()?;
-    if !value.get("criteria").is_some_and(Value::is_array) {
-        return None;
-    }
-    let mut statuses: Vec<Status> = Vec::new();
+    value
+        .get("criteria")
+        .is_some_and(Value::is_array)
+        .then_some(value)
+}
+
+/// Whether `quote` is a non-empty part of a command or file-change line that was sent: the only
+/// proof a status may stand on. The agent's own words and the goal never match.
+fn shown(quote: &str, input: &Input) -> bool {
+    !quote.is_empty() && input.evidence.iter().any(|e| e.contains(quote))
+}
+
+/// The statuses of an answer (see [`answer`]).
+///
+/// An entry for a criterion that was not sent, with an unknown status, or for an index already
+/// given is dropped. A `supported` stands only on a quote of a command or file-change line that
+/// was sent: with no quote, a quote the input does not hold, or one of the agent's own words or
+/// of the goal, it becomes `not_checked` (the quote is kept for the log).
+pub(super) fn parse(text: &str, input: &Input) -> Option<Vec<CriterionCheck>> {
+    let value = answer(text)?;
+    let mut statuses: Vec<CriterionCheck> = Vec::new();
     for entry in value["criteria"].as_array()? {
         let Some(index) = entry["index"]
             .as_u64()
@@ -227,18 +239,63 @@ pub(super) fn parse(text: &str, input: &Input) -> Option<Vec<Status>> {
             .chars()
             .take(MAX_EVIDENCE_CHARS)
             .collect();
-        let shown = !evidence.is_empty() && input.evidence.iter().any(|e| e.contains(&evidence));
         let status = match status {
-            CriterionStatus::Supported if !shown => CriterionStatus::NotChecked,
+            CriterionStatus::Supported if !shown(&evidence, input) => CriterionStatus::NotChecked,
             status => status,
         };
-        statuses.push(Status {
+        statuses.push(CriterionCheck {
             index,
             status,
             evidence,
         });
     }
     Some(statuses)
+}
+
+/// The completion claims of an answer (see [`answer`]): at most [`MAX_CLAIMS`], each claim and
+/// quote at most [`MAX_CLAIM_CHARS`] characters on one line. Nothing when the answer has no
+/// readable `claims` list.
+///
+/// A claim is `supported` or `contradicted` only on a quote of a command or file-change line that
+/// was sent, the rule the criteria follow. Without that quote, or with a status the model did not
+/// give or this list does not know, it is `unverified`: a claim the ledger cannot settle is
+/// never reported false. An entry without a claim text, or repeating one already given, is
+/// dropped.
+pub(super) fn parse_claims(text: &str, input: &Input) -> Vec<ClaimCheck> {
+    let Some(value) = answer(text) else {
+        return Vec::new();
+    };
+    let Some(entries) = value["claims"].as_array() else {
+        return Vec::new();
+    };
+    let cut = |text: &Value| -> String {
+        one_line(text.as_str().unwrap_or_default())
+            .chars()
+            .take(MAX_CLAIM_CHARS)
+            .collect()
+    };
+    let mut claims: Vec<ClaimCheck> = Vec::new();
+    for entry in entries {
+        if claims.len() == MAX_CLAIMS {
+            break;
+        }
+        let claim = cut(&entry["claim"]);
+        if claim.is_empty() || claims.iter().any(|c| c.claim == claim) {
+            continue;
+        }
+        let evidence = cut(&entry["evidence"]);
+        let status = match entry["status"].as_str() {
+            Some("supported") if shown(&evidence, input) => ClaimStatus::Supported,
+            Some("contradicted") if shown(&evidence, input) => ClaimStatus::Contradicted,
+            _ => ClaimStatus::Unverified,
+        };
+        claims.push(ClaimCheck {
+            claim,
+            status,
+            evidence,
+        });
+    }
+    claims
 }
 
 #[cfg(test)]
@@ -387,6 +444,71 @@ turns: 1 · last turn: done · compactions: 0
         assert_eq!(parsed[0].evidence.chars().count(), MAX_EVIDENCE_CHARS);
         assert!(parsed[0].evidence.starts_with('a'));
         assert!(!parsed[0].evidence.contains(['\n', '\u{1b}']));
+    }
+
+    fn claims(entries: &str) -> Vec<(String, ClaimStatus, String)> {
+        let answer = format!(r#"{{"criteria":[],"claims":{entries}}}"#);
+        parse_claims(&answer, &input())
+            .into_iter()
+            .map(|c| (c.claim, c.status, c.evidence))
+            .collect()
+    }
+
+    #[test]
+    fn a_claim_stands_only_on_a_quoted_command_or_file_line() {
+        use ClaimStatus::{Contradicted, Supported, Unverified};
+        let one = |status: &str, evidence: &str| {
+            claims(&format!(
+                r#"[{{"claim":"tests pass","status":"{status}","evidence":"{evidence}"}}]"#
+            ))
+            .pop()
+            .unwrap()
+            .1
+        };
+        assert_eq!(one("supported", "exit 0 · cargo test"), Supported);
+        assert_eq!(one("supported", "src/a.rs · 1 change"), Supported);
+        assert_eq!(one("contradicted", "exit 0 · cargo test"), Contradicted);
+        // No quote, a quote the input does not hold, the agent's own words, the goal.
+        for evidence in ["", "pytest exited 0", "all tests pass", "tests pass"] {
+            assert_eq!(one("supported", evidence), Unverified, "{evidence}");
+            assert_eq!(one("contradicted", evidence), Unverified, "{evidence}");
+        }
+        // An unknown or missing status is no verdict.
+        assert_eq!(one("false", "exit 0 · cargo test"), Unverified);
+        assert_eq!(
+            claims(r#"[{"claim":"tests pass","evidence":"exit 0 · cargo test"}]"#)[0].1,
+            Unverified
+        );
+    }
+
+    #[test]
+    fn claims_are_bounded_and_cleaned() {
+        let long = "c".repeat(MAX_CLAIM_CHARS + 50);
+        let entries = format!(
+            r#"[{{"claim":"{long}","status":"unverified","evidence":"a\n\u001b[31m{long}"}},
+            {{"claim":"","status":"supported"}},
+            {{"status":"supported"}},
+            {{"claim":"dup"}},{{"claim":"dup"}},{{"claim":"c3"}},{{"claim":"c4"}},{{"claim":"c5"}},{{"claim":"c6"}}]"#
+        );
+        let found = claims(&entries);
+        assert_eq!(found[0].0.chars().count(), MAX_CLAIM_CHARS);
+        assert_eq!(found[0].2.chars().count(), MAX_CLAIM_CHARS);
+        assert!(found[0].2.starts_with('a') && !found[0].2.contains(['\n', '\u{1b}']));
+        let names: Vec<&str> = found.iter().map(|c| c.0.as_str()).collect();
+        assert_eq!(names.len(), MAX_CLAIMS);
+        assert_eq!(&names[1..], ["dup", "c3", "c4", "c5"]);
+    }
+
+    #[test]
+    fn an_answer_without_a_readable_claims_list_has_no_claims() {
+        let none = |answer: &str| parse_claims(answer, &input());
+        assert!(none(r#"{"criteria":[]}"#).is_empty());
+        assert!(none(r#"{"criteria":[],"claims":"tests pass"}"#).is_empty());
+        assert!(none("all good").is_empty());
+        // The claims come from the same object as the criteria: the last one wins.
+        let text = r#"e.g. {"criteria":[],"claims":[{"claim":"example"}]}
+{"criteria":[],"claims":[{"claim":"real"}]}"#;
+        assert_eq!(none(text)[0].claim, "real");
     }
 
     #[test]

@@ -63,6 +63,77 @@ pub struct SessionLedger {
     /// set or it was cleared. The same fold of the goal events a resume uses.
     #[serde(default)]
     pub goal: Option<SessionGoal>,
+    /// The last finished goal check of the goal's current revision; `None` when no check has
+    /// finished since the goal was set or last changed. Shown to the Captain's clients only: the
+    /// text digest a check reads never renders it, so a check cannot take its own earlier verdict
+    /// for evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_check: Option<GoalCheck>,
+}
+
+/// Longest [`ClaimCheck::claim`] and [`ClaimCheck::evidence`], in characters.
+pub const MAX_CLAIM_CHARS: usize = 200;
+/// Claims kept in one [`GoalCheck`].
+pub const MAX_CLAIMS: usize = 5;
+
+/// What a goal check found, as the server publishes it (`command.result` named `goal_check`) and
+/// the ledger keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalCheck {
+    /// The revision of the goal the check judged.
+    pub revision: u64,
+    /// The turn whose end started the check.
+    pub turn_id: String,
+    /// One status per criterion the check sent, numbered from 1.
+    pub statuses: Vec<CriterionCheck>,
+    /// The completion claims of the agent's last turn, each against the ledger.
+    #[serde(default)]
+    pub claims: Vec<ClaimCheck>,
+    /// Whether the check queued a passive note for the agent (`goal_watch.notes`).
+    pub note_sent: bool,
+    /// The note the agent will read; absent when none was sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// How the ledger stands against one criterion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CriterionStatus {
+    Supported,
+    Contradicted,
+    NotChecked,
+}
+
+/// One criterion's status, numbered from 1 like the goal's criteria.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CriterionCheck {
+    pub index: u64,
+    pub status: CriterionStatus,
+    /// A quote of the ledger line the status rests on; may be empty.
+    pub evidence: String,
+}
+
+/// How the ledger stands against one claim of the agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimStatus {
+    /// A quoted command or file-change line shows it.
+    Supported,
+    /// A quoted command or file-change line shows the opposite.
+    Contradicted,
+    /// No ledger line settles it. Never read as false.
+    Unverified,
+}
+
+/// One completion claim of the agent's last turn ("tests pass", "committed") and its status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimCheck {
+    pub claim: String,
+    pub status: ClaimStatus,
+    /// The quoted ledger line a `supported` or `contradicted` stands on; may be kept, unproven,
+    /// on an `unverified` claim.
+    pub evidence: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

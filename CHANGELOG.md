@@ -14,6 +14,14 @@ requests land in `develop`.
   summary no longer drops dead ends.
 ### Added
 
+- The goal check now also sets the agent's completion claims in its last answer ("tests pass",
+  "committed", at most five) against the ledger, in the same model call: a claim is supported or
+  contradicted only on a quoted command or file-change line that was sent, and unverified
+  otherwise, never false. The result of every finished check is published to the conversation's
+  clients as a `command.result` named `goal_check` (criteria statuses, claims, whether a note was
+  sent and its text) and the session ledger keeps the last one for the goal's current revision, in
+  the new `goal_check` field. It is shown even with `goal_watch.notes` off: the agent still
+  receives nothing unless notes are on. `goal-checks.jsonl` lines gain a `claims` list.
 - The Instinct calls of the subagent and root watchdogs and of the compaction judge are recorded,
   one line per call in `instinct-calls.jsonl` in the data directory: caller, conversation, model,
   the size and SHA-256 of the state (never the state itself), the question names, the answers,
@@ -60,7 +68,8 @@ requests land in `develop`.
   contradicted or not checked; "supported" stands only on a quoted command or file-change line,
   never on the agent's word, and a long goal takes at most half of the input. Each check is one line of
   `goal-checks.jsonl` in the data directory (outcome, statuses with a short evidence quote,
-  latency, size, tokens, model) and is shown nowhere yet. It runs beside the turn, never delaying
+  latency, size, tokens, model); a finished check is also published to the conversation's clients,
+  as the entry on claims says. It runs beside the turn, never delaying
   it: one at a time per conversation, at most ten per hour (the first skip of each hour is
   logged), 60 seconds each; a skipped, timed-out or outdated check is logged as such.
 - Goal watch notes, off by default: with `goal_watch.notes` set to `true`, a goal check that finds a

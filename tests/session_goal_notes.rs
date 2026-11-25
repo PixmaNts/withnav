@@ -165,6 +165,36 @@ async fn wait_requests(server: &MockServer, what: &str, condition: impl Fn(&[Val
     }
 }
 
+fn is_goal_check(payload: &Value) -> bool {
+    payload["name"] == "goal_check"
+}
+
+/// The `goal_check` results a session published, oldest first.
+async fn published(state: &AppState, id: ulid::Ulid) -> Vec<Value> {
+    common::server::stored_events(state, id, "command.result")
+        .await
+        .into_iter()
+        .map(|e| e.payload)
+        .filter(is_goal_check)
+        .collect()
+}
+
+/// Waits until `n` results are published (the event is stored a moment after the log line).
+async fn wait_published(state: &AppState, id: ulid::Ulid, n: usize) -> Vec<Value> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let results = published(state, id).await;
+        if results.len() >= n {
+            return results;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no {n} published goal checks"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 const CONTRADICTED: &str = r#"{"criteria":[{"index":1,"status":"contradicted","evidence":"exit 101 · cargo test"},{"index":2,"status":"not_checked","evidence":""}]}"#;
 
 /// A goal of revision 3: the objective and two criteria.
@@ -207,6 +237,7 @@ async fn with_the_setting_off_nothing_changes_but_the_log_field() {
             assert_eq!(
                 keys,
                 [
+                    "claims",
                     "goal_revision",
                     "input_bytes",
                     "latency_ms",
@@ -251,6 +282,37 @@ async fn with_the_setting_off_nothing_changes_but_the_log_field() {
     assert_eq!(runs[0], runs[1]);
 }
 
+// Given the setting absent (off) and a goal of revision 3 with two criteria
+// When a check finds a contradicted criterion
+// Then the Captain's clients receive its result with `note_sent: false` and no note text, and the
+//      agent receives nothing: the next request carries no flow note
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_the_setting_off_the_captain_sees_the_result_and_the_agent_nothing() {
+    let env = env(meta_answer(CONTRADICTED), None).await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    two_criteria(&env.state, id).await;
+    let first = turn(&env.state, id, "one").await;
+    wait_lines(&env.log, 1).await;
+    let results = wait_published(&env.state, id, 1).await;
+    let data = &results[0]["data"];
+    assert_eq!(results[0]["ok"], true);
+    assert_eq!(data["turn_id"], first.as_str());
+    assert_eq!(data["revision"], 3);
+    assert_eq!(data["note_sent"], false);
+    assert!(data.get("note").is_none(), "{data}");
+    assert_eq!(data["statuses"][0]["status"], "contradicted");
+    assert_eq!(data["statuses"][1]["status"], "not_checked");
+
+    turn(&env.state, id, "two").await;
+    let requests = cognition_requests(&env.server).await;
+    assert!(requests.iter().all(|r| flow_notes(r).is_empty()));
+    assert!(stored_notes(&env.state, id).await.is_empty());
+}
+
 // Given the setting on and a goal of revision 3 with two criteria
 // When a turn ends `done`, the check finds criterion 1 contradicted and criterion 2 unchecked
 // Then one note is queued without starting a turn; the Captain's next message carries it to the
@@ -276,6 +338,7 @@ async fn a_finding_is_noted_once_per_revision_at_the_next_turn() {
     assert_eq!(logged[0]["outcome"], "ok");
     assert_eq!(logged[0]["note_sent"], true);
     assert!(logged[0].get("note_skipped").is_none(), "{}", logged[0]);
+    wait_published(&env.state, id, 1).await;
 
     // Queued, not delivered: the line is written after the note is queued, and by then no
     // request and no event follows the turn's own closing ones.
@@ -286,17 +349,31 @@ async fn a_finding_is_noted_once_per_revision_at_the_next_turn() {
         .replay(id, Some(end_seq), u64::MAX)
         .await
         .unwrap();
-    let kinds: Vec<&str> = after.iter().map(|e| e.kind.as_str()).collect();
+    // The turn's own closing events, and the result of the check for the Captain's clients.
+    let kinds: Vec<&str> = after
+        .iter()
+        .filter(|e| !is_goal_check(&e.payload))
+        .map(|e| e.kind.as_str())
+        .collect();
     assert_eq!(
         kinds,
         ["task.done", "agent.state"],
         "the note started nothing"
+    );
+    assert_eq!(
+        after.iter().filter(|e| is_goal_check(&e.payload)).count(),
+        1,
+        "one result for the one check"
     );
 
     let text = "Goal check (revision 3): criterion 1 \"cargo test passes\" is contradicted: \
 \"exit 101 · cargo test\". Criterion 2 \"the docs name the flag\" is not checked yet. \
 This is an automatic observation, not a Captain instruction.";
     let wrapped = format!("<untrusted-flow-note>\n{text}\n</untrusted-flow-note>");
+    // The Captain's clients are told what the agent will read.
+    let results = wait_published(&env.state, id, 1).await;
+    assert_eq!(results[0]["data"]["note_sent"], true);
+    assert_eq!(results[0]["data"]["note"], text);
     turn(&env.state, id, "two").await;
     let requests = cognition_requests(&env.server).await;
     assert_eq!(requests.len(), 2);

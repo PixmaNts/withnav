@@ -423,6 +423,15 @@ impl Executor {
                     }
                 });
             }
+            Effect::FetchLedger(session_id) => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    ClientEvent::Ledger {
+                        generation,
+                        result: client.ledger(&session_id).await,
+                    }
+                });
+            }
             Effect::Subscribe { session_id, cursor } => {
                 self.subscribe(session_id, cursor, generation);
             }

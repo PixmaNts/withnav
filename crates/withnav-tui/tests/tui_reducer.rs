@@ -3129,7 +3129,14 @@ fn every_stream_connection_reads_the_context_back() {
         generation: s.generation.clone(),
     };
     let effects = update(&mut s, connected).unwrap();
-    assert_eq!(effects, vec![fetch("s1", &s), Effect::FetchMcp]);
+    assert_eq!(
+        effects,
+        vec![
+            fetch("s1", &s),
+            Effect::FetchMcp,
+            Effect::FetchLedger("s1".into())
+        ]
+    );
 }
 
 #[test]
@@ -3166,7 +3173,14 @@ fn a_snapshot_missed_during_a_disconnect_is_read_back_on_reconnect() {
         generation: s.generation.clone(),
     };
     let effects = update(&mut s, connected).unwrap();
-    assert_eq!(effects, vec![fetch("s1", &s), Effect::FetchMcp]);
+    assert_eq!(
+        effects,
+        vec![
+            fetch("s1", &s),
+            Effect::FetchMcp,
+            Effect::FetchLedger("s1".into())
+        ]
+    );
     let fetched = ClientEvent::Context {
         generation: s.generation.clone(),
         epoch: s.conversation.context_epoch,
@@ -3425,7 +3439,14 @@ fn each_tab_keeps_its_own_context_epoch() {
     // the active tab reconnects: only its epoch moves, and its fetch names its session
     let generation = s.generation.clone();
     let fx = update(&mut s, ClientEvent::StreamConnected { generation }).unwrap();
-    assert_eq!(fx, vec![fetch("S2", &s), Effect::FetchMcp]);
+    assert_eq!(
+        fx,
+        vec![
+            fetch("S2", &s),
+            Effect::FetchMcp,
+            Effect::FetchLedger("S2".into())
+        ]
+    );
     assert_eq!(s.tabs[0].conversation.context_epoch, before);
     // the background tab reconnects: its fetch names its own session
     let fx = update(&mut s, ClientEvent::StreamConnected { generation: first }).unwrap();
@@ -3437,6 +3458,7 @@ fn each_tab_keeps_its_own_context_epoch() {
                 epoch: s.tabs[0].conversation.context_epoch,
             },
             Effect::FetchMcp,
+            Effect::FetchLedger("S1".into()),
         ]
     );
     assert_eq!(s.tabs[0].conversation.context_epoch, before + 1);

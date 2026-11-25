@@ -19,6 +19,9 @@ expression: snapshot
                      │                                                                                                                                              │  input budget                182k 
                      │                                                                                                                                              │  compacted ×1 · ~150k → ~38k      
                      │                                                                                                                                              │                                   
+                     │                                                                                                                                              │ LEDGER                            
+                     │                                                                                                                                              │  —                                
+                     │                                                                                                                                              │                                   
                      │                                                                                                                                              │ SKILLS · MCP · PLUGINS            
                      │                                                                                                                                              │  skills listed                 12 
                      │                                                                                                                                              │  omitted, no room               3 
@@ -32,10 +35,7 @@ expression: snapshot
                      │                                                                                                                                              │  A src/tui/view/file_1.rs         
                      │                                                                                                                                              │  D src/tui/view/file_2.rs         
                      │                                                                                                                                              │  ? src/tui/view/file_3.rs         
-                     │                                                                                                                                              │  M src/tui/view/file_4.rs         
-                     │                                                                                                                                              │  A src/tui/view/file_5.rs         
-                     │                                                                                                                                              │  D src/tui/view/file_6.rs         
-                     │                                                                                                                                              │    7 more                         
+                     │                                                                                                                                              │    10 more                        
                      │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                      │ ready                                                                                                                                                          session 31.2k tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐

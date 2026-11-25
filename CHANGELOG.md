@@ -12,6 +12,14 @@ requests land in `develop`.
   that confirmed it and its observed result, unconfirmed claims are listed apart, failed attempts
   stay with what not to retry, and the open criteria and the next check close the summary. A
   summary no longer drops dead ends.
+### Added
+
+- The session ledger: what a conversation did (turns and how the last one ended, files changed,
+  shell commands with their exit code, commands that failed more than once, the last answer, the
+  questions still waiting), rebuilt from the conversation's stored events on each read, with every
+  list bounded and a text digest of at most 4 KiB. Served by `GET /v1/sessions/{id}/ledger` for
+  every session, stopped ones and subagents included; the terminal client's right column shows its
+  turns, files and repeated failures.
 
 ## [0.8.4] - 2026-11-24
 

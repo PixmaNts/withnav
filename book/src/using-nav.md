@@ -56,6 +56,15 @@ The summary keeps what Nav needs to continue honestly: each piece of verified wo
 that confirmed it, claims no tool output confirmed, failed attempts and what not to retry, what you
 asked for that is not done or not checked yet, and the next check to run.
 
+## The session ledger
+
+Every conversation, subagents included, keeps a ledger of what it did: the turns and how the last
+one ended, the files `write` and `edit` changed, the last shell commands with their exit code,
+the commands that failed more than once, the last answer, and the questions still waiting for you.
+WithNav rebuilds it from the conversation's history whenever it is read, so it costs no model call
+and a stopped conversation has one too. Every list and text is bounded. The terminal client shows
+it in the right column; a client reads it at `GET /v1/sessions/{id}/ledger`.
+
 ## The terminal client: `nav tui`
 
 `nav tui`, or `nav` alone, starts a private server and opens a chat. To use a server that is
@@ -64,7 +73,9 @@ already running, pass `--url`; see the [command line](cli.md#nav-tui).
 - **Tabs.** Up to nine conversations, `alt+1` to `alt+9`. `ctrl+n` opens a new one, `alt+w`
   closes the tab and keeps the conversation, `alt+b` hides the tab bar.
 - **Header.** Workspace, git branch, agent and model.
-- **Right column.** The agent with its model and variant, the context breakdown, skills (listed,
+- **Right column.** The agent with its model and variant, the context breakdown, the session
+  ledger (turns and how the last one ended, the files the agent changed, the commands that keep
+  failing), skills (listed,
   and loaded by the model) and the MCP servers (a dot each: green ready, orange starting, red
   failed), the layers (green ready, red unavailable, Nav orange while it runs) and git changes.
   `alt+r` shows or hides it. The status line also sums up the MCP servers, for example `mcp 2/3`.

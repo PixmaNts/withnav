@@ -10,6 +10,7 @@ use std::time::Duration;
 use withnav_client_api::{
     attachment::ImageRef,
     event::{McpStatus, PauseToken, SkillsBody},
+    ledger::SessionLedger,
     protocol::{
         AgentsBody, BypassResponse, CommandRequest, CommandResponse, CommandsBody, ContextSnapshot,
         CreateSessionRequest, CreateSessionResponse, LayersBody, ModelsBody, PermissionAnswer,
@@ -214,6 +215,12 @@ impl Client {
     /// The session's context snapshot.
     pub async fn context(&self, id: &str) -> Result<ContextSnapshot, String> {
         let request = self.get(&format!("/v1/sessions/{}/context", encode_segment(id)));
+        self.json(request).await
+    }
+
+    /// The session ledger: what the session did, folded by the server from its stored events.
+    pub async fn ledger(&self, id: &str) -> Result<SessionLedger, String> {
+        let request = self.get(&format!("/v1/sessions/{}/ledger", encode_segment(id)));
         self.json(request).await
     }
 

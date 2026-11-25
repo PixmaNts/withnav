@@ -8,6 +8,7 @@ pub mod flows;
 pub(crate) mod layer_fixture;
 pub mod layers;
 pub mod mcp;
+pub mod memory;
 pub mod navigator;
 pub mod paths;
 pub mod permission;

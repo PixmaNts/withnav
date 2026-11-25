@@ -369,6 +369,33 @@ active every request carries it. It is per conversation, unlike the intent recor
 recording it neither delegates work nor authorizes the agent to go on alone.
 _Avoid_: task, objective file, intent (the intent record is the project's)
 
+**Memory item**:
+One durable piece of knowledge the Captain asked WithNav to keep, in the memory register of
+`withnav.db`: a decision, a convention, a preference, an environment fact or a pitfall, with a
+scope. It is never rewritten: each new wording, invalidation, restoration or move to another scope
+appends a dated version naming its author and source session, and a writer states the version it
+read, so a stale writer is refused. Memory informs answers; it never authorizes a tool call and
+never enters the permission input.
+_Avoid_: decision (a decision is a flow node), fact, note, memory entry
+
+**Scope** (of a memory item):
+Who reads a memory item: every session (global), the sessions working in a group's projects, those
+working in one project, or one session. A move that lets more projects read an item (a widening)
+is written only with the Captain's confirmation.
+_Avoid_: visibility, namespace
+
+**Project**:
+One repository whatever the checkout: linked git worktrees share a project (they share a git
+common directory), a separate clone or a folder outside git is its own. A session works in one
+active project at a time; worktrees share its memory items, never its permissions.
+_Avoid_: workspace (a workspace is one folder), repo
+
+**Group**:
+Projects that share memory items without making them global. A project is asked its group once,
+when it is first seen; joining a group is a widening and waits for the Captain, leaving one
+applies at once. Every membership change is kept as history.
+_Avoid_: team, collection, tag
+
 **Live state**:
 The ephemeral part of the shared context: recent edits, compiler diagnostics, a running summary of
 the conversation. It is not persisted.

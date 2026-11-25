@@ -20,6 +20,15 @@ requests land in `develop`.
   list bounded and a text digest of at most 16 KiB. Served by `GET /v1/sessions/{id}/ledger` for
   every session, stopped ones and subagents included; the terminal client's right column shows its
   turns, files and repeated failures.
+- The memory register in `withnav.db`, with no command or page yet: memory items (decision,
+  convention, preference, environment, pitfall) scoped global, group, project or session, each
+  change an appended dated version with its author and source session; a writer that read an
+  older version is refused and writes nothing, and versions cannot be updated or deleted. Search
+  reads current wordings of active items only. Projects follow the git common directory, so linked
+  worktrees share one project while a separate clone or a folder outside git is its own; a session
+  works in one active project and reads only that project's groups. Widening who reads something
+  (a wider scope, a project joining a group) needs the Captain's confirmation, and every
+  membership change is kept as history.
 ### Fixed
 
 - A rejected Instinct request now says why, on one line of at most 300 characters. The flow run

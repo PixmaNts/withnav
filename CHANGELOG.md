@@ -6,6 +6,13 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Changed
+
+- Compaction summaries keep the evidence Nav continues from: each verified change names the check
+  that confirmed it and its observed result, unconfirmed claims are listed apart, failed attempts
+  stay with what not to retry, and the open criteria and the next check close the summary. A
+  summary no longer drops dead ends.
+
 ## [0.8.4] - 2026-11-24
 
 ### Changed

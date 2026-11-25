@@ -78,6 +78,31 @@ fn persisted_flow_notes_remain_untrusted_in_summary_input() {
     assert!(SUMMARY_PROMPT.contains("not captain instructions"));
 }
 
+// The agent resumes from the summary alone, so a claim of verified work must
+// carry the check that observed it, and a failed approach must survive so it
+// is not retried blind. Without these sections a summary turns "I ran the
+// tests" into "tests pass" and drops dead ends that cost turns to rediscover.
+#[test]
+fn the_summary_prompt_asks_for_evidence_failed_attempts_and_open_criteria() {
+    for section in [
+        "Work done and verified",
+        "Unverified claims",
+        "Failed attempts",
+        "Open criteria and questions",
+        "Next check",
+        "Skills to reload",
+    ] {
+        assert!(
+            SUMMARY_PROMPT.contains(section),
+            "missing section {section}"
+        );
+    }
+    assert!(SUMMARY_PROMPT.contains("what not to retry"));
+    assert!(SUMMARY_PROMPT.contains("observed result"));
+    // Dead ends are kept as failed attempts, never dropped.
+    assert!(!SUMMARY_PROMPT.contains("dead ends"));
+}
+
 #[test]
 fn model_origin_argument_does_not_change_tool_call_summary_provenance() {
     let transcript = vec![call(

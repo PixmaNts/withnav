@@ -52,6 +52,10 @@ conversation grows too long, `/compact` summarises the older part. Compaction al
 automatically before a request that would not fit. By default the Metacognition model writes the
 summary (`compaction.writer`; see [Configuration](configuration.md#settings-reference)).
 
+The summary keeps what Nav needs to continue honestly: each piece of verified work with the check
+that confirmed it, claims no tool output confirmed, failed attempts and what not to retry, what you
+asked for that is not done or not checked yet, and the next check to run.
+
 ## The terminal client: `nav tui`
 
 `nav tui`, or `nav` alone, starts a private server and opens a chat. To use a server that is

@@ -17,6 +17,8 @@
 //!   the replayed envelopes carry the current generation and must be applied.
 //! - `Effect::SendAt { revision }` must be echoed in `ClientEvent::Submitted { revision }`.
 mod actions;
+#[cfg(test)]
+mod ledger_tests;
 
 pub use actions::{handle_action, occupied, short_id, show_variants, switch_blocked};
 pub use withnav_client_state::{outcome_text, strip_controls, tokens};
@@ -59,6 +61,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Resumed { generation, .. }
         | ClientEvent::Metadata { generation, .. }
         | ClientEvent::Context { generation, .. }
+        | ClientEvent::Ledger { generation, .. }
         | ClientEvent::Submitted { generation, .. }
         | ClientEvent::AttachmentChecked { generation, .. }
         | ClientEvent::AttachmentsUploaded { generation, .. }
@@ -88,6 +91,18 @@ pub(crate) fn read_git(s: &mut State) -> Option<Effect> {
     }
     s.git_reading = true;
     Some(Effect::ReadGit)
+}
+
+/// Reads the session ledger, one read at a time per conversation: asked while one runs, it is
+/// read once more when that one returns. `None` before the conversation has a session.
+pub(crate) fn read_ledger(s: &mut State) -> Option<Effect> {
+    let id = s.session.as_ref().map(|m| m.session_id.clone())?;
+    if s.conversation.ledger_reading {
+        s.conversation.ledger_again = true;
+        return None;
+    }
+    s.conversation.ledger_reading = true;
+    Some(Effect::FetchLedger(id))
 }
 
 /// Appends a reducer-made block with a unique, stable id (`local:<n>`).
@@ -428,6 +443,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             }
             if turn_end {
                 effects.extend(read_git(s));
+                effects.extend(read_ledger(s));
             }
         }
         ClientEvent::Git { status, .. } => {
@@ -472,6 +488,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 });
             }
             effects.push(Effect::FetchMcp);
+            effects.extend(read_ledger(s));
         }
         ClientEvent::StreamDisconnected { .. } => s.connection = ConnectionStatus::Disconnected,
         ClientEvent::Reconnecting { .. } => s.connection = ConnectionStatus::Reconnecting,
@@ -974,6 +991,16 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 && epoch == s.conversation.context_epoch
             {
                 keep_newer_context(s, snapshot);
+            }
+        }
+        ClientEvent::Ledger { result, .. } => {
+            s.conversation.ledger_reading = false;
+            // An older server has no ledger endpoint: the section keeps its dash.
+            if let Ok(ledger) = result {
+                s.conversation.ledger = Some(ledger);
+            }
+            if std::mem::take(&mut s.conversation.ledger_again) {
+                effects.extend(read_ledger(s));
             }
         }
         ClientEvent::ImageOpened { result, .. } => {

@@ -50,6 +50,9 @@
 //! - `GET  /v1/sessions/:id/secrets` -> `{secrets:[…]}`, metadata only;
 //!   `DELETE /v1/sessions/:id/secrets/:name` -> 204, or 404 when there is none.
 //! - `GET  /v1/sessions/:id/context` -> the context snapshot (`alias, variant?, window, window_source, estimate_total, breakdown{system,rules,skills_catalog,tools,messages}, output_reserve, margin, input_budget, percent, last_usage?{prompt_tokens,completion_tokens,step}, revision`); an estimate of the NEXT request, `last_usage` is the provider's count for the last one
+//! - `GET  /v1/sessions/:id/ledger` -> the session ledger (`through_seq, turns{count,last?{turn_id,outcome}}, files_touched[{path,changes,last_turn}], commands[{command,outcome{status,code?|error?},turn}], repeated_failures[{command,count,last_error}], last_turn_text, open_questions[{kind,id,title,child_session_id?}], compactions, goal`),
+//!   folded on every read from the stored events, so a stopped session has one too; every list
+//!   and text is bounded (`withnav_client_api::ledger`); unknown id 404 like `/context`
 //! - `GET /v1/sessions/:id/skills` -> `{skills:[{name,description}],disabled_reason?}`: only catalog-listed skills; no rows when the agent disables `skill`.
 //!   Message content accepts one `{type:"skill",name}` alongside text. Admission loads it through
 //!   the skill tool's bounded loader before accepting the message; unknown, omitted, disabled or
@@ -206,6 +209,7 @@ pub fn app(state: AppState) -> Router {
             post(submit_secret).delete(revoke_secret),
         )
         .route("/v1/sessions/{id}/context", get(get_context))
+        .route("/v1/sessions/{id}/ledger", get(get_ledger))
         .route("/v1/sessions/{id}/skills", get(get_skills))
         .route(
             "/v1/workspaces",
@@ -915,6 +919,15 @@ async fn get_context(State(state): State<AppState>, Path(id): Path<String>) -> R
         Err(err) => return error_response(err),
     };
     json_result(state.context(parsed).await)
+}
+
+/// `GET /v1/sessions/:id/ledger`: the session ledger, folded from its stored events.
+async fn get_ledger(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let parsed = match parse_session_id(id) {
+        Ok(parsed) => parsed,
+        Err(err) => return error_response(err),
+    };
+    json_result(state.ledger(parsed).await)
 }
 
 async fn get_skills(State(state): State<AppState>, Path(id): Path<String>) -> Response {

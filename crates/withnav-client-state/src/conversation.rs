@@ -181,6 +181,12 @@ pub struct Conversation {
     pub last_response_step: Option<(String, String, String)>,
     /// The last `context.compacted` of the conversation, if any.
     pub last_compaction: Option<withnav_client_api::event::ContextCompacted>,
+    /// The server's session ledger (`GET /v1/sessions/{id}/ledger`), read when the stream
+    /// connects and after each turn; `None` until the first read answers.
+    pub ledger: Option<withnav_client_api::ledger::SessionLedger>,
+    /// A ledger read is running; `ledger_again` asks for one more when it returns.
+    pub ledger_reading: bool,
+    pub ledger_again: bool,
 }
 
 pub fn block(id: impl Into<String>, kind: BlockKind) -> Block {

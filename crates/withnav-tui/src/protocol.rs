@@ -107,6 +107,11 @@ pub enum ClientEvent {
         epoch: u64,
         result: Result<ContextSnapshot, String>,
     },
+    /// The answer to `Effect::FetchLedger`.
+    Ledger {
+        generation: Generation,
+        result: Result<withnav_client_api::ledger::SessionLedger, String>,
+    },
     Submitted {
         generation: Generation,
         revision: u64,
@@ -397,6 +402,8 @@ pub enum Effect {
         session_id: String,
         epoch: u64,
     },
+    /// Reads the session ledger; the answer comes back as `ClientEvent::Ledger`.
+    FetchLedger(String),
     Subscribe {
         session_id: String,
         cursor: Option<u64>,

@@ -12,15 +12,15 @@ expression: snapshot
                      │                                                                                                      │ CONTEXT                           
                      │                                                                                                      │  —                                
                      │                                                                                                      │                                   
-                     │                                                                                                      │ SKILLS · MCP · PLUGINS            
-                     │                    ┌───────────────────────────── Conversations ──────────────────────────────┐      │  skills                         — 
-                     │                    │ ❯ filter…                                                                │      │  mcp                            — 
-                     │                    │▌enter/esc · Delete this session and its 1 subagent sessions? This cannot │      │                                   
-                     │                    │ Fix parser  ·  2026-10-02  ·  child                                      │      │ LAYERS                            
-                     │                    │                                                                          │      │  ● nav  idle                      
+                     │                                                                                                      │ LEDGER                            
+                     │                    ┌───────────────────────────── Conversations ──────────────────────────────┐      │  —                                
+                     │                    │ ❯ filter…                                                                │      │                                   
+                     │                    │▌enter/esc · Delete this session and its 1 subagent sessions? This cannot │      │ SKILLS · MCP · PLUGINS            
+                     │                    │ Fix parser  ·  2026-10-02  ·  child                                      │      │  skills                         — 
+                     │                    │                                                                          │      │  mcp                            — 
                      │                    │ enter delete permanently  esc cancel                                     │      │                                   
-                     │                    └──────────────────────────────────────────────────────────────────────────┘      │                                   
-                     │                                                                                                      │                                   
+                     │                    └──────────────────────────────────────────────────────────────────────────┘      │ LAYERS                            
+                     │                                                                                                      │  ● nav  idle                      
                      │                                                                                                      │                                   
                      │                                                                                                      │                                   
                      │                                                                                                      │                                   

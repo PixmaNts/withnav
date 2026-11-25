@@ -6,6 +6,15 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Added
+
+- The session ledger: what a conversation did (turns and how the last one ended, files changed,
+  shell commands with their exit code, commands that failed more than once, the last answer, the
+  questions still waiting), rebuilt from the conversation's stored events on each read, with every
+  list bounded and a text digest of at most 4 KiB. Served by `GET /v1/sessions/{id}/ledger` for
+  every session, stopped ones and subagents included; the terminal client's right column shows its
+  turns, files and repeated failures.
+
 ## [0.8.4] - 2026-11-24
 
 ### Changed

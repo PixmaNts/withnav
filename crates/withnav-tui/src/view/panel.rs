@@ -1,6 +1,7 @@
 //! The right column: what the conversation runs with, only from what the server and git report.
 //! Agents (the session's agent and the agents it started), Context (the breakdown of the
-//! last snapshot and the last compaction), Skills · MCP · Plugins (the skill catalog counts, the
+//! last snapshot and the last compaction), Ledger (the turns, the files changed and the commands
+//! that keep failing, from the server's session ledger), Skills · MCP · Plugins (the skill catalog counts, the
 //! skills the model loaded, a dot per MCP server of the service), Layers (one dot each, from
 //! the assignment check and the conversation's activity) and Changes (the files git reports). A
 //! section with nothing reported yet shows `—`; none is made up.
@@ -17,7 +18,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use withnav_client_api::tools::ToolStatus;
+use withnav_client_api::{event::TurnEndOutcome, tools::ToolStatus};
+use withnav_client_state::strip_controls;
 
 /// Columns the column takes, its left border included.
 pub const WIDTH: u16 = 36;
@@ -197,6 +199,71 @@ fn context(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     lines
 }
 
+/// Files listed under the ledger's count, most recently changed first.
+const LEDGER_FILES: usize = 3;
+
+/// What the session did, from the server's ledger: the turns and how the last one ended, the
+/// files it changed (the last few) and the commands that keep failing (the worst one).
+fn ledger(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![title("Ledger", theme)];
+    let Some(l) = &state.conversation.ledger else {
+        lines.push(none(theme));
+        return lines;
+    };
+    let turns = match &l.turns.last {
+        Some(last) => format!("{} · {}", l.turns.count, outcome_word(last.outcome)),
+        None => l.turns.count.to_string(),
+    };
+    lines.push(row("turns", turns, width, theme));
+    lines.push(row(
+        "files touched",
+        l.files_touched.len().to_string(),
+        width,
+        theme,
+    ));
+    for file in l.files_touched.iter().take(LEDGER_FILES) {
+        lines.push(Line::styled(
+            format!(
+                "   {}",
+                fit_start(&strip_controls(&file.path), width.saturating_sub(3))
+            ),
+            theme.text(),
+        ));
+    }
+    let failures = l.repeated_failures.len();
+    let style = if failures == 0 {
+        theme.text()
+    } else {
+        theme.warning()
+    };
+    lines.push(styled_row(
+        "repeated failures",
+        failures.to_string(),
+        width,
+        style,
+        style,
+    ));
+    if let Some(worst) = l.repeated_failures.first() {
+        lines.push(Line::styled(
+            fit(
+                &format!("   {}× {}", worst.count, strip_controls(&worst.command)),
+                width,
+            ),
+            theme.warning(),
+        ));
+    }
+    lines
+}
+
+fn outcome_word(outcome: TurnEndOutcome) -> &'static str {
+    match outcome {
+        TurnEndOutcome::Done => "done",
+        TurnEndOutcome::Yielded => "yielded",
+        TurnEndOutcome::Interrupted => "interrupted",
+        TurnEndOutcome::Error => "error",
+    }
+}
+
 /// The skills the model loaded in this conversation: the `skill` calls that succeeded, each
 /// name once, in the order it was first loaded.
 fn loaded_skills(state: &State) -> Vec<String> {
@@ -369,6 +436,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
     let mut lines = agents(state, width, theme);
     for section in [
         context(state, width, theme),
+        ledger(state, width, theme),
         extensions(state, width, theme),
         layers(state, width, theme),
     ] {
@@ -381,4 +449,152 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         lines.extend(section);
     }
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+    use withnav_client_api::event::{Breakdown, SkillCounts};
+    use withnav_client_api::ledger::{
+        FileTouched, LedgerTurns, RepeatedFailure, SessionLedger, SettledTurn,
+    };
+    use withnav_client_api::protocol::ContextSnapshot;
+
+    /// The column drawn alone, one string per row.
+    fn rows(state: &State) -> Vec<String> {
+        let (width, height) = (WIDTH, 60);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, frame.area(), state, &Theme::default()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    /// The rows of the section titled `title`, up to the blank row that ends it.
+    fn section(rows: &[String], title: &str) -> Vec<String> {
+        let start = rows
+            .iter()
+            .position(|r| r.ends_with(title))
+            .unwrap_or_else(|| panic!("{title}: {rows:#?}"));
+        rows[start..]
+            .iter()
+            .take_while(|r| r.trim_start_matches('│').trim() != "")
+            .map(|r| r.trim_start_matches('│').trim_end().to_owned())
+            .collect()
+    }
+
+    fn file(path: &str, changes: u64) -> FileTouched {
+        FileTouched {
+            path: path.into(),
+            changes,
+            last_turn: 1,
+        }
+    }
+
+    #[test]
+    fn the_ledger_section_shows_a_dash_before_the_server_answered() {
+        let shown = section(&rows(&State::default()), "LEDGER");
+        assert_eq!(shown, vec![" LEDGER", "  —"]);
+    }
+
+    #[test]
+    fn the_ledger_section_reads_the_turns_the_last_files_and_the_worst_failure() {
+        let mut state = State::default();
+        state.conversation.ledger = Some(SessionLedger {
+            turns: LedgerTurns {
+                count: 12,
+                last: Some(SettledTurn {
+                    turn_id: ulid::Ulid(1),
+                    outcome: TurnEndOutcome::Interrupted,
+                }),
+            },
+            files_touched: vec![
+                file("src/parser.rs", 3),
+                file("src/lexer.rs", 1),
+                file("crates/a/very/long/path/that/does/not/fit/lib.rs", 1),
+                file("README.md", 1),
+            ],
+            repeated_failures: vec![
+                RepeatedFailure {
+                    command: "cargo test -p parser\x1b[31m".into(),
+                    count: 3,
+                    last_error: "FAILED".into(),
+                },
+                RepeatedFailure {
+                    command: "make".into(),
+                    count: 2,
+                    last_error: "no rule".into(),
+                },
+            ],
+            ..Default::default()
+        });
+        let shown = section(&rows(&state), "LEDGER");
+        assert_eq!(
+            shown,
+            vec![
+                " LEDGER",
+                "  turns           12 · interrupted",
+                "  files touched                  4",
+                "    src/parser.rs",
+                "    src/lexer.rs",
+                "    …path/that/does/not/fit/lib.rs",
+                "  repeated failures              2",
+                "    3× cargo test -p parser",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_context_section_still_reads_the_snapshot() {
+        let mut state = State::default();
+        state.conversation.context = Some(ContextSnapshot {
+            model: "mock/m".into(),
+            gateway: "mock".into(),
+            upstream_id: "m".into(),
+            variant: None,
+            window: 200_000,
+            window_source: "models.json".into(),
+            estimate_total: 41_200,
+            breakdown: Breakdown {
+                system: 3_100,
+                rules: 1_900,
+                skills_catalog: 2_400,
+                tools: 6_800,
+                messages: 27_000,
+            },
+            output_reserve: 8_192,
+            margin: 10_000,
+            input_budget: 181_808,
+            percent: 21,
+            last_usage: None,
+            skills: SkillCounts::default(),
+            rule_files: 2,
+            incarnation: ulid::Ulid(7),
+            revision: 1,
+        });
+        let shown = section(&rows(&state), "CONTEXT");
+        assert_eq!(
+            shown,
+            vec![
+                " CONTEXT",
+                "  system                       ~3k",
+                "  rules · 2 files              ~2k",
+                "  skills                       ~2k",
+                "  tools                        ~7k",
+                "  messages                    ~27k",
+                "  next request          ~41k · 21%",
+                "  input budget                182k",
+            ]
+        );
+    }
 }

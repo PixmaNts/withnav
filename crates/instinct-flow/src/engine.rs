@@ -42,6 +42,19 @@ pub struct RunOutcome {
     pub result: RunResult,
     pub trace: RunRecord,
     pub provider_outage: bool,
+    /// Set when the run failed because the provider refused a decision
+    /// request (HTTP 4xx). Kept apart from `provider_outage`: every Instinct
+    /// call was refused for three days (2026-11-23..25) while hosts only
+    /// watched for outages, so nothing was reported.
+    pub provider_rejection: Option<ProviderRejection>,
+}
+/// A provider's refusal of a decision request: the HTTP status and the
+/// provider's own reason, already bounded and credential-free (see
+/// [`DecisionError::rejection`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRejection {
+    pub status: u16,
+    pub reason: Option<String>,
 }
 #[derive(Debug, Clone)]
 pub enum RunResult {
@@ -109,6 +122,7 @@ struct Evaluation<'a> {
     cache: BTreeMap<String, InputValue>,
     collected_bytes: usize,
     provider_outage: bool,
+    provider_rejection: Option<ProviderRejection>,
     deadline: Instant,
 }
 impl<'a> Evaluation<'a> {
@@ -180,6 +194,7 @@ impl<'a> Evaluation<'a> {
             cache: BTreeMap::new(),
             collected_bytes: 0,
             provider_outage: false,
+            provider_rejection: None,
             deadline,
         }
     }
@@ -832,6 +847,11 @@ impl<'a> Evaluation<'a> {
                 self.trace.failure = Some(FailureRecord {
                     kind,
                     message: message.clone(),
+                    provider_status: self
+                        .provider_rejection
+                        .as_ref()
+                        .filter(|_| kind == FailureKind::ProviderError)
+                        .map(|rejection| rejection.status),
                 });
                 for (i, status) in self.status.iter().enumerate() {
                     if *status == Status::Running {
@@ -880,6 +900,7 @@ impl<'a> Evaluation<'a> {
             result,
             trace: self.trace,
             provider_outage: self.provider_outage,
+            provider_rejection: self.provider_rejection,
         }
     }
 }
@@ -1165,6 +1186,12 @@ async fn execute(
         e.trace.batches[batch].duration_ms = duration;
         let response = response.map_err(|error| {
             e.provider_outage |= error.is_outage();
+            if let Some((status, reason)) = error.rejection() {
+                e.provider_rejection = Some(ProviderRejection {
+                    status,
+                    reason: reason.map(str::to_owned),
+                });
+            }
             decision_failure(error)
         })?;
         if serde_json::to_vec(&response).map_or(true, |bytes| {

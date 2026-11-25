@@ -63,6 +63,12 @@ pub struct BatchRecord {
 pub struct FailureRecord {
     pub kind: FailureKind,
     pub message: String,
+    /// The HTTP status when the provider refused the request (a 4xx). A
+    /// refusal and an unreachable endpoint share the `provider_error` kind;
+    /// this tells them apart without reading the message. Absent otherwise
+    /// and in captures written before 2026-11-25.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_status: Option<u16>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplyReport {

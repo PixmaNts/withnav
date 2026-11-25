@@ -326,5 +326,10 @@ async fn a_failed_flow_trigger_names_the_run_that_holds_the_rejection() {
             "{}",
             failure.message
         );
+        assert_eq!(
+            failure.provider_status,
+            Some(400),
+            "the record names the refusal without parsing the message"
+        );
     }
 }

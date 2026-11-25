@@ -509,6 +509,25 @@ _Avoid_: flow file (the file is where it is stored), script
 One evaluation of a flow definition for one event, within explicit call, input and time limits; it ends in proposed actions and a trace.
 _Avoid_: execution, job
 
+**Score line**:
+What a live flow run leaves for 90 days in `scores.jsonl`, beside its capture: the run and call
+ids, the model, the flow definition's digest, the projection version, the answer of each decision
+and the actions. No state, input, argument or action text. It joins an Instinct answer to the
+Captain's answer in the decision history long after the 7-day capture is gone.
+_Avoid_: score (one decision's answer), run record (the full capture)
+
+**Projection version**:
+The version of the host's shaping of the permission evidence (which messages count, their cuts,
+labels and byte budgets), sent as `projection` on `tool.pre_call`. Scores are only comparable
+within one version.
+_Avoid_: schema version, prompt version
+
+**Instinct rejection**:
+A decision request the Instinct provider refused (HTTP 4xx): a configuration fault, not an outage.
+It opens no outage window; the Captain gets one "instinct rejected" notice per episode, until
+Instinct answers again.
+_Avoid_: outage, provider error (an unreachable or failing endpoint)
+
 **Observation**:
 Evaluating a flow on real events, possibly calling the instinct, without applying any action or changing any production state.
 _Avoid_: shadow mode, dry run

@@ -122,6 +122,10 @@ pub fn catalogue() -> Catalogue {
                 ("protected", Boolean, false),
                 ("protected_checked", Boolean, false),
                 ("skill", Object, false),
+                // Version of the host's shaping of the permission evidence
+                // (`agent::flow_hook::PERMISSION_PROJECTION`); absent on a
+                // call that carries no conversation evidence.
+                ("projection", Integer, false),
             ],
             json!({"tool":"write","args":{"path":"src/lib.rs","content":""},"call_id":"sample"}),
         ),
@@ -253,6 +257,34 @@ mod tests {
                     assert!(f.value_type.matches(&t.sample_payload[&f.name]));
                 }
             }
+        }
+    }
+    // The permission event names the version of its evidence shaping. A
+    // field the catalogue does not declare fails the run as an invalid
+    // event; a required one would fail every hand-written sample.
+    #[test]
+    fn the_tool_call_event_declares_an_optional_projection() {
+        let c = catalogue();
+        let trigger = c
+            .triggers
+            .iter()
+            .find(|t| t.name == "tool.pre_call")
+            .unwrap();
+        let field = trigger
+            .payload_fields
+            .iter()
+            .find(|f| f.name == "projection")
+            .expect("projection is declared");
+        assert!(!field.required);
+        assert!(field.value_type.matches(&json!(1)));
+        assert!(!field.value_type.matches(&json!("1")));
+        assert!(trigger.sample_payload.get("projection").is_none());
+        for other in c.triggers.iter().filter(|t| t.name != "tool.pre_call") {
+            assert!(
+                other.payload_fields.iter().all(|f| f.name != "projection"),
+                "{}",
+                other.name
+            );
         }
     }
 }

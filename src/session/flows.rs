@@ -52,8 +52,20 @@ impl FlowEffects for Effects {
         })
     }
     fn instinct_unavailable(&self) {
-        let _ = self.sequencer.publish(crate::bus::sequencer::Candidate::new(crate::bus::event::EventKind::CommandResult,
-            json!({"operation_id":ulid::Ulid::generate(),"name":"flow_notice","ok":false,"data":{"warning":"instinct unavailable"}})));
+        self.notice(json!({"warning":"instinct unavailable"}));
+    }
+    fn instinct_rejected(&self, status: u16, reason: Option<&str>) {
+        self.notice(json!({"warning":"instinct rejected","status":status,"reason":reason}));
+    }
+}
+impl Effects {
+    /// Tell the Captain's clients about Instinct through a failed
+    /// `command.result` named `flow_notice`, the one shape they render for it.
+    fn notice(&self, data: serde_json::Value) {
+        let _ = self.sequencer.publish(crate::bus::sequencer::Candidate::new(
+            crate::bus::event::EventKind::CommandResult,
+            json!({"operation_id":ulid::Ulid::generate(),"name":"flow_notice","ok":false,"data":data}),
+        ));
     }
 }
 
@@ -210,4 +222,66 @@ pub(crate) async fn settled(handle: super::service::SessionHandle, session_id: S
             });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `command.result` payload a notice of `raise` publishes.
+    async fn notice(raise: impl FnOnce(&Effects)) -> serde_json::Value {
+        let sequencer = crate::bus::sequencer::Sequencer::spawn(
+            ulid::Ulid::generate(),
+            crate::bus::SessionBus::default(),
+            0,
+        );
+        let mut live = sequencer.subscribe_live().await.unwrap().receiver;
+        raise(&Effects {
+            runtime: std::sync::Weak::new(),
+            status: Arc::new(crate::bus::runtime::RuntimeStatus::default()),
+            sequencer: sequencer.clone(),
+            turn_end: false,
+        });
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), live.recv())
+            .await
+            .expect("a notice is published")
+            .expect("the session is open");
+        assert_eq!(event.kind, "command.result");
+        event.payload
+    }
+
+    // A refused Instinct request (HTTP 4xx) raised nothing for three days
+    // (2026-11-23..25). The Captain's clients must receive the status and the
+    // provider's reason, in the notice shape they already render.
+    #[tokio::test]
+    async fn a_refused_instinct_request_tells_the_captain_the_status_and_the_reason() {
+        let payload =
+            notice(|effects| effects.instinct_rejected(400, Some("model x has no systemone API")))
+                .await;
+        assert_eq!(payload["name"], "flow_notice");
+        assert_eq!(payload["ok"], false);
+        assert!(payload["operation_id"].is_string());
+        assert_eq!(
+            payload["data"],
+            json!({
+                "warning": "instinct rejected",
+                "status": 400,
+                "reason": "model x has no systemone API",
+            })
+        );
+        // A provider that gave no reason (or echoed a credential) leaves it null.
+        let payload = notice(|effects| effects.instinct_rejected(401, None)).await;
+        assert_eq!(
+            payload["data"],
+            json!({"warning": "instinct rejected", "status": 401, "reason": null})
+        );
+    }
+
+    #[tokio::test]
+    async fn the_outage_notice_keeps_its_payload() {
+        let payload = notice(|effects| effects.instinct_unavailable()).await;
+        assert_eq!(payload["name"], "flow_notice");
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["data"], json!({"warning": "instinct unavailable"}));
+    }
 }

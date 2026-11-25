@@ -5,8 +5,8 @@ use tokio_util::sync::CancellationToken;
 #[path = "captain_messages.rs"]
 mod captain_evidence;
 pub use captain_evidence::{
-    RecentMessage, captain_messages, captain_messages_with_cut, delegation_with_cut,
-    recent_with_cut,
+    PERMISSION_PROJECTION, RecentMessage, captain_messages, captain_messages_with_cut,
+    delegation_with_cut, recent_with_cut,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -127,11 +127,17 @@ pub struct PermissionCallContext {
 
 /// One flow run behind a permission decision: its id in the flow run log
 /// (`flows/runs/<workspace>/runs.jsonl`) and the score of each node that asked
-/// Instinct a question.
+/// Instinct a question, with the model and the flow text that produced them.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct RunScores {
     pub run_id: String,
     pub scores: std::collections::BTreeMap<String, f64>,
+    /// Digest of the flow definition that ran (see [`PermissionFlowAnswer`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub definition_digest: String,
+    /// The Instinct model the run was configured with.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
 }
 
 impl ProtectedCheck {
@@ -172,6 +178,16 @@ pub struct PermissionFlowAnswer {
     /// The score of each node of this run that asked Instinct.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub scores: std::collections::BTreeMap<String, f64>,
+    /// Digest of the flow definition that ran. The decision row keeps the
+    /// Captain's answer, the label a score is compared with; the 673 scored
+    /// rows read on 2026-11-25 named neither the flow text nor the model, so
+    /// scores from different versions could not be told apart. Empty when no
+    /// flow ran.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub definition_digest: String,
+    /// The Instinct model the run was configured with; empty when no flow ran.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
 }
 
 #[derive(Debug)]

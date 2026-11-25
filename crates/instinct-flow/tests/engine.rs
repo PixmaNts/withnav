@@ -1515,3 +1515,89 @@ async fn each_call_gets_four_seconds_and_an_async_run_ten() {
     assert!(matches!(outcome.result, RunResult::Success { .. }));
     assert_eq!(outcome.trace.budget_ms, 10_000);
 }
+/// Fails every decision with the scripted transport error.
+struct Failing(DecisionError);
+impl DecisionClient for Failing {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities { images: false }
+    }
+    fn identity(&self) -> ClientIdentity {
+        ClientIdentity {
+            model: "fake".into(),
+            variant: None,
+        }
+    }
+    fn decide<'a>(
+        &'a self,
+        _: DecisionRequest<'a>,
+        _: &'a CancellationToken,
+        _: Instant,
+    ) -> BoxFuture<'a, Result<DecisionResponse, DecisionError>> {
+        Box::pin(async move { Err(self.0.clone()) })
+    }
+}
+// A refused request (HTTP 4xx) and an unreachable endpoint both fail a run
+// as `provider_error`; only the refusal is a configuration fault the Captain
+// can fix. The outcome and the stored failure must tell them apart without
+// anyone parsing the message.
+#[tokio::test]
+async fn a_refused_decision_is_named_on_the_outcome_and_in_the_record() {
+    let compiled = compile(&(header("['a']") + &decision("a", "")));
+    let run_with = |error: DecisionError| {
+        let compiled = &compiled;
+        async move {
+            run(
+                compiled,
+                &event(),
+                &Inputs,
+                &Failing(error),
+                RunOptions {
+                    deadline: Instant::now() + Duration::from_secs(2),
+                    run_id: "test".into(),
+                },
+                &CancellationToken::new(),
+            )
+            .await
+        }
+    };
+
+    let refused = run_with(DecisionError::ProviderRejected {
+        status: 400,
+        reason: Some("model x has no systemone API".into()),
+    })
+    .await;
+    assert_eq!(
+        refused.provider_rejection,
+        Some(ProviderRejection {
+            status: 400,
+            reason: Some("model x has no systemone API".into()),
+        })
+    );
+    assert!(!refused.provider_outage, "a refusal is not an outage");
+    let failure = refused.trace.failure.as_ref().expect("the run failed");
+    assert_eq!(failure.kind, FailureKind::ProviderError);
+    assert_eq!(failure.provider_status, Some(400));
+    assert_eq!(
+        serde_json::to_value(failure).unwrap(),
+        serde_json::json!({
+            "kind": "provider_error",
+            "message": "provider rejected the request (HTTP 400): model x has no systemone API",
+            "provider_status": 400,
+        })
+    );
+
+    let unreachable = run_with(DecisionError::ProviderError).await;
+    assert_eq!(unreachable.provider_rejection, None);
+    assert!(unreachable.provider_outage);
+    let failure = unreachable.trace.failure.as_ref().expect("the run failed");
+    assert_eq!(failure.provider_status, None);
+    assert_eq!(
+        serde_json::to_value(failure).unwrap(),
+        serde_json::json!({"kind": "provider_error", "message": "provider unreachable"}),
+        "a failure that is not a refusal is stored as before"
+    );
+    // A capture written before the status existed still reads.
+    let old: FailureRecord =
+        serde_json::from_value(serde_json::json!({"kind": "timeout", "message": "late"})).unwrap();
+    assert_eq!(old.provider_status, None);
+}

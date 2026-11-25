@@ -36,10 +36,13 @@ fn bounded_captain_messages(messages: Vec<String>) -> InputValue {
     }
 }
 
-/// The run id and the score of every node of `outcome` that asked Instinct.
+/// The run id, the model, the flow digest and the score of every node of
+/// `outcome` that asked Instinct.
 fn run_scores(outcome: &RunOutcome) -> RunScores {
     RunScores {
         run_id: outcome.trace.run_id.clone(),
+        definition_digest: outcome.trace.definition_digest.clone(),
+        model: outcome.trace.identity.model.clone(),
         scores: outcome
             .trace
             .nodes
@@ -91,6 +94,7 @@ fn resolve_permissions(
             } => fallback_actions,
             RunResult::Skipped => continue,
         };
+        let run = run_scores(outcome);
         let verdicts: Vec<_> = actions
             .iter()
             .filter_map(|a| FlowAction::parse(&a.action).map(|action| (action, a)))
@@ -114,10 +118,12 @@ fn resolve_permissions(
             );
             answers.push(PermissionFlowAnswer {
                 flow: outcome.trace.flow_name.clone(),
-                run_id: outcome.trace.run_id.clone(),
+                run_id: run.run_id.clone(),
                 action: FlowAction::AskCaptain,
                 used_rule: false,
-                scores: run_scores(outcome).scores,
+                scores: run.scores.clone(),
+                definition_digest: run.definition_digest.clone(),
+                model: run.model.clone(),
             });
             candidates.push((
                 FlowAction::AskCaptain,
@@ -128,10 +134,12 @@ fn resolve_permissions(
         } else if verdicts.is_empty() {
             answers.push(PermissionFlowAnswer {
                 flow: outcome.trace.flow_name.clone(),
-                run_id: outcome.trace.run_id.clone(),
+                run_id: run.run_id.clone(),
                 action: rule_action,
                 used_rule: true,
-                scores: run_scores(outcome).scores,
+                scores: run.scores.clone(),
+                definition_digest: run.definition_digest.clone(),
+                model: run.model.clone(),
             });
             candidates.push((
                 rule_action,
@@ -147,10 +155,12 @@ fn resolve_permissions(
             let resolved = if used_rule { rule_action } else { parsed };
             answers.push(PermissionFlowAnswer {
                 flow: outcome.trace.flow_name.clone(),
-                run_id: outcome.trace.run_id.clone(),
+                run_id: run.run_id.clone(),
                 action: resolved,
                 used_rule,
-                scores: run_scores(outcome).scores,
+                scores: run.scores.clone(),
+                definition_digest: run.definition_digest.clone(),
+                model: run.model.clone(),
             });
             candidates.push((
                 resolved,
@@ -1345,6 +1355,7 @@ mod tests {
                 application: Default::default(),
             },
             provider_outage: false,
+            provider_rejection: None,
         }
     }
 
@@ -1459,10 +1470,13 @@ mod tests {
             action: FlowAction::AskCaptain,
             used_rule: false,
             scores: Default::default(),
+            definition_digest: String::new(),
+            model: String::new(),
         };
         assert_eq!(
-            serde_json::to_value(&answer).unwrap()["action"],
-            json!("ask_captain")
+            serde_json::to_value(&answer).unwrap(),
+            json!({"flow": "f", "run_id": "r", "action": "ask_captain", "used_rule": false}),
+            "an answer no flow produced keeps its shape: no empty digest or model"
         );
     }
 
@@ -1883,6 +1897,286 @@ mod tests {
             "the probe renewed the window"
         );
     }
+    /// Refuses every decision as a provider does for a wrong model id (HTTP
+    /// 400), except the call `answer_at`, which it answers.
+    struct Refusing {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        answer_at: Option<usize>,
+    }
+    impl DecisionClient for Refusing {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/refusing".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            Box::pin(async move {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if Some(call) == self.answer_at {
+                    Ok(instinct_flow::protocol::DecisionResponse {
+                        answers: request
+                            .questions
+                            .keys()
+                            .map(|id| {
+                                (
+                                    id.clone(),
+                                    instinct_flow::protocol::Answer::Noul { noul: 1.0 },
+                                )
+                            })
+                            .collect(),
+                        usage: None,
+                    })
+                } else {
+                    Err(DecisionError::ProviderRejected {
+                        status: 400,
+                        reason: Some("model x has no systemone API".into()),
+                    })
+                }
+            })
+        }
+    }
+    /// Keeps every notice a runtime raises: outages counted, refusals in full.
+    #[derive(Default)]
+    struct NoticeLog {
+        unavailable: std::sync::atomic::AtomicUsize,
+        rejected: std::sync::Mutex<Vec<(u16, Option<String>)>>,
+    }
+    impl NoticeLog {
+        fn rejected(&self) -> Vec<(u16, Option<String>)> {
+            self.rejected
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        }
+    }
+    impl FlowEffects for NoticeLog {
+        fn effect<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: &'a ProposedAction,
+            _: &'a CancellationToken,
+        ) -> BoxFuture<'a, Result<(), ApplyError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn instinct_unavailable(&self) {
+            self.unavailable.fetch_add(1, Ordering::SeqCst);
+        }
+        fn instinct_rejected(&self, status: u16, reason: Option<&str>) {
+            self.rejected
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((status, reason.map(str::to_owned)));
+        }
+    }
+    // Every Instinct call was refused with HTTP 400 for three days
+    // (2026-11-23..25, a model id the gateway did not serve) and the Captain
+    // was never told: a refusal is not an outage, so the outage notice stayed
+    // silent while the permission flow fell back on every call. A refusal is
+    // reported once, with the status and the provider's reason, and again only
+    // after Instinct answered in between.
+    #[tokio::test]
+    async fn a_rejected_request_notifies_once_until_an_answer_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let notices = Arc::new(NoticeLog::default());
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Refusing {
+                calls: calls.clone(),
+                answer_at: Some(2),
+            }),
+            notices.clone(),
+        );
+        let call = || permission_call(dir.path().into(), false);
+        let refusal = (400, Some("model x has no systemone API".to_string()));
+        for _ in 0..2 {
+            let verdict = runtime
+                .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+                .await
+                .verdict;
+            assert!(
+                matches!(verdict, FlowVerdict::AskCaptain { .. }),
+                "a refused decision still applies the rule: {verdict:?}"
+            );
+        }
+        assert_eq!(
+            notices.rejected(),
+            vec![refusal.clone()],
+            "two refusals in a row are one episode"
+        );
+        // The third call is answered: the episode is over.
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        assert_eq!(notices.rejected().len(), 1, "an answer raises nothing");
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        assert_eq!(
+            notices.rejected(),
+            vec![refusal.clone(), refusal],
+            "a refusal after an answer is a new episode"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert_eq!(
+            notices.unavailable.load(Ordering::SeqCst),
+            0,
+            "a refusal is never reported as an outage"
+        );
+    }
+    // A refusal fails at once, so remembering it saves no wait; a window would
+    // only keep a configuration that was just fixed from being tried for the
+    // length of the cooldown.
+    #[tokio::test]
+    async fn a_rejection_does_not_open_the_outage_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let notices = Arc::new(NoticeLog::default());
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Refusing {
+                calls: calls.clone(),
+                answer_at: None,
+            }),
+            notices.clone(),
+        );
+        let call = || permission_call(dir.path().into(), false);
+        for dialled in 1..=3 {
+            runtime
+                .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+                .await;
+            assert!(!runtime.outage.active(), "no window after a refusal");
+            assert_eq!(
+                runtime
+                    .outage
+                    .state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .until,
+                None
+            );
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                dialled,
+                "every call still dials Instinct"
+            );
+        }
+        assert_eq!(notices.rejected().len(), 1);
+        assert_eq!(notices.unavailable.load(Ordering::SeqCst), 0);
+    }
+    // The Captain messages, the delegation and the recent conversation are
+    // cut and labelled by the host before a flow reads them; a score is only
+    // comparable with another one produced from the same shaping. The event
+    // names its version, and the catalogue must declare the field: an
+    // undeclared one fails every permission run as an invalid event.
+    #[tokio::test]
+    async fn the_permission_event_carries_its_projection_version() {
+        let (event, _, _) = FlowRuntime::permission_event(
+            permission_call(PathBuf::from("/project"), false),
+            RuleResult::None,
+            ContextSnapshot::default(),
+        );
+        assert_eq!(
+            event.payload["projection"],
+            json!(crate::agent::flow_hook::PERMISSION_PROJECTION)
+        );
+        assert_eq!(event.payload["projection"], json!(1));
+
+        let dir = tempfile::tempdir().unwrap();
+        let records = Arc::new(crate::flows::records::Records::new(dir.path(), dir.path()));
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Scripted {
+                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                answer_at: 0,
+            }),
+            Arc::new(NoEffects),
+        )
+        .with_records(records.clone());
+        let verdict = runtime
+            .permission_pre_call(
+                permission_call(dir.path().into(), false),
+                RuleResult::Allow,
+                CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(verdict.verdict, FlowVerdict::Allow);
+        records.shutdown(Duration::from_secs(2));
+        let captured = records.read().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(
+            captured[0].status, "success",
+            "the event is valid with its projection: {:?}",
+            captured[0].failure
+        );
+        assert_eq!(captured[0].event.payload["projection"], json!(1));
+        // The score line kept for 90 days joins the answer to its versions:
+        // the call, the model, the flow text and the evidence shaping.
+        let scores = records.scores().unwrap();
+        assert_eq!(scores.len(), 1);
+        let line = &scores[0];
+        assert_eq!(line.run_id, captured[0].run_id);
+        assert_eq!(line.run_id, verdict.flows[0].run_id);
+        assert_eq!(line.flow_name, "decision");
+        assert_eq!(line.call_id.as_deref(), Some("call"));
+        assert_eq!(line.projection, Some(1));
+        assert_eq!(line.identity.model, "fake/scripted");
+        assert!(!line.definition_digest.is_empty());
+        assert_eq!(line.definition_digest, captured[0].definition_digest);
+        assert_eq!(
+            line.answers,
+            BTreeMap::from([("a".to_string(), json!(1.0))])
+        );
+        assert_eq!(line.status, "success");
+    }
+    // A flow written before the event named its projection never sends the
+    // field; the hook that carries no conversation evidence keeps its event.
+    #[tokio::test]
+    async fn the_evidence_free_tool_hook_keeps_its_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = Arc::new(crate::flows::records::Records::new(dir.path(), dir.path()));
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Scripted {
+                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                answer_at: 0,
+            }),
+            Arc::new(NoEffects),
+        )
+        .with_records(records.clone());
+        runtime
+            .tool_pre_call(
+                ToolCallContextLike {
+                    call_id: "legacy".into(),
+                    tool: "read".into(),
+                    args: json!({}),
+                    agent: "build".into(),
+                    workspace: dir.path().into(),
+                },
+                CancellationToken::new(),
+            )
+            .await;
+        records.shutdown(Duration::from_secs(2));
+        let captured = records.read().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].status, "success");
+        assert_eq!(
+            captured[0].event.payload,
+            json!({"call_id": "legacy", "tool": "read", "args": {}})
+        );
+        assert_eq!(records.scores().unwrap()[0].projection, None);
+    }
     #[tokio::test]
     async fn a_local_deny_flow_still_decides_during_an_outage() {
         let dir = tempfile::tempdir().unwrap();
@@ -2196,6 +2490,11 @@ pub trait FlowEffects: Send + Sync {
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<(), ApplyError>>;
     fn instinct_unavailable(&self) {}
+    /// Instinct refused a decision request (HTTP 4xx): a configuration fault
+    /// the Captain can fix (model id, API, key), raised once per episode by
+    /// [`Outage::observe`]. `reason` is the provider's own text, already
+    /// bounded and credential-free; `None` when it gave none.
+    fn instinct_rejected(&self, _status: u16, _reason: Option<&str>) {}
 }
 pub struct NoEffects;
 impl FlowEffects for NoEffects {
@@ -2358,6 +2657,11 @@ struct OutageState {
     /// outage and not once per call: a second failure inside the window renews it
     /// silently, and only an answer from Instinct reports the next one.
     notified: bool,
+    /// Whether a refused request (HTTP 4xx) was already reported since Instinct
+    /// last answered. A refusal never touches `until`: it fails at once, so a
+    /// window would save no wait and would keep a configuration that was just
+    /// fixed from being tried for the whole cooldown.
+    rejection_notified: bool,
 }
 
 /// Keeps an Instinct outage between evaluations, so a turn whose first decision
@@ -2386,7 +2690,10 @@ impl Outage {
 
     /// Keep the memory of the endpoint from one evaluation's outcome. An answer
     /// proves Instinct spoke, so it clears the outage; a timeout or a provider
-    /// outage opens the window again, reporting it only once per episode.
+    /// outage opens the window again, reporting it only once per episode. A
+    /// refused request (HTTP 4xx) is reported once per episode too, without a
+    /// window: every Instinct call was refused for three days (2026-11-23..25)
+    /// and no notice was raised, because only outages were watched.
     ///
     /// `suppressed` marks a run whose decisions never left the process: its
     /// failure is this window's own echo, not new evidence, so it neither renews
@@ -2410,6 +2717,17 @@ impl Outage {
         {
             effects.instinct_unavailable();
         }
+        if let Some(rejection) = &outcome.provider_rejection
+            && self.record_rejection()
+        {
+            effects.instinct_rejected(rejection.status, rejection.reason.as_deref());
+        }
+    }
+
+    /// True when this is the first refusal since Instinct last answered.
+    fn record_rejection(&self) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        !std::mem::replace(&mut state.rejection_notified, true)
     }
 
     /// Open the window for the configured cooldown; true when this is the first
@@ -2917,7 +3235,7 @@ impl FlowRuntime {
                 redacted: false,
             },
         );
-        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":ctx.protected,"protected_checked":ctx.protected_check.is_some()});
+        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":ctx.protected,"protected_checked":ctx.protected_check.is_some(),"projection":crate::agent::flow_hook::PERMISSION_PROJECTION});
         for (name, value) in [
             ("rule", json!(ctx.rule)),
             ("commands", json!(ctx.commands)),

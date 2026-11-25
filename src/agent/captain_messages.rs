@@ -1,6 +1,19 @@
 //! Permission evidence comes from Captain-authored transcript messages, not injected text.
 use crate::provider::openai::ChatMessage;
 
+/// Version of the shaping of the permission evidence: which messages count as
+/// the Captain's, how they are sanitised, cut and labelled, and the byte
+/// budgets of each input (Captain messages and delegation 16 KiB, an answer to
+/// `ask` 4 KiB, the recent conversation 4 messages within 8 KiB). The
+/// `tool.pre_call` event carries it as `projection` and every score line keeps
+/// it, because an Instinct score is only comparable with one produced from the
+/// same evidence: the 673 scored decisions read on 2026-11-25 named neither
+/// the model, nor the flow text, nor this shaping, so scores from different
+/// versions could not be separated. Raise it with any change to a cut, a
+/// budget, a label or what is excluded, here or where the event is built
+/// (`flows::runtime::FlowRuntime::permission_event`).
+pub const PERMISSION_PROJECTION: u32 = 1;
+
 pub fn captain_messages(transcript: &[ChatMessage]) -> Vec<String> {
     captain_messages_with_cut(transcript).0
 }

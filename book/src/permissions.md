@@ -95,10 +95,14 @@ nav permissions add write '*' ask --agent plan
 behind it (for example `permission-default requested 0.04 read_only 0.01 recoverable 0.05`), your
 answer and
 the outcome (`allowed`, `denied`, `pending`, `cancelled`, `expired`). Arguments are stored with
-secrets redacted and size-limited. `--json` adds `flow_trace`: the run id of each flow run, which
-finds the full run, its inputs and the exact text sent to Instinct, in
+secrets redacted and size-limited. `--json` adds `flow_trace`: the run id of each flow run, with
+the Instinct model and the flow definition's digest behind its scores. The run id finds the full
+run, its inputs and the exact text sent to Instinct, in
 `~/.local/share/withnav/flows/runs/<workspace hash>/runs.jsonl`. A question also shows these scores
-in its reason.
+in its reason. History keeps the newest 20 000 decisions; a pending question is never dropped.
+Captures last 7 days; `scores.jsonl` beside them keeps, for 90 days, each run's call id, model, flow
+digest, evidence version (`projection`) and answers, without arguments or messages, so the flow's
+answers can be compared with yours.
 
 Rules and history live in `~/.local/share/withnav/withnav.db`. If it cannot open, the session starts
 with **Permission rules unavailable** and the error. Every call is judged without a rule: the floor

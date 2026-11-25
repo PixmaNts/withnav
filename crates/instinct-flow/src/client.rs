@@ -174,6 +174,19 @@ impl DecisionError {
             Self::Timeout | Self::ProviderError | Self::ProviderStatus(_)
         )
     }
+    /// The HTTP status and the provider's bounded reason when the provider
+    /// refused the request (a 4xx), `None` for every other failure. A refusal
+    /// is a configuration fault (wrong model id, missing API, bad key), not
+    /// an outage: [`Self::is_outage`] stays false for it, since it fails at
+    /// once and remembering it would only hide a configuration that was just
+    /// fixed. The reason was already made safe by [`reason_excerpt`] and the
+    /// credential check when the error was built.
+    pub fn rejection(&self) -> Option<(u16, Option<&str>)> {
+        match self {
+            Self::ProviderRejected { status, reason } => Some((*status, reason.as_deref())),
+            _ => None,
+        }
+    }
 }
 pub trait DecisionClient: Send + Sync {
     fn capabilities(&self) -> Capabilities;

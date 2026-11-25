@@ -152,3 +152,59 @@ async fn cancellation_and_deadline_cover_send_and_body() {
         Err(DecisionError::Cancelled)
     ));
 }
+async fn failure(status: u16, body: &str) -> DecisionError {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(status).set_body_string(body))
+        .mount(&server)
+        .await;
+    let q = questions();
+    client(&server)
+        .decide(
+            DecisionRequest {
+                state: "s",
+                questions: &q,
+            },
+            &CancellationToken::new(),
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err()
+}
+// A wrong model id answered HTTP 400 on every Instinct call for three days
+// (2026-11-23..25) and nothing told the Captain: a refusal was neither an
+// outage nor anything else a host could act on. The host must be able to
+// read the status and the provider's reason apart from an outage, and a
+// refusal must never count as one (it fails at once, and the outage window
+// would only hide a configuration that has just been fixed).
+#[tokio::test]
+async fn a_4xx_is_a_rejection_and_not_an_outage() {
+    let refused = failure(
+        400,
+        r#"{"error":{"message":"model jev-router has no systemone API"}}"#,
+    )
+    .await;
+    assert_eq!(
+        refused.rejection(),
+        Some((400, Some("model jev-router has no systemone API")))
+    );
+    assert!(!refused.is_outage());
+
+    // A body echoing the key gives the status alone.
+    let echoed = failure(401, "secret").await;
+    assert_eq!(echoed.rejection(), Some((401, None)));
+    assert!(!echoed.is_outage());
+
+    let down = failure(503, "busy").await;
+    assert_eq!(down.rejection(), None);
+    assert!(down.is_outage());
+    for error in [
+        DecisionError::Timeout,
+        DecisionError::Cancelled,
+        DecisionError::ProviderError,
+        DecisionError::InvalidAnswer("x".into()),
+        DecisionError::Limit,
+    ] {
+        assert_eq!(error.rejection(), None, "{error}");
+    }
+}

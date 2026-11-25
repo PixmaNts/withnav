@@ -12,6 +12,7 @@ requests land in `develop`.
   that confirmed it and its observed result, unconfirmed claims are listed apart, failed attempts
   stay with what not to retry, and the open criteria and the next check close the summary. A
   summary no longer drops dead ends.
+- Permission history keeps the newest 20 000 decisions instead of 1 000.
 ### Added
 
 - The session ledger: what a conversation did (turns and how the last one ended, files changed,
@@ -20,6 +21,17 @@ requests land in `develop`.
   list bounded and a text digest of at most 16 KiB. Served by `GET /v1/sessions/{id}/ledger` for
   every session, stopped ones and subagents included; the terminal client's right column shows its
   turns, files and repeated failures.
+- An Instinct request the provider refuses (HTTP 4xx) raises an "instinct rejected" notice with the
+  status and the provider's reason, once until Instinct answers again. It never opens the outage
+  window, so a fixed configuration works on the next call. Failed run records carry
+  `provider_status`, and flow health counts `rejections` and `timeouts` apart.
+- Score lines: each live flow run leaves one line in `scores.jsonl` beside its capture, kept 90 days
+  within 16 MiB, with the run and call ids, the model, the flow digest, the evidence version, the
+  answers and the actions, and no state, input or argument.
+- The permission event carries `projection`, the version of the host's shaping of the permission
+  evidence.
+- Permission decision rows name the Instinct model and the flow definition's digest of each flow
+  run and of the protected check (`flow_trace`, `nav permissions history --json`).
 ### Fixed
 
 - A rejected Instinct request now says why, on one line of at most 300 characters. The flow run

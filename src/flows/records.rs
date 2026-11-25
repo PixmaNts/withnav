@@ -18,6 +18,16 @@ const MAX_BYTES: usize = 32 * 1024 * 1024;
 const COMPACT_BYTES: usize = MAX_BYTES * 3 / 2;
 // One maximum-sized capture can be appended before the atomic compaction.
 const MAX_STORAGE_BYTES: usize = COMPACT_BYTES + MAX_BYTES;
+/// How long a score line is kept. Captures expire after 7 days and 1000
+/// records a workspace, which is shorter than a two-week comparison of
+/// Instinct's answers with the Captain's (planned 2026-11-25); a quarter
+/// leaves room to compare one model or flow text with the next.
+const SCORE_DAYS: i64 = 90;
+/// Bytes of score lines kept: about 40 000 lines of 400 bytes.
+const SCORE_BYTES: usize = 16 * 1024 * 1024;
+/// Longest call or turn id copied into a score line. Ids come from the
+/// provider; a longer one is not an id and would defeat the fixed line size.
+const SCORE_ID_BYTES: usize = 128;
 #[derive(Default)]
 struct CaptureState {
     bytes: u64,
@@ -39,6 +49,90 @@ pub struct RunPage {
     pub runs: Vec<RunSummary>,
     pub next_cursor: Option<String>,
 }
+/// One live run reduced to what joins an Instinct answer to its outcome, kept
+/// in `scores.jsonl` beside the captures and far longer than them: which
+/// model, which flow text (`definition_digest`), which shaping of the
+/// permission evidence (`projection`), which answers, which actions.
+///
+/// It holds no rendered state, no input, no tool argument and no action text:
+/// what a capture is expired for after 7 days must not be kept for 90.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScoreLine {
+    pub run_id: String,
+    pub flow_name: String,
+    pub definition_digest: String,
+    pub identity: instinct_flow::ClientIdentity,
+    pub started_at: String,
+    pub duration_ms: u64,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<instinct_flow::FailureKind>,
+    pub trigger: String,
+    /// The tool call judged, on `tool.pre_call`: the key shared with the
+    /// permission decision row holding the Captain's answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    /// Version of the permission evidence shaping the event was built with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection: Option<u64>,
+    /// Node id to its answer: the probability of a yes/no question, the
+    /// chosen criterion of a choice, the level index of a score.
+    pub answers: BTreeMap<String, serde_json::Value>,
+    /// Names of the actions the run proposed, or fell back to when it failed.
+    pub actions: Vec<String>,
+}
+impl ScoreLine {
+    pub fn of(record: &RunRecord) -> Self {
+        use instinct_flow::protocol::Answer;
+        let id = |name: &str| {
+            record
+                .event
+                .payload
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| id.len() <= SCORE_ID_BYTES)
+                .map(str::to_owned)
+        };
+        Self {
+            run_id: record.run_id.clone(),
+            flow_name: record.flow_name.clone(),
+            definition_digest: record.definition_digest.clone(),
+            identity: record.identity.clone(),
+            started_at: record.started_at.clone(),
+            duration_ms: record.duration_ms,
+            status: record.status.clone(),
+            failure_kind: record.failure.as_ref().map(|failure| failure.kind),
+            trigger: record.event.trigger.clone(),
+            call_id: id("call_id"),
+            turn_id: id("turn_id"),
+            projection: record
+                .event
+                .payload
+                .get("projection")
+                .and_then(serde_json::Value::as_u64),
+            answers: record
+                .nodes
+                .iter()
+                .filter_map(|node| {
+                    let answer = match node.answer.as_ref()? {
+                        Answer::Noul { noul } => serde_json::json!(noul),
+                        Answer::Choice { choice, .. } => serde_json::json!(choice),
+                        Answer::Score { score, .. } => serde_json::json!(score),
+                    };
+                    Some((node.id.clone(), answer))
+                })
+                .collect(),
+            actions: record
+                .actions
+                .iter()
+                .chain(&record.fallback_actions)
+                .map(|action| action.action.clone())
+                .collect(),
+        }
+    }
+}
 pub struct Records {
     path: PathBuf,
     write: Arc<Mutex<()>>,
@@ -48,6 +142,8 @@ pub struct Records {
     pending: Arc<AtomicU64>,
     dropped: Arc<AtomicU64>,
     capture: Mutex<CaptureState>,
+    /// When the score log was last rewritten without its expired lines.
+    scores_checked: Mutex<Option<std::time::Instant>>,
 }
 struct Writer {
     sender: SyncSender<RunRecord>,
@@ -66,6 +162,14 @@ struct HealthRow {
     fallbacks_applied: u64,
     cost_usd: f64,
     cost_unknown_runs: u64,
+    /// Failed runs whose request the provider refused (HTTP 4xx): a
+    /// configuration fault, counted apart from a slow or unreachable endpoint.
+    /// Defaulted because the file predates the counter.
+    #[serde(default)]
+    rejections: u64,
+    /// Failed runs that ran out of time waiting for Instinct.
+    #[serde(default)]
+    timeouts: u64,
 }
 impl Records {
     /// Nonblocking admission: bounded queue, no private filesystem access on the caller.
@@ -87,6 +191,7 @@ impl Records {
                 pending: self.pending.clone(),
                 dropped: self.dropped.clone(),
                 capture: Mutex::new(CaptureState::default()),
+                scores_checked: Mutex::new(None),
             };
             let dropped = self.dropped.clone();
             let stopped = self.stopped.clone();
@@ -107,6 +212,11 @@ impl Records {
                         let failed = writer.append(&record).is_err();
                         if failed {
                             dropped.fetch_add(1, Ordering::Relaxed);
+                        }
+                        // Scored apart from the capture: a capture that
+                        // failed (too large, say) still leaves its answers.
+                        if writer.append_scores(&record).is_err() {
+                            tracing::warn!("private flow score append failed");
                         }
                         if writer.update_health(&record, failed).is_err() {
                             tracing::warn!("private flow health update failed");
@@ -185,6 +295,10 @@ impl Records {
             .or_default();
         row.runs += 1;
         row.failures += u64::from(record.status == "failure");
+        if let Some(failure) = &record.failure {
+            row.rejections += u64::from(failure.provider_status.is_some());
+            row.timeouts += u64::from(failure.kind == instinct_flow::FailureKind::Timeout);
+        }
         row.fallbacks_applied += u64::from(
             !record.fallback_actions.is_empty() && record.application.status == "applied",
         );
@@ -212,6 +326,8 @@ impl Records {
                 sum.fallbacks_applied += row.fallbacks_applied;
                 sum.cost_usd += row.cost_usd;
                 sum.cost_unknown_runs += row.cost_unknown_runs;
+                sum.rejections += row.rejections;
+                sum.timeouts += row.timeouts;
             }
         }
         let failures: u64 = health
@@ -219,7 +335,7 @@ impl Records {
             .range((hour - 23)..=hour)
             .map(|(_, n)| n)
             .sum();
-        let flows: Vec<_> = rows.into_iter().map(|(name, r)| serde_json::json!({"name":name,"runs":r.runs,"failures":r.failures,"fallbacks_applied":r.fallbacks_applied,"cost_usd":if r.runs==r.cost_unknown_runs { None } else { Some(r.cost_usd) },"cost_unknown_runs":r.cost_unknown_runs})).collect();
+        let flows: Vec<_> = rows.into_iter().map(|(name, r)| serde_json::json!({"name":name,"runs":r.runs,"failures":r.failures,"rejections":r.rejections,"timeouts":r.timeouts,"fallbacks_applied":r.fallbacks_applied,"cost_usd":if r.runs==r.cost_unknown_runs { None } else { Some(r.cost_usd) },"cost_unknown_runs":r.cost_unknown_runs})).collect();
         let start = time::OffsetDateTime::from_unix_timestamp((hour - 23) * 3600)
             .map_err(std::io::Error::other)?;
         Ok(
@@ -239,6 +355,7 @@ impl Records {
             pending: Arc::new(AtomicU64::new(0)),
             dropped: Arc::new(AtomicU64::new(0)),
             capture: Mutex::new(CaptureState::default()),
+            scores_checked: Mutex::new(None),
         }
     }
     pub fn read(&self) -> std::io::Result<Vec<RunRecord>> {
@@ -399,6 +516,92 @@ impl Records {
         }
         Ok(())
     }
+    /// Keep one [`ScoreLine`] for a live run; a sample or a replay is not an
+    /// exposure and leaves nothing.
+    pub fn append_scores(&self, record: &RunRecord) -> std::io::Result<()> {
+        if record.mode != "live" {
+            return Ok(());
+        }
+        self.append_score_line(&ScoreLine::of(record), SCORE_BYTES)
+    }
+    /// The score lines of the last 90 days within the byte limit, oldest first.
+    pub fn scores(&self) -> std::io::Result<Vec<ScoreLine>> {
+        self.read_scores(SCORE_BYTES)
+    }
+    fn append_score_line(&self, line: &ScoreLine, limit: usize) -> std::io::Result<()> {
+        // The same policy as a capture: a field shaped like a credential is
+        // replaced, here before it could be kept for 90 days.
+        let mut value = serde_json::to_value(line).map_err(std::io::Error::other)?;
+        super::redaction::response(&mut value);
+        let mut bytes = serde_json::to_vec(&value).map_err(std::io::Error::other)?;
+        bytes.push(b'\n');
+        if bytes.len() > limit {
+            return Err(std::io::Error::other("score line exceeds byte limit"));
+        }
+        let _guard = self
+            .write
+            .lock()
+            .map_err(|_| std::io::Error::other("capture writer poisoned"))?;
+        let directory = Directory::private(&self.path, true)?;
+        let _file_lock = directory.lock(".records.lock")?;
+        let mut checked = self
+            .scores_checked
+            .lock()
+            .map_err(|_| std::io::Error::other("score state poisoned"))?;
+        // Like the captures: readers enforce the limits, the file is rewritten
+        // without its expired lines at most daily or once it is half over.
+        let compact_at = limit * 3 / 2;
+        let size = match directory.open_read("scores.jsonl", compact_at + limit, true, false) {
+            Ok(file) => file.metadata()?.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) => return Err(e),
+        };
+        if size > 0
+            && (checked.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(86400))
+                || size + bytes.len() as u64 > compact_at as u64)
+        {
+            let mut kept = Vec::new();
+            for line in Self::read_scores_from(&directory, limit)? {
+                serde_json::to_writer(&mut kept, &line).map_err(std::io::Error::other)?;
+                kept.push(b'\n');
+            }
+            directory.write("scores.jsonl", &kept)?;
+            *checked = Some(std::time::Instant::now());
+        }
+        directory.append("scores.jsonl", &bytes)
+    }
+    fn read_scores(&self, limit: usize) -> std::io::Result<Vec<ScoreLine>> {
+        match Directory::private(&self.path, false) {
+            Ok(directory) => Self::read_scores_from(&directory, limit),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
+            Err(e) => Err(e),
+        }
+    }
+    fn read_scores_from(directory: &Directory, limit: usize) -> std::io::Result<Vec<ScoreLine>> {
+        let file = match directory.open_read("scores.jsonl", limit * 3 / 2 + limit, true, false) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(e) => return Err(e),
+        };
+        let mut lines = vec![];
+        let mut bytes = 0;
+        reverse_lines(file, |line| {
+            let Ok(score) = serde_json::from_slice::<ScoreLine>(line) else {
+                return true;
+            };
+            if !retained_for(&score.started_at, SCORE_DAYS) {
+                return true;
+            }
+            bytes += line.len() + 1;
+            if bytes > limit {
+                return false;
+            }
+            lines.push(score);
+            true
+        })?;
+        lines.reverse();
+        Ok(lines)
+    }
     fn compact(&self, directory: &Directory, state: &mut CaptureState) -> std::io::Result<()> {
         let records = self.read_from(directory)?;
         let mut bytes = Vec::new();
@@ -422,7 +625,10 @@ fn retained(record: &RunRecord) -> bool {
     retained_at(&record.started_at)
 }
 fn retained_at(started_at: &str) -> bool {
-    let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(7);
+    retained_for(started_at, 7)
+}
+fn retained_for(started_at: &str, days: i64) -> bool {
+    let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(days);
     time::OffsetDateTime::parse(started_at, &time::format_description::well_known::Rfc3339)
         .is_ok_and(|t| t >= cutoff)
 }
@@ -462,6 +668,7 @@ fn reverse_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     #[test]
     fn shutdown_drains_and_joins_capture_writer() {
         let temp = tempfile::tempdir().unwrap();
@@ -708,6 +915,350 @@ mod tests {
             "tail scan stops without traversing older captures"
         );
     }
+    /// `days` ago, in the form captures are stamped with.
+    fn days_ago(days: i64) -> String {
+        (time::OffsetDateTime::now_utc() - time::Duration::days(days))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap()
+    }
+    /// A permission run as the runtime captures it: every field that holds
+    /// evidence carries a marker no score line may repeat.
+    fn judged_run() -> RunRecord {
+        serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "run_id": "01RUN",
+            "flow_name": "permission-default",
+            "definition_digest": "sha256:abc",
+            "mode": "live",
+            "started_at": super::super::store::timestamp(),
+            "duration_ms": 412,
+            "budget_ms": 8000,
+            "event": {"trigger": "tool.pre_call", "payload": {
+                "tool": "bash",
+                "args": {"command": "ARGUMENT-MARKER"},
+                "call_id": "call_7",
+                "projection": 1,
+                "rule": "RULE-MARKER"
+            }},
+            "identity": {"model": "typesafe/jev-1.13", "variant": null},
+            "inputs": {"conversation.captain_messages": {"value": ["INPUT-MARKER"], "cut": false}},
+            "nodes": [
+                {"id": "requested", "status": "completed", "port": "yes", "duration_ms": 400,
+                 "answer": {"type": "noul", "noul": 0.93},
+                 "result": true, "variables": {"note": "VARIABLE-MARKER"}, "batch_id": "b1",
+                 "error": null},
+                {"id": "kind", "status": "completed", "port": "read", "duration_ms": 400,
+                 "answer": {"type": "choice", "choice": "read",
+                            "probabilities": {"read": 0.8, "write": 0.2}, "confidence": 0.8},
+                 "result": null, "variables": {}, "batch_id": "b1", "error": null},
+                {"id": "risk", "status": "completed", "port": null, "duration_ms": 400,
+                 "answer": {"type": "score", "score": 1.5, "legend": {"0": "LEGEND-MARKER", "1": "b"},
+                            "probabilities": {"0": 0.5, "1": 0.5}, "confidence": 0.5},
+                 "result": null, "variables": {}, "batch_id": "b1", "error": null},
+                {"id": "allow", "status": "completed", "port": null, "duration_ms": 0,
+                 "answer": null, "result": null, "variables": {}, "batch_id": null, "error": null}
+            ],
+            "batches": [{"id": "b1", "node_ids": ["requested", "kind", "risk"],
+                         "state": "STATE-MARKER", "questions": {
+                             "requested": {"type": "noul", "instructions": "QUESTION-MARKER"}},
+                         "duration_ms": 400, "usage": null, "cost_usd": null}],
+            "status": "success",
+            "failure": null,
+            "actions": [{"node_id": "allow", "action": "allow", "params": {"note": "NOTE-MARKER"}}],
+            "fallback_actions": [],
+            "usage": null,
+            "cost_usd": null,
+            "application": {"status": "not_applied", "actions": []}
+        }))
+        .unwrap()
+    }
+    // A score line is kept twelve times longer than a capture, so it must
+    // hold nothing a capture is expired for: no command, no Captain message,
+    // no rendered state, no action text. It keeps what joins an Instinct
+    // answer to its outcome: the run, the call, the model, the flow text's
+    // digest, the input shaping's version, the answers and the actions.
+    #[test]
+    fn a_score_line_holds_no_state_or_arguments() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = Records::new(temp.path(), temp.path());
+        let run = judged_run();
+        records.append_scores(&run).unwrap();
+        let text = std::fs::read_to_string(records.path.join("scores.jsonl")).unwrap();
+        assert_eq!(text.lines().count(), 1);
+        for marker in [
+            "ARGUMENT-MARKER",
+            "RULE-MARKER",
+            "INPUT-MARKER",
+            "VARIABLE-MARKER",
+            "LEGEND-MARKER",
+            "STATE-MARKER",
+            "QUESTION-MARKER",
+            "NOTE-MARKER",
+            "bash",
+        ] {
+            assert!(!text.contains(marker), "{marker} in {text}");
+        }
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+            serde_json::json!({
+                "run_id": "01RUN",
+                "flow_name": "permission-default",
+                "definition_digest": "sha256:abc",
+                "identity": {"model": "typesafe/jev-1.13", "variant": null},
+                "started_at": run.started_at,
+                "duration_ms": 412,
+                "status": "success",
+                "trigger": "tool.pre_call",
+                "call_id": "call_7",
+                "projection": 1,
+                "answers": {"requested": 0.93, "kind": "read", "risk": 1.5},
+                "actions": ["allow"]
+            })
+        );
+        assert_eq!(records.scores().unwrap(), vec![ScoreLine::of(&run)]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(records.path.join("scores.jsonl"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "the score log is private");
+        }
+    }
+    // A failed run is scored by what it fell back to, and a turn-level run by
+    // its turn; an id too long to be an id, or one shaped like a credential,
+    // is left out rather than kept for 90 days.
+    #[test]
+    fn a_score_line_names_the_failure_the_fallback_and_the_turn() {
+        let mut run = judged_run();
+        run.status = "failure".into();
+        run.failure = Some(
+            serde_json::from_value(
+                serde_json::json!({"kind": "timeout", "message": "MESSAGE-MARKER"}),
+            )
+            .unwrap(),
+        );
+        run.actions.clear();
+        run.fallback_actions = serde_json::from_value(
+            serde_json::json!([{"node_id": null, "action": "apply_rule", "params": {}}]),
+        )
+        .unwrap();
+        run.nodes.clear();
+        run.event = serde_json::from_value(serde_json::json!({
+            "trigger": "turn.end",
+            "payload": {"turn_id": "turn_3", "text": "TEXT-MARKER", "status": "completed"}
+        }))
+        .unwrap();
+        let line = serde_json::to_value(ScoreLine::of(&run)).unwrap();
+        assert_eq!(line["status"], "failure");
+        assert_eq!(line["failure_kind"], "timeout");
+        assert_eq!(line["trigger"], "turn.end");
+        assert_eq!(line["turn_id"], "turn_3");
+        assert_eq!(line["actions"], serde_json::json!(["apply_rule"]));
+        assert_eq!(line["answers"], serde_json::json!({}));
+        for absent in ["call_id", "projection"] {
+            assert!(line.get(absent).is_none(), "{absent}: {line}");
+        }
+        assert!(!line.to_string().contains("MARKER"), "{line}");
+
+        run.event.payload["turn_id"] = "t".repeat(SCORE_ID_BYTES + 1).into();
+        assert!(
+            serde_json::to_value(ScoreLine::of(&run))
+                .unwrap()
+                .get("turn_id")
+                .is_none()
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let records = Records::new(temp.path(), temp.path());
+        run.event.payload["turn_id"] = "ghp_123456789012345678901234".into();
+        records.append_scores(&run).unwrap();
+        let text = std::fs::read_to_string(records.path.join("scores.jsonl")).unwrap();
+        assert!(!text.contains("ghp_"), "{text}");
+        assert_eq!(
+            records.scores().unwrap()[0].turn_id.as_deref(),
+            Some("<redacted>")
+        );
+    }
+    // Captures expire after 7 days and 1000 records a workspace, before a
+    // two-week comparison of Instinct's answers with the Captain's ends
+    // (planned 2026-11-25). Scores are kept 90 days, without a record count.
+    #[test]
+    fn scores_outlive_the_capture_window() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = Records::new(temp.path(), temp.path());
+        let mut run = judged_run();
+        for (run_id, age) in [("expired", 91), ("old", 30), ("recent", 0)] {
+            run.run_id = run_id.into();
+            run.started_at = days_ago(age);
+            records.append(&run).unwrap();
+            records.append_scores(&run).unwrap();
+        }
+        let captured: Vec<_> = records
+            .read()
+            .unwrap()
+            .into_iter()
+            .map(|r| r.run_id)
+            .collect();
+        assert_eq!(captured, ["recent"], "the capture window is 7 days");
+        let scored: Vec<_> = records
+            .scores()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.run_id)
+            .collect();
+        assert_eq!(scored, ["old", "recent"], "scores are kept 90 days");
+
+        run.started_at = days_ago(0);
+        for i in 0..MAX_RECORDS + 100 {
+            run.run_id = format!("n{i}");
+            records
+                .append_score_line(&ScoreLine::of(&run), SCORE_BYTES)
+                .unwrap();
+        }
+        assert_eq!(
+            records.scores().unwrap().len(),
+            MAX_RECORDS + 102,
+            "scores are bounded by age and bytes, not by the capture count"
+        );
+    }
+    // 16 MiB holds about 40 000 lines; past it the oldest lines go, in one
+    // rewrite per half limit of growth and never one per append.
+    #[test]
+    fn scores_keep_the_newest_lines_within_their_byte_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = Records::new(temp.path(), temp.path());
+        let mut run = judged_run();
+        let line_bytes = serde_json::to_vec(&ScoreLine::of(&run)).unwrap().len() + 1;
+        let limit = line_bytes * 10;
+        let path = records.path.join("scores.jsonl");
+        for i in 0..100 {
+            run.run_id = format!("{i:05}");
+            records
+                .append_score_line(&ScoreLine::of(&run), limit)
+                .unwrap();
+            assert!(
+                std::fs::metadata(&path).unwrap().len() as usize <= limit * 3 / 2 + line_bytes,
+                "the file never grows past the compaction threshold"
+            );
+        }
+        let kept = records.read_scores(limit).unwrap();
+        assert!(kept.len() <= 10, "{}", kept.len());
+        assert!(kept.len() >= 5, "{}", kept.len());
+        assert_eq!(kept.last().unwrap().run_id, "00099");
+        let ids: Vec<_> = kept.iter().map(|line| line.run_id.clone()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted, "oldest first");
+        // A truncated tail (a crash mid-write) does not lose the next line.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"run_id\":")
+            .unwrap();
+        run.run_id = "after-crash".into();
+        records
+            .append_score_line(&ScoreLine::of(&run), limit)
+            .unwrap();
+        assert_eq!(
+            records.read_scores(limit).unwrap().last().unwrap().run_id,
+            "after-crash"
+        );
+    }
+    // The writer thread is the one place a live run is captured, so it is the
+    // one place it is scored; a sample or a replay is neither.
+    #[test]
+    fn the_capture_writer_scores_live_runs_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = Records::new(temp.path(), temp.path());
+        let mut live = judged_run();
+        live.run_id = "live".into();
+        let mut sample = judged_run();
+        sample.run_id = "sample".into();
+        sample.mode = "sample".into();
+        records.enqueue(live);
+        records.enqueue(sample);
+        records.shutdown(std::time::Duration::from_secs(2));
+        let scored: Vec<_> = records
+            .scores()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.run_id)
+            .collect();
+        assert_eq!(scored, ["live"]);
+        assert_eq!(
+            records.read().unwrap().len(),
+            2,
+            "captures are kept as before"
+        );
+        let missing = Records::new(&temp.path().join("missing"), temp.path());
+        assert!(missing.scores().unwrap().is_empty());
+        assert!(!missing.path.exists(), "reading scores creates nothing");
+    }
+    // A refused request (HTTP 4xx) and a timeout both counted as one
+    // "failure": for three days (2026-11-23..25) every run of the permission
+    // flow failed on a wrong model id and the health table could not say it
+    // was a configuration fault, not a slow endpoint.
+    #[test]
+    fn health_counts_rejections_apart_from_timeouts() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = Records::new(temp.path(), temp.path());
+        let failed = |kind: &str, status: Option<u16>| {
+            let mut record = fixture();
+            record.flow_name = "guard".into();
+            record.status = "failure".into();
+            let mut failure = serde_json::json!({"kind": kind, "message": "failed"});
+            if let Some(status) = status {
+                failure["provider_status"] = status.into();
+            }
+            record.failure = Some(serde_json::from_value(failure).unwrap());
+            record
+        };
+        let mut answered = fixture();
+        answered.flow_name = "guard".into();
+        for record in [
+            failed("provider_error", Some(400)),
+            failed("provider_error", Some(401)),
+            failed("provider_error", None),
+            failed("timeout", None),
+            answered,
+        ] {
+            records.update_health(&record, false).unwrap();
+        }
+        let flow = &records.health().unwrap()["flows"][0];
+        assert_eq!(flow["name"], "guard");
+        assert_eq!(flow["runs"], 5);
+        assert_eq!(flow["failures"], 4);
+        assert_eq!(flow["rejections"], 2, "{flow}");
+        assert_eq!(flow["timeouts"], 1, "{flow}");
+    }
+    // The counters were added to a file that already exists on every
+    // installation: an hour written without them must still read, or the
+    // health view fails until the 24-hour window rolls over.
+    #[test]
+    fn health_written_before_the_rejection_counters_still_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = Records::new(temp.path(), temp.path());
+        let hour = time::OffsetDateTime::now_utc().unix_timestamp() / 3600;
+        let old = serde_json::json!({
+            "hours": {hour.to_string(): {"guard": {
+                "runs": 3, "failures": 1, "fallbacks_applied": 0,
+                "cost_usd": 0.0, "cost_unknown_runs": 3
+            }}},
+            "capture_failures": {}
+        });
+        Directory::private(&records.path, true)
+            .unwrap()
+            .write("health.json", &serde_json::to_vec(&old).unwrap())
+            .unwrap();
+        let flow = &records.health().unwrap()["flows"][0];
+        assert_eq!(flow["runs"], 3);
+        assert_eq!(flow["failures"], 1);
+        assert_eq!(flow["rejections"], 0);
+        assert_eq!(flow["timeouts"], 0);
+    }
     #[test]
     fn health_is_independent_of_retained_captures_and_expires() {
         let temp = tempfile::tempdir().unwrap();
@@ -722,6 +1273,7 @@ mod tests {
                 fallbacks_applied: 1,
                 cost_usd: 0.2,
                 cost_unknown_runs: 3,
+                ..Default::default()
             },
         );
         health.hours.entry(hour - 24).or_default().insert(

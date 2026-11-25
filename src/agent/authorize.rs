@@ -640,19 +640,25 @@ pub(super) async fn save_always(
 }
 
 /// What the flows answered for this decision, for the decision table and the
-/// permission card: the protected check's verdict, run and score.
+/// permission card: the protected check's verdict, run and score, and each
+/// flow run with its scores, and the model and flow digest behind them.
 fn flow_trace(decision: &Decision) -> Option<Value> {
     let mut trace = serde_json::Map::new();
     if let Some(check) = decision.trace.protected_check {
         let run = decision.trace.protected_run.as_ref();
-        trace.insert(
-            "protected_check".into(),
-            json!({
-                "verdict": check.as_str(),
-                "run_id": run.map(|run| run.run_id.as_str()),
-                "score": run.and_then(|run| run.scores.get("protected_requested")),
-            }),
-        );
+        let mut entry = json!({
+            "verdict": check.as_str(),
+            "run_id": run.map(|run| run.run_id.as_str()),
+            "score": run.and_then(|run| run.scores.get("protected_requested")),
+        });
+        if let Some(run) = run {
+            versions(
+                &mut entry,
+                run.definition_digest.as_str(),
+                run.model.as_str(),
+            );
+        }
+        trace.insert("protected_check".into(), entry);
     }
     if !decision.trace.flow_runs.is_empty() {
         trace.insert(
@@ -662,14 +668,28 @@ fn flow_trace(decision: &Decision) -> Option<Value> {
                     .trace
                     .flow_runs
                     .iter()
-                    .map(
-                        |run| json!({"flow": run.flow, "run_id": run.run_id, "scores": run.scores})
-                    )
+                    .map(|run| {
+                        let mut entry =
+                            json!({"flow": run.flow, "run_id": run.run_id, "scores": run.scores});
+                        versions(&mut entry, &run.definition_digest, &run.model);
+                        entry
+                    })
                     .collect::<Vec<_>>()
             ),
         );
     }
     (!trace.is_empty()).then_some(Value::Object(trace))
+}
+
+/// Name the flow text and the model behind a run's scores in its trace entry.
+/// Both are left out when empty (no flow ran), so such an entry keeps the
+/// shape it had before they were recorded.
+fn versions(entry: &mut Value, definition_digest: &str, model: &str) {
+    for (key, value) in [("definition_digest", definition_digest), ("model", model)] {
+        if !value.is_empty() {
+            entry[key] = json!(value);
+        }
+    }
 }
 
 fn evidence(source: &str, decision: &Decision, reason: Option<&str>) -> Value {

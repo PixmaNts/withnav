@@ -97,6 +97,8 @@ impl ToolCallFlows for FakeFlows {
                     action,
                     used_rule: !own,
                     scores: Default::default(),
+                    definition_digest: String::new(),
+                    model: String::new(),
                 }],
             }
         })
@@ -1055,6 +1057,63 @@ async fn the_protected_checks_score_is_recorded_with_the_decision_and_the_reques
         .as_ref()
         .expect("the decision keeps the check");
     assert_eq!(trace["protected_check"], gate["protected_check"]);
+}
+
+// The decision row is where the Captain's answer is kept, so it is the label
+// an Instinct score is compared with. The 673 scored rows read on 2026-11-25
+// named neither the model nor the flow text that produced their scores; a
+// row must name both, for every flow run and for the protected check.
+#[tokio::test]
+async fn a_decision_row_names_the_model_and_the_flow_digest() {
+    for (command, captain, check) in [
+        ("rm -v notes.txt", "look at the notes", "flows"),
+        (
+            "nav permissions revoke 3",
+            "remove permission rule 3",
+            "protected",
+        ),
+    ] {
+        let mut actor = actor_with(None);
+        let store = Arc::new(crate::flows::store::FlowStore::new(
+            actor.tool_context.workspace.clone(),
+            actor.permission_dirs.config.clone().unwrap(),
+        ));
+        let runtime = Arc::new(crate::flows::runtime::FlowRuntime::new(
+            store.clone(),
+            Arc::new(ScoreInstinct(0.25)),
+            Arc::new(crate::flows::runtime::NoEffects),
+        ));
+        actor.tool_flows = Some(Arc::new(RuntimeFlows(runtime)));
+        script(&mut actor, vec![owned(&[bash("b1", command)])]).await;
+        actor.push_user(captain);
+        let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+            panic!("{command}: the call asks");
+        };
+        let rows = decisions(&actor);
+        let trace = rows[0].flow_trace.as_ref().expect("the row has a trace");
+        let gate = request.permission_gate.as_deref().unwrap();
+        let entry = if check == "flows" {
+            let digest = store.snapshot()["permission-default"]
+                .compiled
+                .digest()
+                .to_owned();
+            let run = &trace["flows"][0];
+            assert_eq!(run["flow"], json!("permission-default"), "{trace}");
+            assert_eq!(run["definition_digest"], json!(digest), "{trace}");
+            assert_eq!(gate["flows"], trace["flows"]);
+            run
+        } else {
+            assert_eq!(gate["protected_check"], trace["protected_check"]);
+            &trace["protected_check"]
+        };
+        assert_eq!(entry["model"], json!("fake/score"), "{command}: {trace}");
+        assert!(
+            entry["definition_digest"]
+                .as_str()
+                .is_some_and(|d| d.starts_with("sha256:")),
+            "{command}: {trace}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -2088,6 +2147,8 @@ impl ToolCallFlows for RecordingFlows {
                     action: FlowAction::Allow,
                     used_rule: false,
                     scores: Default::default(),
+                    definition_digest: String::new(),
+                    model: String::new(),
                 }],
             }
         })

@@ -23,7 +23,7 @@ use crate::navigator::log::{LogRecord, NavLog};
 use crate::navigator::lsp::protocol::Remark;
 use crate::navigator::ports::{Metacognition, ModelError, RemarkCall};
 
-pub(crate) use answer::extract_last_object;
+pub(crate) use answer::answer_objects;
 use answer::tool_attempt_instead_of_answer;
 pub use answer::{ParsedAnswer, parse_answer};
 pub use tools::slice_buffer;

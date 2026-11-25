@@ -79,21 +79,29 @@ fn extract_json(raw: &str) -> Option<&str> {
 /// Returns the whole answer when it is one JSON object; otherwise the last
 /// balanced object for which `is_answer` holds, so an explanatory example
 /// earlier in the text never wins over the final answer. `None` when no such
-/// object exists. Shared by every caller that parses a JSON-only answer, so
-/// the remark model and the root watchdog reviewer accept the same shapes.
-pub(crate) fn extract_last_object(
+/// object exists.
+fn extract_last_object(raw: &str, is_answer: impl Fn(&serde_json::Value) -> bool) -> Option<&str> {
+    answer_objects(raw, is_answer).pop()
+}
+
+/// Every answer-shaped object of [`extract_last_object`], in order: the whole
+/// answer alone when it is one JSON object, otherwise each balanced object
+/// for which `is_answer` holds. Shared by every caller that parses a
+/// JSON-only answer, so the remark model and the root watchdog reviewer
+/// accept the same shapes; the reviewer compares them all, so a quoted
+/// example cannot decide for it.
+pub(crate) fn answer_objects(
     raw: &str,
     is_answer: impl Fn(&serde_json::Value) -> bool,
-) -> Option<&str> {
+) -> Vec<&str> {
     let trimmed = raw.trim();
     // Direct hit first.
     if trimmed.starts_with('{') && serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
-        return Some(trimmed);
+        return vec![trimmed];
     }
-    // Ignore explanatory objects and prefer the final answer-shaped object.
     let bytes = trimmed.as_bytes();
     let mut start = 0;
-    let mut candidate = None;
+    let mut objects = Vec::new();
     let mut depth = 0usize;
     let mut in_string = false;
     let mut escaped = false;
@@ -126,14 +134,14 @@ pub(crate) fn extract_last_object(
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(object)
                         && is_answer(&value)
                     {
-                        candidate = Some(object);
+                        objects.push(object);
                     }
                 }
             }
             _ => {}
         }
     }
-    candidate
+    objects
 }
 
 #[cfg(test)]

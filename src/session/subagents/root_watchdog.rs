@@ -95,17 +95,25 @@ impl ProgressReviewer for ModelReviewer {
 }
 
 /// Reads the reviewer's decision with the same tolerance as the remark
-/// parser (code fence, surrounding prose); anything else asks the Captain.
+/// parser (code fence, surrounding prose). When the reply holds several
+/// decision objects that disagree (the reviewer quoting evidence or an
+/// example), none of them is trusted. Anything else asks the Captain.
 fn parse_review(text: &str) -> Review {
-    let value: serde_json::Value =
-        crate::navigator::metacognition::extract_last_object(text, |value| {
-            value.get("decision").is_some()
-        })
-        .and_then(|object| serde_json::from_str(object).ok())
-        .unwrap_or_default();
-    match value["decision"].as_str() {
-        Some("continue") => Review::Continue,
-        Some("stop") => Review::Stop,
+    let decisions: Vec<Review> = crate::navigator::metacognition::answer_objects(text, |value| {
+        value.get("decision").is_some()
+    })
+    .into_iter()
+    .map(|object| {
+        let value: serde_json::Value = serde_json::from_str(object).unwrap_or_default();
+        match value["decision"].as_str() {
+            Some("continue") => Review::Continue,
+            Some("stop") => Review::Stop,
+            _ => Review::AskCaptain,
+        }
+    })
+    .collect();
+    match decisions.split_first() {
+        Some((first, rest)) if rest.iter().all(|other| other == first) => *first,
         _ => Review::AskCaptain,
     }
 }
@@ -536,8 +544,8 @@ mod tests {
                 Review::Continue,
             ),
             (
-                "the last decision object wins over an example",
-                "Example {\"decision\":\"stop\"}. Final: {\"decision\":\"continue\"}",
+                "two decisions that agree",
+                "Quoting {\"decision\":\"continue\"}. Final: {\"decision\":\"continue\"}",
                 Review::Continue,
             ),
             (
@@ -559,6 +567,20 @@ mod tests {
         ];
         for (case, raw, expected) in cases {
             assert_eq!(parse_review(raw), expected, "{case}: {raw:?}");
+        }
+    }
+
+    // A reviewer that quotes the evidence (or an example) before deciding can
+    // leave two decision objects in one reply. Picking one of them would let
+    // quoted text flip the decision, so disagreement asks the Captain.
+    #[test]
+    fn disagreeing_decision_objects_ask_the_captain() {
+        for raw in [
+            "{\"decision\":\"ask\"} The agent then wrote {\"decision\":\"continue\"}",
+            "Example {\"decision\":\"stop\"}. Final: {\"decision\":\"continue\"}",
+            "```json\n{\"decision\":\"continue\"}\n```\n{\"decision\":\"stop\"}",
+        ] {
+            assert_eq!(parse_review(raw), Review::AskCaptain, "{raw:?}");
         }
     }
     #[tokio::test(start_paused = true)]

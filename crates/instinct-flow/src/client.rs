@@ -77,10 +77,37 @@ pub fn reason_excerpt(text: &str) -> Option<String> {
 /// near the start, and a hostile endpoint cannot make a rejection costly.
 const REJECTION_BODY_BYTES: usize = 4 * 1024;
 
+/// Shortest run of a credential treated as a leak: a reason cut by the
+/// excerpt or by the read limit can hold the start or end of a key without
+/// the whole key, and 8 characters of a random key already identify it.
+pub const CREDENTIAL_FRAGMENT_CHARS: usize = 8;
+
+/// True when `text` holds `secret` or any run of
+/// [`CREDENTIAL_FRAGMENT_CHARS`] of its characters. A secret shorter than
+/// that is matched whole. An empty secret never matches.
+pub fn credential_leaks(text: &str, secret: &str) -> bool {
+    let chars: Vec<char> = secret.chars().collect();
+    if chars.is_empty() {
+        return false;
+    }
+    if chars.len() < CREDENTIAL_FRAGMENT_CHARS {
+        return text.contains(secret);
+    }
+    let mut fragment = String::new();
+    chars.windows(CREDENTIAL_FRAGMENT_CHARS).any(|window| {
+        fragment.clear();
+        fragment.extend(window);
+        text.contains(fragment.as_str())
+    })
+}
+
 /// The provider's explanation of a rejection: `error.message`, `error` or
-/// `message` of a JSON body, else the body text. Dropped entirely when it
-/// contains a credential this client sent, since a provider echoing the
-/// request back must never put a key into a run record or a log.
+/// `message` of a JSON body, else the body text. Dropped entirely when the
+/// body, the decoded message or the excerpt holds a credential this client
+/// sent, or a fragment of one: a provider echoing the request back must
+/// never put a key, whole or cut, into a run record or a log. The check runs
+/// on the decoded message as well as the raw body, since JSON escapes
+/// (`\/`) hide a key from the raw text.
 fn rejection_reason(body: &[u8], credentials: &[&str]) -> Option<String> {
     let text = String::from_utf8_lossy(body);
     let json: Option<serde_json::Value> = serde_json::from_str(&text).ok();
@@ -92,11 +119,16 @@ fn rejection_reason(body: &[u8], credentials: &[&str]) -> Option<String> {
             .or_else(|| value.get("message"))
             .and_then(serde_json::Value::as_str)
     });
+    let leaks = |text: &str| {
+        credentials
+            .iter()
+            .any(|secret| credential_leaks(text, secret))
+    };
+    if leaks(&text) || message.is_some_and(leaks) {
+        return None;
+    }
     let reason = reason_excerpt(message.unwrap_or(&text))?;
-    let echoed = credentials
-        .iter()
-        .any(|secret| !secret.is_empty() && (text.contains(secret) || reason.contains(secret)));
-    (!echoed).then_some(reason)
+    (!leaks(&reason)).then_some(reason)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -451,5 +483,77 @@ mod tests {
         )
         .unwrap();
         assert!(!format!("{client:?}").contains("secret"));
+    }
+}
+
+/// Regression probes for credential echoes in a rejection body: every way a
+/// key can reach the reason whole or in part (cut by the 300-char excerpt, a
+/// JSON `\/` escape, the 4 KiB read limit) must drop the reason.
+#[cfg(test)]
+mod credential_echo_probes {
+    use super::*;
+
+    const KEY: &str = "sk-or-v1-0123456789abcdef0123456789abcdef";
+
+    /// True when `text` holds any 8-character run of `secret`.
+    fn holds_fragment(text: &str, secret: &str) -> bool {
+        let chars: Vec<char> = secret.chars().collect();
+        chars
+            .windows(8)
+            .any(|window| text.contains(&window.iter().collect::<String>()))
+    }
+
+    #[test]
+    fn a_key_straddling_the_excerpt_cut_in_a_json_message_is_dropped() {
+        let message = format!("{} {KEY}", "a".repeat(290));
+        let body = serde_json::json!({"error": {"message": message}}).to_string();
+        assert_eq!(rejection_reason(body.as_bytes(), &[KEY]), None);
+    }
+
+    #[test]
+    fn a_json_escaped_key_straddling_the_excerpt_cut_is_dropped() {
+        // The raw body holds `sk\/abc…`, the decoded message `sk/abc…`: only
+        // the decoded text matches the credential.
+        let key = "sk/abc+def0123456789";
+        let body = format!(
+            r#"{{"error":{{"message":"{} sk\/abc+def0123456789"}}}}"#,
+            "a".repeat(290)
+        );
+        assert_eq!(rejection_reason(body.as_bytes(), &[key]), None);
+    }
+
+    #[test]
+    fn a_key_cut_by_the_read_limit_leaves_no_fragment() {
+        let mut body = " ".repeat(REJECTION_BODY_BYTES - 15).into_bytes();
+        body.extend_from_slice(KEY.as_bytes());
+        body.truncate(REJECTION_BODY_BYTES);
+        let reason = rejection_reason(&body, &[KEY]);
+        assert!(
+            reason.as_deref().is_none_or(|r| !holds_fragment(r, KEY)),
+            "{reason:?}"
+        );
+    }
+
+    #[test]
+    fn non_utf8_bearer_and_exact_key_bodies_are_dropped() {
+        let mut body = vec![0xff, 0xfe];
+        body.extend_from_slice(format!("Bearer {KEY}").as_bytes());
+        assert_eq!(rejection_reason(&body, &[KEY]), None);
+        assert_eq!(rejection_reason(KEY.as_bytes(), &[KEY]), None);
+        // Encoded echoes are not recognized; they are kept as written.
+        let url = rejection_reason(b"see https://user:pw@host/x?key=abc", &[KEY]);
+        assert_eq!(url.as_deref(), Some("see https://user:pw@host/x?key=abc"));
+    }
+
+    // Fail-safe, kept on purpose: a credential shorter than a fragment is
+    // matched whole, so a one-letter header value hides any reason holding
+    // that letter. Losing a reason is cheaper than leaking a short secret.
+    #[test]
+    fn a_short_credential_suppresses_any_reason_holding_it() {
+        let reason = rejection_reason(
+            br#"{"error":{"message":"model x not found"}}"#,
+            &["KEYVALUE", "x"],
+        );
+        assert_eq!(reason, None);
     }
 }

@@ -10,10 +10,11 @@ requests land in `develop`.
 
 - A rejected Instinct request now says why: the flow run record carries the provider's reason
   after "provider rejected the request (HTTP 400)", and `nav doctor` shows it
-  after "HTTP 400 rejected" (one line, at most 300 characters; a reason that echoes a credential
-  is left out).
+  after "HTTP 400 rejected" (one line, at most 300 characters; a reason that echoes a credential,
+  whole or in part, is left out).
 - The root watchdog reviewer reads a decision wrapped in a code fence or in prose, as the remark
-  parser does, instead of asking the Captain.
+  parser does, instead of asking the Captain. A reply holding two decisions that disagree still
+  asks the Captain.
 - The Cognition prompt points at `.withnav/intent.md` instead of the old `.navigator/intent.md`.
 - Editor-flow trigger records name the flow runs they started (`flow_run_ids`), so they join the
   flow run records that hold the Instinct answers.

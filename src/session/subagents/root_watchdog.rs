@@ -94,8 +94,15 @@ impl ProgressReviewer for ModelReviewer {
     }
 }
 
+/// Reads the reviewer's decision with the same tolerance as the remark
+/// parser (code fence, surrounding prose); anything else asks the Captain.
 fn parse_review(text: &str) -> Review {
-    let value: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+    let value: serde_json::Value =
+        crate::navigator::metacognition::extract_last_object(text, |value| {
+            value.get("decision").is_some()
+        })
+        .and_then(|object| serde_json::from_str(object).ok())
+        .unwrap_or_default();
     match value["decision"].as_str() {
         Some("continue") => Review::Continue,
         Some("stop") => Review::Stop,
@@ -509,6 +516,50 @@ mod tests {
             Review::AskCaptain
         );
         assert_eq!(parse_review("{\"decision\":\"stop\"}"), Review::Stop);
+    }
+
+    // Reviewer models answer in the same shapes as the remark model: a fenced
+    // block or a sentence before the object. Reading those strictly turned a
+    // clear decision into "ask the Captain".
+    #[test]
+    fn a_fenced_or_prose_wrapped_decision_is_read() {
+        let cases = [
+            ("plain object", "{\"decision\":\"stop\"}", Review::Stop),
+            (
+                "json code fence",
+                "```json\n{\"decision\":\"continue\"}\n```",
+                Review::Continue,
+            ),
+            (
+                "after a sentence",
+                "The agent is making progress. {\"decision\":\"continue\"}",
+                Review::Continue,
+            ),
+            (
+                "the last decision object wins over an example",
+                "Example {\"decision\":\"stop\"}. Final: {\"decision\":\"continue\"}",
+                Review::Continue,
+            ),
+            (
+                "an unknown decision in a fence",
+                "```json\n{\"decision\":\"hesitate\"}\n```",
+                Review::AskCaptain,
+            ),
+            (
+                "prose without an object",
+                "I would continue.",
+                Review::AskCaptain,
+            ),
+            (
+                "an object without a decision",
+                "{\"other\":1}",
+                Review::AskCaptain,
+            ),
+            ("empty answer", "", Review::AskCaptain),
+        ];
+        for (case, raw, expected) in cases {
+            assert_eq!(parse_review(raw), expected, "{case}: {raw:?}");
+        }
     }
     #[tokio::test(start_paused = true)]
     async fn reflective_timeout_asks_the_captain() {

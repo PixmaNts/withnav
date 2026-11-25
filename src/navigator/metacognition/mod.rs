@@ -21,8 +21,9 @@ use tokio_util::sync::CancellationToken;
 use crate::navigator::document::{text_around_changes, unified_diff};
 use crate::navigator::log::{LogRecord, NavLog};
 use crate::navigator::lsp::protocol::Remark;
-use crate::navigator::ports::{Metacognition, ModelError};
+use crate::navigator::ports::{Metacognition, ModelError, RemarkCall};
 
+pub(crate) use answer::extract_last_object;
 use answer::tool_attempt_instead_of_answer;
 pub use answer::{ParsedAnswer, parse_answer};
 pub use tools::slice_buffer;
@@ -158,7 +159,7 @@ pub struct LlmCommenter {
 }
 
 /// The whole remark (tool rounds + final answer) is capped at this budget;
-/// past it the metacognition stays silent.
+/// past it the remark ends with [`ModelError::OverBudget`], not silence.
 const REMARK_BUDGET: Duration = Duration::from_secs(20);
 /// Tool rounds of an ordinary remark: one optional round of reading, then the
 /// answer. Each round is a model round trip the Captain waits for, and an
@@ -353,14 +354,37 @@ impl LlmCommenter {
     /// `read`/`grep`, then one final call without tools to force the JSON
     /// answer. A final answer that is unparseable because the model tried a
     /// tool anyway is asked for once more. Everything runs under one
-    /// [`REMARK_BUDGET`] timeout; past it the metacognition stays silent.
+    /// [`REMARK_BUDGET`] timeout; past it the remark is
+    /// [`ModelError::OverBudget`], so the change stays unjudged.
     async fn remark_with_tools(
         &self,
         ctx: &RemarkContext,
         cancel: &CancellationToken,
+    ) -> RemarkCall {
+        let mut usage = None;
+        let result = self.remark_rounds(ctx, cancel, &mut usage).await;
+        RemarkCall { result, usage }
+    }
+
+    /// The rounds of [`Self::remark_with_tools`]; every round that reports
+    /// usage adds it to `usage`, also when a later round fails or the budget
+    /// runs out.
+    async fn remark_rounds(
+        &self,
+        ctx: &RemarkContext,
+        cancel: &CancellationToken,
+        usage: &mut Option<crate::provider::Usage>,
     ) -> Result<Option<Remark>, ModelError> {
         use crate::provider::openai::ChatMessage;
 
+        let mut add_usage = |msg: &crate::provider::AssistantMessage| {
+            if let Some(round) = msg.usage {
+                let total = usage.get_or_insert_with(Default::default);
+                total.prompt_tokens += round.prompt_tokens;
+                total.completion_tokens += round.completion_tokens;
+                total.total_tokens += round.total_tokens;
+            }
+        };
         let body = match tokio::time::timeout(REMARK_BUDGET, async {
             // The pipeline renders the branch prompt (conversation, live
             // state) into the context; without it the metacognition would
@@ -396,6 +420,7 @@ impl LlmCommenter {
                 let msg = self
                     .chat_round(&messages, round_tools, cancel)
                     .await?;
+                add_usage(&msg);
 
                 if last || msg.tool_calls.is_empty() {
                     message = Some(msg);
@@ -443,6 +468,7 @@ answered_by: None, images: Vec::new(), });
                         "Your last reply tried to call a tool. {NO_MORE_TOOLS_NOTICE}"
                     ), images: Vec::new() });
                 message = self.chat_round(&messages, Vec::new(), cancel).await?;
+                add_usage(&message);
             }
             Ok::<_, ModelError>(message)
         })
@@ -452,7 +478,7 @@ answered_by: None, images: Vec::new(), });
             Err(_) => {
                 tracing::warn!(
                     budget_ms = REMARK_BUDGET.as_millis() as u64,
-                    "navigator: metacognition remark over budget, staying silent"
+                    "navigator: metacognition remark over budget, nothing judged"
                 );
                 if let Some(log) = &self.log {
                     log.append(&LogRecord::Call {
@@ -465,7 +491,9 @@ answered_by: None, images: Vec::new(), });
                         purpose: None,
                     });
                 }
-                return Ok(None);
+                return Err(ModelError::OverBudget {
+                    budget_ms: u64::try_from(REMARK_BUDGET.as_millis()).unwrap_or(u64::MAX),
+                });
             }
         };
 
@@ -486,6 +514,14 @@ impl Metacognition for LlmCommenter {
         ctx: &'a RemarkContext,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<Option<Remark>, ModelError>> {
+        Box::pin(async move { self.remark_with_tools(ctx, cancel).await.result })
+    }
+
+    fn remark_with_usage<'a>(
+        &'a self,
+        ctx: &'a RemarkContext,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, RemarkCall> {
         Box::pin(self.remark_with_tools(ctx, cancel))
     }
 }

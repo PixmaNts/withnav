@@ -8,7 +8,9 @@
 //! and a wake posted through the feed lands as a navigator-sourced
 //! `message.received` that drives a real turn — queued behind a pending
 //! `ask` when the cognition is yielded, delivered right after the Captain's
-//! answer.
+//! answer. The same holds for an editor flow's `wake` posted through the
+//! feed's flow poster: it starts a turn on an idle conversation and is held
+//! behind a pending `ask` or permission request.
 
 use std::path::Path;
 use std::time::Duration;
@@ -681,4 +683,250 @@ async fn resumed_feed_rebuilds_without_announcing_old_turns() {
         announced.try_recv().is_err(),
         "the replayed turn is not announced"
     );
+}
+
+/// Posts `text` as an editor flow's `wake` to the feed's active conversation,
+/// the path the navigator's flow effects use.
+fn flow_wake(feed: &withnav::navigator::ConversationFeed, text: &str) -> Result<(), String> {
+    let target = feed.snapshot().target.expect("an active conversation");
+    feed.post_targeted_flow_note(&target, text.into(), "review".into(), "run".into(), true)
+}
+
+// Given a navigator conversation whose last turn is over
+// When an editor flow posts a wake
+// Then it starts a new turn whose provider request carries the note
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flow_wake_on_an_idle_conversation_starts_a_turn() {
+    let server = MockServer::start().await;
+    let done = r#"{"choices":[{"index":0,"delta":{"content":"noted"},"finish_reason":"stop"}]}"#;
+    let wake_guard = Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(wiremock::matchers::body_string_contains("this edit drifts"))
+        .respond_with(sse_response(&[done]))
+        .with_priority(1)
+        .expect(1..)
+        .mount_as_scoped(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(sse_response(&[done]))
+        .with_priority(5)
+        .mount(&server)
+        .await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    let feed = withnav::navigator::ConversationFeed::new();
+    let state = test_state_with_feed(&root, &server.uri(), Some(feed.clone()));
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("ws dir");
+    let id = state.create_session(&ws, None, true).await.expect("create");
+
+    assert!(feed.snapshot().target.is_none(), "no Captain message yet");
+    send_text(&state, id, "add an auth remove command").await;
+    wait_for_completed_message_turn(&state, id, "user:http", "add an auth remove command").await;
+    wait_for("the Captain message to activate the session", || {
+        feed.snapshot().target.is_some()
+    })
+    .await;
+
+    assert_eq!(
+        flow_wake(&feed, "wake: this edit drifts from the intent"),
+        Ok(())
+    );
+    let requests = wait_for_request(&wake_guard, Duration::from_secs(20)).await;
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("json body");
+    let last_user = body["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "user")
+        .expect("a user message");
+    let text = last_user["content"].as_str().expect("content");
+    assert!(text.contains("this edit drifts from the intent"), "{text}");
+    assert!(text.contains("<untrusted-flow-note>"), "{text}");
+}
+
+// Given a cognition that yields on `ask`
+// When an editor flow posts a wake while the cognition waits on the Captain
+// Then the wake starts no turn: the Captain's next message answers the ask
+//      as the TOOL result and the wake reaches the provider after it; a
+//      second wake inside the cooldown is refused, never queued
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flow_wake_while_the_cognition_yields_is_held_behind_the_ask_answer() {
+    let server = MockServer::start().await;
+    let ask = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask_1","function":{"name":"ask","arguments":"{\"question\":\"remove which scope?\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+    let done = r#"{"choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}"#;
+    let wake_guard = Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(wiremock::matchers::body_string_contains("first wake"))
+        .respond_with(sse_response(&[done]))
+        .with_priority(3)
+        .expect(1..)
+        .mount_as_scoped(&server)
+        .await;
+    for (body, marker, priority) in [
+        (done, "the local scope", 4u8),
+        (ask, "add an auth remove command", 5),
+    ] {
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(wiremock::matchers::body_string_contains(marker.to_string()))
+            .respond_with(sse_response(&[body]))
+            .with_priority(priority)
+            .mount(&server)
+            .await;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    let feed = withnav::navigator::ConversationFeed::new();
+    let state = test_state_with_feed(&root, &server.uri(), Some(feed.clone()));
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("ws dir");
+    let id = state.create_session(&ws, None, true).await.expect("create");
+
+    let sub = subscribe(&state, id).await;
+    send_text(&state, id, "add an auth remove command").await;
+    collect_until(sub, |e| {
+        e.kind == "agent.state" && e.payload["to"] == "yielded"
+    })
+    .await;
+    wait_for("the feed to see agent.yield", || {
+        feed.is_waiting_on_captain()
+    })
+    .await;
+
+    assert_eq!(flow_wake(&feed, "first wake"), Ok(()));
+    assert_eq!(
+        flow_wake(&feed, "second wake"),
+        Err("wake cooldown".to_string())
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let before: Vec<_> = server.received_requests().await.expect("wiremock retains");
+    assert!(
+        !before
+            .iter()
+            .any(|r| String::from_utf8_lossy(&r.body).contains("first wake")),
+        "the held wake started no turn while the ask was open"
+    );
+
+    send_text(&state, id, "the local scope").await;
+    let requests = wait_for_request(&wake_guard, Duration::from_secs(20)).await;
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("json body");
+    let messages = body["messages"].as_array().expect("messages");
+    let text = |m: &Value| m["content"].as_str().unwrap_or("").to_string();
+    let answer_at = messages
+        .iter()
+        .position(|m| {
+            m["role"] == "tool"
+                && m["tool_call_id"] == "ask_1"
+                && text(m).contains("the local scope")
+        })
+        .expect("the Captain's answer became the ask tool result");
+    let wake_at = messages
+        .iter()
+        .position(|m| m["role"] == "user" && text(m).contains("first wake"))
+        .expect("the wake as a user message");
+    assert!(
+        answer_at < wake_at,
+        "the answer precedes the wake: {messages:?}"
+    );
+    assert!(
+        !messages.iter().any(|m| text(m).contains("second wake")),
+        "the refused wake never reaches the provider"
+    );
+}
+
+// Given a navigator conversation whose cognition waits on a permission request
+// When an editor flow posts a wake
+// Then the runtime holds it and the request stays open; once the Captain
+//      answers and the turn ends, the wake is delivered
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flow_wake_never_cancels_an_open_permission_request() {
+    let server = MockServer::start().await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonical");
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).expect("ws dir");
+    let target = ws.join("note.txt");
+    let write = serde_json::json!({"choices": [{"index": 0, "finish_reason": "tool_calls",
+    "delta": {"tool_calls": [{"index": 0, "id": "w1", "function": {
+        "name": "write",
+        "arguments": serde_json::json!({"path": target, "content": "x"}).to_string(),
+    }}]}}]})
+    .to_string();
+    let done = r#"{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}"#;
+    let wake_guard = Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(wiremock::matchers::body_string_contains(
+            "a wake while asking",
+        ))
+        .and(wiremock::matchers::body_string_contains(
+            "\"role\":\"tool\"",
+        ))
+        .respond_with(sse_response(&[done]))
+        .with_priority(2)
+        .expect(1..)
+        .mount_as_scoped(&server)
+        .await;
+    for (body, marker, priority) in [
+        (done, "\"role\":\"tool\"", 3u8),
+        (write.as_str(), "write the note", 5),
+    ] {
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(wiremock::matchers::body_string_contains(marker.to_string()))
+            .respond_with(sse_response(&[body]))
+            .with_priority(priority)
+            .mount(&server)
+            .await;
+    }
+    let feed = withnav::navigator::ConversationFeed::new();
+    let state = test_state_with_feed(&root, &server.uri(), Some(feed.clone()));
+    let id = state.create_session(&ws, None, true).await.expect("create");
+
+    send_text(&state, id, "write the note").await;
+    let requested = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let sub = subscribe(&state, id).await;
+            if let withnav::bus::ResumeOutcome::Replay(all) = sub.replay
+                && let Some(found) = all.into_iter().find(|e| e.kind == "permission.requested")
+            {
+                break found;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the write must reach its permission request");
+    let request_id: ulid::Ulid = requested.payload["request_id"]
+        .as_str()
+        .and_then(|id| id.parse().ok())
+        .expect("request id");
+    wait_for("the Captain message to activate the session", || {
+        feed.snapshot().target.is_some()
+    })
+    .await;
+    assert_eq!(flow_wake(&feed, "a wake while asking"), Ok(()));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let sub = subscribe(&state, id).await;
+    let withnav::bus::ResumeOutcome::Replay(all) = sub.replay else {
+        panic!("expected a replay");
+    };
+    assert!(
+        !all.iter().any(|e| e.kind == "permission.resolved"),
+        "the request is still open"
+    );
+
+    state
+        .answer_permission(
+            id,
+            request_id,
+            withnav::agent::permissions::PermissionDecision::AllowOnce,
+        )
+        .await
+        .expect("answer");
+    let requests = wait_for_request(&wake_guard, Duration::from_secs(20)).await;
+    assert!(!requests.is_empty());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
 }

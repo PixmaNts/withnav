@@ -6,6 +6,22 @@ requests land in `develop`.
 
 ## [Unreleased]
 
+### Fixed
+
+- A rejected Instinct request now says why: the flow run record carries the provider's reason
+  after "provider rejected the request (HTTP 400)", and `nav doctor` shows it
+  after "HTTP 400 rejected" (one line, at most 300 characters; a reason that echoes a credential
+  is left out).
+- The root watchdog reviewer reads a decision wrapped in a code fence or in prose, as the remark
+  parser does, instead of asking the Captain.
+- The Cognition prompt points at `.withnav/intent.md` instead of the old `.navigator/intent.md`.
+- Editor-flow trigger records name the flow runs they started (`flow_run_ids`), so they join the
+  flow run records that hold the Instinct answers.
+- A remark that runs out of its 20-second budget no longer counts as a silence: the edit stays
+  unjudged, the next trigger looks at it again, and the trigger record says `over_budget`.
+- Remark call records in the navigator log carry the input and output token counts when the
+  provider reports them.
+
 ## [0.8.4] - 2026-11-24
 
 ### Changed

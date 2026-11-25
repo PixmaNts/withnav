@@ -228,6 +228,25 @@ impl Metacognition for LazyCommenter {
     ) -> futures::future::BoxFuture<'a, Result<Option<Remark>, ModelError>> {
         Box::pin(async move { self.get().await?.remark(ctx, cancel).await })
     }
+
+    /// Forwards to the commenter's own usage-carrying call: the trait's
+    /// default would report no usage, and the delivery's call records would
+    /// lose their token counts.
+    fn remark_with_usage<'a>(
+        &'a self,
+        ctx: &'a RemarkContext,
+        cancel: &'a tokio_util::sync::CancellationToken,
+    ) -> futures::future::BoxFuture<'a, crate::navigator::ports::RemarkCall> {
+        Box::pin(async move {
+            match self.get().await {
+                Ok(commenter) => commenter.remark_with_usage(ctx, cancel).await,
+                Err(error) => crate::navigator::ports::RemarkCall {
+                    result: Err(error),
+                    usage: None,
+                },
+            }
+        })
+    }
 }
 
 impl crate::navigator::ports::ReflexContextModel for LazyCommenter {
@@ -630,5 +649,44 @@ mod tests {
         assert!(lazy.get().await.is_ok());
         assert!(lazy.get().await.is_ok());
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    // Given the editor's metacognition, which resolves its commenter on first
+    //       use, and a provider that reports usage
+    // When a remark is asked with its usage
+    // Then the usage crosses the lazy wrapper to the delivery's call record
+    #[tokio::test]
+    async fn the_lazy_commenter_passes_the_remark_usage_through() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let body = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"{\\\"silent\\\":true}\"},\"finish_reason\":null}]}\n\n\
+                    data: {\"choices\":[],\"usage\":{\"prompt_tokens\":321,\"completion_tokens\":7,\"total_tokens\":328}}\n\n\
+                    data: [DONE]\n\n";
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+            .mount(&server)
+            .await;
+        let models = ModelsConfig::parse(
+            &serde_json::json!({
+                "providers": { "omni": { "base_url": format!("{}/v1", server.uri()) }},
+                "models": { "omni/m-chat": {
+                    "provider": "omni", "model": "m-chat", "supports_tools": true,
+                    "context_window": 64_000
+                }}
+            })
+            .to_string(),
+        )
+        .expect("config");
+        let (_dir, layers) = layers(&models);
+        let call = layers
+            .metacognition()
+            .remark_with_usage(&ctx(), &tokio_util::sync::CancellationToken::new())
+            .await;
+        assert!(matches!(call.result, Ok(None)), "{:?}", call.result);
+        let usage = call.usage.expect("the provider's usage");
+        assert_eq!((usage.prompt_tokens, usage.completion_tokens), (321, 7));
     }
 }

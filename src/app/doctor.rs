@@ -1400,12 +1400,19 @@ fn sanitize(text: &str, secrets: &[String]) -> String {
 
 fn error_category(error: &ProviderError) -> (&'static str, String, &'static str) {
     match error {
+        // The provider's reason is the only clue to why a request is refused
+        // (a 400 for a reassigned model looked like any other 400); the
+        // report's `sanitize` then removes credentials and URLs from it.
         ProviderError::Api {
             status: status @ 400..=499,
+            message,
             ..
         } => (
             "http_rejected",
-            format!("HTTP {status} rejected"),
+            match instinct_flow::reason_excerpt(message) {
+                Some(reason) => format!("HTTP {status} rejected: {reason}"),
+                None => format!("HTTP {status} rejected"),
+            },
             "Check provider authentication, model id and API support.",
         ),
         ProviderError::Api {

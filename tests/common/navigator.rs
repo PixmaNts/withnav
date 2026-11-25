@@ -19,7 +19,7 @@ use withnav::navigator::conversation::SessionPost;
 use withnav::navigator::metacognition::RemarkContext;
 use withnav::navigator::ports::{
     Answer, Answers, FimAnswer, FimModel, FimRequest, Metacognition, ModelError, Question,
-    Questions, ReflexContextModel, ReflexContextRequest,
+    Questions, ReflexContextModel, ReflexContextRequest, RemarkCall,
 };
 use withnav::navigator::{self, NavigatorDeps, Remark};
 use withnav::provider::Usage;
@@ -66,12 +66,14 @@ pub fn delta_tool_call(id: &str, name: &str, args: &Value) -> Value {
 /// - `Silent` => Ok(None)
 /// - `Fail(msg)` => a provider-side failure with that message
 /// - `Malformed(raw)` => an answer that violates the prompt contract
+/// - `OverBudget` => the remark ran out of its time budget unjudged
 #[derive(Clone)]
 pub enum RemarkAnswer {
     Remark(u32, &'static str),
     Silent,
     Fail(&'static str),
     Malformed(&'static str),
+    OverBudget,
 }
 
 /// Scripted [`Metacognition`]: consumes answers from a shared list, in order;
@@ -83,6 +85,7 @@ pub struct ScriptedCommenter {
     calls: Arc<Mutex<usize>>,
     tool_rounds: Arc<Mutex<Vec<usize>>>,
     gate: Option<Arc<CancellationToken>>,
+    usage: Option<Usage>,
 }
 
 impl ScriptedCommenter {
@@ -99,6 +102,12 @@ impl ScriptedCommenter {
             gate: Some(gate),
             ..Self::new(answers)
         }
+    }
+
+    /// Every call reports `usage` as the provider's token counts.
+    pub fn with_usage(mut self, usage: Usage) -> Self {
+        self.usage = Some(usage);
+        self
     }
 
     pub fn calls(&self) -> usize {
@@ -145,6 +154,20 @@ impl Metacognition for ScriptedCommenter {
                 RemarkAnswer::Silent => Ok(None),
                 RemarkAnswer::Fail(msg) => Err(ModelError::Unavailable(msg.to_string())),
                 RemarkAnswer::Malformed(raw) => Err(ModelError::Malformed(raw.to_string())),
+                RemarkAnswer::OverBudget => Err(ModelError::OverBudget { budget_ms: 20_000 }),
+            }
+        })
+    }
+
+    fn remark_with_usage<'a>(
+        &'a self,
+        ctx: &'a RemarkContext,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, RemarkCall> {
+        Box::pin(async move {
+            RemarkCall {
+                result: self.remark(ctx, cancel).await,
+                usage: self.usage,
             }
         })
     }
@@ -1017,22 +1040,52 @@ impl instinct_flow::DecisionClient for FlowDecision {
 }
 impl EditorFlowsExt for NavigatorDeps {
     fn with_decision(self, model: Arc<dyn DecisionModel>) -> Self {
-        let workspace = self
-            .workspace
-            .clone()
-            .unwrap_or_else(|| self.log_path.parent().unwrap().to_path_buf());
-        let store = Arc::new(withnav::flows::store::FlowStore::with_data(
-            workspace.clone(),
-            workspace.join("config"),
-            workspace.join("data"),
-        ));
-        let model = Arc::new(FlowDecision(model));
-        self.with_flows(Arc::new(move |effects| {
-            Arc::new(withnav::flows::runtime::FlowRuntime::new(
-                store.clone(),
-                model.clone(),
-                effects,
-            ))
-        }))
+        with_decision_and_records(self, model, None)
     }
+}
+
+/// [`EditorFlowsExt::with_decision`] that also writes the flow run records
+/// (the `runs.jsonl` captures) under `<workspace>/data`, returned so a
+/// scenario can read them back after `shutdown`.
+pub fn with_recorded_decision(
+    deps: NavigatorDeps,
+    model: Arc<dyn DecisionModel>,
+) -> (NavigatorDeps, Arc<withnav::flows::records::Records>) {
+    let workspace = deps
+        .workspace
+        .clone()
+        .unwrap_or_else(|| deps.log_path.parent().unwrap().to_path_buf());
+    let records = Arc::new(withnav::flows::records::Records::new(
+        &workspace.join("data"),
+        &workspace,
+    ));
+    (
+        with_decision_and_records(deps, model, Some(records.clone())),
+        records,
+    )
+}
+
+fn with_decision_and_records(
+    deps: NavigatorDeps,
+    model: Arc<dyn DecisionModel>,
+    records: Option<Arc<withnav::flows::records::Records>>,
+) -> NavigatorDeps {
+    let workspace = deps
+        .workspace
+        .clone()
+        .unwrap_or_else(|| deps.log_path.parent().unwrap().to_path_buf());
+    let store = Arc::new(withnav::flows::store::FlowStore::with_data(
+        workspace.clone(),
+        workspace.join("config"),
+        workspace.join("data"),
+    ));
+    let model = Arc::new(FlowDecision(model));
+    deps.with_flows(Arc::new(move |effects| {
+        let runtime =
+            withnav::flows::runtime::FlowRuntime::new(store.clone(), model.clone(), effects);
+        Arc::new(match &records {
+            Some(records) => runtime.with_records(records.clone()),
+            None => runtime,
+        })
+    }))
 }

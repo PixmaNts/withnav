@@ -39,15 +39,16 @@ validated; a flow that is not validated does not load.
 ✓ ok assignment.layer.instinct: gateway/typesafe/jev variant=off
 ✓ ok live.instinct.editor: valid answer (145 ms)
 ⚠ warning flows.workspace.guard: current flow version not validated; not loaded
-✕ failed live.metacognition.chat: HTTP 401 rejected; Check provider authentication, model id and API support.
+✕ failed live.metacognition.chat: HTTP 401 rejected: invalid api key; Check provider authentication, model id and API support.
 ```
 
 Each line is `status id: value`, then a hint when there is one. Statuses are `ok`, `warning` and
 `failed`.
 
 In `--json`, each check has an id, a status, the measured value, an optional sanitised error
-category, a hint and the elapsed milliseconds. Neither mode prints response bodies,
-credential-bearing URLs, keys or environment values. Attach `nav doctor --offline --json` to a bug
+category, a hint and the elapsed milliseconds. A rejected request (HTTP 4xx) shows the provider's
+reason, cut to 300 characters on one line; otherwise neither mode prints response bodies. Neither
+mode prints URLs, keys or environment values. Attach `nav doctor --offline --json` to a bug
 report when configuration may be involved.
 
 **Exit code:** `0` means no failed check (warnings are allowed). `1` means at least one failure.

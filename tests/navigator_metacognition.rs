@@ -1,6 +1,6 @@
 //! The metacognition's tool loop, over a scripted wiremock chat provider:
 //! one `read` round then a remark; the tool-call cap forcing a final
-//! tools-free call; the whole-remark 8 s budget returning silence; the
+//! tools-free call; the whole-remark 20 s budget ending unjudged; the
 //! open-buffer override answering from the editor text instead of disk.
 
 use std::collections::BTreeMap;
@@ -14,7 +14,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use withnav::navigator::log::NavLog;
 use withnav::navigator::metacognition::{LlmCommenter, RemarkContext};
-use withnav::navigator::ports::{Metacognition, ReflexContextModel, ReflexContextRequest};
+use withnav::navigator::ports::{
+    Metacognition, ModelError, ReflexContextModel, ReflexContextRequest,
+};
 use withnav::provider::config::{
     ApiKind, ModelConfig, ProviderConfig, ReasoningHistory, ResolvedModel,
 };
@@ -321,10 +323,10 @@ async fn tool_loop_is_capped_then_forces_the_answer() {
 
 // Given a provider whose first response never arrives in time
 // When the whole remark exceeds its 20 s budget
-// Then the metacognition returns silence (never an error) and the log
-//      records the cancelled round.
+// Then the metacognition reports the budget ran out (not silence: nothing
+//      was judged) and the log records the cancelled round.
 #[tokio::test]
-async fn over_budget_returns_silence() {
+async fn over_budget_is_reported_not_silence() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path().to_path_buf();
 
@@ -350,8 +352,11 @@ async fn over_budget_returns_silence() {
     // in virtual time, so the test itself is instant.
     tokio::time::pause();
     let started = std::time::Instant::now();
-    let out = c.remark(&ctx, &cancel).await.unwrap();
-    assert!(out.is_none(), "over budget means silence");
+    let out = c.remark(&ctx, &cancel).await;
+    assert!(
+        matches!(out, Err(ModelError::OverBudget { budget_ms: 20_000 })),
+        "over budget is not silence: {out:?}"
+    );
     assert!(
         started.elapsed() < Duration::from_secs(5),
         "the paused clock keeps the test fast"
@@ -470,8 +475,6 @@ async fn the_branch_prompt_reaches_the_models_system_message() {
 //      provider failure.
 #[tokio::test]
 async fn a_prose_answer_is_a_typed_malformed_error() {
-    use withnav::navigator::ports::ModelError;
-
     let tmp = tempfile::tempdir().unwrap();
     let server = isolated_server().await;
     let answer = sse_stream(vec![sse_data(&delta_text("you should refactor this"))]);
@@ -682,8 +685,6 @@ async fn provider_tool_calls_in_the_final_round_are_asked_again() {
 // Then the result is `Malformed`, after exactly one retry.
 #[tokio::test]
 async fn two_tool_attempts_in_a_row_are_malformed() {
-    use withnav::navigator::ports::ModelError;
-
     let tmp = tempfile::tempdir().unwrap();
     let server = isolated_server().await;
     script_texts(&server, &[DSML_CALL, DSML_CALL, r#"{"silent": true}"#]).await;
@@ -810,4 +811,72 @@ async fn without_a_branch_prompt_the_user_turn_carries_the_context() {
     let bodies = received_bodies(&server).await;
     let users = user_messages(&bodies[0]);
     assert!(users[0].contains("UNIQUE_DIFF_MARKER"), "{users:?}");
+}
+
+/// A usage-only SSE chunk, as providers send it after the last delta.
+fn usage_chunk(prompt: u64, completion: u64) -> String {
+    sse_data(&json!({"choices": [], "usage": {
+        "prompt_tokens": prompt, "completion_tokens": completion,
+        "total_tokens": prompt + completion
+    }}))
+}
+
+// Given a tool round and an answer round that each report usage
+// When the metacognition remarks
+// Then the remark's usage is the sum over its rounds, so the delivery's call
+//      record states what the whole remark cost; a provider that reports no
+//      usage gives none, not zeros.
+#[tokio::test]
+async fn a_remark_reports_the_usage_of_all_its_rounds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().to_path_buf();
+    std::fs::create_dir_all(ws.join("src")).unwrap();
+    std::fs::write(ws.join("src/other.rs"), "fn helper() {}\n").unwrap();
+    for reported in [true, false] {
+        let server = isolated_server().await;
+        let usage = |prompt, completion| {
+            if reported {
+                vec![usage_chunk(prompt, completion)]
+            } else {
+                Vec::new()
+            }
+        };
+        let mut round1 = vec![sse_data(&delta_tool_call(
+            "call-1",
+            "read",
+            &json!({"path": "src/other.rs"}),
+        ))];
+        round1.extend(usage(100, 10));
+        let mut round2 = vec![sse_data(&delta_text(r#"{"silent": true}"#))];
+        round2.extend(usage(150, 5));
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_partial_json(json!({"tools": [{"type": "function"}]})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(sse_stream(round1), "text/event-stream"),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(sse_stream(round2), "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let c = commenter(server.uri(), None);
+        let mut ctx = remark_ctx(&ws, vec![]);
+        ctx.tool_rounds = 1;
+        let call = c
+            .remark_with_usage(&ctx, &tokio_util::sync::CancellationToken::new())
+            .await;
+        assert!(matches!(call.result, Ok(None)), "{:?}", call.result);
+        let expected = reported.then_some(withnav::provider::Usage {
+            prompt_tokens: 250,
+            completion_tokens: 15,
+            total_tokens: 265,
+        });
+        assert_eq!(call.usage, expected, "reported={reported}");
+    }
 }

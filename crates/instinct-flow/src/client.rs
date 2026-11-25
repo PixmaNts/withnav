@@ -24,8 +24,11 @@ pub enum DecisionError {
     Cancelled,
     #[error("provider unreachable")]
     ProviderError,
-    #[error("provider rejected the request (HTTP {0})")]
-    ProviderRejected(u16),
+    /// The provider refused the request (a 4xx). `reason` is the provider's
+    /// own explanation, bounded by [`reason_excerpt`]; `None` when the body
+    /// gave none or echoed a credential.
+    #[error("provider rejected the request (HTTP {status}){}", reason_suffix(.reason))]
+    ProviderRejected { status: u16, reason: Option<String> },
     #[error("provider error (HTTP {0})")]
     ProviderStatus(u16),
     #[error("invalid provider answer: {0}")]
@@ -33,6 +36,69 @@ pub enum DecisionError {
     #[error("response exceeds byte limit")]
     Limit,
 }
+fn reason_suffix(reason: &Option<String>) -> String {
+    reason
+        .as_deref()
+        .map(|reason| format!(": {reason}"))
+        .unwrap_or_default()
+}
+
+/// Longest provider reason kept on an error, in characters.
+pub const REASON_MAX_CHARS: usize = 300;
+
+/// A provider's error text made safe to show on one diagnostic line: every
+/// whitespace run becomes one space, other control characters are dropped
+/// (an escape sequence cannot restyle a terminal), and the result is cut at
+/// [`REASON_MAX_CHARS`] with a trailing `…`. `None` when nothing is left.
+pub fn reason_excerpt(text: &str) -> Option<String> {
+    let mut line = String::new();
+    for c in text.chars() {
+        if c.is_whitespace() {
+            if !line.is_empty() && !line.ends_with(' ') {
+                line.push(' ');
+            }
+        } else if !c.is_control() {
+            line.push(c);
+        }
+    }
+    let line = line.trim_end();
+    if line.is_empty() {
+        return None;
+    }
+    let mut chars = line.chars();
+    let mut excerpt: String = chars.by_ref().take(REASON_MAX_CHARS).collect();
+    if chars.next().is_some() {
+        excerpt.push('…');
+    }
+    Some(excerpt)
+}
+
+/// Error bodies larger than this are read only this far: the reason is
+/// near the start, and a hostile endpoint cannot make a rejection costly.
+const REJECTION_BODY_BYTES: usize = 4 * 1024;
+
+/// The provider's explanation of a rejection: `error.message`, `error` or
+/// `message` of a JSON body, else the body text. Dropped entirely when it
+/// contains a credential this client sent, since a provider echoing the
+/// request back must never put a key into a run record or a log.
+fn rejection_reason(body: &[u8], credentials: &[&str]) -> Option<String> {
+    let text = String::from_utf8_lossy(body);
+    let json: Option<serde_json::Value> = serde_json::from_str(&text).ok();
+    let message = json.as_ref().and_then(|value| {
+        let error = value.get("error");
+        error
+            .and_then(|error| error.get("message"))
+            .or(error)
+            .or_else(|| value.get("message"))
+            .and_then(serde_json::Value::as_str)
+    });
+    let reason = reason_excerpt(message.unwrap_or(&text))?;
+    let echoed = credentials
+        .iter()
+        .any(|secret| !secret.is_empty() && (text.contains(secret) || reason.contains(secret)));
+    (!echoed).then_some(reason)
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("invalid System One client configuration")]
 pub struct ClientError;
@@ -62,6 +128,9 @@ pub struct SystemOneClient {
     key: String,
     deadline: Duration,
     headers: reqwest::header::HeaderMap,
+    /// The configured header values, kept only to recognize a rejection body
+    /// that echoes one (see [`rejection_reason`]).
+    header_values: Vec<String>,
 }
 impl std::fmt::Debug for SystemOneClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -88,6 +157,7 @@ impl SystemOneClient {
             return Err(ClientError);
         }
         let mut map = reqwest::header::HeaderMap::new();
+        let header_values = headers.values().cloned().collect();
         for (name, value) in headers {
             let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
                 .map_err(|_| ClientError)?;
@@ -108,6 +178,7 @@ impl SystemOneClient {
             key,
             deadline: deadline.min(Duration::from_secs(2)),
             headers: map,
+            header_values,
         })
     }
 }
@@ -136,7 +207,23 @@ impl DecisionClient for SystemOneClient {
                 if !response.status().is_success() {
                     let status = response.status();
                     return Err(if status.is_client_error() {
-                        DecisionError::ProviderRejected(status.as_u16())
+                        let mut body = Vec::new();
+                        while body.len() < REJECTION_BODY_BYTES {
+                            match response.chunk().await {
+                                Ok(Some(chunk)) => {
+                                    let room = REJECTION_BODY_BYTES - body.len();
+                                    body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+                                }
+                                Ok(None) | Err(_) => break,
+                            }
+                        }
+                        let credentials: Vec<&str> = std::iter::once(self.key.as_str())
+                            .chain(self.header_values.iter().map(String::as_str))
+                            .collect();
+                        DecisionError::ProviderRejected {
+                            status: status.as_u16(),
+                            reason: rejection_reason(&body, &credentials),
+                        }
                     } else {
                         DecisionError::ProviderStatus(status.as_u16())
                     });
@@ -274,6 +361,85 @@ mod tests {
         assert!(validate_answers(&q, &answer("a", f64::NAN)).is_err());
         assert!(validate_answers(&q, &Answers::new()).is_err());
     }
+    fn noul_questions() -> Questions {
+        Questions::from([(
+            "go".into(),
+            Question::Noul {
+                instructions: "Go?".into(),
+            },
+        )])
+    }
+
+    async fn rejection(body: wiremock::ResponseTemplate) -> DecisionError {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(body)
+            .mount(&server)
+            .await;
+        let client = SystemOneClient::new(
+            format!("{}/systemone", server.uri()).parse().unwrap(),
+            "model".into(),
+            "sk-key-value".into(),
+            Duration::from_secs(2),
+            BTreeMap::from([("x-token".into(), "header-value".into())]),
+        )
+        .unwrap();
+        let questions = noul_questions();
+        client
+            .decide(
+                DecisionRequest {
+                    state: "s",
+                    questions: &questions,
+                },
+                &CancellationToken::new(),
+                Instant::now() + Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err()
+    }
+
+    // A rejected decision used to say only "HTTP 400": every Instinct call
+    // failed that way for days (observed 2026-11-23..25) and neither the run
+    // record nor the log said why. The provider's own reason must travel
+    // with the error, bounded and on one line.
+    #[tokio::test]
+    async fn a_rejection_carries_the_providers_reason() {
+        let json = wiremock::ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": {"message": "model jev-router does not support\nthe systemone API", "code": 400}
+        }));
+        let error = rejection(json).await;
+        assert_eq!(
+            error.to_string(),
+            "provider rejected the request (HTTP 400): model jev-router does not support the systemone API"
+        );
+        assert!(!error.is_outage());
+
+        let text = wiremock::ResponseTemplate::new(422)
+            .set_body_string(format!("bad\u{1b}[31m state\t{}", "x".repeat(500)));
+        let message = rejection(text).await.to_string();
+        let reason = message
+            .strip_prefix("provider rejected the request (HTTP 422): ")
+            .expect(&message);
+        assert!(reason.starts_with("bad[31m state x"), "{reason}");
+        assert_eq!(reason.chars().count(), 301, "300 chars and the cut marker");
+        assert!(reason.ends_with('…'));
+        assert!(!reason.chars().any(char::is_control));
+
+        // A body echoing a credential is not shown at all.
+        for echoed in ["sk-key-value", "invalid header header-value"] {
+            let echo = wiremock::ResponseTemplate::new(401).set_body_string(echoed);
+            assert_eq!(
+                rejection(echo).await.to_string(),
+                "provider rejected the request (HTTP 401)"
+            );
+        }
+        let empty = wiremock::ResponseTemplate::new(400);
+        assert_eq!(
+            rejection(empty).await.to_string(),
+            "provider rejected the request (HTTP 400)"
+        );
+    }
+
     #[test]
     fn secret_values_do_not_escape_debug_or_errors() {
         let client = SystemOneClient::new(

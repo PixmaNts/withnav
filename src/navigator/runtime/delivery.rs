@@ -1,7 +1,6 @@
-//! Delivery of a trigger's outcome: a `remark` branch calls the
-//! metacognition and notifies the editor; a `wake_cognition` branch posts to
-//! the active conversation through the feed. Each writes the completed
-//! trigger record.
+//! Delivery of a flow's `remark` action: calls the metacognition, notifies
+//! the editor and writes the completed trigger record. Flow `wake` and
+//! `inject_note` actions are posted by the flow effects (`flows.rs`).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -95,11 +94,11 @@ impl Runtime {
             biased;
             _ = self.connection_cancel.cancelled() => None,
             _ = cancel.cancelled() => None, // superseded, or the document closed
-            r = self.metacognition.remark(&remark_ctx, &cancel) => Some(r),
+            r = self.metacognition.remark_with_usage(&remark_ctx, &cancel) => Some(r),
         };
         self.end_remark(&uri, &cancel).await;
 
-        let Some(result) = result else {
+        let Some(crate::navigator::ports::RemarkCall { result, usage }) = result else {
             // Cancelled: a newer remark took over, or the document closed.
             pending.finish(&self.log, DeliveryOutcome::Cancelled { reason: None });
             return;
@@ -173,8 +172,8 @@ impl Runtime {
                     layer: "metacognition",
                     model: &model,
                     latency_ms: latency,
-                    input_tokens: None,
-                    output_tokens: None,
+                    input_tokens: usage.map(|u| u.prompt_tokens),
+                    output_tokens: usage.map(|u| u.completion_tokens),
                     cancelled: false,
                     purpose: None,
                 });
@@ -222,8 +221,8 @@ impl Runtime {
                     layer: "metacognition",
                     model: &model,
                     latency_ms: started.elapsed().as_millis(),
-                    input_tokens: None,
-                    output_tokens: None,
+                    input_tokens: usage.map(|u| u.prompt_tokens),
+                    output_tokens: usage.map(|u| u.completion_tokens),
                     cancelled: false,
                     purpose: None,
                 });
@@ -235,13 +234,34 @@ impl Runtime {
                 pending.finish(&self.log, DeliveryOutcome::Silent { reason: None });
                 self.set_status("idle", None).await;
             }
+            Err(ModelError::OverBudget { .. }) => {
+                // Nothing was judged: the document is not rebased and a call
+                // for help stays open, so the next trigger sees the same
+                // change. Recording silence here consumed unjudged edits.
+                self.log.append(&LogRecord::Call {
+                    layer: "metacognition",
+                    model: &model,
+                    latency_ms: started.elapsed().as_millis(),
+                    input_tokens: usage.map(|u| u.prompt_tokens),
+                    output_tokens: usage.map(|u| u.completion_tokens),
+                    cancelled: true,
+                    purpose: None,
+                });
+                pending.finish(
+                    &self.log,
+                    DeliveryOutcome::None {
+                        reason: "over_budget",
+                    },
+                );
+                self.set_status("idle", None).await;
+            }
             Err(error) => {
                 self.log.append(&LogRecord::Call {
                     layer: "metacognition",
                     model: &model,
                     latency_ms: started.elapsed().as_millis(),
-                    input_tokens: None,
-                    output_tokens: None,
+                    input_tokens: usage.map(|u| u.prompt_tokens),
+                    output_tokens: usage.map(|u| u.completion_tokens),
                     cancelled: false,
                     purpose: None,
                 });

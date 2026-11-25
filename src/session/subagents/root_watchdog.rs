@@ -150,7 +150,7 @@ impl ReviewRequest {
         let mut call = evidence.last_tool_call;
         let mut result = evidence.last_tool_result;
         let mut digest = self.ledger.as_ref().map(crate::session::ledger::digest);
-        loop {
+        for _ in 0..MAX_FIT_ROUNDS {
             let text = serde_json::json!({ "untrusted_evidence": ReviewWire {
                 goal_source: self.goal_source,
                 goal: goal.as_deref().unwrap_or_default(),
@@ -174,8 +174,25 @@ impl ReviewRequest {
                 return text;
             }
         }
+        // Each round shortens one field, so the loop ends on its own, but text that grows when
+        // escaped (quotes, control characters) can take many small rounds: past the cap, every
+        // cuttable field is dropped at once, which always fits.
+        serde_json::json!({ "untrusted_evidence": ReviewWire {
+            goal_source: self.goal_source,
+            goal: ELIDED,
+            ledger: digest.as_ref().map(|_| ""),
+            since_last_message_secs: evidence.since_last_message_secs,
+            since_last_tool_call_secs: evidence.since_last_tool_call_secs,
+            step_count: evidence.step_count,
+            last_tool_call: call.as_ref().map(|_| ELIDED),
+            last_tool_result: result.as_ref().map(|_| ELIDED),
+        }})
+        .to_string()
     }
 }
+
+/// Rounds of [`ReviewRequest::user_content`] before it drops every cuttable field at once.
+const MAX_FIT_ROUNDS: usize = 64;
 
 /// Re-renders `digest` at least `over` bytes shorter, by the digest's own trimming rules;
 /// `false` when there is no ledger or nothing left of it.
@@ -207,17 +224,29 @@ struct ReviewWire<'a> {
     last_tool_result: Option<&'a str>,
 }
 
-/// Shortens `text` by at least `over` bytes; `false` when it is absent or already elided.
+/// Shortens `text` by at least `over` bytes, or to [`ELIDED`]; `false` when it is absent, already
+/// elided, or would not get shorter. `bound_output(value, keep)` with `keep` below the value's
+/// length and at least its marker's length returns at most `keep` bytes (head budget + marker +
+/// tail budget = `keep`), so the check only guards against a change of that function.
 fn cut(text: &mut Option<String>, over: usize) -> bool {
     let Some(value) = text.as_mut().filter(|v| v.as_str() != ELIDED) else {
         return false;
     };
-    let keep = value.len().saturating_sub(over);
-    *value = if keep < MIN_KEPT_BYTES {
+    // `over` counts serialized bytes: a field that grows when escaped (a quote takes two bytes,
+    // a control character six) gives up the same share of its raw bytes, not the same number,
+    // or one round would drop all of it.
+    let escaped = serde_json::to_string(value.as_str()).map_or(value.len(), |s| s.len() - 2);
+    let share = value.len() * escaped.saturating_sub(over) / escaped.max(1);
+    let keep = share.min(value.len().saturating_sub(1));
+    let shorter = if keep < MIN_KEPT_BYTES {
         ELIDED.to_owned()
     } else {
         crate::tools::bound_output(value, keep).0
     };
+    if shorter.len() >= value.len() && shorter != ELIDED {
+        return false;
+    }
+    *value = shorter;
     true
 }
 
@@ -314,6 +343,16 @@ pub async fn review_bounded(
     request: &ReviewRequest,
     cancel: &CancellationToken,
 ) -> ReviewOutcome {
+    review_within(reviewer, request, cancel, REVIEW_DEADLINE).await
+}
+
+/// [`review_bounded`] with `deadline` in place of [`REVIEW_DEADLINE`].
+async fn review_within(
+    reviewer: Option<&dyn ProgressReviewer>,
+    request: &ReviewRequest,
+    cancel: &CancellationToken,
+    deadline: Duration,
+) -> ReviewOutcome {
     let Some(reviewer) = reviewer else {
         return Review::AskCaptain.into();
     };
@@ -321,10 +360,88 @@ pub async fn review_bounded(
     let result = tokio::select! {
         biased;
         _ = cancel.cancelled() => Review::AskCaptain.into(),
-        result = tokio::time::timeout(REVIEW_DEADLINE, reviewer.review(request, &review_cancel)) => result.unwrap_or_else(|_| Review::AskCaptain.into()),
+        result = tokio::time::timeout(deadline, reviewer.review(request, &review_cancel)) => result.unwrap_or_else(|_| Review::AskCaptain.into()),
     };
     review_cancel.cancel();
     result
+}
+
+/// How a review's ledger read ended, as the review log line names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LedgerRead {
+    Attached,
+    Timeout,
+    Error,
+    NoSession,
+    Cancelled,
+}
+
+impl LedgerRead {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Attached => "attached",
+            Self::Timeout => "timeout",
+            Self::Error => "error",
+            Self::NoSession => "no_session",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// One review of a doubtful turn, with what the log line reports about it.
+#[derive(Debug, Clone)]
+pub struct SessionReview {
+    pub outcome: ReviewOutcome,
+    pub goal_source: GoalSource,
+    pub ledger: LedgerRead,
+}
+
+/// Reads the session ledger through `replay` (`None` when the runtime has no session id), then
+/// reviews `evidence` under `goal`.
+pub async fn review_session<F>(
+    reviewer: &dyn ProgressReviewer,
+    evidence: Evidence,
+    goal: &GoalLog,
+    replay: Option<F>,
+    cancel: &CancellationToken,
+) -> SessionReview
+where
+    F: std::future::Future<Output = Result<Vec<crate::bus::event::EventEnvelope>, String>>,
+{
+    // One deadline for the read and the review together: the read takes its time out of the
+    // review's [`REVIEW_DEADLINE`], so a slow store never makes the watchdog wait longer than
+    // a review alone did.
+    let started = tokio::time::Instant::now();
+    let (ledger, read) = match replay {
+        None => (None, LedgerRead::NoSession),
+        Some(replay) => tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                let request = ReviewRequest::new(evidence, goal, None);
+                return SessionReview {
+                    outcome: Review::AskCaptain.into(),
+                    goal_source: request.goal_source,
+                    ledger: LedgerRead::Cancelled,
+                };
+            }
+            read = tokio::time::timeout(LEDGER_READ_DEADLINE, replay) => match read {
+                Ok(Ok(events)) => (
+                    Some(crate::session::ledger::fold(&events)),
+                    LedgerRead::Attached,
+                ),
+                Ok(Err(_)) => (None, LedgerRead::Error),
+                Err(_) => (None, LedgerRead::Timeout),
+            },
+        },
+    };
+    let request = ReviewRequest::new(evidence, goal, ledger);
+    let left = REVIEW_DEADLINE.saturating_sub(started.elapsed());
+    let outcome = review_within(Some(reviewer), &request, cancel, left).await;
+    SessionReview {
+        outcome,
+        goal_source: request.goal_source,
+        ledger: read,
+    }
 }
 
 pub(crate) struct RootWatchdog {
@@ -520,20 +637,31 @@ impl RootWatchdog {
                     _ if checked.verdict == Verdict::Stuck => Review::Stop.into(),
                     None => Review::AskCaptain.into(),
                     Some(reviewer) => {
-                        let request = self.review_request(&status, evidence.clone()).await;
-                        let review = review_bounded(
-                            Some(reviewer),
-                            &request,
+                        let goal = status
+                            .goal
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .clone();
+                        let replay = status
+                            .session_id
+                            .get()
+                            .map(|&id| self.history.replay(id, None, u64::MAX));
+                        let review = review_session(
+                            reviewer,
+                            evidence.clone(),
+                            &goal,
+                            replay,
                             &status.watchdog.supervisor_cancel,
                         )
                         .await;
                         tracing::info!(
-                            decision = ?review.decision,
-                            reason = review.reason.as_deref().unwrap_or(""),
-                            goal_source = ?request.goal_source,
+                            decision = ?review.outcome.decision,
+                            reason = review.outcome.reason.as_deref().unwrap_or(""),
+                            goal_source = ?review.goal_source,
+                            ledger = review.ledger.as_str(),
                             "root watchdog review"
                         );
-                        review
+                        review.outcome
                     }
                 };
                 apply_review(&status, &sequencer, generation, &review, &evidence);
@@ -542,32 +670,8 @@ impl RootWatchdog {
     }
 }
 
-impl RootWatchdog {
-    /// The reviewer's request: `evidence` under the session's goal, with the session ledger
-    /// folded from the stored events. A ledger that cannot be read in [`LEDGER_READ_DEADLINE`]
-    /// is left out rather than delaying the review.
-    async fn review_request(&self, status: &RuntimeStatus, evidence: Evidence) -> ReviewRequest {
-        let goal = status
-            .goal
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let ledger = match status.session_id.get() {
-            Some(&id) => tokio::time::timeout(
-                LEDGER_READ_DEADLINE,
-                self.history.replay(id, None, u64::MAX),
-            )
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .map(|events| crate::session::ledger::fold(&events)),
-            None => None,
-        };
-        ReviewRequest::new(evidence, &goal, ledger)
-    }
-}
-
-/// How long a review waits for the session's stored events before it goes without the ledger.
+/// How long a review waits for the session's stored events before it goes without the ledger;
+/// taken out of [`REVIEW_DEADLINE`], so the model keeps at least 15 seconds.
 pub const LEDGER_READ_DEADLINE: Duration = Duration::from_secs(5);
 
 fn notice(sequencer: &Sequencer, text: &str, reason: Option<&str>) {
@@ -1145,5 +1249,244 @@ mod tests {
                 reason.as_deref()
             );
         }
+    }
+
+    /// The serialized evidence with `request`'s fields as they are, no cut.
+    fn sent_len(request: &ReviewRequest, call: Option<&str>) -> usize {
+        let mut request = request.clone();
+        request.evidence.last_tool_call = call.map(str::to_owned);
+        request.user_content().len()
+    }
+
+    #[test]
+    fn a_small_final_overage_on_the_tool_call_still_fits_and_returns() {
+        let mut base = evidence();
+        base.last_tool_result = None;
+        let empty = ReviewRequest::new(base.clone(), &GoalLog::default(), None);
+        let room = REVIEW_INPUT_BYTES - sent_len(&empty, Some(""));
+        for over in 1..=20 {
+            let mut evidence = base.clone();
+            // Escape-free ASCII but long enough that `bounded` keeps it whole is not possible
+            // past EVIDENCE_BYTES, so the overage comes from a long goal plus the call.
+            evidence.goal = "g".repeat(room - crate::session::subagents::watchdog::EVIDENCE_BYTES);
+            evidence.last_tool_call =
+                Some("a".repeat(crate::session::subagents::watchdog::EVIDENCE_BYTES + over));
+            let request = ReviewRequest::new(evidence, &GoalLog::default(), None);
+            let content = request.user_content();
+            assert!(
+                content.len() <= REVIEW_INPUT_BYTES,
+                "over {over}: {}",
+                content.len()
+            );
+            let wire = sent(&request);
+            assert!(wire["last_tool_call"].as_str().unwrap().starts_with("aaaa"));
+            assert_eq!(
+                wire["goal"].as_str().unwrap().len(),
+                room - 2048,
+                "the goal is whole"
+            );
+        }
+    }
+
+    #[test]
+    fn each_cut_is_strictly_shorter_and_an_elided_field_is_not_cut_again() {
+        for over in 1..=20 {
+            let before = "g".repeat(MIN_KEPT_BYTES + 5);
+            let mut text = Some(before.clone());
+            assert!(cut(&mut text, over));
+            let after = text.as_deref().unwrap();
+            assert!(after.len() < before.len(), "over {over}");
+            assert!(
+                after.len() <= before.len() - over || after == ELIDED,
+                "over {over}"
+            );
+            let mut elided = Some(ELIDED.to_owned());
+            assert!(!cut(&mut elided, over));
+            assert!(!cut(&mut None, over));
+        }
+        // Text whose every byte doubles once escaped, so a cut gives back less than it seems.
+        let mut evidence = evidence();
+        evidence.goal = "\"".repeat(4_000);
+        evidence.last_tool_call = Some("\\".repeat(4_000));
+        evidence.last_tool_result = Some("\n".repeat(4_000));
+        let request = ReviewRequest::new(evidence, &GoalLog::default(), Some(full_ledger()));
+        assert!(request.user_content().len() <= REVIEW_INPUT_BYTES);
+    }
+
+    #[test]
+    fn the_tool_call_gives_way_before_the_digest() {
+        let mut ledger = full_ledger();
+        ledger.commands.truncate(8);
+        ledger.files_touched.truncate(4);
+        let digest = crate::session::ledger::digest(&ledger);
+        assert!(digest.len() > 2_000, "{}", digest.len());
+        let mut evidence = evidence();
+        evidence.last_tool_result = None;
+        evidence.last_tool_call = Some("c".repeat(2_000));
+        let request = ReviewRequest::new(evidence, &GoalLog::default(), Some(ledger));
+        assert!(request.user_content().len() <= REVIEW_INPUT_BYTES);
+        let wire = sent(&request);
+        assert_eq!(wire["ledger"], digest, "the digest is whole");
+        let call = wire["last_tool_call"].as_str().unwrap();
+        assert!(
+            call.len() < 2_000 && call.starts_with("cccc"),
+            "the call gave way"
+        );
+    }
+
+    #[test]
+    fn a_long_goal_gives_way_only_once_the_digest_is_gone() {
+        let goal = |criterion: &str| GoalLog {
+            current: Some(SessionGoal {
+                revision: 1,
+                objective: "o".repeat(500),
+                criteria: vec![criterion.repeat(300); 10],
+                status: GoalStatus::Active,
+            }),
+            last_revision: 1,
+        };
+        // Plain text: the goal (cut to EVIDENCE_BYTES by the evidence bound) fits beside part of
+        // the digest, which gives way alone.
+        let request = ReviewRequest::new(evidence(), &goal("c"), Some(full_ledger()));
+        assert!(request.user_content().len() <= REVIEW_INPUT_BYTES);
+        let wire = sent(&request);
+        let bounded = request.evidence.clone().bounded().goal;
+        assert_eq!(wire["goal"], bounded, "the goal is whole");
+        assert!(
+            wire["ledger"]
+                .as_str()
+                .unwrap()
+                .starts_with("session ledger")
+        );
+        // A control character takes six bytes once escaped (`/goal` strips them, this request
+        // does not), so the goal alone overflows the bound: the digest goes first, then the goal
+        // is cut.
+        let request = ReviewRequest::new(evidence(), &goal("\u{1}"), Some(full_ledger()));
+        assert!(request.user_content().len() <= REVIEW_INPUT_BYTES);
+        let wire = sent(&request);
+        assert_eq!(wire["ledger"], "", "the digest is gone");
+        assert_eq!(wire["last_tool_result"], ELIDED);
+        assert_eq!(wire["last_tool_call"], ELIDED);
+        let sent_goal = wire["goal"].as_str().unwrap();
+        assert!(sent_goal.len() < bounded.len() && sent_goal.starts_with("Objective: ooo"));
+    }
+
+    /// Records the request it reviews and answers `stop` with a reason.
+    struct Recording(std::sync::Mutex<Option<ReviewRequest>>);
+    impl ProgressReviewer for Recording {
+        fn review<'a>(
+            &'a self,
+            request: &'a ReviewRequest,
+            _: &'a CancellationToken,
+        ) -> BoxFuture<'a, ReviewOutcome> {
+            *self.0.lock().unwrap() = Some(request.clone());
+            Box::pin(async {
+                ReviewOutcome {
+                    decision: Review::Stop,
+                    reason: Some("same failure".into()),
+                }
+            })
+        }
+    }
+
+    type Replay = BoxFuture<'static, Result<Vec<crate::bus::event::EventEnvelope>, String>>;
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unread_ledger_leaves_the_review_and_its_outcome_unchanged() {
+        let cases: [(Option<Replay>, LedgerRead); 4] = [
+            (Some(Box::pin(std::future::pending())), LedgerRead::Timeout),
+            (
+                Some(Box::pin(async { Err("disk".into()) })),
+                LedgerRead::Error,
+            ),
+            (None, LedgerRead::NoSession),
+            (
+                Some(Box::pin(async { Ok(Vec::new()) })),
+                LedgerRead::Attached,
+            ),
+        ];
+        for (replay, read) in cases {
+            let reviewer = Recording(Default::default());
+            let review = review_session(
+                &reviewer,
+                evidence(),
+                &GoalLog::default(),
+                replay,
+                &CancellationToken::new(),
+            )
+            .await;
+            assert_eq!(review.ledger, read);
+            assert_eq!(
+                read.as_str(),
+                ["attached", "timeout", "error", "no_session"][[
+                    LedgerRead::Attached,
+                    LedgerRead::Timeout,
+                    LedgerRead::Error,
+                    LedgerRead::NoSession
+                ]
+                .iter()
+                .position(|r| *r == read)
+                .unwrap()]
+            );
+            assert_eq!(
+                review.outcome,
+                ReviewOutcome {
+                    decision: Review::Stop,
+                    reason: Some("same failure".into())
+                }
+            );
+            let seen = reviewer.0.lock().unwrap().clone().unwrap();
+            assert_eq!(seen.ledger.is_some(), read == LedgerRead::Attached);
+            assert_eq!(seen.evidence, evidence());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_ledger_read_counts_inside_the_review_deadline() {
+        struct Never;
+        impl ProgressReviewer for Never {
+            fn review<'a>(
+                &'a self,
+                _: &'a ReviewRequest,
+                _: &'a CancellationToken,
+            ) -> BoxFuture<'a, ReviewOutcome> {
+                Box::pin(std::future::pending())
+            }
+        }
+        let started = tokio::time::Instant::now();
+        let review = review_session(
+            &Never,
+            evidence(),
+            &GoalLog::default(),
+            Some(std::future::pending::<Result<Vec<_>, String>>()),
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(review.outcome, Review::AskCaptain.into());
+        assert_eq!(review.ledger, LedgerRead::Timeout);
+        assert_eq!(started.elapsed(), REVIEW_DEADLINE);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_turn_does_not_wait_for_the_ledger() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let reviewer = Recording(Default::default());
+        let started = tokio::time::Instant::now();
+        let review = review_session(
+            &reviewer,
+            evidence(),
+            &GoalLog::default(),
+            Some(std::future::pending::<Result<Vec<_>, String>>()),
+            &cancel,
+        )
+        .await;
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert_eq!(review.outcome, Review::AskCaptain.into());
+        assert_eq!(review.ledger, LedgerRead::Cancelled);
+        assert!(
+            reviewer.0.lock().unwrap().is_none(),
+            "no review after a cancel"
+        );
     }
 }

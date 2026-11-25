@@ -176,11 +176,12 @@ _Avoid_: stop (stop tears down the session)
 Root conversations have no default step cap. Their watchdog uses the same bounded observable
 evidence every 300 seconds (`agent.watchdog_interval_secs`; 0 disables), bound to the judged turn.
 `active` continues; `stuck` stops before the next provider request once every tool result is in.
-`doubt`, including two consecutive judge failures, gets one tool-free metacognition review with a
-20-second deadline. The review reads the Captain's active session goal and its numbered criteria
+`doubt`, including two consecutive judge failures, gets one tool-free metacognition review. Its
+20-second deadline covers reading the session ledger (at most 5 seconds; past that, or on a read
+error, the review goes on without it) and the model call together. The review reads the Captain's active session goal and its numbered criteria
 (else the Captain's last message), the session ledger digest, the timers, the step count and the
 last tool call and result, in one message of at most 4 KiB (the tool call and result are cut
-first), and answers `continue`, `stop` or `ask` within 256 output tokens, with an optional reason
+first, then the digest, the goal last), and answers `continue`, `stop` or `ask` within 256 output tokens, with an optional reason
 of at most 200 characters. The reason is logged and, when present, added to the stop notice
 (`data.reason`) or the held evidence (`review_reason`); it never changes the decision. Continue resumes with the remaining steps; stop settles the batch and stops; hesitation, invalid
 output, timeout or an unavailable reviewer pauses at that boundary and asks the Captain to Continue

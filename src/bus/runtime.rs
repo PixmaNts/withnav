@@ -143,7 +143,10 @@ pub struct RuntimeStatus {
     pub watchdog: watchdog::WatchdogPark,
     pub watchdog_goal: Mutex<String>,
     /// The session this runtime runs, set when it is spawned: the root watchdog reads the
-    /// session's stored events by it to give its reviewer the ledger.
+    /// session's stored events by it to give its reviewer the ledger. A status is per session:
+    /// the service builds one for each session runtime and shares it with that runtime's actor,
+    /// commands and supervisor, so a status given a second session would mix two sessions'
+    /// goals, holds and ledgers. See [`RuntimeStatus::record_session_id`].
     pub session_id: std::sync::OnceLock<Ulid>,
     /// The Captain's own messages of this session's transcript, as permission
     /// evidence (`captain_messages_with_cut`), refreshed at each turn start.
@@ -200,6 +203,17 @@ pub struct RuntimeStatus {
 }
 
 impl RuntimeStatus {
+    /// Records the session this status belongs to. The first id stays: a different one later is
+    /// a wiring error, warned about and ignored, so the watchdog keeps reading the session it
+    /// supervises. Returns whether `id` is the recorded session.
+    pub fn record_session_id(&self, id: Ulid) -> bool {
+        let recorded = *self.session_id.get_or_init(|| id);
+        if recorded != id {
+            tracing::warn!(%recorded, ignored = %id, "runtime status already belongs to another session");
+        }
+        recorded == id
+    }
+
     /// Why the runtime returned on its own, once [`Self::ended`] fired.
     /// `None` when it returned for a stop, or panicked.
     pub fn exit_cause(&self) -> Option<String> {
@@ -1173,7 +1187,7 @@ pub fn spawn_with_completion(
     completion: Option<CompletionHook>,
 ) -> tokio::task::JoinHandle<AgentActor> {
     status.init_ask(&actor);
-    let _ = status.session_id.set(session_id);
+    status.record_session_id(session_id);
     if let Some(secrets) = &actor.tool_context.secrets {
         let _ = status.secrets.set(secrets.clone());
     }
@@ -2323,6 +2337,19 @@ fn error_code(err: &AgentError) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_status_keeps_the_first_session_it_was_given() {
+        let status = super::RuntimeStatus::default();
+        let (first, other) = (ulid::Ulid::generate(), ulid::Ulid::generate());
+        assert!(status.record_session_id(first));
+        assert!(!status.record_session_id(other));
+        assert!(
+            status.record_session_id(first),
+            "the same session again is fine"
+        );
+        assert_eq!(status.session_id.get(), Some(&first));
+    }
+
     use super::*;
 
     /// A status parked on its step budget, as the runtime leaves it.

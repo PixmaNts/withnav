@@ -31,8 +31,9 @@ requests land in `develop`.
   the timers, the step count and the last tool call and result, in one message of at most 4 KiB
   (the last tool call and result are cut first). It answers within 256 output tokens instead of
   128 and may give a reason of at most 200 characters, which is logged and added to the stop notice
-  (`data.reason`) or the held evidence (`review_reason`). A timeout or an unavailable reviewer still
-  asks the Captain.
+  (`data.reason`) or the held evidence (`review_reason`). Reading the ledger (at most 5 seconds)
+  and the review share the review's 20-second deadline; a review without the ledger goes on as
+  before. A timeout or an unavailable reviewer still asks the Captain.
 
 ## [0.8.4] - 2026-11-24
 

@@ -554,3 +554,52 @@ fn sections(ledger: &SessionLedger) -> Vec<Section> {
         },
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A ledger whose digest is longer than [`MAX_DIGEST_BYTES`].
+    fn long_ledger() -> SessionLedger {
+        SessionLedger {
+            files_touched: (0..MAX_FILES_TOUCHED)
+                .map(|n| FileTouched {
+                    path: format!("src/{n}/{}.rs", "é".repeat(60)),
+                    changes: 1,
+                    last_turn: 1,
+                })
+                .collect(),
+            ..SessionLedger::default()
+        }
+    }
+
+    #[test]
+    fn a_zero_budget_gives_an_empty_digest() {
+        assert_eq!(digest_within(&long_ledger(), 0), "");
+        assert_eq!(digest_within(&SessionLedger::default(), 0), "");
+    }
+
+    #[test]
+    fn a_cut_inside_a_multi_byte_character_ends_before_it() {
+        let whole = digest(&SessionLedger::default());
+        // The summary line's first `·` takes two bytes; a budget ending inside it keeps the
+        // text before it.
+        let dot = whole.find('·').unwrap();
+        let cut = digest_within(&SessionLedger::default(), dot + 1);
+        assert_eq!(cut, whole[..dot]);
+    }
+
+    #[test]
+    fn a_budget_above_the_cap_is_held_to_it() {
+        let ledger = long_ledger();
+        let capped = digest_within(&ledger, 10 * MAX_DIGEST_BYTES);
+        assert!(capped.len() <= MAX_DIGEST_BYTES);
+        assert_eq!(capped, digest(&ledger));
+        assert!(
+            capped.contains(&format!(
+                "[files touched: {MAX_FILES_TOUCHED}, most recent first]"
+            )),
+            "items were dropped, the header kept"
+        );
+    }
+}

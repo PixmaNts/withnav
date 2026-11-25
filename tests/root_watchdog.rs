@@ -611,6 +611,13 @@ async fn one_review(
         .bounded(file!(), line!())
         .await
         .unwrap();
+    // The reviewer folds the stored events, which the store writes after they are streamed:
+    // wait until the turn's start is stored so the ledger it reads is fixed, not a race.
+    common::deadline::eventually("the stored turn.start", || async {
+        let events = service.history().replay(id, None, u64::MAX).await.unwrap();
+        events.iter().any(|e| e.kind == "turn.start").then_some(())
+    })
+    .await;
     let tick = sleeps.recv().bounded(file!(), line!()).await.unwrap();
     *clock.now.lock().unwrap() += Duration::from_secs(300);
     tick.send(()).unwrap();
@@ -639,7 +646,10 @@ async fn the_root_reviewer_reads_the_active_goal_and_the_session_ledger() {
         "Objective: ship the parser\n1. tests pass"
     );
     let ledger = request.ledger.as_ref().expect("the ledger was read");
-    assert_eq!(ledger.turns.count, 1, "the running turn is folded");
+    assert_eq!(
+        ledger.turns.count, 1,
+        "the running turn is folded: its start was stored before the check"
+    );
     assert_eq!(ledger.goal, None, "the goal field already carries it");
     let content = request.user_content();
     assert!(content.len() <= REVIEW_INPUT_BYTES);

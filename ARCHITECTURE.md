@@ -547,7 +547,15 @@ are checked before completion-only wakes. `subagent.spawned` and `subagent.done`
 consecutive-failure rule. The service installs one task per root runtime. It skips idle and human
 waits, checks the turn generation again after each model await, and submits a safe-boundary stop or
 doubt hold through `WatchdogPark`. A local mockable `ProgressReviewer` performs one tool-free
-metacognition call within 20 seconds; undecidable reviews ask the Captain. Notices reuse
+metacognition call; `review_session` reads the ledger (`LEDGER_READ_DEADLINE`, 10 s, cancelled with
+the supervisor) and runs the review in what is left of the 60-second `REVIEW_DEADLINE`, and logs
+whether the ledger was attached. Undecidable reviews ask the Captain. Its `ReviewRequest`
+carries the active session goal (else the last Captain message, `RuntimeStatus::watchdog_goal`)
+and the session ledger, folded from the stored events by `session/ledger.rs` through the
+`RuntimeStatus::session_id` the runtime records; `ReviewRequest::user_content` keeps the message
+within `REVIEW_INPUT_BYTES` (16 KiB) by cutting the last tool result, then the call, then the digest
+(`ledger::digest_within`), then the goal; each cut is strictly shorter and the loop is capped. The answer's optional `reason` is read apart from the decision,
+sanitized, logged, and attached to the stop notice or the held evidence. Notices reuse
 `command.result`; the runtime emits typed `agent.yield` at the final safe-boundary check after
 awaited delivery, snapshots settled tools and ends the paused turn. Hold identity is a session
 incarnation plus unique hold id. Continue consumes the matching token atomically and sequences

@@ -8,7 +8,7 @@ own model.
 |---|---|---|---|
 | Reflex | one model, editor only | `fim` | Inline completion as you type (Mercury in the example). |
 | Instinct | one model | `systemone` | Typed decisions and supervision: when to speak, the permission flow's questions, progress checks. |
-| Metacognition | one model | `chat` | Remarks beside your code, and the watchdog's doubts about a long turn. Prefers the `low` variant when the model offers one, otherwise the model's default. |
+| Metacognition | one model | `chat` | Remarks beside your code, and the watchdog's doubts about a long turn: the review reads your session goal (or your last message) and the session ledger, and may give a short reason. Reading the ledger and the review share one 60-second limit; past it, Nav asks you. Prefers the `low` variant when the model offers one, otherwise the model's default. |
 | Cognition | agents, each with its own role and model | `chat` | The agent loop you talk to. |
 
 ## Assign a model

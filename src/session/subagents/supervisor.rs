@@ -1,4 +1,5 @@
 use crate::layers::recorded::{Caller, Recorded};
+#[cfg(any(test, feature = "test-support"))]
 use crate::provider::systemone::DecisionModel;
 use std::sync::Arc;
 use std::time::Duration;

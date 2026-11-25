@@ -31,6 +31,8 @@ struct Fake {
     status: u16,
     invalid: bool,
     delay: Duration,
+    /// The error body; the default echoes a credential and a URL.
+    error_body: Option<String>,
 }
 impl Fake {
     async fn response_error(&self) -> Option<axum::response::Response> {
@@ -39,7 +41,9 @@ impl Fake {
         (self.status != 200).then(|| {
             (
                 StatusCode::from_u16(self.status).unwrap(),
-                format!("{SECRET} https://user:password@host/key"),
+                self.error_body
+                    .clone()
+                    .unwrap_or_else(|| format!("{SECRET} https://user:password@host/key")),
             )
                 .into_response()
         })
@@ -90,6 +94,14 @@ async fn server(
     invalid: bool,
     delay: Duration,
 ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+    server_with_error_body(status, invalid, delay, None).await
+}
+async fn server_with_error_body(
+    status: u16,
+    invalid: bool,
+    delay: Duration,
+    error_body: Option<String>,
+) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let calls = Arc::new(AtomicUsize::new(0));
@@ -103,6 +115,7 @@ async fn server(
             status,
             invalid,
             delay,
+            error_body,
         });
     let task = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -303,6 +316,65 @@ async fn invalid_missing_answers_and_http_errors_are_sanitized() {
         }
         task.abort();
     }
+}
+
+// A live check that only said "HTTP 400 rejected" left the Captain guessing
+// for days why every Instinct call failed (observed 2026-11-23..25, a model
+// reassigned to one the endpoint refused). The provider's reason is shown,
+// on one bounded line, with credentials and URLs still removed.
+#[tokio::test]
+async fn a_rejected_live_check_shows_the_providers_reason() {
+    let body = r#"{"error":{"message":"model one is not served by the systemone API\nsee https://user:password@host/docs"}}"#;
+    let (base, _, task) =
+        server_with_error_body(400, false, Duration::ZERO, Some(body.into())).await;
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), &base);
+    args.layer = Some(DoctorLayer::Instinct);
+    let report = inspect(&args, &config, None, None).await;
+    let result = check(&report, "live.instinct.editor");
+    assert_eq!(result.status, Status::Failed);
+    assert_eq!(result.category.as_deref(), Some("http_rejected"));
+    assert_eq!(
+        result.value,
+        "HTTP 400 rejected: model one is not served by the systemone API see [url omitted]"
+    );
+    assert_eq!(
+        result.hint.as_deref(),
+        Some("Check provider authentication, model id and API support.")
+    );
+    assert_eq!(report.exit_code(), 1);
+    task.abort();
+}
+
+// A credential near the end of the provider's reason must be removed before
+// the reason is cut: cutting first left a fragment ("secret-do…") that the
+// report-level redaction no longer recognized as the key.
+#[tokio::test]
+async fn a_credential_at_the_reason_cut_leaves_no_fragment() {
+    let body = format!("{} {SECRET}", "a".repeat(290));
+    let (base, _, task) = server_with_error_body(400, false, Duration::ZERO, Some(body)).await;
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), &base);
+    args.layer = Some(DoctorLayer::Instinct);
+    let report = inspect(&args, &config, None, None).await;
+    let result = check(&report, "live.instinct.editor");
+    assert_eq!(result.category.as_deref(), Some("http_rejected"));
+    assert!(
+        result
+            .value
+            .starts_with(&format!("HTTP 400 rejected: {}", "a".repeat(290))),
+        "{}",
+        result.value
+    );
+    let json = serde_json::to_string(&report).unwrap();
+    let chars: Vec<char> = SECRET.chars().collect();
+    for output in [report.human(), json] {
+        for window in chars.windows(8) {
+            let fragment: String = window.iter().collect();
+            assert!(!output.contains(&fragment), "{fragment:?} leaks: {output}");
+        }
+    }
+    task.abort();
 }
 
 #[tokio::test]

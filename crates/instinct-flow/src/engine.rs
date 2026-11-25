@@ -899,7 +899,7 @@ fn decision_failure(error: DecisionError) -> Failure {
         DecisionError::Timeout => FailureKind::Timeout,
         DecisionError::Cancelled => FailureKind::Cancelled,
         DecisionError::ProviderError
-        | DecisionError::ProviderRejected(_)
+        | DecisionError::ProviderRejected { .. }
         | DecisionError::ProviderStatus(_) => FailureKind::ProviderError,
         DecisionError::InvalidAnswer(_) => FailureKind::InvalidAnswer,
         DecisionError::Limit => FailureKind::Limit,

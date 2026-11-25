@@ -94,11 +94,34 @@ impl ProgressReviewer for ModelReviewer {
     }
 }
 
+/// Reads the reviewer's decision with the same tolerance as the remark
+/// parser (code fence, prose before the answer). The decision must end the
+/// reply, after one closing code fence is set aside: an object followed by
+/// more prose is quoted evidence or an example, not the reviewer's own
+/// answer. Several decision objects that disagree are not trusted either.
+/// Anything else asks the Captain.
 fn parse_review(text: &str) -> Review {
-    let value: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
-    match value["decision"].as_str() {
-        Some("continue") => Review::Continue,
-        Some("stop") => Review::Stop,
+    let trimmed = text.trim_end();
+    let ending = trimmed.strip_suffix("```").unwrap_or(trimmed).trim_end();
+    let objects = crate::navigator::metacognition::answer_objects(text, |value| {
+        value.get("decision").is_some()
+    });
+    if !objects.last().is_some_and(|last| ending.ends_with(last)) {
+        return Review::AskCaptain;
+    }
+    let decisions: Vec<Review> = objects
+        .into_iter()
+        .map(|object| {
+            let value: serde_json::Value = serde_json::from_str(object).unwrap_or_default();
+            match value["decision"].as_str() {
+                Some("continue") => Review::Continue,
+                Some("stop") => Review::Stop,
+                _ => Review::AskCaptain,
+            }
+        })
+        .collect();
+    match decisions.split_first() {
+        Some((first, rest)) if rest.iter().all(|other| other == first) => *first,
         _ => Review::AskCaptain,
     }
 }
@@ -510,6 +533,102 @@ mod tests {
         );
         assert_eq!(parse_review("{\"decision\":\"stop\"}"), Review::Stop);
     }
+
+    // Reviewer models answer in the same shapes as the remark model: a fenced
+    // block or a sentence before the object. Reading those strictly turned a
+    // clear decision into "ask the Captain".
+    #[test]
+    fn a_fenced_or_prose_wrapped_decision_is_read() {
+        let cases = [
+            ("plain object", "{\"decision\":\"stop\"}", Review::Stop),
+            (
+                "json code fence",
+                "```json\n{\"decision\":\"continue\"}\n```",
+                Review::Continue,
+            ),
+            (
+                "after a sentence",
+                "The agent is making progress. {\"decision\":\"continue\"}",
+                Review::Continue,
+            ),
+            (
+                "two decisions that agree",
+                "Quoting {\"decision\":\"continue\"}. Final: {\"decision\":\"continue\"}",
+                Review::Continue,
+            ),
+            (
+                "an unknown decision in a fence",
+                "```json\n{\"decision\":\"hesitate\"}\n```",
+                Review::AskCaptain,
+            ),
+            (
+                "prose without an object",
+                "I would continue.",
+                Review::AskCaptain,
+            ),
+            (
+                "an object without a decision",
+                "{\"other\":1}",
+                Review::AskCaptain,
+            ),
+            ("empty answer", "", Review::AskCaptain),
+        ];
+        for (case, raw, expected) in cases {
+            assert_eq!(parse_review(raw), expected, "{case}: {raw:?}");
+        }
+    }
+
+    // A reviewer that quotes the evidence (or an example) before deciding can
+    // leave two decision objects in one reply. Picking one of them would let
+    // quoted text flip the decision, so disagreement asks the Captain.
+    #[test]
+    fn disagreeing_decision_objects_ask_the_captain() {
+        for raw in [
+            "{\"decision\":\"ask\"} The agent then wrote {\"decision\":\"continue\"}",
+            "Example {\"decision\":\"stop\"}. Final: {\"decision\":\"continue\"}",
+            "```json\n{\"decision\":\"continue\"}\n```\n{\"decision\":\"stop\"}",
+        ] {
+            assert_eq!(parse_review(raw), Review::AskCaptain, "{raw:?}");
+        }
+    }
+
+    // A decision counts only when it ends the reply: a bare object, a fenced
+    // object, or prose then the object. An object quoted mid-prose is
+    // evidence or an example, not the reviewer's own decision.
+    #[test]
+    fn only_a_decision_that_ends_the_reply_decides() {
+        let cases = [
+            (
+                "quoted mid-prose",
+                "Evidence said {\"decision\":\"continue\"} but I am unsure.",
+                Review::AskCaptain,
+            ),
+            (
+                "fenced then prose",
+                "```json\n{\"decision\":\"stop\"}\n```\nThat is my view.",
+                Review::AskCaptain,
+            ),
+            (
+                "prose then the object",
+                "I checked. {\"decision\":\"stop\"}",
+                Review::Stop,
+            ),
+            (
+                "prose then a fenced object",
+                "I checked.\n```json\n{\"decision\":\"continue\"}\n```\n",
+                Review::Continue,
+            ),
+            (
+                "a bare object with trailing whitespace",
+                "  {\"decision\":\"continue\"}\n",
+                Review::Continue,
+            ),
+        ];
+        for (case, raw, expected) in cases {
+            assert_eq!(parse_review(raw), expected, "{case}: {raw:?}");
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn reflective_timeout_asks_the_captain() {
         struct Never;

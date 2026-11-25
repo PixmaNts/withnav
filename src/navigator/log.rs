@@ -5,7 +5,9 @@
 //! Record kinds:
 //! - `trigger`: one trigger with its pre-filter inputs/outcome, the pipeline
 //!   snapshot and instinct question/answer (when a pipeline ran), the
-//!   requested action and the delivered outcome.
+//!   requested action and the delivered outcome. On the flow path the
+//!   questions and answers live in the flow run records instead, and the
+//!   trigger names those runs (`flow_run_ids`).
 //! - `call`: one cost-relevant model call (layer, model, latency, tokens).
 //! - `reflex_shown`: the extension reporting when a suggestion was displayed.
 //! - `remark` / `silent` / `malformed` / `error` / `feedback`: the prototype
@@ -78,15 +80,16 @@ pub struct TriggerRecord<'a> {
     pub remark_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'a str>,
-    /// The cognition session a `wake_cognition` action targeted: set when
-    /// delivered `wake` or `wake_queued`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session: Option<&'a str>,
+    /// The flow runs this trigger started. Their run records
+    /// (`flows/runs/*/runs.jsonl`) hold the Instinct questions and answers;
+    /// the trigger names them instead of copying the answers twice.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    pub flow_run_ids: &'a [String],
 }
 
 /// What a trigger finally delivered. Each variant carries exactly the
 /// fields its terminal record has, so a caller cannot log a remark without
-/// an id or a wake without a session.
+/// an id.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeliveryOutcome {
     /// A remark was sent to the editor.
@@ -103,24 +106,18 @@ pub enum DeliveryOutcome {
     ProviderError { reason: Option<&'static str> },
     /// Nothing was delivered, for a stated reason.
     None { reason: &'static str },
-    /// A wake was posted to the cognition session.
-    Wake { session: String },
-    /// A wake was queued behind the cognition's pending `ask`.
-    WakeQueued { session: String },
 }
 
 impl DeliveryOutcome {
-    /// `delivered`, `remark_id`, `reason`, `session` of the record.
-    fn parts(&self) -> (&'static str, Option<&str>, Option<&str>, Option<&str>) {
+    /// `delivered`, `remark_id`, `reason` of the record.
+    fn parts(&self) -> (&'static str, Option<&str>, Option<&str>) {
         match self {
-            Self::Remark { remark_id } => ("remark", Some(remark_id), None, None),
-            Self::Silent { reason } => ("silent", None, *reason, None),
-            Self::Cancelled { reason } => ("cancelled", None, *reason, None),
-            Self::Malformed => ("malformed", None, None, None),
-            Self::ProviderError { reason } => ("provider_error", None, *reason, None),
-            Self::None { reason } => ("none", None, Some(reason), None),
-            Self::Wake { session } => ("wake", None, None, Some(session)),
-            Self::WakeQueued { session } => ("wake_queued", None, None, Some(session)),
+            Self::Remark { remark_id } => ("remark", Some(remark_id), None),
+            Self::Silent { reason } => ("silent", None, *reason),
+            Self::Cancelled { reason } => ("cancelled", None, *reason),
+            Self::Malformed => ("malformed", None, None),
+            Self::ProviderError { reason } => ("provider_error", None, *reason),
+            Self::None { reason } => ("none", None, Some(reason)),
         }
     }
 }
@@ -150,6 +147,8 @@ pub struct PendingTrigger {
     pub answers: Option<Value>,
     pub branch: Option<usize>,
     pub requested_action: Option<&'static str>,
+    /// The flow runs the trigger started, joined to their run records.
+    pub flow_run_ids: Vec<String>,
 }
 
 impl PendingTrigger {
@@ -180,12 +179,13 @@ impl PendingTrigger {
             answers: None,
             branch: None,
             requested_action: None,
+            flow_run_ids: Vec::new(),
         }
     }
 
     /// Writes the trigger's one terminal record.
     pub fn finish(self, log: &NavLog, outcome: DeliveryOutcome) {
-        let (delivered, remark_id, reason, session) = outcome.parts();
+        let (delivered, remark_id, reason) = outcome.parts();
         log.append(&LogRecord::Trigger(TriggerRecord {
             trigger_id: &self.trigger_id,
             run_id: &self.run_id,
@@ -209,7 +209,7 @@ impl PendingTrigger {
             delivered,
             remark_id,
             reason,
-            session,
+            flow_run_ids: &self.flow_run_ids,
         }));
     }
 }
@@ -365,7 +365,7 @@ mod tests {
             delivered: "remark",
             remark_id: Some("r1"),
             reason: None,
-            session: None,
+            flow_run_ids: &[],
         }));
         log.append(&LogRecord::Feedback {
             id: "r1",

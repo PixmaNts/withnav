@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! Configured MCP secrets never reach the provider, the event store or doctor output, in
 //! any of the representations a server can emit them in.
 use serde_json::json;
@@ -30,7 +31,11 @@ async fn escaped_secrets_never_reach_provider_events_or_store() {
     settings.set_dotted("yolo", json!(true));
     withnav::settings::save(&cfg.config_dir, &settings).unwrap();
     let history_db = cfg.history_db.clone();
-    let state = AppState::new(cfg).unwrap();
+    let state = AppState::new(
+        cfg,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .unwrap();
     wait_for("MCP discovery", || {
         state
             .service()

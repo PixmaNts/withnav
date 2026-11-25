@@ -159,6 +159,7 @@ fn network(
 async fn workspace(
     state: &AppState,
     query: &HashMap<String, String>,
+    headers: &HeaderMap,
 ) -> Result<PathBuf, StoreError> {
     let path = PathBuf::from(query.get("workspace").ok_or_else(invalid)?);
     if !path.is_absolute() {
@@ -170,18 +171,35 @@ async fn workspace(
     if !path.is_dir() {
         return Err(invalid());
     }
-    let launched = state.http.web.as_ref().is_some_and(|w| {
-        w.launch_workspaces
+    let caller_token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "));
+    let caller_launched = caller_token.is_some_and(|token| {
+        state
+            .pairing
+            .launch_workspaces(token)
             .iter()
             .any(|p| p.canonicalize().ok().as_ref() == Some(&path))
     });
+    let launched = caller_launched
+        || state.http.web.as_ref().is_some_and(|w| {
+            w.launch_workspaces
+                .iter()
+                .any(|p| p.canonicalize().ok().as_ref() == Some(&path))
+        });
     let known = state
         .history()
         .workspaces()
         .await
         .map_err(|_| StoreError::reason("io"))?
         .iter()
-        .any(|w| std::path::Path::new(&w.workspace) == path);
+        // A conversation saved under a symlinked spelling of the same directory counts: the
+        // browser lists it under its canonical form, so Studio must accept that form too.
+        .any(|w| {
+            let stored = std::path::Path::new(&w.workspace);
+            stored == path || stored.canonicalize().ok().as_ref() == Some(&path)
+        });
     if !launched && !known {
         return Err(StoreError::reason("forbidden"));
     }
@@ -197,7 +215,7 @@ async fn handle(
     body: &[u8],
 ) -> Result<(StatusCode, Value), StoreError> {
     network(state, headers, peer)?;
-    let workspace = workspace(state, query).await?;
+    let workspace = workspace(state, query, headers).await?;
     // A new workspace entry loads its flows and reads their validations from
     // the permission database: built on the blocking pool.
     let store = blocking({
@@ -439,19 +457,22 @@ mod tests {
         use tower::ServiceExt;
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().canonicalize().unwrap();
-        let state = AppState::new(super::super::ServerConfig {
-            bind: "127.0.0.1:8080".parse().unwrap(),
-            models_path: None,
-            config_dir: dir.path().join("config"),
-            allow_non_loopback: false,
-            bearer_token: None,
-            history_db: dir.path().join("history.db"),
-            data_dir: dir.path().join("data"),
-            rules_roots: Default::default(),
-            web: Some(super::super::WebConfig {
-                launch_workspaces: vec![workspace.clone()],
-            }),
-        })
+        let state = AppState::new(
+            super::super::ServerConfig {
+                bind: "127.0.0.1:8080".parse().unwrap(),
+                models_path: None,
+                config_dir: dir.path().join("config"),
+                allow_non_loopback: false,
+                bearer_token: None,
+                history_db: dir.path().join("history.db"),
+                data_dir: dir.path().join("data"),
+                rules_roots: Default::default(),
+                web: Some(super::super::WebConfig {
+                    launch_workspaces: vec![workspace.clone()],
+                }),
+            },
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
+        )
         .unwrap();
         state
             .flows
@@ -593,19 +614,22 @@ mod tests {
     async fn studio_documents_revisions_reload_and_network_policy() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().canonicalize().unwrap();
-        let state = AppState::new(super::super::ServerConfig {
-            bind: "127.0.0.1:8080".parse().unwrap(),
-            models_path: None,
-            config_dir: dir.path().join("config"),
-            allow_non_loopback: false,
-            bearer_token: None,
-            history_db: dir.path().join("history.db"),
-            data_dir: dir.path().join("data"),
-            rules_roots: Default::default(),
-            web: Some(super::super::WebConfig {
-                launch_workspaces: vec![workspace.clone()],
-            }),
-        })
+        let state = AppState::new(
+            super::super::ServerConfig {
+                bind: "127.0.0.1:8080".parse().unwrap(),
+                models_path: None,
+                config_dir: dir.path().join("config"),
+                allow_non_loopback: false,
+                bearer_token: None,
+                history_db: dir.path().join("history.db"),
+                data_dir: dir.path().join("data"),
+                rules_roots: Default::default(),
+                web: Some(super::super::WebConfig {
+                    launch_workspaces: vec![workspace.clone()],
+                }),
+            },
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
+        )
         .unwrap();
         let query = HashMap::from([("workspace".into(), workspace.to_string_lossy().into_owned())]);
         let mut headers = HeaderMap::new();

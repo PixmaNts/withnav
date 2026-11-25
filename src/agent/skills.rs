@@ -286,7 +286,7 @@ impl Skills {
 
 fn path_inside(path: &Path, root: &Path) -> bool {
     #[cfg(windows)]
-    return crate::tools::nofollow::path_within(path, root);
+    return crate::tools::win_path::path_within(path, root);
     #[cfg(unix)]
     path.starts_with(root)
 }
@@ -506,7 +506,7 @@ impl Walk {
         return self
             .roots
             .iter()
-            .any(|(root, _)| crate::tools::nofollow::path_within(path, root));
+            .any(|(root, _)| crate::tools::win_path::path_within(path, root));
         #[cfg(unix)]
         self.roots.iter().any(|(root, _)| path.starts_with(root))
     }
@@ -670,11 +670,11 @@ impl Walk {
                 #[cfg(windows)]
                 return winners
                     .values()
-                    .any(|s| crate::tools::nofollow::path_within(&s.base_dir, root))
+                    .any(|s| crate::tools::win_path::path_within(&s.base_dir, root))
                     || ambiguous
                         .values()
                         .flatten()
-                        .any(|p| crate::tools::nofollow::path_within(p, root));
+                        .any(|p| crate::tools::win_path::path_within(p, root));
                 #[cfg(unix)]
                 {
                     winners.values().any(|s| s.base_dir.starts_with(root))

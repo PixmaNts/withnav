@@ -82,9 +82,15 @@ class ConversationState {
   childRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   replayThrough: number | undefined;
   previousRunThrough: number = -1;
-  toolSummaries: Map<string, string> = new Map();
+  /** callId -> the turn the call started in, its name and summary. A tool's
+   * turn is fixed at `tool.pre_call`: a `turn.end` that settles the turn
+   * leaves these behind, and a session-end settlement must still find the
+   * original row. */
+  toolSummaries: Map<string, { turn: string; name: string; summary: string }> = new Map();
   toolArgs: Map<string, Record<string, unknown>> = new Map();
   toolEvidence: Map<string, NonNullable<Extract<HostToWebview, { type: "tool" }>["evidence"]>> = new Map();
+  /** Turn ids that started and never ended; drained by `session.end`. */
+  openTurns: Set<string> = new Set();
 }
 
 export class CognitionBackend implements ChatBackend {
@@ -543,6 +549,10 @@ export class CognitionBackend implements ChatBackend {
     return this.state.session ?? this.state.resumeId;
   }
 
+  currentIncarnation(): string | null {
+    return this.state.incarnation;
+  }
+
   async listConversations(): Promise<ConversationSummary[]> {
     // Before the first announcement there is nothing to list; the bootstrap
     // on the announcement pushes the real list.
@@ -758,6 +768,7 @@ export class CognitionBackend implements ChatBackend {
     if (!session || !this.endpoint) return undefined;
     const response = await fetch(`http://127.0.0.1:${this.endpoint.port}/v1/sessions/${encodeURIComponent(session)}/attachments/${encodeURIComponent(attachmentId)}`, {
       headers: { authorization: `Bearer ${this.endpoint.token}` },
+      redirect: "error",
     }).catch(() => undefined);
     const type = response?.headers.get("content-type") ?? "";
     if (!response?.ok || !type.startsWith("image/")) return undefined;
@@ -1166,6 +1177,7 @@ export class CognitionBackend implements ChatBackend {
     this.state.toolSummaries.clear();
     this.state.toolEvidence.clear();
     this.state.turnTextDelta.clear();
+    this.state.openTurns.clear();
     this.state.context = undefined;
     this.state.contextEpoch++;
     this.state.retiredIncarnations = [];
@@ -1204,7 +1216,7 @@ export class CognitionBackend implements ChatBackend {
       if (this.state.lastSeq !== undefined) headers["last-event-id"] = this.state.lastSeq;
       const response = await fetch(
         `http://127.0.0.1:${endpoint.port}/v1/sessions/${encodeURIComponent(session)}/events`,
-        { headers, signal: abort.signal },
+        { headers, signal: abort.signal, redirect: "error" },
       );
       if (!response.ok || !response.body) {
         throw new Error(`event stream: HTTP ${response.status}`);
@@ -1448,6 +1460,7 @@ export class CognitionBackend implements ChatBackend {
       const cursor = !cards.length ? this.state.childStateCursors.get(child) : undefined;
       const response = await fetch(`http://127.0.0.1:${endpoint.port}/v1/sessions/${encodeURIComponent(child)}/events`, {
         headers: { authorization: `Bearer ${endpoint.token}`, ...(cursor ? { "last-event-id": cursor } : {}) }, signal: abort.signal,
+        redirect: "error",
       });
       if (!response.ok || !response.body) return;
       reader = response.body.getReader();
@@ -1620,8 +1633,38 @@ export class CognitionBackend implements ChatBackend {
       if (this.state.bypassSeq < 0) this.state.bypassEvents.push({ seq: envelope.seq, enabled: false });
       else if (envelope.seq > this.state.bypassSeq) { this.state.bypass = false; this.state.bypassSeq = envelope.seq; this.state.incarnation = null; this.publishBypass(); }
       if (this.state.compaction?.pending) { this.state.compaction = { ...this.state.compaction, pending: false, ok: false, text: "Compaction stopped with the conversation." }; this.publishCompaction(); }
+      const hadPendingModel = this.state.pendingModel !== undefined;
       this.state.pendingModel = undefined;
-      this.emit({ type: "modelPending" });
+      if (hadPendingModel) this.emit({ type: "modelPending" });
+      // An isolated session.end (a resync replay, a capture that lost the
+      // server's own closing events) must settle what it interrupts, like the
+      // other clients: open permissions are cancelled, running tool calls and
+      // unclosed turns end interrupted, the conversation stops. Settled rows
+      // keep what the stream said.
+      // Open permission cards settle cancelled — including delegated child
+      // permissions: the root's teardown closes the children too, and an
+      // isolated root end must not leave their cards answerable.
+      const openPermissions = [...this.state.controls.permissions.values()]
+        .map(card => card.requestId);
+      for (const requestId of openPermissions) {
+        this.emit({ type: "permissionState", requestId, resolution: "cancelled" });
+      }
+      const openCalls = [...this.state.toolSummaries.entries()];
+      for (const [callId, call] of openCalls) {
+        this.state.toolSummaries.delete(callId);
+        this.state.toolArgs.delete(callId);
+        const evidence = this.state.toolEvidence.get(callId);
+        this.state.toolEvidence.delete(callId);
+        this.emit({ type: "tool", id: call.turn, callId, phase: "end", name: call.name, summary: call.summary, interrupted: true, ...(evidence ? { evidence } : {}) });
+      }
+      const openTurns = [...this.state.openTurns];
+      this.state.openTurns.clear();
+      this.state.turnTextDelta.clear();
+      for (const turn of openTurns) {
+        this.emit({ type: "turnEnd", id: turn, outcome: "stopped" });
+      }
+      this.state.currentTurn = undefined;
+      this.emit({ type: "status", state: "ready" });
     }
     if (envelope.kind === "command.result") {
       this.settleCommand(payload, envelope.seq);
@@ -1669,6 +1712,7 @@ export class CognitionBackend implements ChatBackend {
         return undefined;
       case "turn.start": {
         this.state.currentTurn = String(payload.turn_id ?? envelope.seq);
+        this.state.openTurns.add(this.state.currentTurn);
         this.emit({ type: "status", state: "busy" });
         return { type: "turnStart", id: this.state.currentTurn };
       }
@@ -1687,13 +1731,18 @@ export class CognitionBackend implements ChatBackend {
       }
       case "llm.response": {
         // During a history replay no `llm.delta` arrives: a turn that got
-        // no live text renders its final message as one delta. Live steps
-        // (flagged above) must not be duplicated.
+        // no live text renders its final message as one delta. A step that
+        // streamed live text gets the final text as a replacement instead:
+        // `llm.delta` is never stored, so a stream reconnect mid-answer
+        // replays only this event and the deltas after the gap are lost.
         const id = String(payload.turn_id ?? this.state.currentTurn ?? envelope.seq);
+        const stepId = String(payload.step_id ?? "");
         const message = payload.message ?? {};
         const text = typeof message.text === "string" ? message.text : "";
         const thinking = typeof message.thinking === "string" ? message.thinking : "";
-        if (this.state.turnTextDelta.has(`${id}:${String(payload.step_id ?? "")}`)) return undefined;
+        if (this.state.turnTextDelta.delete(`${id}:${stepId}`)) {
+          return text ? { type: "text", id, stepId, text } : undefined;
+        }
         if (!text && !thinking) return undefined;
         if (thinking) this.emit({ type: "reasoning", id, stepId: String(payload.step_id ?? ""), text: thinking });
         return text ? { type: "delta", id, stepId: String(payload.step_id ?? ""), text } : undefined;
@@ -1703,7 +1752,7 @@ export class CognitionBackend implements ChatBackend {
         const callId = String(payload.tool_call_id ?? envelope.seq);
         const name = String(payload.name ?? "tool");
         const summary = toolSummary(name, payload.args);
-        this.state.toolSummaries.set(callId, summary);
+        this.state.toolSummaries.set(callId, { turn: id, name, summary });
         if (payload.args && typeof payload.args === "object") {
           this.state.toolArgs.set(callId, payload.args as Record<string, unknown>);
         }
@@ -1712,12 +1761,14 @@ export class CognitionBackend implements ChatBackend {
         return { type: "tool", id, callId, phase: "start", name, summary, evidence };
       }
       case "tool.post_call": {
-        const id = this.state.currentTurn ?? String(envelope.seq);
         const callId = String(payload.tool_call_id ?? envelope.seq);
         const name = String(payload.name ?? "tool");
         // The post_call payload carries no args: reuse the pre_call summary
-        // so the finished row keeps saying what was touched.
-        const summary = toolSummary(name, undefined, this.state.toolSummaries.get(callId));
+        // so the finished row keeps saying what was touched. The row keeps
+        // the turn it started in even after the turn pointer moved on.
+        const held = this.state.toolSummaries.get(callId);
+        const id = held?.turn ?? this.state.currentTurn ?? String(envelope.seq);
+        const summary = toolSummary(name, undefined, held?.summary);
         this.state.toolSummaries.delete(callId);
         const args = this.state.toolArgs.get(callId);
         this.state.toolArgs.delete(callId);
@@ -1744,7 +1795,12 @@ export class CognitionBackend implements ChatBackend {
           phase: "end",
           name,
           summary: shown,
-          ok: payload.status === "ok",
+          // A call the server settled as interrupted is not a failure: the
+          // row shows the interruption, and group summaries do not count it
+          // as failed.
+          ...(payload.status === "interrupted"
+            ? { interrupted: true }
+            : { ok: payload.status === "ok" }),
           evidence,
           images: imageRefs(payload.metadata?.images),
         };
@@ -1759,6 +1815,7 @@ export class CognitionBackend implements ChatBackend {
       }
       case "turn.end": {
         const id = String(payload.turn_id ?? this.state.currentTurn ?? envelope.seq);
+        this.state.openTurns.delete(id);
         const outcome =
           payload.outcome === "interrupted"
             ? "stopped"
@@ -1771,6 +1828,7 @@ export class CognitionBackend implements ChatBackend {
             : undefined;
         const message: HostToWebview = { type: "turnEnd", id, outcome };
         if (error !== undefined) (message as any).error = error;
+        for (const key of this.state.turnTextDelta) if (key.startsWith(`${id}:`)) this.state.turnTextDelta.delete(key);
         this.state.currentTurn = undefined;
         this.emit({ type: "status", state: outcome === "error" ? "error" : "ready" });
         return message;
@@ -1853,6 +1911,7 @@ export class CognitionBackend implements ChatBackend {
           "content-type": "application/json",
           ...init.headers,
         },
+        redirect: "error",
       });
     } catch (error) {
       check();

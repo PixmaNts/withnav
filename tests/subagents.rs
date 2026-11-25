@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! Background child session ownership, tool policy and durable notices.
 
 use std::path::{Path, PathBuf};
@@ -695,6 +696,7 @@ fn fixture_at(provider_url: &str) -> Fx {
         TestServerConfig::mock(&root, provider_url)
             .chat_tools(128_000)
             .config(),
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
     )
     .unwrap();
     Fx {
@@ -796,12 +798,6 @@ async fn a_writable_childs_unruled_call_asks_and_is_routed_to_its_parent() {
 }
 
 async fn events(fx: &Fx, id: ulid::Ulid) -> Vec<withnav::bus::event::EventEnvelope> {
-    fx.state
-        .history()
-        .flush()
-        .bounded(file!(), line!())
-        .await
-        .unwrap();
     match fx
         .state
         .subscribe(id, None)
@@ -1082,8 +1078,9 @@ async fn child_policy_depth_metadata_and_terminal_notices() {
             .bounded(file!(), line!())
             .await
             .unwrap()
-            .agent,
-        "vigie"
+            .agent
+            .as_deref(),
+        Some("vigie")
     );
     fx.state
         .close_session(child)
@@ -1147,8 +1144,9 @@ async fn filtered_agent_declared_false_tool_is_removed() {
             .bounded(file!(), line!())
             .await
             .unwrap()
-            .agent,
-        "filtered"
+            .agent
+            .as_deref(),
+        Some("filtered")
     );
     fx.state
         .close_session(child)
@@ -1687,8 +1685,9 @@ async fn full_access_child_of_plan_parent_has_no_write_dispatch() {
             .bounded(file!(), line!())
             .await
             .unwrap()
-            .agent,
-        "writer"
+            .agent
+            .as_deref(),
+        Some("writer")
     );
 }
 
@@ -2071,7 +2070,7 @@ async fn failed_durable_toggle_enables_nothing_in_the_tree() {
 }
 
 #[tokio::test]
-async fn a_bypass_commit_reports_its_own_append_not_an_earlier_poisoned_write() {
+async fn a_bypass_commit_reports_its_own_append_not_an_earlier_failed_write() {
     let provider = common::sse::spawn_streaming_provider()
         .bounded(file!(), line!())
         .await;
@@ -2082,18 +2081,24 @@ async fn a_bypass_commit_reports_its_own_append_not_an_earlier_poisoned_write() 
         .bounded(file!(), line!())
         .await
         .unwrap();
-    // An earlier fire-and-forget write for an unknown session poisons flush.
+    // An earlier write for an unknown session fails on its own and must not
+    // affect any later write of the store.
     let stray = ulid::Ulid::generate();
-    fx.state.history().append_event(
-        stray,
-        withnav::bus::event::EventEnvelope::new(
-            stray,
-            0,
-            withnav::bus::event::EventKind::SessionStart,
-            json!({}),
-        ),
+    assert!(
+        fx.state
+            .history()
+            .append_event_acked(
+                stray,
+                withnav::bus::event::EventEnvelope::new(
+                    stray,
+                    0,
+                    withnav::bus::event::EventKind::SessionStart,
+                    json!({}),
+                ),
+            )
+            .await
+            .is_err()
     );
-    assert!(fx.state.history().flush().await.is_err());
     let first = fx
         .state
         .set_bypass(id, true, withnav::bus::runtime::bypass::BypassOrigin::Http)

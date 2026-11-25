@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use withnav::bus::ResumeOutcome;
 use withnav::session::Service;
+use withnav_provider::openai::ClientCache;
 
 mod common;
 use common::server::TestServerConfig;
@@ -18,8 +19,11 @@ async fn service_create_without_http_emits_start_zero() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
-        .expect("service");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(ClientCache::new()),
+    )
+    .expect("service");
 
     let id = service
         .create_session(&ws, None, false)
@@ -53,8 +57,11 @@ async fn service_send_rejects_invalid_content_without_event() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
-        .expect("service");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(ClientCache::new()),
+    )
+    .expect("service");
     let id = service
         .create_session(&ws, None, false)
         .await
@@ -196,6 +203,123 @@ async fn service_subscription_matches_http_replay() {
     ));
 }
 
+// Given a session that ran a turn, was stopped, was resumed to run another
+//      turn, and was stopped again
+// When its history is replayed, live and then stored
+// Then the live replay shows both turns with no `session.end` at all, and
+//      the stored replay shows the full history with exactly one
+//      `session.end`, in last position. A resume continues the same
+//      sequence space, so the first stop's end sits mid-history in the
+//      store; a client that ends reading on `session.end` must not have it
+//      truncate the replay there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stored_replay_of_a_resumed_session_hides_intermediate_session_end() {
+    use common::server::{TestServer, create_session, post_message_ok};
+    use common::sse::{http_sse, sse_body};
+
+    async fn stop(server: &common::server::TestServer, id: ulid::Ulid) {
+        let stop = reqwest::Client::new()
+            .post(format!("{}/v1/sessions/{id}/stop", server.base))
+            .send()
+            .await
+            .expect("stop");
+        assert_eq!(stop.status(), 200);
+    }
+
+    let done = r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}"#;
+    let server = TestServer::start(vec![
+        http_sse(&sse_body(&[done])),
+        http_sse(&sse_body(&[done])),
+    ])
+    .await;
+    let id: ulid::Ulid = create_session(&server.base, &server.ws)
+        .await
+        .parse()
+        .expect("ulid");
+
+    // First turn.
+    post_message_ok(&server.base, &id.to_string(), "go").await;
+    let mut replay = service_replay(&server, id).await;
+    for _ in 0..100 {
+        if replay.iter().any(|e| e.kind == "turn.end") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        replay = service_replay(&server, id).await;
+    }
+    assert!(replay.iter().any(|e| e.kind == "turn.end"), "{replay:?}");
+
+    // First stop: the stored replay ends with the stop's `session.end`.
+    stop(&server, id).await;
+    let stopped_sub = server.state.subscribe(id, None).await.expect("subscribe");
+    assert!(
+        stopped_sub.live.is_none(),
+        "a stopped session has no live receiver"
+    );
+    let first_stop = service_replay(&server, id).await;
+    assert_eq!(
+        first_stop.last().map(|e| e.kind.as_str()),
+        Some("session.end"),
+        "a stopped session's replay ends with session.end: {first_stop:?}"
+    );
+
+    // Resume the same id: same sequence space, new runtime.
+    let (resumed, _) = server
+        .state
+        .create_or_resume_session(&server.ws, None, false, Some(id))
+        .await
+        .expect("resume");
+
+    // Second turn.
+    post_message_ok(&server.base, &resumed.to_string(), "go again").await;
+    let mut live_replay = service_replay(&server, id).await;
+    for _ in 0..100 {
+        if live_replay.iter().filter(|e| e.kind == "turn.end").count() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        live_replay = service_replay(&server, id).await;
+    }
+    assert_eq!(
+        live_replay.iter().filter(|e| e.kind == "turn.end").count(),
+        2,
+        "both turns replay while live: {live_replay:?}"
+    );
+
+    // While live, no `session.end` at all — not even the stale one the
+    // first stop left mid-history.
+    assert!(
+        !live_replay.iter().any(|e| e.kind == "session.end"),
+        "a live resumed session's replay carries no session.end: {live_replay:?}"
+    );
+
+    // Stop again: the stored replay holds the full history, exactly one
+    // `session.end` in last position, with strictly increasing seqs (the
+    // gap marks the hidden stale end).
+    stop(&server, id).await;
+    let final_replay = service_replay(&server, id).await;
+    let ends: Vec<usize> = final_replay
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.kind == "session.end")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        ends,
+        vec![final_replay.len() - 1],
+        "exactly one trailing session.end: {final_replay:?}"
+    );
+    assert_eq!(
+        final_replay.iter().filter(|e| e.kind == "turn.end").count(),
+        2,
+        "the full history survives the intermediate session.end: {final_replay:?}"
+    );
+    assert!(
+        final_replay.windows(2).all(|w| w[1].seq > w[0].seq),
+        "seqs increase, with a gap where the stale end was hidden: {final_replay:?}"
+    );
+}
+
 // Given a persisted session created through the Service
 // When it is deleted through the Service
 // Then it is gone from `list(workspace)`, `send` answers not-found, and
@@ -213,7 +337,7 @@ async fn service_delete_removes_listing_and_routing() {
         .config()
         .split()
         .0;
-    let service = Service::new(config).expect("service");
+    let service = Service::new(config, std::sync::Arc::new(ClientCache::new())).expect("service");
     let ws_str = ws.display().to_string();
 
     let id = service
@@ -271,7 +395,7 @@ async fn service_construction_fails_on_an_unopenable_history_db() {
         .split()
         .0;
 
-    let result = Service::new(config);
+    let result = Service::new(config, std::sync::Arc::new(ClientCache::new()));
     assert!(matches!(result, Err(ServerError::History(_))));
 }
 
@@ -327,6 +451,7 @@ async fn concurrent_resume_stop_delete_never_creates_two_runtimes() {
     let service = Service::with_hooks(
         TestServerConfig::unreachable(tmp.path()).config().split().0,
         std::sync::Arc::new(hooks.clone()),
+        std::sync::Arc::new(ClientCache::new()),
     )
     .expect("service");
 
@@ -449,8 +574,11 @@ async fn service_send_refuses_a_foreign_session_image_before_sequencing() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
-        .expect("service");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(ClientCache::new()),
+    )
+    .expect("service");
 
     let a = service.create_session(&ws, None, false).await.expect("A");
     let b = service.create_session(&ws, None, false).await.expect("B");
@@ -509,8 +637,11 @@ async fn service_send_refuses_an_unknown_attachment_id_before_sequencing() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("ws");
     std::fs::create_dir_all(&ws).expect("workspace");
-    let service = Service::new(TestServerConfig::unreachable(tmp.path()).config().split().0)
-        .expect("service");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(ClientCache::new()),
+    )
+    .expect("service");
 
     let a = service.create_session(&ws, None, false).await.expect("A");
 
@@ -529,4 +660,88 @@ async fn service_send_refuses_an_unknown_attachment_id_before_sequencing() {
         "nothing was sequenced for the refused message"
     );
     service.close_all().await;
+}
+
+// Given two live root sessions on one Service and history database
+// When one session's stored row disappears, so its next history write fails
+// Then that session's message is refused with the write error and the session
+//      ends with a `session.end` that names the failure, while the other
+//      session keeps accepting messages: a failed write ends only its own
+//      conversation
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_history_write_ends_only_its_own_session() {
+    use withnav::bus::command::{Command, ContentBlock, DeliveryMode};
+    use withnav::error::ServerError;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("workspace");
+    let service = Service::new(
+        TestServerConfig::unreachable(tmp.path()).config().split().0,
+        std::sync::Arc::new(ClientCache::new()),
+    )
+    .expect("service");
+    let broken = service
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
+    let healthy = service
+        .create_session(&ws, None, false)
+        .await
+        .expect("create");
+    let mut broken_live = service
+        .subscribe(broken, None)
+        .await
+        .expect("subscribe")
+        .live
+        .take()
+        .expect("live receiver");
+
+    let db = rusqlite::Connection::open(tmp.path().join("history.db")).expect("open history db");
+    db.execute(
+        "DELETE FROM events WHERE session_id = ?1",
+        [broken.to_string()],
+    )
+    .expect("delete events");
+    db.execute("DELETE FROM sessions WHERE id = ?1", [broken.to_string()])
+        .expect("delete row");
+
+    let message = |session_id| Command {
+        command_id: ulid::Ulid::generate(),
+        session_id,
+        source_actor_id: "user:test".to_string(),
+        target_actor_id: "agent:main".to_string(),
+        mode: DeliveryMode::NextTurn,
+        content: vec![ContentBlock::Text {
+            text: "hello".to_string(),
+        }],
+        created_at: std::time::SystemTime::now(),
+    };
+
+    let refused = service.send(message(broken)).await;
+    assert!(
+        matches!(&refused, Err(ServerError::History(why)) if why.contains("no stored session")),
+        "{refused:?}"
+    );
+    let end = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = broken_live.recv().await.expect("stream open until the end");
+            if event.kind.as_str() == "session.end" {
+                return event;
+            }
+            assert_ne!(event.kind.as_str(), "message.received", "never shown");
+        }
+    })
+    .await
+    .expect("session.end arrives");
+    let reason = end.payload["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("history write failed") && reason.contains("no stored session"),
+        "{reason}"
+    );
+
+    service
+        .send(message(healthy))
+        .await
+        .expect("the other session still accepts messages");
 }

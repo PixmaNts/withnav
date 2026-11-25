@@ -234,6 +234,7 @@ fn input<'a>(
         catalog: None,
         max_message_tokens: None,
         progress: None,
+        client_cache: Arc::new(ClientCache::new()),
     }
 }
 

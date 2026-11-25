@@ -63,7 +63,11 @@ async fn live_server_edit_and_test_through_the_bus() {
         rules_roots: Default::default(),
         web: None,
     };
-    let state = AppState::new(config).expect("state");
+    let state = AppState::new(
+        config,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .expect("state");
     let (addr, server_task) = spawn_server(state).await;
     let base = format!("http://{addr}");
 

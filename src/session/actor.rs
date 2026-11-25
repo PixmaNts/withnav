@@ -2,6 +2,7 @@
 //! the tool registry and the `session.start` candidate.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
@@ -31,9 +32,18 @@ pub(super) fn build_actor(
     api_key: String,
     cancel: CancellationToken,
     mcp: &[crate::mcp::McpTool],
+    client_cache: Arc<crate::provider::openai::ClientCache>,
 ) -> AgentActor {
     build_actor_with_policy(
-        workspace, config_dir, resolved, api_key, cancel, None, false, mcp,
+        workspace,
+        config_dir,
+        resolved,
+        api_key,
+        cancel,
+        None,
+        false,
+        mcp,
+        client_cache,
     )
 }
 
@@ -47,6 +57,7 @@ pub(super) fn build_child_actor(
     allowed_tools: std::collections::BTreeMap<String, bool>,
     read_only: bool,
     mcp: &[crate::mcp::McpTool],
+    client_cache: Arc<crate::provider::openai::ClientCache>,
 ) -> AgentActor {
     build_actor_with_policy(
         workspace,
@@ -57,6 +68,7 @@ pub(super) fn build_child_actor(
         Some(allowed_tools),
         read_only,
         mcp,
+        client_cache,
     )
 }
 
@@ -70,6 +82,7 @@ fn build_actor_with_policy(
     allowed_tools: Option<std::collections::BTreeMap<String, bool>>,
     read_only: bool,
     mcp: &[crate::mcp::McpTool],
+    client_cache: Arc<crate::provider::openai::ClientCache>,
 ) -> AgentActor {
     let tool_context = ToolContext {
         secrets: None,
@@ -89,6 +102,7 @@ fn build_actor_with_policy(
         resolved.model.reasoning_history,
         resolved.model.max_output_tokens,
         cancel,
+        client_cache,
     );
     actor.compaction_max_message_tokens = max_message_tokens;
     actor.images = images;

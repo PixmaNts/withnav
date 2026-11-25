@@ -240,7 +240,7 @@ impl AgentDefinition {
             .map_err(|e| e.to_string())?
             .join(".withnav/charts");
         #[cfg(windows)]
-        let inside = crate::tools::nofollow::path_within(&resolved, &root);
+        let inside = crate::tools::win_path::path_within(&resolved, &root);
         #[cfg(unix)]
         let inside = resolved.starts_with(&root);
         if !inside

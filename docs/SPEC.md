@@ -602,12 +602,12 @@ Output of every tool is bounded to 64 KiB, with the original size in the result 
 
 - Paths are checked against roots. `write`, `edit` and `bash` may change files under the workspace and the WithNav config directory. `read` and `grep` also accept the read-only roots, which are the skill directories. Path traversal outside the roots is refused.
 - `bash` is not sandboxed. It runs with the operator's OS permissions.
-- An allowed `write` or `edit` is bound to the canonical pathname it was decided for and opened without following any link (`src/tools/nofollow.rs`: `openat2` with `RESOLVE_NO_SYMLINKS`, else a component-by-component `O_NOFOLLOW` walk). A link put in the destination after the decision is refused and the call is decided again.
+- An allowed `write` or `edit` runs once on the canonical pathname it was decided for, with ordinary file operations (atomic replace through a temporary file and a rename). A target changed after the decision is not decided again: symlink races are out of scope (ADR 0015).
 - Tool denial is a structured tool result, so the model can recover. Tool errors never crash the agent actor.
 
 ### 9.4 Permission Decision
 
-Every tool call is decided before it runs, in a fixed order: yolo, the fixed floor (credentials, WithNav's own configuration and database), free reads inside the project, the Captain's rules (a `deny` stops the call), bypass, the permission flow, then the Captain. See ADR 0015.
+Every tool call is decided before it runs, in a fixed order: yolo, the fixed floor (credentials, WithNav's own configuration and database), free reads inside the project, the Captain's rules (a `deny` stops the call), bypass, an `allow` rule on a call other than `bash` (the call runs), the permission flow, then the Captain. See ADR 0015.
 
 - A call that needs the Captain does not run. The turn yields and the server publishes a durable `permission.requested`, with `always_label` when an "Always" answer can save a rule.
 - The Captain answers with `POST /v1/sessions/{id}/permissions/{request_id}`: `allow_once`, `allow_always` or `reject` with an optional message. Older answers still parse: `allow_folder` and `allow_config_session` count as `allow_once`, `deny` as `reject`. Chat text never approves a request: a message sent while a request waits cancels it.
@@ -1430,8 +1430,8 @@ If the co-agent rewrites a user prompt:
 
 ### 17.1 Model
 
-- One database per user: `<data dir>/withnav.db` (`~/.local/share/withnav/withnav.db` on Linux). WAL mode. One dedicated writer thread owns the connection and is fed by a channel; reads open their own connection. The sequencer never waits on SQLite.
-- Every write is one transaction: an event insert and the `last_seq` bump commit together or not at all. A failed write is remembered until `flush`, which is also a barrier.
+- One database per user: `<data dir>/withnav.db` (`~/.local/share/withnav/withnav.db` on Linux). WAL mode. One dedicated writer thread owns the connection and is fed by a channel; reads open their own connection. Every durable event is stored before it is shown to clients: the sequencer awaits its write, then emits it.
+- Every write is one transaction: an event insert and the `last_seq` bump commit together or not at all. Every write is acknowledged and reports its own failure. A failed event write ends only its own session, with a `session.end` whose reason names the failure; the stream keeps no gap.
 - The events table is the log clients replay. The `transcript` column holds the model-facing messages. A resume rebuilds the actor from the transcript (and the checkpoint) and replays the events to the client. The transcript is not rebuilt from events.
 
 Tables:
@@ -1610,12 +1610,12 @@ Version 0.1 is a personal local service.
 Defaults:
 
 ```text
-bind = 127.0.0.1:7310        (nav serve --bind)
+bind = 127.0.0.1:<port>      (nav serve --port, default any free port)
 ```
 
-A non-loopback bind is refused unless `--allow-non-loopback` is given, and even then there is no TLS. Operators exposing it remotely are responsible for an authenticated reverse proxy or private network.
+A non-loopback bind is refused.
 
-When the server is started with a bearer token, every route except `GET /v1/health` needs `Authorization: Bearer <token>`. `nav tui` starts a private server with a random per-process token, and `nav lsp` does the same for the editor. A client reaches a running server with `nav tui --url`, and gives the token in `WITHNAV_SERVER_TOKEN`. `nav serve` itself starts without a token.
+`nav serve` is the one owner of the database and always has a token, written with its port to an owner-only `<data dir>/server/owner.json`. Every route except the public ones (`GET /v1/health`, `GET /v1/hello`, `POST /v1/pair/exchange`, the web assets and the single-use MCP app document) needs `Authorization: Bearer <token>` or a browser credential; `POST /v1/shutdown`, `POST /v1/pair` and `GET /v1/lsp` accept the owner token only. A request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>` gets 421, a foreign or `null` `Origin` gets 403, and after a shutdown is accepted every route except health and hello answers 503. Clients (`nav lsp`, `nav tui`, `nav web`, `nav run`) start or find that owner and read the token from the record after checking the owner's proof; `nav tui --url` reaches another server with the token in `WITHNAV_SERVER_TOKEN`.
 
 ### 20.2 HTTP API
 
@@ -2021,7 +2021,7 @@ nav/
 │   │                          instructions (rules), skills, definitions (agents), selection
 │   ├── bus/                   sequencer, event catalog, commands, inboxes, runtime task
 │   ├── provider/              models.json, auth, catalog, chat client, SSE, FIM, System One
-│   ├── tools/                 read, write, edit, bash, grep, glob, fetch, ask, no-follow open
+│   ├── tools/                 read, write, edit, bash, grep, glob, fetch, ask
 │   ├── session/               service, commands, store (SQLite), lifecycle, hooks, subagents
 │   ├── permission/            rules, decision history, validations, shell splitting, fixed floor, decision order
 │   ├── flows/                 flow store, runtime, built-in flows, run records

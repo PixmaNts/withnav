@@ -19,9 +19,22 @@ async fn get(
     uri: &str,
     token: bool,
 ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let auth = if token {
+        Some(format!("Bearer {TOKEN}"))
+    } else {
+        None
+    };
+    get_with_auth(state, uri, auth.as_deref()).await
+}
+
+async fn get_with_auth(
+    state: &AppState,
+    uri: &str,
+    auth_header: Option<&str>,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
     let mut request = Request::builder().method("GET").uri(uri);
-    if token {
-        request = request.header("authorization", format!("Bearer {TOKEN}"));
+    if let Some(auth) = auth_header {
+        request = request.header("authorization", auth);
     }
     let response = app(state.clone())
         .oneshot(request.body(Body::empty()).expect("request"))
@@ -36,6 +49,34 @@ async fn get(
         .expect("body")
         .to_bytes();
     (status, headers, body.to_vec())
+}
+
+async fn post_json(
+    state: &AppState,
+    uri: &str,
+    body: Value,
+    auth_header: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json");
+    if let Some(auth) = auth_header {
+        request = request.header("authorization", auth);
+    }
+    let response = app(state.clone())
+        .oneshot(request.body(Body::from(body.to_string())).expect("request"))
+        .await
+        .expect("infallible");
+    let status = response.status();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let json_body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json_body)
 }
 
 async fn get_json(state: &AppState, uri: &str) -> (StatusCode, Value) {
@@ -196,15 +237,36 @@ async fn workspaces_list_launched_first_then_history_and_skip_missing() {
     for dir in [&launched_a, &launched_b, &history, &gone] {
         std::fs::create_dir_all(dir).expect("workspace dir");
     }
-    let state = web_state(&root, vec![launched_b.clone(), launched_a.clone()]);
+    let state = TestServerConfig::unreachable(&root).web(vec![]).state();
     create_session(&state, &history).await;
     create_session(&state, &history).await;
     create_session(&state, &gone).await;
     create_session(&state, &launched_a).await;
     std::fs::remove_dir_all(&gone).expect("remove workspace");
 
-    let (status, body) = get_json(&state, "/v1/workspaces").await;
+    let (status, resp) = post_json(
+        &state,
+        "/v1/pair",
+        json!({ "workspaces": [launched_b.to_str().unwrap(), launched_a.to_str().unwrap()] }),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
+    let code = resp["code"].as_str().expect("code");
+
+    let (status, resp) =
+        post_json(&state, "/v1/pair/exchange", json!({ "code": code }), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let credential = resp["credential"].as_str().expect("credential");
+
+    let (status, _, body) = get_with_auth(
+        &state,
+        "/v1/workspaces",
+        Some(&format!("Bearer {credential}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body).expect("json");
     let list = body["workspaces"].as_array().expect("array");
     let paths: Vec<&str> = list
         .iter()
@@ -240,10 +302,32 @@ async fn plain_launched_workspace_and_verbatim_history_are_one_entry() {
     let tmp = tempfile::tempdir().unwrap();
     let workspace = withnav::tools::canonical_path(tmp.path()).unwrap();
     let history = std::fs::canonicalize(tmp.path()).unwrap();
-    let state = web_state(tmp.path(), vec![workspace.clone()]);
+    let state = TestServerConfig::unreachable(tmp.path())
+        .web(vec![])
+        .state();
     create_session(&state, &history).await;
-    let (status, body) = get_json(&state, "/v1/workspaces").await;
+    let (status, resp) = post_json(
+        &state,
+        "/v1/pair",
+        json!({ "workspaces": [workspace.to_str().unwrap()] }),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
+    let code = resp["code"].as_str().unwrap();
+
+    let (status, resp) =
+        post_json(&state, "/v1/pair/exchange", json!({ "code": code }), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let credential = resp["credential"].as_str().unwrap();
+    let (status, _, body) = get_with_auth(
+        &state,
+        "/v1/workspaces",
+        Some(&format!("Bearer {credential}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body).unwrap();
     let entries = body["workspaces"].as_array().unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["session_count"], 1);

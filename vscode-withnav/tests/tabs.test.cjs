@@ -66,9 +66,15 @@ function fakeBackend() {
     selectModel(name) { this.model = name; },
   };
 }
-function makeHub(saved) {
+function makeHub(saved, notifyBinding) {
   const backends = []; const lister = fakeBackend(); const saves = [];
-  const hub = new ChatHub(() => { const b = fakeBackend(); backends.push(b); return b; }, lister, { load: () => saved, save: value => saves.push(value) });
+  const hub = new ChatHub(
+    () => { const b = fakeBackend(); backends.push(b); return b; },
+    lister,
+    { load: () => saved, save: value => saves.push(value) },
+    () => undefined,
+    notifyBinding,
+  );
   return { hub, backends, lister, saves };
 }
 
@@ -172,6 +178,72 @@ test("hub: a failed coalesced list refresh is reported, unless the hub was dispo
   pending(new Error("late"));
   await flush();
   assert.deepEqual(errors, ["HTTP 503"], "a refresh failing after disposal stays silent");
+});
+
+test("hub: binding notification is sent on activate and restart, not on background restore, and unbinds on close", () => {
+  const bindings = [];
+  const notifyBinding = params => bindings.push({ ...params });
+  const saved = { sessions: ["S1", "S2", "S3"], active: 0 };
+  const { hub } = makeHub(saved, notifyBinding);
+
+  // Background restore: only active tab S1 should be bound, background tabs S2 and S3 are not bound
+  assert.deepEqual(bindings, [
+    { sessionId: "S1", focus: true },
+  ]);
+
+  // Tab activation unbinds the previously focused session and sends focus: true for the new tab
+  const tabs = hub.tabs();
+  hub.focus(tabs[1].id);
+  assert.deepEqual(bindings, [
+    { sessionId: "S1", focus: true },
+    { sessionId: "S1", focus: false },
+    { sessionId: "S2", focus: true },
+  ]);
+
+  // Restart sends binding again for active tab even if port/token are unchanged
+  hub.setServerInfo({ port: 1234, token: "token" });
+  assert.deepEqual(bindings, [
+    { sessionId: "S1", focus: true },
+    { sessionId: "S1", focus: false },
+    { sessionId: "S2", focus: true },
+    { sessionId: "S2", focus: true },
+  ]);
+
+  // Closing a tab sends focus: false for that tab and activates the neighbor
+  hub.close(tabs[1].id);
+  assert.deepEqual(bindings, [
+    { sessionId: "S1", focus: true },
+    { sessionId: "S1", focus: false },
+    { sessionId: "S2", focus: true },
+    { sessionId: "S2", focus: true },
+    { sessionId: "S2", focus: false },
+    { sessionId: "S3", focus: true },
+  ]);
+
+  // Transitioning to a new conversation (no session id) unbinds the previously focused session
+  const newTabId = hub.open();
+  assert.deepEqual(bindings, [
+    { sessionId: "S1", focus: true },
+    { sessionId: "S1", focus: false },
+    { sessionId: "S2", focus: true },
+    { sessionId: "S2", focus: true },
+    { sessionId: "S2", focus: false },
+    { sessionId: "S3", focus: true },
+    { sessionId: "S3", focus: false },
+  ]);
+
+  // When the new conversation receives an id, it binds the new session
+  hub.backend(newTabId).emit({ type: "conversationOpened", id: "S4", title: "New" });
+  assert.deepEqual(bindings, [
+    { sessionId: "S1", focus: true },
+    { sessionId: "S1", focus: false },
+    { sessionId: "S2", focus: true },
+    { sessionId: "S2", focus: true },
+    { sessionId: "S2", focus: false },
+    { sessionId: "S3", focus: true },
+    { sessionId: "S3", focus: false },
+    { sessionId: "S4", focus: true },
+  ]);
 });
 
 // --- The chat view routes by tab --------------------------------------------------------------------
@@ -1138,4 +1210,30 @@ test("tab strip: a keyboard activation never lingers, and a tab activated elsewh
   tabs(["a", "b"], "b");
   assert.equal(d.activeElement, d.querySelector(".tab-view:not([hidden]) .prompt"));
   dom.window.close();
+});
+
+test("hub: a new conversation started in the same tab drops the binding of the conversation it replaced", () => {
+  const bindings = [];
+  const saved = { sessions: ["S1"], active: 0 };
+  const { hub } = makeHub(saved, params => bindings.push({ ...params }));
+  const [tab] = hub.tabs();
+  assert.deepEqual(bindings, [{ sessionId: "S1", focus: true }]);
+  // The backend's own "new conversation" clears its id and announces an empty conversation.
+  const backend = hub.backend(tab.id);
+  backend.currentConversationId = () => undefined;
+  backend.emit({ type: "conversationOpened", id: undefined, title: "" });
+  assert.deepEqual(bindings, [
+    { sessionId: "S1", focus: true },
+    { sessionId: "S1", focus: false },
+  ]);
+});
+
+test("hub: closing a background tab sends no unfocus", () => {
+  const bindings = [];
+  const saved = { sessions: ["S1", "S2"], active: 0 };
+  const { hub } = makeHub(saved, params => bindings.push({ ...params }));
+  const tabs = hub.tabs();
+  assert.deepEqual(bindings, [{ sessionId: "S1", focus: true }]);
+  hub.close(tabs[1].id);
+  assert.deepEqual(bindings, [{ sessionId: "S1", focus: true }], "S2 was never bound");
 });

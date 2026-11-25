@@ -192,7 +192,6 @@ async fn context_updated_is_emitted_at_boundaries_and_never_stored() {
     assert_eq!(&snap, &updates.last().unwrap().payload);
 
     // Live-only: the stored history has no context.updated.
-    state.history().flush().await.expect("flush");
     let sub = state.subscribe(id, None).await.expect("subscribe");
     match sub.replay {
         withnav::bus::ResumeOutcome::Replay(replayed) => {
@@ -237,7 +236,6 @@ async fn the_http_endpoint_serves_the_snapshot() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     state.close_session(id).await.expect("close");
-    state.history().flush().await.expect("flush");
     let (status, _) = request_json(&router, "GET", &path, None).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
@@ -280,7 +278,6 @@ async fn a_resumed_session_has_a_new_incarnation() {
     let before = serde_json::to_value(state.context(id).await.unwrap()).unwrap();
     assert!(before["revision"].as_u64().unwrap() >= 3);
     state.close_session(id).await.expect("close");
-    state.history().flush().await.expect("flush");
     let (resumed_id, resumed) = state
         .create_or_resume_session(&ws, None, false, Some(id))
         .await

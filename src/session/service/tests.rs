@@ -167,7 +167,10 @@ async fn preparation_uses_captured_assignment_catalog_and_variant_generation() {
     assert_eq!(meta.model, "mock/old");
     assert_eq!(meta.variant, None);
     assert!(meta.model_resolution.unwrap().contains("127.0.0.1:1"));
-    assert_eq!(service.session_summary(id).await.unwrap().agent, "build");
+    assert_eq!(
+        service.session_summary(id).await.unwrap().agent.as_deref(),
+        Some("build")
+    );
 }
 
 /// A service over its own temporary history database; keep the directory
@@ -181,7 +184,11 @@ pub(crate) fn test_service() -> (tempfile::TempDir, Service) {
         data_dir: dir.path().join("data"),
         rules_roots: Default::default(),
     };
-    let service = Service::new(config).expect("service over a temp database");
+    let service = Service::new(
+        config,
+        Arc::new(crate::provider::openai::ClientCache::new()),
+    )
+    .expect("service over a temp database");
     (dir, service)
 }
 
@@ -387,6 +394,7 @@ async fn a_host_message_is_published_with_the_secret_hidden() {
             rules_roots: Default::default(),
         },
         hooks.clone(),
+        Arc::new(crate::provider::openai::ClientCache::new()),
     )
     .unwrap();
     let id = service
@@ -465,4 +473,215 @@ async fn service_settings_wiring_discovers_configured_skills() {
         crate::agent::skills::Resolution::Found(_)
     ));
     assert!(handle.skills.catalog().unwrap().contains("my-skill"));
+}
+
+// The server and its clients read the session body through one shared type: a summary the
+// service builds must survive serialisation and decode back unchanged, live and once stopped.
+#[tokio::test]
+async fn session_summary_round_trips_through_the_client_wire_type() {
+    let (dir, service) = test_service();
+    std::fs::create_dir_all(dir.path().join("cfg")).unwrap();
+    std::fs::write(
+        dir.path().join("cfg/config.json"),
+        r#"{"agents":{"build":{"model":"mock/old"}}}"#,
+    )
+    .unwrap();
+    crate::provider::auth::set_key(&service.config.config_dir, "mock", "test").unwrap();
+    std::fs::write(dir.path().join("models.json"), r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/old":{"provider":"mock","model":"old","context_window":128000}}}"#).unwrap();
+    let id = service
+        .create_session(dir.path(), None, false)
+        .await
+        .unwrap();
+    let live = service.session_summary(id).await.unwrap();
+    service.close_session(id).await.unwrap();
+    let stored = service.session_summary(id).await.unwrap();
+    assert_eq!(stored.actor_state, "stopped");
+    for summary in [live, stored] {
+        let wire = serde_json::to_value(&summary).unwrap();
+        let decoded: withnav_client_api::protocol::SessionMetadata =
+            serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(decoded, summary);
+        assert_eq!(decoded.source.as_deref(), Some("config"));
+        assert_eq!(decoded.agent.as_deref(), Some("build"));
+        assert_eq!(wire["gateway"], "mock");
+    }
+}
+
+#[tokio::test]
+async fn listing_fifty_conversations_costs_one_store_read() {
+    let (dir, service) = test_service();
+    let parent = Ulid::generate();
+    service
+        .history()
+        .record_session(parent, "/workspace", "default", false)
+        .await
+        .unwrap();
+    for _ in 0..48 {
+        service
+            .history()
+            .record_session(Ulid::generate(), "/workspace", "default", false)
+            .await
+            .unwrap();
+    }
+    let child = Ulid::generate();
+    service
+        .history()
+        .record_session(child, "/workspace", "default", false)
+        .await
+        .unwrap();
+    service
+        .history()
+        .create_child_link(
+            child,
+            "vigie".into(),
+            "inspect".into(),
+            "{}".into(),
+            4,
+            crate::bus::event::EventEnvelope::new(
+                parent,
+                0,
+                EventKind::SubagentSpawned,
+                serde_json::json!({}),
+            ),
+        )
+        .await
+        .unwrap();
+    let db = dir.path().join("history.db");
+    let before = crate::session::store::read_count::get(&db);
+    let listed = service.list("/workspace").await.unwrap();
+    assert_eq!(crate::session::store::read_count::get(&db) - before, 1);
+    assert_eq!(listed.len(), 50);
+    let row = listed.iter().find(|row| row.id == child).unwrap();
+    assert_eq!(
+        row.summary.parent_session_id.as_deref(),
+        Some(parent.to_string().as_str())
+    );
+    assert_eq!(row.summary.actor_state, "stopped");
+    assert!(!row.summary.promptable);
+}
+
+#[tokio::test]
+async fn two_actors_created_by_one_service_share_client_cache_instance() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_dir = dir.path().join("cfg");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.json"),
+        r#"{"agents":{"build":{"model":"mock/test"}}}"#,
+    )
+    .unwrap();
+    crate::provider::auth::set_key(&cfg_dir, "mock", "test").unwrap();
+    std::fs::write(
+        dir.path().join("models.json"),
+        r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/test":{"provider":"mock","model":"test","context_window":128000}}}"#,
+    )
+    .unwrap();
+
+    let client_cache = Arc::new(crate::provider::openai::ClientCache::new());
+    let service = Service::new(
+        SessionConfig {
+            models_path: None,
+            config_dir: cfg_dir,
+            history_db: dir.path().join("history.db"),
+            data_dir: dir.path().join("data"),
+            rules_roots: Default::default(),
+        },
+        client_cache.clone(),
+    )
+    .unwrap();
+
+    let id1 = service
+        .create_session(dir.path(), None, false)
+        .await
+        .unwrap();
+    let id2 = service
+        .create_session(dir.path(), None, false)
+        .await
+        .unwrap();
+
+    let handle1 = service.handle(id1).unwrap();
+    let task1 = handle1.runtime_task.lock().unwrap().take().unwrap();
+    handle1.session_cancel.cancel();
+    let actor1 = task1.await.unwrap();
+
+    let handle2 = service.handle(id2).unwrap();
+    let task2 = handle2.runtime_task.lock().unwrap().take().unwrap();
+    handle2.session_cancel.cancel();
+    let actor2 = task2.await.unwrap();
+
+    assert!(Arc::ptr_eq(&actor1.client_cache, &service.client_cache));
+    assert!(Arc::ptr_eq(&actor2.client_cache, &service.client_cache));
+    assert!(Arc::ptr_eq(&actor1.client_cache, &actor2.client_cache));
+}
+
+// Given a message or session start being admitted
+// When a non-forced shutdown is asked, then the work finishes
+// Then the shutdown is refused while the work is in flight, accepted after, and refuses new work
+#[tokio::test]
+async fn a_non_forced_close_waits_for_admitted_work() {
+    let (_dir, service) = test_service();
+    let ticket = service.admit_work().expect("admitted");
+    assert!(!service.try_close(false), "work in flight");
+    drop(ticket);
+    assert!(service.try_close(false));
+    assert!(matches!(
+        service.admit_work(),
+        Err(ServerError::ShuttingDown)
+    ));
+}
+
+// Given a session start admitted before shutdown
+// When the shutdown drain runs
+// Then it waits for that start to finish (and register) before draining
+#[tokio::test]
+async fn the_drain_waits_for_admitted_session_starts() {
+    let (_dir, service) = test_service();
+    let ticket = service.admit_work().expect("admitted");
+    let draining = {
+        let service = service.clone();
+        tokio::spawn(async move { service.close_all().await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !draining.is_finished(),
+        "the drain must wait for the admitted start"
+    );
+    drop(ticket);
+    tokio::time::timeout(std::time::Duration::from_secs(10), draining)
+        .await
+        .expect("the drain ends once the start finished")
+        .unwrap();
+}
+
+// Given an idle session with a Captain message waiting in its inbox, not yet taken by the
+//       runtime
+// When a non-forced shutdown is asked
+// Then it is refused: the drain would drop the message
+#[tokio::test]
+async fn a_queued_captain_message_keeps_a_non_forced_close_out() {
+    let (dir, service) = test_service();
+    std::fs::create_dir_all(dir.path().join("cfg")).unwrap();
+    std::fs::write(
+        dir.path().join("cfg/config.json"),
+        r#"{"agents":{"build":{"model":"mock/test"}}}"#,
+    )
+    .unwrap();
+    crate::provider::auth::set_key(&service.config.config_dir, "mock", "test").unwrap();
+    std::fs::write(
+        dir.path().join("models.json"),
+        r#"{"providers":{"mock":{"base_url":"http://127.0.0.1:1/v1"}},"models":{"mock/test":{"provider":"mock","model":"test","context_window":128000}}}"#,
+    )
+    .unwrap();
+    let id = service
+        .create_session(dir.path(), None, false)
+        .await
+        .expect("session");
+    assert!(!service.is_turn_running(), "idle before the message");
+    service
+        .handle(id)
+        .expect("live session")
+        .status
+        .queue_captain();
+    assert!(service.is_turn_running(), "a queued message counts as work");
+    assert!(!service.try_close(false));
 }

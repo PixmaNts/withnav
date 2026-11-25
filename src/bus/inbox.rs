@@ -587,6 +587,7 @@ mod tests {
             ReasoningHistory::Preserve,
             Some(64),
             tokio_util::sync::CancellationToken::new(),
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
         )
     }
 

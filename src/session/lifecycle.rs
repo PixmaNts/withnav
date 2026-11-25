@@ -19,18 +19,9 @@ const TEARDOWN_AWAIT_CAP: Duration = Duration::from_secs(10);
 impl Service {
     /// Ownership inspection and lifecycle claim share admission; waits always retry.
     async fn claim_lifecycle_stop(&self, id: SessionId) -> Option<SessionHandle> {
-        #[cfg(debug_assertions)]
-        {
-            let barrier = self
-                .lifecycle_claim_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
-            if let Some(barrier) = barrier {
-                barrier.reached.notify_one();
-                barrier.release.notified().await;
-            }
-        }
+        self.test_points
+            .park(crate::session::test_points::ParkPoint::LifecycleClaim)
+            .await;
         loop {
             let pending = {
                 let _admission = self.admission_gate.lock().await;
@@ -61,7 +52,7 @@ impl Service {
     /// THEN drop the registry entry. Idempotent: a conversation that is
     /// already closed (or only stored) is a no-op; unknown is a 404.
     pub async fn close_session(&self, id: SessionId) -> Result<(), ServerError> {
-        let _gate = self.lifecycle_gate().await;
+        let _gate = self.lifecycle_gate(id).await?;
         self.ensure_not_archived(id).await?;
         self.wait_child_operation(id).await;
         let parent = self.handle(id).and_then(|h| h.parent_session_id);
@@ -86,6 +77,12 @@ impl Service {
     /// [`Service::close_session`] for a caller that already holds the
     /// lifecycle gate.
     pub(super) async fn close_session_gated(&self, id: SessionId) -> Result<(), ServerError> {
+        self.close_tree_gated(id, "stop requested").await
+    }
+
+    /// Closes `id` and its children with `reason` on `session.end`. The
+    /// caller holds the lifecycle gate.
+    async fn close_tree_gated(&self, id: SessionId, reason: &str) -> Result<(), ServerError> {
         let target = self.claim_lifecycle_stop(id).await;
         let claimed_children = {
             let _admission = self.admission_gate.lock().await;
@@ -113,7 +110,7 @@ impl Service {
             claimed
         };
         if let Some(handle) = target {
-            self.fence_and_remove(id, handle, "stop requested").await;
+            self.fence_and_remove(id, handle, reason).await;
             self.close_children(id, claimed_children).await?;
             return Ok(());
         }
@@ -160,6 +157,55 @@ impl Service {
         Ok(())
     }
 
+    /// Watches one incarnation of a root session for an end nobody asked
+    /// for: its runtime returning (a failed delivery or checkpoint, a failed
+    /// publish, a panic) or its sequencer closing on a failed store write.
+    /// Such a session is closed like a stop, `session.end` naming the cause,
+    /// and leaves the registry, so a message to it asks for a resume instead
+    /// of failing as "stopping" for good. A stop or shutdown cancels the
+    /// session first and closes it itself: the watcher then does nothing.
+    pub(super) fn supervise_runtime(&self, id: SessionId, handle: &SessionHandle) {
+        let service = self.clone();
+        let incarnation = handle.incarnation;
+        let status = handle.status.clone();
+        let sequencer = handle.sequencer.clone();
+        let cancel = handle.session_cancel.clone();
+        tokio::spawn(async move {
+            let unexplained = tokio::select! {
+                _ = status.ended.cancelled() => "the runtime stopped unexpectedly",
+                _ = sequencer.closed() => "the event stream closed",
+                _ = cancel.cancelled() => return,
+            };
+            if cancel.is_cancelled() {
+                return;
+            }
+            let cause = status.exit_cause().unwrap_or_else(|| unexplained.into());
+            service
+                .end_runtime(id, incarnation, &format!("runtime ended: {cause}"))
+                .await;
+        });
+    }
+
+    /// Closes the incarnation `incarnation` of `id` with `reason`, through
+    /// the same gated path as a stop. A newer incarnation (the conversation
+    /// was resumed meanwhile) or a session already stopping is left alone.
+    async fn end_runtime(&self, id: SessionId, incarnation: ulid::Ulid, reason: &str) {
+        let Ok(_gate) = self.lifecycle_gate(id).await else {
+            return;
+        };
+        let current = self
+            .handle(id)
+            .is_some_and(|h| h.incarnation == incarnation && h.lifecycle == Lifecycle::Active);
+        if !current {
+            return;
+        }
+        tracing::warn!(session_id = %id, reason, "session runtime ended on its own; closing it");
+        if let Err(error) = self.close_tree_gated(id, reason).await {
+            tracing::error!(session_id = %id, %error, "closing an ended session failed");
+        }
+        self.secrets.end_session(id);
+    }
+
     /// Graceful shutdown: stop every active session (each one's fence emits
     /// its `session.end`), then shut the MCP servers down and return so axum
     /// finishes draining. Sessions stop first: an agent still running during
@@ -172,7 +218,13 @@ impl Service {
     }
 
     async fn stop_all_sessions(&self) {
-        let _gate = self.lifecycle_gate().await;
+        let _shutdown = self.gates.shutdown().await;
+        // Refuse new work, then let the admitted messages and session starts finish: a session
+        // being started is registered before its ticket drops, so the loop below ends it.
+        self.try_close(true);
+        while self.pending_work() > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         loop {
             let admission = self.admission_gate.lock().await;
             let owned = self
@@ -193,18 +245,9 @@ impl Service {
                     .collect()
             };
             drop(admission);
-            #[cfg(debug_assertions)]
-            {
-                let barrier = self
-                    .shutdown_snapshot_barrier
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take();
-                if let Some(barrier) = barrier {
-                    barrier.reached.notify_one();
-                    barrier.release.notified().await;
-                }
-            }
+            self.test_points
+                .park(crate::session::test_points::ParkPoint::ShutdownSnapshot)
+                .await;
             if targets.is_empty() && owned.is_empty() {
                 let _admission = self.admission_gate.lock().await;
                 if self.lock_sessions().is_empty()
@@ -241,13 +284,14 @@ impl Service {
     }
 
     /// Teardown order. The RUNTIME owns the terminal tail: the session-token
-    /// cancel interrupts the actor, the runtime's natural outcome path emits
-    /// `turn.end{interrupted}` then `agent.state{Idle}`, and its `teardown()`
-    /// fires the CloseSession fence itself. The manager (1) cancels and
-    /// awaits the runtime JoinHandle (bounded; on breach the task is ABORTED
-    /// because a dropped JoinHandle would only DETACH it), (2) fires the
-    /// fence (an already-closed sequencer ignores it: never a second
-    /// `session.end`), (3) waits for the sequencer to finish, so
+    /// cancel interrupts the actor and the runtime's natural outcome path
+    /// emits `turn.end{interrupted}` then `agent.state{Idle}` before it
+    /// returns. The manager (1) cancels and awaits the runtime JoinHandle
+    /// (bounded; on breach the task is ABORTED because a dropped JoinHandle
+    /// would only DETACH it), (2) fires the fence with `reason`, the only
+    /// `session.end` of a running session (a sequencer already closed by a
+    /// failed store write ignores it: never a second `session.end`), (3)
+    /// waits for the sequencer to finish, so
     /// `session.end` has been emitted and queued to the store writer, (4)
     /// flushes the store, and (5) removes the registry entry. No lock is held
     /// across any await.
@@ -303,9 +347,6 @@ impl Service {
             .is_err()
         {
             tracing::error!(session_id = %id, "sequencer did not close in time; dropping it");
-        }
-        if let Err(err) = self.history().flush().await {
-            tracing::error!(session_id = %id, error = %err, "flushing history at close failed");
         }
         self.lock_sessions().remove(&id);
     }
@@ -376,6 +417,7 @@ mod tests {
             ReasoningHistory::Preserve,
             Some(64),
             tokio_util::sync::CancellationToken::new(),
+            std::sync::Arc::new(crate::provider::openai::ClientCache::new()),
         )
     }
 
@@ -402,7 +444,6 @@ mod tests {
             mcp_tools: Default::default(),
             actor_id: ROOT_ACTOR_ID.to_string(),
             lifecycle: Lifecycle::Active,
-            actor_state: "idle".to_string(),
             workspace: PathBuf::from("/w"),
             selected: Arc::new(std::sync::Mutex::new(
                 crate::session::service::SelectedModel {
@@ -490,6 +531,95 @@ mod tests {
 
         assert_eq!(collect_session_end_seq(observer).await, 2);
         assert!(state.handle(id).is_none());
+    }
+
+    /// Spawns `close_session(a)` on a wedged runtime and returns once its
+    /// teardown is under way: `a` is `Stopping` and its tree gate is held
+    /// for the teardown cap (10 s) by a runtime that never exits.
+    async fn wedged_teardown(state: &Service, a: SessionId) -> tokio::task::JoinHandle<()> {
+        state.lock_sessions().insert(a, wedged_runtime_handle());
+        let closing = state.clone();
+        let task = tokio::spawn(async move {
+            let _ = closing.close_session(a).await;
+        });
+        while state
+            .handle(a)
+            .is_some_and(|h| h.lifecycle == Lifecycle::Active)
+        {
+            tokio::task::yield_now().await;
+        }
+        task
+    }
+
+    // Given conversation A stuck in a degraded teardown (its runtime ignores
+    // cancellation, so the stop holds A's gate for the 10 s cap)
+    // When the Captain runs a slash command on, and resumes, an unrelated B
+    // Then both answer at once, while A is still stopping
+    #[tokio::test]
+    async fn an_unrelated_tree_does_not_wait_for_a_degraded_teardown() {
+        let (_dir, state) = test_service();
+        let (a, b) = (Ulid::generate(), Ulid::generate());
+        let b_handle = wedged_runtime_handle();
+        b_handle
+            .sequencer
+            .publish(start_candidate(Path::new("/w")))
+            .expect("start");
+        state.lock_sessions().insert(b, b_handle);
+        let teardown = wedged_teardown(&state, a).await;
+
+        let started = std::time::Instant::now();
+        let outcome =
+            tokio::time::timeout(Duration::from_secs(2), state.run_command(b, "help", ""))
+                .await
+                .expect("a command on B never waits for A's teardown")
+                .expect("command");
+        assert!(outcome.ok);
+        let (resumed, existed) = tokio::time::timeout(
+            Duration::from_secs(2),
+            state.create_or_resume_session(Path::new("/w"), None, false, Some(b)),
+        )
+        .await
+        .expect("a resume of B never waits for A's teardown")
+        .expect("resume");
+        assert_eq!((resumed, existed), (b, true));
+        assert!(started.elapsed() < TEARDOWN_AWAIT_CAP);
+        assert!(
+            state
+                .handle(a)
+                .is_some_and(|h| h.lifecycle == Lifecycle::Stopping),
+            "A's teardown is still running"
+        );
+        teardown.abort();
+    }
+
+    // Given conversation A stuck in a degraded teardown
+    // When its subagent is stopped
+    // Then the subagent's stop waits for A's tree gate
+    #[tokio::test]
+    async fn a_subagent_waits_for_its_parent_trees_gate() {
+        let (_dir, state) = test_service();
+        let (a, child) = (Ulid::generate(), Ulid::generate());
+        let mut child_handle = wedged_runtime_handle();
+        child_handle.parent_session_id = Some(a);
+        state.lock_sessions().insert(child, child_handle);
+        let teardown = wedged_teardown(&state, a).await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), state.lifecycle_gate(child))
+                .await
+                .is_err(),
+            "the child shares its root's gate"
+        );
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(200),
+                state.lifecycle_gate(Ulid::generate())
+            )
+            .await
+            .is_ok(),
+            "an unrelated root does not"
+        );
+        teardown.abort();
     }
 
     /// Drains an observer probe (replay + live) until session.end lands and

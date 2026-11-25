@@ -15,6 +15,7 @@ pub struct Host {
     pub config: PathBuf,
     pub data: PathBuf,
     models: Option<PathBuf>,
+    pub client_cache: Arc<crate::provider::openai::ClientCache>,
     workspaces: Mutex<BTreeMap<PathBuf, Workspace>>,
 }
 
@@ -43,11 +44,17 @@ impl Host {
                 .shutdown(deadline.saturating_duration_since(std::time::Instant::now()));
         }
     }
-    pub fn new(config: PathBuf, data: PathBuf, models: Option<PathBuf>) -> Self {
+    pub fn new(
+        config: PathBuf,
+        data: PathBuf,
+        models: Option<PathBuf>,
+        client_cache: Arc<crate::provider::openai::ClientCache>,
+    ) -> Self {
         Self {
             config,
             data,
             models,
+            client_cache,
             workspaces: Mutex::default(),
         }
     }
@@ -65,11 +72,7 @@ impl Host {
             crate::provider::config::load_models(self.models.as_deref(), &workspace, &self.config)
                 .map_err(anyhow::Error::from)
                 .and_then(|(models, _)| {
-                    WithNavDecisionClient::new(
-                        &models,
-                        &self.config,
-                        Arc::new(crate::provider::openai::ClientCache::new()),
-                    )
+                    WithNavDecisionClient::new(&models, &self.config, self.client_cache.clone())
                 });
         let (client, diagnostic): (Arc<dyn instinct_flow::DecisionClient>, _) = match client {
             Ok(client) => (Arc::new(client), None),
@@ -98,6 +101,29 @@ impl Host {
             records,
             diagnostic,
         }
+    }
+    /// Reloads the flows of every workspace this host has loaded and returns the workspaces whose
+    /// reload failed, with the reason. A revoked validation applies to a global flow in every
+    /// workspace and to a workspace flow wherever that workspace is loaded; reloading them all is
+    /// what makes a revocation take effect for running sessions without a restart, whichever
+    /// directory the revocation came from.
+    pub fn reload_all(&self) -> Vec<(PathBuf, String)> {
+        let stores: Vec<(PathBuf, Arc<FlowStore>)> = self
+            .workspaces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(path, entry)| (path.clone(), entry.store.clone()))
+            .collect();
+        stores
+            .into_iter()
+            .filter_map(|(path, store)| {
+                store
+                    .reload()
+                    .err()
+                    .map(|error| (path, error.reason.replace('_', " ")))
+            })
+            .collect()
     }
     pub fn diagnostics(&self, path: &Path) -> Vec<instinct_flow::Diagnostic> {
         let workspace = self.workspace(path);
@@ -188,7 +214,7 @@ mod tests {
             templates: BTreeMap::new(),
         }
     }
-    async fn verdict(runtime: &FlowRuntime) -> super::super::runtime::VerdictLike {
+    async fn verdict(runtime: &FlowRuntime) -> super::super::runtime::FlowVerdict {
         runtime
             .tool_pre_call(
                 super::super::runtime::ToolCallContextLike {
@@ -205,21 +231,31 @@ mod tests {
     #[tokio::test]
     async fn independent_hosts_reload_on_next_event_and_keep_invalid_snapshot() {
         use super::super::{
-            runtime::VerdictLike,
+            runtime::FlowVerdict,
             store::{Content, Location},
         };
         let temp = tempfile::tempdir().unwrap();
-        let a = Host::new(temp.path().join("config"), temp.path().join("data"), None);
-        let b = Host::new(a.config.clone(), a.data.clone(), None);
+        let a = Host::new(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            None,
+            Arc::new(crate::provider::openai::ClientCache::new()),
+        );
+        let b = Host::new(
+            a.config.clone(),
+            a.data.clone(),
+            None,
+            Arc::new(crate::provider::openai::ClientCache::new()),
+        );
         let store = a.store(temp.path().into());
         let runtime = b.runtime(temp.path()).unwrap();
         let doc = store
             .save("guard", Location::Global, None, content("deny"))
             .unwrap();
-        assert_eq!(verdict(&runtime).await, VerdictLike::Allow);
+        assert_eq!(verdict(&runtime).await, FlowVerdict::Allow);
         store.validate_test_documents();
         store.reload().unwrap();
-        assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
+        assert!(matches!(verdict(&runtime).await, FlowVerdict::Deny { .. }));
         let next = store
             .save(
                 "guard",
@@ -228,7 +264,7 @@ mod tests {
                 content("no_objection"),
             )
             .unwrap();
-        assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
+        assert!(matches!(verdict(&runtime).await, FlowVerdict::Deny { .. }));
         store.validate_test_documents();
         store.reload().unwrap();
         // A publishes a valid set; an external editor corrupts the file before B evaluates.
@@ -243,7 +279,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(verdict(&runtime).await, VerdictLike::Allow);
+        assert_eq!(verdict(&runtime).await, FlowVerdict::Allow);
         assert!(!b.diagnostics(temp.path()).is_empty());
         store.reload().unwrap();
         let dir =
@@ -268,12 +304,22 @@ mod tests {
     #[tokio::test]
     async fn independent_hosts_revoke_workspace_runs_even_when_reload_is_invalid() {
         use super::super::{
-            runtime::VerdictLike,
+            runtime::FlowVerdict,
             store::{Content, Location},
         };
         let temp = tempfile::tempdir().unwrap();
-        let a = Host::new(temp.path().join("config"), temp.path().join("data"), None);
-        let b = Host::new(a.config.clone(), a.data.clone(), None);
+        let a = Host::new(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            None,
+            Arc::new(crate::provider::openai::ClientCache::new()),
+        );
+        let b = Host::new(
+            a.config.clone(),
+            a.data.clone(),
+            None,
+            Arc::new(crate::provider::openai::ClientCache::new()),
+        );
         let store = a.store(temp.path().into());
         let runtime = b.runtime(temp.path()).unwrap();
         store
@@ -281,7 +327,7 @@ mod tests {
             .unwrap();
         store.validate_test_documents();
         store.reload().unwrap();
-        assert!(matches!(verdict(&runtime).await, VerdictLike::Deny { .. }));
+        assert!(matches!(verdict(&runtime).await, FlowVerdict::Deny { .. }));
         store
             .save(
                 "broken",
@@ -298,13 +344,56 @@ mod tests {
             permissions.revoke_validation(approval.id).unwrap();
         }
         store.reload().unwrap();
-        assert_eq!(verdict(&runtime).await, VerdictLike::Allow);
+        assert_eq!(verdict(&runtime).await, FlowVerdict::Allow);
         assert!(!runtime.store.reload_diagnostics().is_empty());
+    }
+    // Given a validated global flow that denies, loaded in two workspaces of one host
+    // When its validation is revoked and the host reloads every loaded workspace
+    // Then neither workspace keeps running the revoked flow
+    #[tokio::test]
+    async fn reload_all_applies_a_revocation_to_every_loaded_workspace() {
+        use super::super::{runtime::FlowVerdict, store::Location};
+        let temp = tempfile::tempdir().unwrap();
+        let (first, second) = (temp.path().join("first"), temp.path().join("second"));
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let host = Host::new(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            None,
+            Arc::new(crate::provider::openai::ClientCache::new()),
+        );
+        let store = host.store(first.clone());
+        store
+            .save("guard", Location::Global, None, content("deny"))
+            .unwrap();
+        store.validate_test_documents();
+        assert!(host.reload_all().is_empty());
+        let runtimes = [
+            host.runtime(&first).unwrap(),
+            host.runtime(&second).unwrap(),
+        ];
+        for runtime in &runtimes {
+            assert!(matches!(verdict(runtime).await, FlowVerdict::Deny { .. }));
+        }
+        let permissions = crate::permission::store::PermissionStore::open(&host.data).unwrap();
+        for approval in permissions.list_validations().unwrap() {
+            permissions.revoke_validation(approval.id).unwrap();
+        }
+        assert!(host.reload_all().is_empty());
+        for runtime in &runtimes {
+            assert_eq!(verdict(runtime).await, FlowVerdict::Allow);
+        }
     }
     #[test]
     fn editor_adapter_observes_shared_host_reload() {
         let temp = tempfile::tempdir().unwrap();
-        let host = Host::new(temp.path().join("config"), temp.path().join("data"), None);
+        let host = Host::new(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            None,
+            Arc::new(crate::provider::openai::ClientCache::new()),
+        );
         let runtime = host.runtime(temp.path()).unwrap();
         let editor = runtime.with_effects_adapter(Arc::new(NoEffects));
         let store = host.store(temp.path().canonicalize().unwrap());
@@ -358,6 +447,7 @@ mod tests {
             temp.path().join("config"),
             temp.path().join("data"),
             Some(temp.path().join("missing-models.toml")),
+            Arc::new(crate::provider::openai::ClientCache::new()),
         );
         let runtime = host.runtime(temp.path()).unwrap();
         assert!(!host.diagnostics(temp.path()).is_empty());
@@ -391,7 +481,7 @@ mod tests {
             .await;
         assert!(matches!(
             verdict,
-            super::super::runtime::VerdictLike::Deny { .. }
+            super::super::runtime::FlowVerdict::Deny { .. }
         ));
         assert_eq!(
             runtime

@@ -31,10 +31,10 @@ fn make_state(tmp: &Path, base_url: &str, history_db: PathBuf) -> AppState {
         .assigned_navigator_state()
 }
 
-/// Waits for the writer's acknowledged barrier, then verifies the HTTP list.
-async fn wait_for_list(state: &AppState, base: &str, workspace: &Path, min: usize) -> Vec<Value> {
+/// Verifies the HTTP list: every event is stored before it is shown, so the
+/// list needs no writer barrier.
+async fn wait_for_list(_state: &AppState, base: &str, workspace: &Path, min: usize) -> Vec<Value> {
     tokio::time::timeout(Duration::from_secs(10), async {
-        state.history().flush().await.expect("flush");
         let body = list_sessions(&reqwest::Client::new(), base, workspace).await;
         let sessions = body["sessions"].as_array().expect("sessions").clone();
         assert!(
@@ -386,30 +386,35 @@ async fn resuming_an_old_navigator_transcript_sends_the_role_prompt_once() {
         .record_session(id, &ws.display().to_string(), "mock/mock-opus", true)
         .await
         .expect("record");
-    store.append_event(
-        id,
-        EventEnvelope::new(id, 0, EventKind::SessionStart, json!({})),
-    );
-    store.save_transcript(
-        id,
-        vec![
-            ChatMessage::System {
-                content: COGNITION_PROMPT.to_string(),
-            },
-            ChatMessage::User {
-                provenance: Default::default(),
-                content: "earlier question".into(),
-                images: Vec::new(),
-            },
-            ChatMessage::Assistant {
-                content: Some("earlier answer".into()),
-                reasoning_content: None,
-                tool_calls: vec![],
-                opaque: None,
-            },
-        ],
-    );
-    store.flush().await.expect("flush");
+    store
+        .append_event_acked(
+            id,
+            EventEnvelope::new(id, 0, EventKind::SessionStart, json!({})),
+        )
+        .await
+        .unwrap();
+    store
+        .save_transcript(
+            id,
+            vec![
+                ChatMessage::System {
+                    content: COGNITION_PROMPT.to_string(),
+                },
+                ChatMessage::User {
+                    provenance: Default::default(),
+                    content: "earlier question".into(),
+                    images: Vec::new(),
+                },
+                ChatMessage::Assistant {
+                    content: Some("earlier answer".into()),
+                    reasoning_content: None,
+                    tool_calls: vec![],
+                    opaque: None,
+                },
+            ],
+        )
+        .await
+        .unwrap();
 
     let mock = spawn_capturing_provider(vec![done_response("fine")]).await;
     let state = make_state(&root, &mock.url, db.clone());
@@ -484,12 +489,6 @@ async fn delete_removes_from_memory_and_store() {
     // Store is empty for the workspace after the writer acknowledges deletion.
     let client = reqwest::Client::new();
     let body = tokio::time::timeout(Duration::from_secs(10), async {
-        server
-            .state
-            .history()
-            .flush()
-            .await
-            .expect("flush deletion");
         list_sessions(&client, &server.base, &server.ws).await
     })
     .await
@@ -610,7 +609,6 @@ async fn list_skips_a_session_with_unreadable_metadata() {
         .create_session(&server.ws, None, false)
         .await
         .expect("broken");
-    server.state.history().flush().await.expect("flush");
     rusqlite::Connection::open(&db)
         .expect("db")
         .execute(

@@ -30,6 +30,12 @@ pub struct WithNavDecisionClient {
     identity: ClientIdentity,
 }
 impl WithNavDecisionClient {
+    /// Builds a flow decision client.
+    ///
+    /// The `_cache` parameter preserves the caller-supplied cache injection seam,
+    /// but the decision transport (`SystemOneClient`) intentionally builds its
+    /// own isolated HTTP client with redirect policy `none` and retry `never` so
+    /// instinct decisions do not inherit generic provider pooling policies.
     pub fn new(
         models: &crate::provider::config::ModelsConfig,
         config: &Path,

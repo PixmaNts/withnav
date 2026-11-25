@@ -144,10 +144,12 @@ export type HostToWebview = { generation?: number; tab?: string } & (
   | { type: "turnStart"; id: string }
   /** Streamed answer text for the current turn, to append. */
   | { type: "delta"; id: string; stepId?: string; text: string }
+  /** The complete answer text of a step: replaces what streamed for it (deltas lost to a reconnect). */
+  | { type: "text"; id: string; stepId?: string; text: string }
   /** Streamed reasoning text for the current turn, to append (shown collapsed). */
   | { type: "reasoning"; id: string; stepId?: string; text: string }
   /** A tool call inside the current turn. `summary` is a short human line (e.g. "read src/main.rs"). */
-  | { type: "tool"; id: string; callId: string; phase: "start" | "end"; name: string; summary: string; ok?: boolean; evidence?: PermissionEvidence; mcpMedia?: McpMediaItem[]; mcpUi?: McpUiMeta; args?: Record<string, unknown>; output?: string; metadata?: Record<string, unknown>; images?: ImageRef[] }
+  | { type: "tool"; id: string; callId: string; phase: "start" | "end"; name: string; summary: string; ok?: boolean; interrupted?: boolean; evidence?: PermissionEvidence; mcpMedia?: McpMediaItem[]; mcpUi?: McpUiMeta; args?: Record<string, unknown>; output?: string; metadata?: Record<string, unknown>; images?: ImageRef[] }
   /** The turn is over. `error` is set when it failed. */
   | { type: "turnEnd"; id: string; outcome: "done" | "stopped" | "error"; error?: string }
   /** The cognition asked the Captain a question and waits for the next message as the answer. */
@@ -335,6 +337,8 @@ export interface ChatBackend {
   deleteConversation(id: string): Promise<void>;
   /** The open conversation's id, if one exists yet. */
   currentConversationId(): string | undefined;
+  /** The open conversation's runtime incarnation, if known. */
+  currentIncarnation?(): string | null;
   /** Model name for the next new conversation (ignored while one is open with messages). */
   selectModel(name: string): void;
   readMcpResource?(server: string, uri: string): Promise<McpResourceBody>;

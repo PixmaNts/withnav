@@ -102,7 +102,7 @@ pub struct AgentActor {
     pub bypass: Arc<std::sync::Mutex<BypassState>>,
     /// Private temporary storage offered to the model; a write there is bound
     /// to the directory's identity (inode and mode).
-    pub scratch_roots: Vec<super::scratch::Identity>,
+    pub scratch_roots: Vec<std::path::PathBuf>,
     /// Captain setting `yolo`: no permission control at all for this session.
     pub yolo: bool,
     /// The Instinct judge compaction asks which old tool outputs still matter.
@@ -175,6 +175,7 @@ pub struct AgentActor {
     /// from the stored `message.received` events (the newest from the Captain),
     /// so it is `None` only when the Captain never spoke.
     pub captain_task: Option<String>,
+    pub client_cache: Arc<crate::provider::openai::ClientCache>,
 }
 
 impl AgentActor {
@@ -243,8 +244,10 @@ impl AgentActor {
         reasoning_history: ReasoningHistory,
         max_tokens: Option<u64>,
         cancel: CancellationToken,
+        client_cache: Arc<crate::provider::openai::ClientCache>,
     ) -> Self {
         Self {
+            client_cache,
             compaction_writer: None,
             compaction_catalog: None,
             compaction_max_message_tokens: None,
@@ -315,7 +318,7 @@ impl AgentActor {
         let usable: Vec<_> = self
             .scratch_roots
             .iter()
-            .filter(|root| root.valid())
+            .filter(|root| root.is_dir())
             .collect();
         if usable.is_empty() {
             message
@@ -325,7 +328,7 @@ impl AgentActor {
                 message.as_deref().unwrap_or(""),
                 usable
                     .iter()
-                    .map(|root| root.path.display().to_string())
+                    .map(|root| root.display().to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
             ))

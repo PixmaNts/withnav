@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;
-use crate::navigator::conversation::ConversationFeed;
+use crate::navigator::conversation::{ConversationFeed, ConversationTarget, EditorSelectionError};
 use crate::navigator::lsp::protocol::{RevealParams, RevealPlacement};
 use crate::tools::{Tool, ToolContext, ToolResult, validate_path};
 
@@ -22,12 +22,21 @@ const EDITOR_TIMEOUT: Duration = Duration::from_secs(10);
 /// Registered only in editor sessions, like `intent`.
 pub struct RevealTool {
     feed: Option<ConversationFeed>,
+    target: Option<ConversationTarget>,
 }
 
 impl RevealTool {
     /// `feed` carries the connected editor; without one every call fails.
     pub fn new(feed: Option<ConversationFeed>) -> Self {
-        Self { feed }
+        Self { feed, target: None }
+    }
+
+    /// Bound to a specific session target.
+    pub fn for_session(feed: Option<ConversationFeed>, target: ConversationTarget) -> Self {
+        Self {
+            feed,
+            target: Some(target),
+        }
     }
 }
 
@@ -72,18 +81,54 @@ impl Tool for RevealTool {
                 Ok(params) => params,
                 Err(result) => return Ok(result),
             };
-            let Some(editor) = self.feed.as_ref().and_then(ConversationFeed::editor) else {
+            let Some(feed) = self.feed.as_ref() else {
                 return Ok(ToolResult::error(
                     "editor_unavailable",
                     "no editor is connected to this session",
                 ));
             };
+            let session_id = self.target.as_ref().map(|t| t.session_id);
+            let selected = match feed.select_editor(session_id) {
+                Ok(selected) => selected,
+                Err(EditorSelectionError::Unavailable) => {
+                    return Ok(ToolResult::error(
+                        "editor_unavailable",
+                        "no editor is connected to this session",
+                    ));
+                }
+                Err(EditorSelectionError::Ambiguous) => {
+                    return Ok(ToolResult::error(
+                        "editor_ambiguous",
+                        "multiple editors are connected to this workspace; target is ambiguous",
+                    ));
+                }
+            };
+            if let Some(target) = &self.target {
+                if !feed.matches_workspace(&target.workspace) {
+                    return Ok(ToolResult::error(
+                        "workspace_mismatch",
+                        "target workspace does not match feed workspace",
+                    ));
+                }
+                if !feed.is_incarnation_available(target.session_id, target.incarnation) {
+                    return Ok(ToolResult::error(
+                        "editor_unavailable",
+                        "session incarnation is no longer active",
+                    ));
+                }
+            }
+            let editor = selected.reveal;
+            let editor_cancel = selected.cancel;
             let path = args["path"].as_str().unwrap_or_default().to_string();
             let placement = params.placement;
             let symbol = params.symbol.clone();
             let line = params.line;
             let answer = tokio::select! {
                 _ = cancel.cancelled() => return Ok(ToolResult::interrupted()),
+                _ = editor_cancel.cancelled() => return Ok(ToolResult::error(
+                    "editor_detached",
+                    "editor disconnected during reveal request",
+                )),
                 answer = tokio::time::timeout(EDITOR_TIMEOUT, editor(params)) => answer,
             };
             let result = match answer {
@@ -329,5 +374,189 @@ mod tests {
         let refused = call(&tool, &cx, json!({"path": "a.c"})).await;
         assert_eq!(refused.error.unwrap().code, "unsupported_path");
         assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reveal_routes_to_explicitly_bound_editor_when_multiple_present() {
+        use crate::navigator::conversation::EditorId;
+        use ulid::Ulid;
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("file.rs"), "fn main() {}\n").unwrap();
+        let cx = cx(tmp.path());
+        let feed = ConversationFeed::with_workspace(tmp.path().to_path_buf());
+        let session_id = Ulid::generate();
+        let incarnation = Ulid::generate();
+        feed.register_session_incarnation(
+            session_id,
+            incarnation,
+            Arc::new(|_| Box::pin(async { Ok(()) })),
+            true,
+        );
+
+        let seen_a = Arc::new(Mutex::new(Vec::new()));
+        let seen_b = Arc::new(Mutex::new(Vec::new()));
+        let log_a = seen_a.clone();
+        let log_b = seen_b.clone();
+
+        let id_a = EditorId::new();
+        let id_b = EditorId::new();
+
+        feed.register_editor(
+            id_a,
+            Arc::new(move |params| {
+                log_a.lock().unwrap().push(params);
+                Box::pin(async { Ok(RevealResult::default()) })
+            }),
+            CancellationToken::new(),
+        );
+        feed.register_editor(
+            id_b,
+            Arc::new(move |params| {
+                log_b.lock().unwrap().push(params);
+                Box::pin(async { Ok(RevealResult::default()) })
+            }),
+            CancellationToken::new(),
+        );
+
+        // Bind session to editor B
+        assert_eq!(feed.bind_editor(session_id, id_b), Ok(()));
+
+        let target = ConversationTarget {
+            workspace: tmp.path().to_path_buf(),
+            session_id,
+            incarnation,
+        };
+        let tool = RevealTool::for_session(Some(feed.clone()), target);
+        let ok = call(&tool, &cx, json!({"path": "file.rs"})).await;
+        assert_eq!(ok.status, ToolStatus::Ok);
+        assert!(seen_a.lock().unwrap().is_empty());
+        assert_eq!(seen_b.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reveal_fails_with_ambiguous_error_when_multiple_editors_unbound() {
+        use crate::navigator::conversation::EditorId;
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("file.rs"), "fn main() {}\n").unwrap();
+        let cx = cx(tmp.path());
+        let feed = ConversationFeed::with_workspace(tmp.path().to_path_buf());
+
+        feed.register_editor(
+            EditorId::new(),
+            Arc::new(|_| Box::pin(async { Ok(RevealResult::default()) })),
+            CancellationToken::new(),
+        );
+        feed.register_editor(
+            EditorId::new(),
+            Arc::new(|_| Box::pin(async { Ok(RevealResult::default()) })),
+            CancellationToken::new(),
+        );
+
+        let tool = RevealTool::new(Some(feed));
+        let res = call(&tool, &cx, json!({"path": "file.rs"})).await;
+        assert_eq!(res.error.unwrap().code, "editor_ambiguous");
+    }
+
+    #[tokio::test]
+    async fn reveal_cancels_when_editor_detaches_during_call() {
+        use crate::navigator::conversation::EditorId;
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("file.rs"), "fn main() {}\n").unwrap();
+        let cx = cx(tmp.path());
+        let feed = ConversationFeed::with_workspace(tmp.path().to_path_buf());
+
+        let id = EditorId::new();
+        let cancel = CancellationToken::new();
+
+        feed.register_editor(
+            id,
+            Arc::new(|_| {
+                Box::pin(async move {
+                    std::future::pending::<()>().await;
+                    Ok(RevealResult::default())
+                })
+            }),
+            cancel.clone(),
+        );
+
+        let tool = Arc::new(RevealTool::new(Some(feed.clone())));
+        let tool_call = {
+            let tool = tool.clone();
+            let cx = cx.clone();
+            tokio::spawn(async move { call(&tool, &cx, json!({"path": "file.rs"})).await })
+        };
+
+        // Detach editor while call is waiting
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        feed.unregister_editor(id);
+
+        let res = tool_call.await.unwrap();
+        assert_eq!(res.error.unwrap().code, "editor_detached");
+    }
+
+    #[tokio::test]
+    async fn reveal_fails_when_session_incarnation_is_invalidated() {
+        use ulid::Ulid;
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("file.rs"), "fn main() {}\n").unwrap();
+        let cx = cx(tmp.path());
+        let (feed, _) = editor(RevealResult::default());
+        let session_id = Ulid::generate();
+        let incarnation = Ulid::generate();
+        feed.register_session_incarnation(
+            session_id,
+            incarnation,
+            Arc::new(|_| Box::pin(async { Ok(()) })),
+            true,
+        );
+
+        let target = ConversationTarget {
+            workspace: tmp.path().to_path_buf(),
+            session_id,
+            incarnation,
+        };
+        let tool = RevealTool::for_session(Some(feed.clone()), target);
+
+        // Invalidate incarnation
+        feed.invalidate_session_incarnation(session_id, incarnation);
+
+        let res = call(&tool, &cx, json!({"path": "file.rs"})).await;
+        assert_eq!(res.error.unwrap().code, "editor_unavailable");
+    }
+
+    #[tokio::test]
+    async fn reveal_fails_on_workspace_mismatch() {
+        use std::path::PathBuf;
+        use ulid::Ulid;
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("file.rs"), "fn main() {}\n").unwrap();
+        let cx = cx(tmp.path());
+        let feed = ConversationFeed::with_workspace(tmp.path().to_path_buf());
+        feed.set_editor(Arc::new(|_| {
+            Box::pin(async { Ok(RevealResult::default()) })
+        }));
+        let session_id = Ulid::generate();
+        let incarnation = Ulid::generate();
+        feed.register_session_incarnation(
+            session_id,
+            incarnation,
+            Arc::new(|_| Box::pin(async { Ok(()) })),
+            true,
+        );
+
+        // Target points to a different workspace
+        let target = ConversationTarget {
+            workspace: PathBuf::from("/different/workspace"),
+            session_id,
+            incarnation,
+        };
+        let tool = RevealTool::for_session(Some(feed), target);
+        let res = call(&tool, &cx, json!({"path": "file.rs"})).await;
+        assert_eq!(res.error.unwrap().code, "workspace_mismatch");
     }
 }

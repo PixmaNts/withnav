@@ -59,10 +59,25 @@ pub fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     uri_to_path_str(uri.as_str()).map(PathBuf::from)
 }
 
+/// Percent-encodes a path string: unreserved ASCII characters and path separators are
+/// kept as-is, while all other bytes are escaped as `%XX`.
+pub fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/' | b'\\') {
+            out.push(b as char);
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(out, "%{:02X}", b);
+        }
+    }
+    out
+}
+
 /// Percent-decodes a URI component (the `%XX` escapes of the path).
 /// Returns `None` when a `%` is not followed by two hex digits: guessing a
 /// path from a malformed URI would key the document under the wrong file.
-fn percent_decode(s: &str) -> Option<String> {
+pub fn percent_decode(s: &str) -> Option<String> {
     let hex = |b: u8| -> Option<u8> {
         match b {
             b'0'..=b'9' => Some(b - b'0'),

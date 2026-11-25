@@ -40,7 +40,24 @@ pub const SENSITIVE_NAMES: &[&str] = &[
     "*.keyring",
 ];
 
+/// The WithNav server's record holds its bearer token: `server/owner.json` under a data
+/// directory, which may live inside a workspace. Matched as a path suffix, so an unrelated
+/// `owner.json` elsewhere stays readable.
+pub const OWNER_RECORD_SUFFIX: &[&str] = &["server", "owner.json"];
+
+fn is_owner_record(path: &std::path::Path) -> bool {
+    let parts: Vec<_> = path.components().map(|part| part.as_os_str()).collect();
+    parts.len() >= OWNER_RECORD_SUFFIX.len()
+        && parts[parts.len() - OWNER_RECORD_SUFFIX.len()..]
+            .iter()
+            .zip(OWNER_RECORD_SUFFIX)
+            .all(|(part, name)| part.eq_ignore_ascii_case(name))
+}
+
 pub fn sensitive_read(path: &std::path::Path) -> bool {
+    if is_owner_record(path) {
+        return true;
+    }
     static MATCHER: std::sync::OnceLock<globset::GlobSet> = std::sync::OnceLock::new();
     let matcher = MATCHER.get_or_init(|| {
         let mut builder = globset::GlobSetBuilder::new();
@@ -180,7 +197,12 @@ fn protected_targets(cx: &FloorContext) -> (Vec<PathBuf>, Vec<PathBuf>) {
     };
     add(&cx.config_dir, "config.json", false);
     add(&cx.config_dir, "flows", true);
-    for name in ["withnav.db", "withnav.db-wal", "withnav.db-shm"] {
+    for name in [
+        "withnav.db",
+        "withnav.db-wal",
+        "withnav.db-shm",
+        "withnav.db.owner.lock",
+    ] {
         add(&cx.data_dir, name, false);
     }
     (files, roots)
@@ -190,15 +212,15 @@ fn protected_resolved(path: &Path, cx: &FloorContext) -> bool {
     let (files, roots) = protected_targets(cx);
     #[cfg(windows)]
     {
-        let identity = |path: &Path| crate::tools::nofollow::path_identity(path);
+        let identity = |path: &Path| crate::tools::win_path::path_identity(path);
         identity(path).is_ok_and(|path| {
             files.iter().any(|file| {
                 identity(file).is_ok_and(|file| {
-                    crate::tools::nofollow::path_within(&path, &file)
-                        && crate::tools::nofollow::path_within(&file, &path)
+                    crate::tools::win_path::path_within(&path, &file)
+                        && crate::tools::win_path::path_within(&file, &path)
                 })
             }) || roots.iter().any(|root| {
-                identity(root).is_ok_and(|root| crate::tools::nofollow::path_within(&path, &root))
+                identity(root).is_ok_and(|root| crate::tools::win_path::path_within(&path, &root))
             })
         })
     }
@@ -276,7 +298,7 @@ pub fn resolve_path(path: &str, cx: &FloorContext) -> Option<PathBuf> {
 /// [`resolve_path`], optionally leaving a link in the final component alone.
 #[cfg(windows)]
 fn resolve(path: &str, cx: &FloorContext, _follow_last: bool) -> Option<PathBuf> {
-    crate::tools::nofollow::resolve_target(Path::new(path), &cx.workspace, cx.home.as_deref()).ok()
+    crate::tools::win_path::resolve_target(Path::new(path), &cx.workspace, cx.home.as_deref()).ok()
 }
 
 #[cfg(unix)]
@@ -404,7 +426,47 @@ fn native(call: &ToolCall, cx: &FloorContext, writes: bool) -> Floor {
 /// innocently can point at a key.
 fn names_credential(word: &str, cx: &FloorContext) -> bool {
     let plain: String = word.chars().filter(|c| !"[]{}*?\\".contains(*c)).collect();
-    credential(Path::new(&plain)) || resolve_path(word, cx).is_some_and(|path| credential(&path))
+    credential(Path::new(&plain))
+        || resolve_path(word, cx).is_some_and(|path| credential(&path))
+        || server_credential(word, cx)
+}
+
+fn server_credential(word: &str, cx: &FloorContext) -> bool {
+    let Some(ref data_dir) = cx.data_dir else {
+        return false;
+    };
+    let server_dir = data_dir.join("server");
+    let resolved_server =
+        resolve_path(&server_dir.to_string_lossy(), cx).unwrap_or_else(|| server_dir.clone());
+
+    let is_in = |p: &Path| -> bool {
+        #[cfg(windows)]
+        {
+            let identity = |path: &Path| crate::tools::win_path::path_identity(path);
+            identity(p).is_ok_and(|p| {
+                identity(&resolved_server)
+                    .is_ok_and(|root| crate::tools::win_path::path_within(&p, &root))
+                    || identity(&server_dir)
+                        .is_ok_and(|root| crate::tools::win_path::path_within(&p, &root))
+            })
+        }
+        #[cfg(unix)]
+        {
+            p.starts_with(&resolved_server) || p.starts_with(&server_dir)
+        }
+    };
+
+    if let Some(resolved) = resolve_path(word, cx)
+        && is_in(&resolved)
+    {
+        return true;
+    }
+    if let Some(requested) = resolve(word, cx, false)
+        && is_in(&requested)
+    {
+        return true;
+    }
+    false
 }
 
 /// Programs that only read their operands, so naming a protected file is free.
@@ -709,9 +771,9 @@ fn bash(command: &ShellCommand, cx: &FloorContext) -> Floor {
 #[cfg(windows)]
 fn not_a_windows_path(word: &str, cx: &FloorContext) -> bool {
     if let Ok(path) =
-        crate::tools::nofollow::requested_path(Path::new(word), &cx.workspace, cx.home.as_deref())
+        crate::tools::win_path::requested_path(Path::new(word), &cx.workspace, cx.home.as_deref())
     {
-        if matches!(crate::tools::nofollow::path_identity(&path), Err(crate::error::ToolError::Io(ref error)) if matches!(error.raw_os_error(), Some(123 | 206)))
+        if matches!(crate::tools::win_path::path_identity(&path), Err(crate::error::ToolError::Io(ref error)) if matches!(error.raw_os_error(), Some(123 | 206)))
         {
             return true;
         }
@@ -928,7 +990,7 @@ mod tests {
         ] {
             let target = f.cx.workspace.parent().unwrap().join(relative);
             std::fs::write(&target, "original").unwrap();
-            let canonical = crate::tools::nofollow::path_identity(&target).unwrap();
+            let canonical = crate::tools::win_path::path_identity(&target).unwrap();
             let mut spellings = vec![
                 format!("{}.", target.display()),
                 format!("{} ", target.display()),
@@ -943,7 +1005,7 @@ mod tests {
                 spellings.push(target.display().to_string().replace("flows\\", "flows.\\"));
                 spellings.push(target.display().to_string().replace("flows\\", "flows \\"));
             }
-            if let Some(alias) = crate::tools::nofollow::short_alias(target.parent().unwrap()) {
+            if let Some(alias) = crate::tools::win_path::short_alias(target.parent().unwrap()) {
                 spellings.push(
                     alias
                         .join(target.file_name().unwrap())
@@ -963,7 +1025,7 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(dispatch, canonical, "{spelling}");
-                crate::tools::nofollow::write_atomic(&dispatch, b"updated").unwrap();
+                std::fs::write(&dispatch, b"updated").unwrap();
                 assert_eq!(std::fs::read_to_string(&target).unwrap(), "updated");
                 for suffix in [":$DATA", "::$DATA"] {
                     assert!(matches!(
@@ -986,7 +1048,8 @@ mod tests {
             .join("file.toml");
         let resolved = crate::tools::canonical_path(&target).unwrap();
         assert!(resolved.to_string_lossy().starts_with(r"\\?\"));
-        crate::tools::nofollow::write_atomic(&resolved, b"flow").unwrap();
+        std::fs::create_dir_all(resolved.parent().unwrap()).unwrap();
+        std::fs::write(&resolved, b"flow").unwrap();
         assert!(protected_resolved(&resolved, &f.cx));
         assert!(
             matches!(check(&native_call("write", &target.to_string_lossy()), &[], &f.cx),
@@ -1080,8 +1143,8 @@ mod tests {
         let f = fixture();
         let target = f.cx.config_dir.as_ref().unwrap().join("config.json");
         std::fs::write(&target, "protected").unwrap();
-        let target = crate::tools::nofollow::path_identity(&target).unwrap();
-        let root = crate::tools::nofollow::drive_root(&target).unwrap();
+        let target = crate::tools::win_path::path_identity(&target).unwrap();
+        let root = crate::tools::win_path::drive_root(&target).unwrap();
         let tail = target
             .strip_prefix(&root)
             .unwrap()
@@ -1199,6 +1262,7 @@ mod tests {
             "data/withnav.db",
             "data/withnav.db-wal",
             "data/withnav.db-shm",
+            "data/withnav.db.owner.lock",
             "config/flows/mine/flow.json",
             "project/../config/config.json",
         ] {
@@ -1228,6 +1292,34 @@ mod tests {
             "project/config.json",
         ] {
             assert!(!protected_write(&root.join(path), &f.cx), "{path}");
+        }
+    }
+
+    #[test]
+    fn read_of_owner_json_hits_credential_floor() {
+        let f = fixture();
+        let server_dir = f.cx.data_dir.as_ref().unwrap().join("server");
+        std::fs::create_dir_all(&server_dir).unwrap();
+        let owner_json = server_dir.join("owner.json");
+        std::fs::write(&owner_json, "{}").unwrap();
+
+        let name = owner_json.to_string_lossy().into_owned();
+        assert!(matches!(
+            check(&native_call("read", &name), &[], &f.cx),
+            Floor::Credential(_)
+        ));
+
+        // A symbolic link to the record reaches the same floor; creating one needs a privilege
+        // Windows does not grant by default, so this half runs on Unix only.
+        #[cfg(unix)]
+        {
+            let ws_link = f.cx.workspace.join("owner_alias.json");
+            std::os::unix::fs::symlink(&owner_json, &ws_link).unwrap();
+            let link_name = ws_link.to_string_lossy().into_owned();
+            assert!(matches!(
+                check(&native_call("read", &link_name), &[], &f.cx),
+                Floor::Credential(_)
+            ));
         }
     }
 

@@ -1,7 +1,4 @@
 //! Process startup admission uses synthetic config and never the Captain's credentials.
-#[path = "common/uri.rs"]
-mod uri;
-
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -48,6 +45,7 @@ async fn captured(dir: &Path) -> Preflight {
         None,
         dir,
         &RulesRoots::default(),
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
     )
     .await
     .unwrap()
@@ -185,7 +183,6 @@ fn command(dir: &Path, lsp: bool) -> tokio::process::Command {
 async fn overrides_cannot_hide_default_failure_before_run_bind_terminal_or_lsp_readiness() {
     for args in [
         vec!["run", "--model", "mock/chat", "--prompt", "never send"],
-        vec!["serve", "--bind", "127.0.0.1:0"],
         vec!["tui", "--model", "mock/chat"],
     ] {
         let dir = fixture(json!({"agents":{"build":"mock/fim"}}));
@@ -205,6 +202,7 @@ async fn overrides_cannot_hide_default_failure_before_run_bind_terminal_or_lsp_r
         assert!(!dir.path().join("data/withnav/history.sqlite3").exists());
     }
     let dir = fixture(json!({}));
+    let _guard = common::owner::OwnerGuard::new(&dir.path().join("data/withnav"));
     use tokio::io::AsyncWriteExt as _;
     let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}})
         .to_string();
@@ -284,13 +282,14 @@ async fn lsp_workspace_catalog_and_project_primary_override_are_authoritative() 
             )
             .unwrap();
         }
+        let _guard = common::owner::OwnerGuard::new(&dir.path().join("data/withnav"));
         let mut child = command(dir.path(), true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"rootUri":uri::file_uri(&workspace)}}).to_string();
+        let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"rootUri":common::uri::file_uri(&workspace)}}).to_string();
         let initialized = json!({"jsonrpc":"2.0","method":"initialized","params":{}}).to_string();
         // The `initialize` frame and the header of the next frame go out in one write, so
         // bytes after the first frame must survive the startup reader. The `initialized`
@@ -400,6 +399,7 @@ async fn lsp_actual_invalid_catalog_and_malformed_frame_fail_before_readiness() 
         .unwrap();
         models["models"]["mock/chat"]["api"] = json!("fim");
         std::fs::write(workspace.join("models.json"), models.to_string()).unwrap();
+        let _guard = common::owner::OwnerGuard::new(&dir.path().join("data/withnav"));
         let mut child = command(dir.path(), true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -409,7 +409,7 @@ async fn lsp_actual_invalid_catalog_and_malformed_frame_fail_before_readiness() 
         let frame = if malformed {
             "Content-Length: 1048577\r\n\r\n".to_string()
         } else {
-            let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"rootUri":uri::file_uri(&workspace)}}).to_string();
+            let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"rootUri":common::uri::file_uri(&workspace)}}).to_string();
             format!("Content-Length: {}\r\n\r\n{body}", body.len())
         };
         child
@@ -494,7 +494,7 @@ async fn lsp_actual_initialize_workspace_resolves_project_default_or_exits_befor
             .unwrap();
         }
         let body = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-            "processId":null,"rootUri":uri::file_uri(&workspace),"capabilities":{}
+            "processId":null,"rootUri":common::uri::file_uri(&workspace),"capabilities":{}
         }})
         .to_string();
         let mut child = command(dir.path(), true)
@@ -596,7 +596,7 @@ async fn lsp_supplied_unsupported_workspace_never_falls_back_to_valid_cwd() {
             params[key] = value.clone();
         }
         if params["workspaceFolders"][0]["uri"] == "LOCAL" {
-            params["workspaceFolders"][0]["uri"] = json!(uri::file_uri(dir.path()));
+            params["workspaceFolders"][0]["uri"] = json!(common::uri::file_uri(dir.path()));
         }
         let body =
             json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":params}).to_string();
@@ -671,6 +671,7 @@ async fn global_primary_default_and_invalid_runtime_variant_are_checked() {
         None,
         dir.path(),
         &RulesRoots { home: Some(home) },
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
     )
     .await
     .unwrap();

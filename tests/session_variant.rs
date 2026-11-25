@@ -1,3 +1,4 @@
+#![cfg(feature = "test-support")]
 //! The session's model variant: chosen at creation (or the alias default),
 //! saved with the session, checked on resume, changed with `/variant` at the
 //! next turn boundary, and merged into the chat request body.
@@ -142,7 +143,6 @@ async fn resume_keeps_the_variant_and_a_missing_one_is_an_error() {
         .await
         .unwrap();
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
 
     state
         .create_or_resume_session(&ws, None, false, Some(id))
@@ -153,7 +153,6 @@ async fn resume_keeps_the_variant_and_a_missing_one_is_an_error() {
         Some("low")
     );
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
 
     // The alias stops offering "low".
     TestServerConfig::mock(tmp.path(), "http://127.0.0.1:1/v1")
@@ -444,6 +443,7 @@ async fn withnav_run_variant_reaches_the_wire() {
     )
     .unwrap();
     let (root, models) = (tmp.path().to_path_buf(), cfg.models_path());
+    let _owner_guard = common::owner::OwnerGuard::new(&root.join("data/withnav"));
     let run = move |variant: &'static str, ws: std::path::PathBuf| {
         let (root, models) = (root.clone(), models.clone());
         tokio::task::spawn_blocking(move || {
@@ -535,7 +535,6 @@ async fn stopped_generated(
         .await
         .expect("create");
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
     (state, id)
 }
 
@@ -577,7 +576,6 @@ async fn resume_with_a_stale_list_and_the_provider_down_keeps_the_variant() {
         .await
         .expect("stale list names it");
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
 
     // An old list that does not name it proves nothing either.
     std::fs::remove_dir_all(tmp.path().join("data/model-catalog")).unwrap();
@@ -755,13 +753,16 @@ async fn variant_errors_name_the_models_file_that_was_loaded() {
     let mut session = cfg.config().split().0;
     std::fs::copy(cfg.models_path(), ws.join("models.json")).unwrap();
     session.models_path = None;
-    let service = withnav::session::Service::new(session).expect("service");
+    let service = withnav::session::Service::new(
+        session,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
+    )
+    .expect("service");
     let id = service
         .create_session_with_variant(&ws, None, false, VariantChoice::from_word(Some("low")))
         .await
         .unwrap();
     service.close_session(id).await.unwrap();
-    service.history().flush().await.unwrap();
 
     std::fs::write(
         ws.join("models.json"),
@@ -819,7 +820,6 @@ async fn an_unknown_offer_resumes_with_the_saved_override() {
         .await
         .unwrap();
     state.close_session(id).await.unwrap();
-    state.history().flush().await.unwrap();
 
     // The explicit map is gone; the provider reports nothing.
     TestServerConfig::mock(tmp.path(), &url)

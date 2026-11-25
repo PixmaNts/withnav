@@ -19,9 +19,10 @@
 //! store, as "stopped" at its `last_seq`; a message post to it is a 409
 //! asking to resume first. Only an id the store does not know is a 404.
 //!
-//! Lifecycle gate: resume, close and delete take one async mutex for their
-//! whole run, so an id never has two runtimes and is never resumed while it
-//! is stopping or being deleted (the resume waits, then proceeds).
+//! Lifecycle gate: resume, close and delete take their conversation tree's
+//! gate ([`super::gate`]) for their whole run, so an id never has two
+//! runtimes and is never resumed while it is stopping or being deleted (the
+//! resume waits, then proceeds). Other trees do not wait.
 //!
 //! Lock discipline: the registry is a `std::sync::Mutex`
 //! whose critical sections are short and purely synchronous. Every `.await`
@@ -33,7 +34,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
@@ -43,6 +43,10 @@ use super::config::SessionConfig;
 use super::hooks::{NoHooks, SessionHooks, StartedSession};
 use super::message::{MessageAccepted, accept};
 use super::sender::SessionSender;
+use super::store::{ChildLink, StoredSession};
+#[cfg(any(test, feature = "test-support"))]
+use super::test_points::ChildPreparationBarrier;
+use super::test_points::{ParkPoint, TestPoints};
 use crate::agent::actor::AgentActor;
 use crate::agent::context::{ContextLimits, ContextSnapshot, ContextTracker};
 use crate::agent::definitions::{AgentDefinition, AgentId, AgentRoots, Agents};
@@ -63,20 +67,6 @@ use crate::provider::openai::ChatMessage;
 
 /// A session id on the wire and in the registry.
 pub type SessionId = Ulid;
-
-/// Debug-build seam for deterministic child admission integration tests.
-#[cfg(debug_assertions)]
-#[doc(hidden)]
-#[derive(Clone, Debug, Default)]
-pub struct ChildPreparationBarrier {
-    pub reached: Arc<tokio::sync::Notify>,
-    pub release: Arc<tokio::sync::Notify>,
-}
-
-#[cfg(debug_assertions)]
-fn take_barrier(slot: &Mutex<Option<ChildPreparationBarrier>>) -> Option<ChildPreparationBarrier> {
-    slot.lock().unwrap_or_else(|e| e.into_inner()).take()
-}
 
 /// Synchronously-readable lifecycle state of a LIVE registry entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,8 +100,6 @@ pub struct SessionHandle {
     /// Always `agent:main` this slice (the single root actor).
     pub actor_id: String,
     pub lifecycle: Lifecycle,
-    /// Last state the manager knows about ("idle" at creation).
-    pub actor_state: String,
     pub workspace: PathBuf,
     /// The alias and saved resolution the session talks to now: they change
     /// when `/model` switches it.
@@ -229,6 +217,18 @@ impl SessionHandle {
         self.selected().alias
     }
 
+    /// What the actor reports as doing in summaries and message acks:
+    /// `"stopped"` once stopping has begun (new commands and subscriptions
+    /// are rejected from there on), otherwise the runtime's live view of
+    /// its actor. Stopped and stored conversations report `"stopped"`
+    /// through the store instead.
+    pub fn actor_state(&self) -> &'static str {
+        match self.lifecycle {
+            Lifecycle::Stopping => "stopped",
+            Lifecycle::Active => self.status.actor_state(),
+        }
+    }
+
     /// Holds the selection while a reader looks at the other things that
     /// change with it (the context gauge). No `.await` while it is held.
     pub(crate) fn lock_selected(&self) -> MutexGuard<'_, SelectedModel> {
@@ -245,7 +245,7 @@ impl std::fmt::Debug for SessionHandle {
             .field("incarnation", &self.incarnation)
             .field("actor_id", &self.actor_id)
             .field("lifecycle", &self.lifecycle)
-            .field("actor_state", &self.actor_state)
+            .field("actor_state", &self.actor_state())
             .field("workspace", &self.workspace)
             .field("model", &self.model())
             .finish_non_exhaustive()
@@ -321,44 +321,12 @@ struct PreparedSession {
     save_late: bool,
     child_parent: Option<SessionId>,
     mcp_tools: crate::mcp::InstalledTools,
+    incarnation: Ulid,
 }
 
-/// Frozen `GET /v1/sessions/:id` body.
-#[derive(Debug, Clone, Serialize)]
-pub struct SessionSummary {
-    /// Captain setting `yolo`: the session runs with no permission control.
-    pub yolo: bool,
-    pub permissions_unavailable: Option<String>,
-    pub bypass: bool,
-    pub bypass_seq: u64,
-    pub incarnation: Option<String>,
-    pub editor: bool,
-    pub read_only: bool,
-    pub resume_disabled_reason: Option<String>,
-    pub session_id: String,
-    pub actor_state: String,
-    pub workspace: String,
-    pub model: String,
-    /// The primary agent the session runs as.
-    pub agent: String,
-    /// The model variant in use; `null` for none.
-    pub variant: Option<String>,
-    pub source: Option<String>,
-    pub variant_source: Option<String>,
-    pub gateway: String,
-    pub upstream_id: String,
-    pub current_seq: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub child_status: Option<String>,
-    #[serde(skip_serializing_if = "is_promptable")]
-    pub promptable: bool,
-}
-
-fn is_promptable(value: &bool) -> bool {
-    *value
-}
+/// The `GET /v1/sessions/:id` body, from the wire contract shared with clients.
+pub use withnav_client_api::protocol::SessionMetadata;
+pub type SessionSummary = SessionMetadata;
 
 /// The session service: the registry plus the immutable config. Cheap to
 /// clone (all fields are `Arc`).
@@ -370,31 +338,6 @@ pub struct Service {
     /// Publishes the MCP servers' status to every live session.
     pub(super) mcp_bridge: Arc<super::mcp::McpBridge>,
     pub(crate) flows: Arc<crate::flows::host::Host>,
-    #[cfg(debug_assertions)]
-    skill_loading_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    delivery_failure_countdown: Arc<std::sync::atomic::AtomicUsize>,
-    #[cfg(debug_assertions)]
-    pub(crate) shutdown_snapshot_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    pub(crate) watchdog_claim_write_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    pub(crate) watchdog_ownership_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    pub(crate) budget_notice_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    pub(crate) lifecycle_claim_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    pub(crate) watchdog_stop_failure: Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(debug_assertions)]
-    pub(crate) budget_notice_failure: Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(debug_assertions)]
-    pub(crate) watchdog_teardown_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    pub(crate) watchdog_test: Arc<Mutex<Option<super::subagents::supervisor::TestWatchdog>>>,
-    #[cfg(debug_assertions)]
-    pub(crate) root_watchdog_test:
-        Arc<Mutex<Option<super::subagents::root_watchdog::TestRootWatchdog>>>,
     _instance: Arc<super::instance::Instance>,
     /// The live sessions of this process; a closed session is removed.
     pub(super) sessions: Arc<Mutex<HashMap<SessionId, SessionHandle>>>,
@@ -406,37 +349,21 @@ pub struct Service {
     attachments: Option<Arc<super::attachments::AttachmentStore>>,
     /// Editor context injected by the host binary.
     hooks: Arc<dyn SessionHooks>,
-    /// The lifecycle gate: resume, close and delete run one at a time, so a
-    /// session id never has two runtimes and is never resumed while it is
-    /// being stopped or deleted. One client, so one gate for the service.
-    gate: Arc<tokio::sync::Mutex<()>>,
+    /// The lifecycle gates: resume, close and delete of one conversation
+    /// tree run one at a time, so a session id never has two runtimes and is
+    /// never resumed while it is being stopped or deleted; shutdown excludes
+    /// them all.
+    pub(super) gates: Arc<super::gate::LifecycleGates>,
     pub(super) admission_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Work admission for shutdown: whether the service is closing, and how many messages and
+    /// root-session starts are in flight. The shutdown decision and every admission take this
+    /// one lock, so a non-forced shutdown never interrupts work it did not see.
+    pub(super) admission_state: Arc<std::sync::Mutex<AdmissionState>>,
     pub(super) subagent_slots: Arc<Mutex<HashMap<SessionId, usize>>>,
     pub(super) unpublished_children: Arc<Mutex<std::collections::HashSet<SessionId>>>,
     pub(crate) child_operations: Arc<Mutex<HashMap<SessionId, CancellationToken>>>,
-    #[cfg(debug_assertions)]
-    child_registration_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    child_cleanup_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     catalog: crate::provider::catalog::ModelCatalog,
-    #[cfg(debug_assertions)]
-    child_preparation_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    child_publication_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    resume_registration_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    child_start_failure: Arc<Mutex<Option<bool>>>,
-    #[cfg(debug_assertions)]
-    child_bypass_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    bypass_commit_failure: Arc<std::sync::atomic::AtomicUsize>,
-    #[cfg(debug_assertions)]
-    bypass_commit_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    root_publication_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
-    #[cfg(debug_assertions)]
-    root_publication_failure: Arc<std::sync::atomic::AtomicBool>,
+    pub client_cache: Arc<crate::provider::openai::ClientCache>,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
     /// Test seam: parks a model switch after its store write and before its
@@ -447,11 +374,92 @@ pub struct Service {
     pub(super) preparation_barrier: Arc<Mutex<Option<Arc<super::run_command::Barrier>>>>,
     #[cfg(test)]
     pub(super) publish_barrier: Arc<Mutex<Option<Arc<super::run_command::Barrier>>>>,
+    pub(super) test_points: TestPoints,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct AdmissionState {
+    pub(super) closing: bool,
+    pub(super) pending: usize,
+}
+
+/// One admitted message or root-session start; the shutdown drain waits until none is left.
+#[derive(Debug)]
+pub(super) struct WorkTicket(Arc<std::sync::Mutex<AdmissionState>>);
+
+impl Drop for WorkTicket {
+    fn drop(&mut self) {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        state.pending = state.pending.saturating_sub(1);
+    }
 }
 
 impl Service {
+    /// Admits one message or root-session start, unless shutdown has begun.
+    pub(super) fn admit_work(&self) -> Result<WorkTicket, ServerError> {
+        let mut state = self
+            .admission_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if state.closing {
+            return Err(ServerError::ShuttingDown);
+        }
+        state.pending += 1;
+        Ok(WorkTicket(self.admission_state.clone()))
+    }
+
+    /// Starts closing the service, refusing new work from now on. Without `force` it refuses,
+    /// and changes nothing, while a turn runs, a Captain message waits in an inbox, or a
+    /// message or session start is being admitted: those would be interrupted by the drain.
+    pub fn try_close(&self, force: bool) -> bool {
+        let mut state = self
+            .admission_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !force && (state.pending > 0 || self.is_turn_running()) {
+            return false;
+        }
+        state.closing = true;
+        true
+    }
+
+    /// Admissions still in flight.
+    pub(super) fn pending_work(&self) -> usize {
+        self.admission_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pending
+    }
+
+    /// Probes for any held instance locks under `<database>.instances/`.
+    pub fn check_legacy_instances(database: &std::path::Path) -> Result<(), String> {
+        super::instance::check_legacy_instances(database)
+    }
+
+    /// Returns true if any active session currently has a turn running.
+    pub fn is_turn_running(&self) -> bool {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.values().any(|h| {
+            // Queued first: the runtime marks its turn running before it takes a queued
+            // Captain message off the count, so reading the count first and the running state
+            // second cannot miss a message passing from one to the other.
+            h.lifecycle == Lifecycle::Active
+                && (h.status.has_queued_captain()
+                    || h.status.selection.is_running()
+                    || h.status.actor_state() == "running")
+        })
+    }
+
+    /// Marks a session's turn as running for tests.
+    #[doc(hidden)]
+    pub async fn pin_session_turn(&self, session_id: SessionId) {
+        let handle = self.sessions.lock().unwrap().get(&session_id).cloned();
+        if let Some(handle) = handle {
+            handle.status.selection.pin_turn().await;
+        }
+    }
     /// Debug-build readiness seam: tests create frozen registries only after discovery settles.
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn mcp_statuses(&self) -> Vec<crate::mcp::ServerStatus> {
         self.mcp.statuses()
@@ -494,88 +502,12 @@ impl Service {
     pub async fn wait_for_mcp(&self) {
         self.mcp.wait_until_settled().await;
     }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn fail_delivery_commit(&self, ordinal: usize) {
-        self.delivery_failure_countdown
-            .store(ordinal, std::sync::atomic::Ordering::Release);
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_shutdown_snapshot(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .shutdown_snapshot_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub async fn watchdog_natural_retained(&self, child: SessionId) {
         if let Some(handle) = self.handle(child) {
             handle.status.watchdog.natural_retained.notified().await;
         }
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_watchdog_claim_write(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .watchdog_claim_write_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    /// Pauses the next budget-park notice after its first park check and
-    /// before its durable commit, the window a concurrent top-up can land in.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_budget_notice(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .budget_notice_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_watchdog_ownership(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .watchdog_ownership_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_lifecycle_claim(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .lifecycle_claim_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn fail_watchdog_stop_write(&self) {
-        self.watchdog_stop_failure
-            .store(true, std::sync::atomic::Ordering::Release);
-    }
-    /// Makes the next budget-notice enqueue fail, as a history write would.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn fail_budget_notice_enqueue(&self) {
-        self.budget_notice_failure
-            .store(true, std::sync::atomic::Ordering::Release);
-    }
-    /// Whether the failure armed by `fail_budget_notice_enqueue` is still unused.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn budget_notice_failure_armed(&self) -> bool {
-        self.budget_notice_failure
-            .load(std::sync::atomic::Ordering::Acquire)
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_watchdog_teardown(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .watchdog_teardown_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
     }
 
     /// Called under admission: publication/teardown retains ownership until completion.
@@ -593,12 +525,12 @@ impl Service {
             done,
         }
     }
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn expire_catalog_backoff(&self) {
         self.catalog.expire_failures();
     }
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn pause_negative_result_eligibility(
         &self,
@@ -628,127 +560,28 @@ impl Service {
             pending.cancelled().await;
         }
     }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_child_registration(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .child_registration_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-
-    /// Parks a child start inside the bypass gate, after its runtime is
-    /// registered and before its first prompt.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_child_bypass_gate(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .child_bypass_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-
-    /// Parks the next durable bypass write before it is recorded.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_bypass_commit(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .bypass_commit_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
 
     /// Whether an answer already holds the request waiting in `id`.
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn permission_claimed(&self, id: SessionId) -> bool {
         self.handle(id)
             .is_some_and(|handle| handle.status.permission_claimed())
     }
 
-    /// Makes the next durable bypass write fail.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn fail_bypass_commit(&self) {
-        self.fail_bypass_commit_after(0);
-    }
-
-    /// Makes the durable bypass write fail after `skip` successful ones.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn fail_bypass_commit_after(&self, skip: usize) {
-        self.bypass_commit_failure
-            .store(skip + 1, std::sync::atomic::Ordering::Release);
-    }
-
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_root_publication(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .root_publication_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn fail_root_publication(&self) {
-        self.root_publication_failure
-            .store(true, std::sync::atomic::Ordering::Release);
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_child_cleanup(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .child_cleanup_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn session_has_runtime(&self, id: SessionId) -> bool {
         self.handle(id).is_some()
     }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn fail_child_start(&self, publication: bool) {
-        *self
-            .child_start_failure
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(publication);
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_child_preparation(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .child_preparation_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_child_publication(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .child_publication_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn session_is_cancelled(&self, id: SessionId) -> bool {
         self.handle(id)
             .is_some_and(|h| h.session_cancel.is_cancelled())
     }
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_resume_registration(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .resume_registration_barrier
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
-    }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn reserved_child_count(&self, parent: SessionId) -> usize {
         self.subagent_slots
@@ -761,8 +594,11 @@ impl Service {
 
     /// A service without any editor behaviour ([`NoHooks`]). Fails when
     /// the history database cannot be opened.
-    pub fn new(config: SessionConfig) -> Result<Self, ServerError> {
-        Self::with_hooks(config, Arc::new(NoHooks))
+    pub fn new(
+        config: SessionConfig,
+        client_cache: Arc<crate::provider::openai::ClientCache>,
+    ) -> Result<Self, ServerError> {
+        Self::with_hooks(config, Arc::new(NoHooks), client_cache)
     }
 
     /// [`Service::new`] with the host's editor policy and lifecycle
@@ -770,6 +606,7 @@ impl Service {
     pub fn with_hooks(
         config: SessionConfig,
         hooks: Arc<dyn SessionHooks>,
+        client_cache: Arc<crate::provider::openai::ClientCache>,
     ) -> Result<Self, ServerError> {
         // No fallback: a conversation that cannot be saved is not served.
         let mut history =
@@ -806,78 +643,57 @@ impl Service {
                 config.config_dir.clone(),
                 config.data_dir.clone(),
                 config.models_path.clone(),
+                client_cache.clone(),
             )),
-            #[cfg(debug_assertions)]
-            delivery_failure_countdown: Arc::default(),
-            #[cfg(debug_assertions)]
-            shutdown_snapshot_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            watchdog_claim_write_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            watchdog_ownership_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            budget_notice_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            lifecycle_claim_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            watchdog_stop_failure: Arc::default(),
-            #[cfg(debug_assertions)]
-            budget_notice_failure: Arc::default(),
-            #[cfg(debug_assertions)]
-            watchdog_teardown_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            watchdog_test: Arc::default(),
-            #[cfg(debug_assertions)]
-            root_watchdog_test: Arc::default(),
             _instance: instance,
             sessions,
             config: Arc::new(config),
             history: Arc::new(history),
             attachments,
             hooks,
-            gate: Arc::new(tokio::sync::Mutex::new(())),
+            gates: Arc::default(),
             admission_gate: Arc::new(tokio::sync::Mutex::new(())),
+            admission_state: Arc::default(),
             subagent_slots: Arc::new(Mutex::new(seeded_slots)),
             unpublished_children: Arc::default(),
             child_operations: Arc::default(),
-            #[cfg(debug_assertions)]
-            child_registration_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            child_cleanup_barrier: Arc::default(),
             catalog,
-            #[cfg(debug_assertions)]
-            child_preparation_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            skill_loading_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            child_publication_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            resume_registration_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            child_start_failure: Arc::default(),
-            #[cfg(debug_assertions)]
-            child_bypass_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            bypass_commit_failure: Arc::default(),
-            #[cfg(debug_assertions)]
-            bypass_commit_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            root_publication_barrier: Arc::default(),
-            #[cfg(debug_assertions)]
-            root_publication_failure: Arc::default(),
+            client_cache,
             #[cfg(test)]
             install_barrier: Arc::default(),
             #[cfg(test)]
             preparation_barrier: Arc::default(),
             #[cfg(test)]
             publish_barrier: Arc::default(),
+            test_points: TestPoints::default(),
         })
     }
 
-    /// Takes the lifecycle gate. Hold the guard across the whole of a
-    /// resume, close or delete; never call a gated method while holding it.
-    pub(super) async fn lifecycle_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.gate.lock().await
+    /// Takes the lifecycle gate of `id`'s conversation tree. Hold the guard
+    /// across the whole of a resume, close or delete; never call a gated
+    /// method while holding it.
+    pub(super) async fn lifecycle_gate(
+        &self,
+        id: SessionId,
+    ) -> Result<super::gate::LifecycleGuard, ServerError> {
+        let root = self.tree_root(id).await?;
+        Ok(self.gates.tree(root).await)
+    }
+
+    /// The root of `id`'s conversation tree: its live parent, else its stored
+    /// parent link (a stopped child), else `id` itself. Children cannot start
+    /// children (ADR 0009), so one link is the whole way up; a link never
+    /// changes, so the root found here still holds once its gate is taken.
+    async fn tree_root(&self, id: SessionId) -> Result<SessionId, ServerError> {
+        if let Some(handle) = self.handle(id) {
+            return Ok(handle.parent_session_id.unwrap_or(id));
+        }
+        Ok(self
+            .history
+            .child_link(id)
+            .await
+            .map_err(ServerError::History)?
+            .map_or(id, |link| link.parent_id))
     }
 
     /// Fills the command's image references from this session's stored rows, before anything is
@@ -926,7 +742,7 @@ impl Service {
     }
 
     /// Debug-build observation seam for resume and child inheritance tests.
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn captain_task_probe(&self, id: SessionId) -> Option<String> {
         let handle = self.handle(id)?;
@@ -1109,14 +925,7 @@ impl Service {
             )
             .await;
         let prepared = prepared?;
-        #[cfg(debug_assertions)]
-        {
-            let barrier = take_barrier(&self.child_preparation_barrier);
-            if let Some(barrier) = barrier {
-                barrier.reached.notify_one();
-                barrier.release.notified().await;
-            }
-        }
+        self.test_points.park(ParkPoint::ChildPreparation).await;
         let _admission = self.child_admission(&parent_handle.session_cancel).await?;
         let current = self.routable_handle(parent).await?;
         if current.incarnation != incarnation || current.session_cancel.is_cancelled() {
@@ -1144,14 +953,7 @@ impl Service {
             done,
         };
         drop(_admission);
-        #[cfg(debug_assertions)]
-        {
-            let barrier = take_barrier(&self.child_publication_barrier);
-            if let Some(barrier) = barrier {
-                barrier.reached.notify_one();
-                barrier.release.notified().await;
-            }
-        }
+        self.test_points.park(ParkPoint::ChildPublication).await;
         if parent_handle.session_cancel.is_cancelled() {
             return Err(ServerError::SessionStopping);
         }
@@ -1210,27 +1012,9 @@ impl Service {
         }
         let mut reservation = reservation;
         reservation.committed = true;
-        #[cfg(debug_assertions)]
-        {
-            let barrier = take_barrier(&self.child_registration_barrier);
-            if let Some(barrier) = barrier {
-                barrier.reached.notify_one();
-                barrier.release.notified().await;
-            }
-        }
+        self.test_points.park(ParkPoint::ChildRegistration).await;
         let start = async {
-            #[cfg(debug_assertions)]
-            if self
-                .child_start_failure
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                == Some(&true)
-            {
-                self.child_start_failure
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take();
+            if self.test_points.child_start_publication_failure() {
                 return Err(ServerError::History(
                     "injected child publication failure".into(),
                 ));
@@ -1242,14 +1026,7 @@ impl Service {
             if parent_handle.session_cancel.is_cancelled() {
                 return Err(ServerError::SessionStopping);
             }
-            #[cfg(debug_assertions)]
-            {
-                let barrier = take_barrier(&self.child_bypass_barrier);
-                if let Some(barrier) = barrier {
-                    barrier.reached.notify_one();
-                    barrier.release.notified().await;
-                }
-            }
+            self.test_points.park(ParkPoint::ChildBypass).await;
             if let Some(handle) = self.handle(child) {
                 handle
                     .sequencer
@@ -1271,14 +1048,7 @@ impl Service {
                     )
                     .await?;
                 }
-                #[cfg(debug_assertions)]
-                if self
-                    .child_start_failure
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                    == Some(false)
-                {
+                if self.test_points.take_child_start_failure() == Some(false) {
                     return Err(ServerError::History("injected child start failure".into()));
                 }
                 accept(&handle, Command::child_prompt(child, prompt.to_string())).await?;
@@ -1290,14 +1060,7 @@ impl Service {
         .await;
         if let Err(error) = start {
             if let Some(handle) = self.mark_stopping(child) {
-                #[cfg(debug_assertions)]
-                {
-                    let barrier = take_barrier(&self.child_cleanup_barrier);
-                    if let Some(barrier) = barrier {
-                        barrier.reached.notify_one();
-                        barrier.release.notified().await;
-                    }
-                }
+                self.test_points.park(ParkPoint::ChildCleanup).await;
                 self.fence_and_remove(child, handle, "child start failed")
                     .await;
             }
@@ -1482,7 +1245,7 @@ impl Service {
     /// Explicitly archive an offline conversation. Any retained runtime (including
     /// stopping) is refused; stop it completely before marking its history.
     pub async fn mark_archive(&self, id: SessionId, reason: &str) -> Result<(), ServerError> {
-        let _lifecycle = self.lifecycle_gate().await;
+        let _lifecycle = self.lifecycle_gate(id).await?;
         let _admission = self.admission_gate.lock().await;
         if self.handle(id).is_some()
             || self
@@ -1495,7 +1258,6 @@ impl Service {
                 "archive marking requires an offline session with no retained runtime".into(),
             ));
         }
-        self.history.flush().await.map_err(ServerError::History)?;
         self.history
             .mark_archive(id, reason)
             .await
@@ -1507,7 +1269,10 @@ impl Service {
     /// caller names the source actor. `message.received` is sequenced before
     /// the command reaches the inbox, and only for an accepted command.
     pub async fn send(&self, mut command: Command) -> Result<MessageAccepted, ServerError> {
+        // Routing first: a closed session answers `ResumeRequired` whether or not the server is
+        // shutting down. The ticket is taken right after, before anything is enqueued.
         let handle = self.routable_handle(command.session_id).await?;
+        let _ticket = self.admit_work()?;
         if handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
         }
@@ -1543,18 +1308,7 @@ impl Service {
                     "this agent cannot use the skill tool".into(),
                 ));
             }
-            #[cfg(debug_assertions)]
-            {
-                let barrier = self
-                    .skill_loading_barrier
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .take();
-                if let Some(barrier) = barrier {
-                    barrier.reached.notify_one();
-                    barrier.release.notified().await;
-                }
-            }
+            self.test_points.park(ParkPoint::SkillLoading).await;
             let skills = handle.skills.clone();
             let skill_name = name.clone();
             let snapshot = tokio::task::spawn_blocking(move || skills.snapshot(&skill_name))
@@ -1578,16 +1332,6 @@ impl Service {
             }
         }
         accept(&handle, command).await
-    }
-
-    /// Debug-build seam to hold loading across an agent switch in deterministic tests.
-    #[cfg(debug_assertions)]
-    #[doc(hidden)]
-    pub fn pause_skill_loading(&self, barrier: ChildPreparationBarrier) {
-        *self
-            .skill_loading_barrier
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(barrier);
     }
 
     /// Lists only the session snapshot's catalog-visible skills and current tool policy.
@@ -1923,8 +1667,7 @@ impl Service {
             }
             // A resume waits for any stop or delete of this id to finish,
             // and holds the gate until the new runtime is registered.
-            let _gate = self.lifecycle_gate().await;
-            self.history.flush().await.map_err(ServerError::History)?;
+            let _gate = self.lifecycle_gate(id).await?;
             if let Some(reason) = self
                 .history
                 .meta(id)
@@ -1945,12 +1688,10 @@ impl Service {
                 return Ok((id, true));
             }
             // Stopped, or only on disk: rebuild under the same id from the
-            // stored row.
+            // stored row. Store-first ordering makes the closing session's last
+            // events (`session.end` included) durable before the fence, so the
+            // load below already sees the full stored sequence.
             let store = &self.history;
-            // The closing session's last events (`session.end` included) may
-            // still be queued: the load must see them, or the resumed
-            // sequence could restart below a seq a client already saw.
-            store.flush().await.map_err(ServerError::History)?;
             let Some((meta, transcript, compaction)) = store
                 .load_for_resume(id)
                 .await
@@ -1999,11 +1740,30 @@ impl Service {
     /// 404; a stored conversation with no registry entry answers "stopped"
     /// at its stored `last_seq`. `current_seq` = last EMITTED seq: for a
     /// live session it is the sequencer head minus one.
-    pub async fn session_summary(&self, id: SessionId) -> Result<SessionSummary, ServerError> {
+    pub async fn session_summary(&self, id: SessionId) -> Result<SessionMetadata, ServerError> {
+        let stored = self
+            .history
+            .meta_with_child_link(id)
+            .await
+            .map_err(ServerError::History)?;
+        self.summary_of(id, stored).await
+    }
+
+    /// The summary of `id` from its stored row (metadata and child link, read
+    /// by the caller) overlaid with its live handle when one exists. Reads
+    /// nothing from the store, so a list builds every row's summary from its
+    /// one list read.
+    pub(crate) async fn summary_of(
+        &self,
+        id: SessionId,
+        stored: Option<(StoredSession, Option<ChildLink>)>,
+    ) -> Result<SessionMetadata, ServerError> {
         // Clone out of the guard; the head query below is a plain sequencer
         // round-trip (the manager reads no events).
         let Some(handle) = self.handle(id) else {
-            return self.stored_summary(id).await;
+            let (meta, child_link) =
+                stored.ok_or_else(|| ServerError::SessionNotFound(id.to_string()))?;
+            return Self::stored_summary(id, meta, child_link);
         };
         let current_seq = handle
             .sequencer
@@ -2013,12 +1773,7 @@ impl Service {
             .unwrap_or(0);
         let selected = handle.selected();
         let identity = selected.identity();
-        let (metadata, child_link) = self
-            .history
-            .meta_with_child_link(id)
-            .await
-            .map_err(ServerError::History)?
-            .map_or((None, None), |(meta, link)| (Some(meta), link));
+        let (metadata, child_link) = stored.map_or((None, None), |(meta, link)| (Some(meta), link));
         let editor = metadata.as_ref().is_some_and(|meta| meta.editor);
         let resume_disabled_reason = metadata.and_then(|meta| meta.resume_disabled_reason);
         let bypass = *handle
@@ -2026,7 +1781,7 @@ impl Service {
             .bypass
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        Ok(SessionSummary {
+        Ok(SessionMetadata {
             permissions_unavailable: handle.status.permissions_unavailable.clone(),
             yolo: selected
                 .execution
@@ -2038,11 +1793,11 @@ impl Service {
             editor,
             read_only: resume_disabled_reason.is_some(),
             session_id: id.to_string(),
-            actor_state: handle.actor_state.clone(),
+            actor_state: handle.actor_state().to_string(),
             workspace: handle.workspace.display().to_string(),
             variant: selected.variant_name(),
             model: identity.model,
-            agent: selected.agent,
+            agent: Some(selected.agent),
             gateway: identity.gateway,
             upstream_id: identity.upstream_id,
             source: identity.source,
@@ -2061,13 +1816,11 @@ impl Service {
 
     /// The summary of a conversation that only the store holds (stopped, or
     /// from before a restart): stopped at its stored `last_seq`.
-    async fn stored_summary(&self, id: SessionId) -> Result<SessionSummary, ServerError> {
-        let (meta, child_link) = self
-            .history
-            .meta_with_child_link(id)
-            .await
-            .map_err(ServerError::History)?
-            .ok_or_else(|| ServerError::SessionNotFound(id.to_string()))?;
+    fn stored_summary(
+        id: SessionId,
+        meta: StoredSession,
+        child_link: Option<ChildLink>,
+    ) -> Result<SessionMetadata, ServerError> {
         let agent = meta
             .primary_agent
             .as_deref()
@@ -2085,7 +1838,7 @@ impl Service {
             meta.variant.clone(),
             meta.provenance.as_ref(),
         );
-        Ok(SessionSummary {
+        Ok(SessionMetadata {
             yolo: false,
             permissions_unavailable: None,
             bypass: false,
@@ -2101,9 +1854,10 @@ impl Service {
             upstream_id: identity.upstream_id,
             source: identity.source,
             variant_source: identity.variant_source,
-            agent: meta
-                .primary_agent
-                .unwrap_or_else(|| AgentId::build().to_string()),
+            agent: Some(
+                meta.primary_agent
+                    .unwrap_or_else(|| AgentId::build().to_string()),
+            ),
             variant: meta.variant,
             current_seq: meta.last_seq,
             parent_session_id: child_link.as_ref().map(|link| link.parent_id.to_string()),
@@ -2196,30 +1950,151 @@ impl Service {
             .map_err(ServerError::History)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_shutdown_snapshot(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_shutdown_snapshot(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_watchdog_claim_write(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_watchdog_claim_write(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_budget_notice(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_budget_notice(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_watchdog_ownership(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_watchdog_ownership(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_lifecycle_claim(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_lifecycle_claim(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fail_watchdog_stop_write(&self) {
+        self.test_points.fail_watchdog_stop_write()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fail_budget_notice_enqueue(&self) {
+        self.test_points.fail_budget_notice_enqueue()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn budget_notice_failure_armed(&self) -> bool {
+        self.test_points.budget_notice_failure_armed()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_watchdog_teardown(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_watchdog_teardown(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_child_registration(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_child_registration(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_child_bypass_gate(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_child_bypass_gate(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_bypass_commit(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_bypass_commit(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fail_bypass_commit(&self) {
+        self.test_points.fail_bypass_commit()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fail_bypass_commit_after(&self, skip: usize) {
+        self.test_points.fail_bypass_commit_after(skip)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_root_publication(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_root_publication(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fail_root_publication(&self) {
+        self.test_points.fail_root_publication()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_child_cleanup(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_child_cleanup(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fail_child_start(&self, publication: bool) {
+        self.test_points.fail_child_start(publication)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_child_preparation(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_child_preparation(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_child_publication(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_child_publication(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_resume_registration(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_resume_registration(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn pause_skill_loading(&self, barrier: ChildPreparationBarrier) {
+        self.test_points.pause_skill_loading(barrier)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn fail_delivery_commit(&self, ordinal: usize) {
+        self.test_points.fail_delivery_commit(ordinal)
+    }
+
     fn bypass_commit(&self, id: SessionId) -> crate::bus::sequencer::AckedCommit {
         let history = self.history.clone();
-        #[cfg(debug_assertions)]
-        let failure = self.bypass_commit_failure.clone();
-        #[cfg(debug_assertions)]
-        let barrier = self.bypass_commit_barrier.clone();
+        let bypass_seam = self.test_points.bypass_commit_seam();
         Box::new(move |envelope| {
             Box::pin(async move {
-                #[cfg(debug_assertions)]
-                {
-                    let barrier = barrier.lock().unwrap_or_else(|e| e.into_inner()).take();
-                    if let Some(barrier) = barrier {
-                        barrier.reached.notify_one();
-                        barrier.release.notified().await;
-                    }
-                    // Test seam: one writer at a time, so load/store is enough.
-                    let left = failure.load(std::sync::atomic::Ordering::Acquire);
-                    if left > 0 {
-                        failure.store(left - 1, std::sync::atomic::Ordering::Release);
-                    }
-                    let fails = left == 1;
-                    if fails {
-                        return Err("injected bypass commit failure".into());
-                    }
+                if bypass_seam.before_commit().await {
+                    return Err("injected bypass commit failure".into());
                 }
                 history.append_event_acked(id, envelope).await
             })
@@ -2387,6 +2262,13 @@ impl Service {
         child_parent: Option<SessionId>,
         inherited: Option<SelectedModel>,
     ) -> Result<SessionId, ServerError> {
+        // Held until the session is registered, so the shutdown drain, which waits for every
+        // ticket, finds it in the registry and ends it normally.
+        let _ticket = if child_parent.is_none() {
+            Some(self.admit_work()?)
+        } else {
+            None
+        };
         let prepared = self
             .prepare_session_kind(
                 workspace,
@@ -2412,21 +2294,9 @@ impl Service {
             None
         };
         self.store_prepared(&prepared).await?;
-        #[cfg(debug_assertions)]
         if root_operation.is_some() {
-            let barrier = self
-                .root_publication_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
-            if let Some(barrier) = barrier {
-                barrier.reached.notify_one();
-                barrier.release.notified().await;
-            }
-            if self
-                .root_publication_failure
-                .swap(false, std::sync::atomic::Ordering::AcqRel)
-            {
+            self.test_points.park(ParkPoint::RootPublication).await;
+            if self.test_points.take_root_publication_failure() {
                 return Err(ServerError::History(
                     "injected root publication failure".into(),
                 ));
@@ -2674,7 +2544,7 @@ impl Service {
                 None => match settings.permissions_scratch_dirs() {
                     Ok(paths) => paths,
                     Err(error) => {
-                        crate::agent::scratch::warn_once(&error);
+                        warn_scratch_once(&error);
                         Vec::new()
                     }
                 },
@@ -2712,6 +2582,7 @@ impl Service {
                 allowed.clone(),
                 *read_only,
                 &mcp_registry,
+                self.client_cache.clone(),
             ),
             None => build_actor(
                 &workspace,
@@ -2720,6 +2591,7 @@ impl Service {
                 api_key,
                 session_cancel.child_token(),
                 &mcp_registry,
+                self.client_cache.clone(),
             ),
         };
         // A subagent hands its tools the secrets of the tree it works for.
@@ -2795,6 +2667,7 @@ impl Service {
             self.config.models_path.as_deref(),
             &workspace,
             &self.config.config_dir,
+            self.client_cache.clone(),
         );
         actor.compaction_catalog = Some(self.catalog.clone());
         actor.yolo = execution.yolo;
@@ -2838,19 +2711,16 @@ impl Service {
             let path = match scratch_candidate(config_root.as_deref(), path) {
                 Ok(path) => path,
                 Err(error) => {
-                    crate::agent::scratch::warn_once(&error);
+                    warn_scratch_once(&error);
                     continue;
                 }
             };
-            match crate::agent::scratch::Identity::capture(&path) {
-                Ok(identity) => {
-                    actor
-                        .tool_context
-                        .writable_roots
-                        .push(identity.path.clone());
-                    actor.scratch_roots.push(identity);
+            match prepare_scratch(&path) {
+                Ok(root) => {
+                    actor.tool_context.writable_roots.push(root.clone());
+                    actor.scratch_roots.push(root);
                 }
-                Err(error) => crate::agent::scratch::warn_once(&error),
+                Err(error) => warn_scratch_once(&error),
             }
         }
         if let Some((_, _, captain_task, _, _, _)) = &child_policy {
@@ -2885,7 +2755,7 @@ impl Service {
                         &self.catalog,
                         resolved,
                         &api_key,
-                        &crate::provider::openai::ClientCache::new(),
+                        &self.client_cache,
                     )
                     .await
                     .ok()?;
@@ -2914,7 +2784,15 @@ impl Service {
                 .await;
             }
         }
-        self.hooks.configure_actor(editor, &mut actor);
+        let incarnation = Ulid::generate();
+        let actor_cx = super::hooks::StartedSession {
+            id: session_id,
+            workspace: workspace.clone(),
+            editor,
+            resumed: resumed.is_some(),
+            incarnation,
+        };
+        self.hooks.configure_session_actor(&actor_cx, &mut actor);
         if child_policy.is_some() {
             actor.max_steps = crate::agent::run_loop::max_steps();
         }
@@ -2956,6 +2834,7 @@ impl Service {
             save_late,
             child_parent,
             mcp_tools,
+            incarnation,
         })
     }
 
@@ -3009,26 +2888,24 @@ impl Service {
             save_late: _,
             child_parent,
             mcp_tools,
+            incarnation,
         } = prepared;
         let next_seq = resumed
             .as_ref()
             .map(|loaded| loaded.meta.last_seq + 1)
             .unwrap_or(0);
-        #[cfg(debug_assertions)]
         if resumed.is_some() {
-            let barrier = self
-                .resume_registration_barrier
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take();
-            if let Some(barrier) = barrier {
-                barrier.reached.notify_one();
-                barrier.release.notified().await;
-            }
+            self.test_points.park(ParkPoint::ResumeRegistration).await;
         }
-        // The in-memory ring starts empty on resume: subscribers replay from
-        // the store, and the ring is only a bounded fallback cache.
-        let bus = SessionBus::default();
+        // The in-memory ring of a fresh session starts empty with no floor.
+        // A resumed one starts with the stored `last_seq` as its floor: the
+        // ring never holds the conversation's past (only the store does), so
+        // it must refuse a replay it cannot serve gaplessly — the fallback
+        // path then answers `Resync` instead of a partial history.
+        let bus = match resumed.as_ref() {
+            Some(loaded) => SessionBus::starting_after(loaded.meta.last_seq),
+            None => SessionBus::new(),
+        };
         let is_resume = resumed.is_some();
 
         // History hooks: a persisting emitter + a turn-end transcript
@@ -3152,7 +3029,11 @@ impl Service {
         let saver_history = history.clone();
         let on_turn_end: Option<crate::bus::runtime::TurnEndHook> =
             Some(Box::new(move |transcript: &[ChatMessage]| {
-                history.save_transcript(session_id, transcript.to_vec());
+                let history = history.clone();
+                let transcript = transcript.to_vec();
+                Box::pin(async move {
+                    let _ = history.save_transcript(session_id, transcript).await;
+                })
             }));
         let completion: Option<crate::bus::runtime::CompletionHook> =
             if let Some(parent) = child_parent {
@@ -3231,7 +3112,6 @@ impl Service {
             status.install_captain_commit(Arc::new(move |transcript| {
                 let (history, sequencer) = (history.clone(), captain_sequencer.clone());
                 Box::pin(async move {
-                    history.flush().await?;
                     let candidate = Candidate::new(EventKind::CommandResult, serde_json::json!({
                         "name":"watchdog","ok":true,"operation_id":Ulid::generate(),
                         "data":{"captain_committed":true,"message":"Fresh captain instruction checkpointed"}
@@ -3277,15 +3157,12 @@ impl Service {
             }));
             let history = self.history.clone();
             let delivery_sequencer = sequencer.clone();
-            #[cfg(debug_assertions)]
-            let failure_countdown = self.delivery_failure_countdown.clone();
+            let delivery_seam = self.test_points.delivery_seam();
             status.install_delivery(Arc::new(move |transcript, mid_turn| {
                 let history = history.clone();
                 let sequencer = delivery_sequencer.clone();
-                #[cfg(debug_assertions)]
-                let failure_countdown = failure_countdown.clone();
+                let delivery_seam = delivery_seam.clone();
                 Box::pin(async move {
-                    history.flush().await?;
                     let mut notices = history.unconsumed_completions(session_id).await?;
                     notices.retain(|(_, payload, _)| !mid_turn || payload["delivery"] == "steer");
                     if notices.is_empty() {
@@ -3315,22 +3192,10 @@ impl Service {
                         transcript.push(ChatMessage::User { provenance: crate::provider::openai::UserProvenance::Subagent, content: text, images: Vec::new() });
                         let committed_transcript = transcript.clone();
                         let committed_history = history.clone();
-                        #[cfg(debug_assertions)]
-                        let failure_countdown = failure_countdown.clone();
+                        let delivery_seam = delivery_seam.clone();
                         let result = sequencer.commit_acked(event, Box::new(move |envelope| Box::pin(async move {
-                            #[cfg(debug_assertions)]
-                            {
-                                // `fetch_update` is deprecated in Rust 1.99 in favour of `try_update`, which
-                                // does not exist on the minimum supported Rust (1.89, Cargo.toml); keep the old
-                                // name until the minimum moves past the rename.
-                                #[allow(deprecated)]
-                                let previous = failure_countdown.fetch_update(std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire, |n| {
-                                    if n == usize::MAX { Some(n) } else { n.checked_sub(1) }
-                                });
-                                if previous == Ok(1) || previous == Ok(usize::MAX) {
-                                    failure_countdown.store(usize::MAX, std::sync::atomic::Ordering::Release);
-                                    return Err("injected delivery commit failure".into());
-                                }
+                            if delivery_seam.should_fail_commit() {
+                                return Err("injected delivery commit failure".into());
                             }
                             committed_history.consume_completions_shared(session_id, vec![child], committed_transcript, Some(envelope)).await
                         }))).await;
@@ -3431,7 +3296,6 @@ impl Service {
             completion,
         ))));
 
-        let incarnation = Ulid::generate();
         status.watchdog.install_incarnation(incarnation);
         let handle = SessionHandle {
             flows,
@@ -3445,7 +3309,6 @@ impl Service {
             runtime_task,
             actor_id: ROOT_ACTOR_ID.to_string(),
             lifecycle: Lifecycle::Active,
-            actor_state: "idle".to_string(),
             workspace: workspace.clone(),
             selected: selected_model,
             status,
@@ -3461,7 +3324,12 @@ impl Service {
             } else {
                 None
             };
+            let supervised = child_parent.is_none().then(|| handle.clone());
             self.lock_sessions().insert(session_id, handle);
+            // Registered first: an end seen at once still finds its entry.
+            if let Some(handle) = supervised {
+                self.supervise_runtime(session_id, &handle);
+            }
         }
         if child_parent.is_none()
             && let Some(owner) = self.handle(session_id)
@@ -3514,6 +3382,7 @@ impl Service {
                     editor,
                     workspace,
                     resumed: is_resume,
+                    incarnation,
                 },
                 sender,
                 subscription,
@@ -3611,6 +3480,35 @@ pub(crate) use resolve::exact_variant;
 #[cfg(test)]
 pub(crate) mod tests;
 
+/// Logs the first scratch directory problem of the process; later ones are the same
+/// misconfiguration and would only repeat it.
+fn warn_scratch_once(error: &str) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!("scratch directory disabled: {error}");
+    }
+}
+
+/// Creates a scratch directory private to the current user (mode 0700 on Unix) and
+/// returns its canonical path.
+fn prepare_scratch(path: &std::path::Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("scratch directory must be absolute".into());
+    }
+    std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+    }
+    let path = path.canonicalize().map_err(|e| e.to_string())?;
+    if !path.is_dir() {
+        return Err("scratch path is not a directory".into());
+    }
+    Ok(path)
+}
+
 /// WithNav's configuration directory as scratch candidates are compared with it; `None`
 /// when it cannot be resolved, which refuses every scratch directory.
 fn scratch_config_root(config_dir: &std::path::Path) -> Option<PathBuf> {
@@ -3648,8 +3546,8 @@ fn scratch_candidate(
     #[cfg(windows)]
     {
         let path = crate::tools::canonical_path(path).map_err(|error| error.to_string())?;
-        if crate::tools::nofollow::path_within(root, &path)
-            || crate::tools::nofollow::path_within(&path, root)
+        if crate::tools::win_path::path_within(root, &path)
+            || crate::tools::win_path::path_within(&path, root)
         {
             return Err(OVERLAP.into());
         }
@@ -3683,7 +3581,7 @@ mod scratch_candidate_tests {
         let tmp = tempfile::tempdir().unwrap();
         let config = tmp.path().join("withnav long configuration directory");
         std::fs::create_dir_all(&config).unwrap();
-        let Some(short) = crate::tools::nofollow::short_alias(&config).filter(|s| s != &config)
+        let Some(short) = crate::tools::win_path::short_alias(&config).filter(|s| s != &config)
         else {
             eprintln!("skipping: the volume does not generate 8.3 short names");
             return;
@@ -3701,14 +3599,11 @@ fn compaction_decision(
     models_path: Option<&std::path::Path>,
     workspace: &std::path::Path,
     config_dir: &std::path::Path,
+    cache: Arc<crate::provider::openai::ClientCache>,
 ) -> Option<Arc<dyn crate::provider::systemone::DecisionModel>> {
     let (models, _) = crate::provider::config::load_models(models_path, workspace, config_dir)
         .map_err(|error| tracing::warn!(%error, "compaction judge disabled: catalog unavailable"))
         .ok()?;
-    let client = crate::provider::layers::available_instinct(
-        &models,
-        config_dir,
-        Arc::new(crate::provider::openai::ClientCache::new()),
-    )?;
+    let client = crate::provider::layers::available_instinct(&models, config_dir, cache)?;
     Some(Arc::new(client))
 }

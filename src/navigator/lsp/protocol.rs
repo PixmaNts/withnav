@@ -160,6 +160,16 @@ pub struct InlineCompletionResult {
     pub request_id: Option<String>,
 }
 
+/// Client -> server: bind or unbind this editor connection to a conversation session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationParams {
+    pub session_id: String,
+    #[serde(default)]
+    pub incarnation: Option<String>,
+    pub focus: bool,
+}
+
 /// Client -> server: the extension reporting that a suggestion was
 /// displayed; `shownAtMs` is the display timestamp so the log holds both
 /// halves of the pause-to-display latency.

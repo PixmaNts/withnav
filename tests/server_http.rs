@@ -247,6 +247,7 @@ async fn real_socket_serve_answers_health_create_and_get() {
             ..config
         },
         listener,
+        std::sync::Arc::new(withnav_provider::openai::ClientCache::new()),
     );
 
     let server = tokio::spawn(bound);

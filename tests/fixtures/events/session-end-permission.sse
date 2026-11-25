@@ -1,0 +1,30 @@
+id: 0
+data: {"schema_version":1,"event_id":"01M48ENP000000000000000000","seq":0,"session_id":"01M48ENPSESS00000000000000","actor_id":"agent:main","kind":"session.start","occurred_at":"2026-10-06T16:10:00.000Z","causation_id":null,"correlation_id":null,"payload":{"root_actor_id":"agent:main","workspace":"/tmp/opencode/navai-int-ws"}}
+
+id: 1
+data: {"schema_version":1,"event_id":"01M48ENP000000000000000001","seq":1,"session_id":"01M48ENPSESS00000000000000","actor_id":"agent:main","kind":"message.received","occurred_at":"2026-10-06T16:10:01.000Z","causation_id":"01M48ENPTASK00000000000000","correlation_id":null,"payload":{"command_id":"01M48ENPTASK00000000000000","content":"List the files, then read the credentials","mode":"next-turn","source":"user:http","target":"agent:main"}}
+
+id: 2
+data: {"schema_version":1,"event_id":"01M48ENP000000000000000002","seq":2,"session_id":"01M48ENPSESS00000000000000","actor_id":"agent:main","kind":"turn.start","occurred_at":"2026-10-06T16:10:01.100Z","causation_id":null,"correlation_id":"01M48ENPTASK00000000000000","payload":{"actor_id":"agent:main","task_id":"01M48ENPTASK00000000000000","turn_id":"01M48ENPTRN000000000000000"}}
+
+id: 3
+data: {"schema_version":1,"event_id":"01M48ENP000000000000000003","seq":3,"session_id":"01M48ENPSESS00000000000000","actor_id":"agent:main","kind":"llm.response","occurred_at":"2026-10-06T16:10:02.000Z","causation_id":null,"correlation_id":"01M48ENPTASK00000000000000","payload":{"finish_reason":"tool_calls","step_id":"01M48ENPSTP000000000000000","turn_id":"01M48ENPTRN000000000000000","message":{"finish_reason":"tool_calls","text":"","thinking":"","tool_calls":[{"id":"toolu_01listcall00000000000001","name":"glob","args":{"pattern":"**/*"},"args_valid":true},{"id":"toolu_01gatedcall00000000001","name":"bash","args":{"command":"cat ~/.ssh/config"},"args_valid":true}]},"usage":{"completion_tokens":120,"prompt_tokens":800,"total_tokens":920}}}
+
+id: 4
+data: {"schema_version":1,"event_id":"01M48ENP000000000000000004","seq":4,"session_id":"01M48ENPSESS00000000000000","actor_id":"agent:main","kind":"tool.pre_call","occurred_at":"2026-10-06T16:10:02.100Z","causation_id":null,"correlation_id":"01M48ENPTASK00000000000000","payload":{"actor_id":"agent:main","args":{"pattern":"**/*"},"name":"glob","source":"native","tool_call_id":"toolu_01listcall00000000000001"}}
+
+id: 5
+data: {"schema_version":1,"event_id":"01M48ENP000000000000000005","seq":5,"session_id":"01M48ENPSESS00000000000000","actor_id":"agent:main","kind":"tool.post_call","occurred_at":"2026-10-06T16:10:02.150Z","causation_id":null,"correlation_id":"01M48ENPTASK00000000000000","payload":{"actor_id":"agent:main","metadata":{"duration_ms":2},"name":"glob","output":"README.md","status":"ok","tool_call_id":"toolu_01listcall00000000000001"}}
+
+id: 6
+data: {"schema_version":1,"event_id":"01M48ENP000000000000000006","seq":6,"session_id":"01M48ENPSESS00000000000000","actor_id":"agent:main","kind":"permission.requested","occurred_at":"2026-10-06T16:10:03.000Z","causation_id":null,"correlation_id":"01M48ENPTASK00000000000000","payload":{"agent":"build","arguments":"{\"command\":\"cat ~/.ssh/config\"}","reason":"Sensitive credential/key access requires a typed driver decision; approve once or deny","request_id":"01M48ENPREQ00000000000000","scope":{"kind":"folder","value":"/tmp/opencode/navai-int-ws"},"tool":"bash","tool_call_id":"toolu_01gatedcall00000000001"}}
+
+id: 7
+data: {"schema_version":1,"event_id":"01M48ENP000000000000000007","seq":7,"session_id":"01M48ENPSESS00000000000000","actor_id":"agent:main","kind":"turn.end","occurred_at":"2026-10-06T16:10:03.100Z","causation_id":null,"correlation_id":"01M48ENPTASK00000000000000","payload":{"actor_id":"agent:main","duration_ms":2000,"outcome":"yielded","turn_id":"01M48ENPTRN000000000000000"}}
+
+id: 8
+data: {"schema_version":1,"event_id":"01M48ENP000000000000000008","seq":8,"session_id":"01M48ENPSESS00000000000000","actor_id":"agent:main","kind":"agent.state","occurred_at":"2026-10-06T16:10:03.100Z","causation_id":null,"correlation_id":"01M48ENPTASK00000000000000","payload":{"actor_id":"agent:main","from":"running","to":"yielded"}}
+
+id: 9
+data: {"schema_version":1,"event_id":"01M48ENP000000000000000009","seq":9,"session_id":"01M48ENPSESS00000000000000","actor_id":"agent:main","kind":"session.end","occurred_at":"2026-10-06T16:10:04.000Z","causation_id":null,"correlation_id":null,"payload":{}}
+

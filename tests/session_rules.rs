@@ -243,6 +243,7 @@ async fn withnav_run_sends_the_rules_too() {
     .unwrap();
     let models = env.root.join("models.json");
     let (ws, root) = (env.ws.clone(), env.root.clone());
+    let _owner_guard = common::owner::OwnerGuard::new(&root.join("data/withnav"));
     let out = tokio::task::spawn_blocking(move || {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_nav"));
         common::isolate(&mut command, &root);

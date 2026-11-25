@@ -117,6 +117,16 @@ export namespace ServerInfoNotification {
   export const type = new NotificationType<ServerInfoParams>("withnav/serverInfo");
 }
 
+export interface ConversationBindingParams {
+  sessionId: string;
+  incarnation?: string;
+  focus: boolean;
+}
+
+export namespace ConversationBindingNotification {
+  export const type = new NotificationType<ConversationBindingParams>("withnav/conversation");
+}
+
 export namespace RemarkNotification {
   export const type = new NotificationType<RemarkParams>("withnav/remark");
 }

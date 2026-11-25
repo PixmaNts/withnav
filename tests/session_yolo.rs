@@ -112,7 +112,6 @@ async fn a_resume_reads_the_current_setting() {
         let id = state.create_session(&env.ws, None, false).await.unwrap();
         assert_eq!(yolo_of(&state, id).await, before);
         state.close_session(id).await.unwrap();
-        state.history().flush().await.unwrap();
         settings(&env, Some(!before), plain_agents());
         let (resumed, was_resumed) = state
             .create_or_resume_session(&env.ws, None, false, Some(id))
@@ -207,7 +206,6 @@ async fn wait_for_kind(state: &AppState, id: ulid::Ulid, kind: &str) -> Value {
 async fn await_transcript(state: &AppState, id: ulid::Ulid) {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            state.history().flush().await.expect("flush");
             let stored = state.history().load(id).await.unwrap().expect("session");
             if !stored.transcript.is_empty() {
                 return;

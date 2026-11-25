@@ -8,6 +8,10 @@
 //! `yielded`, its question is shown by the yield block) and at `session.end`; running tools at `turn.end`
 //! (`interrupted`, `error`) and `session.end`. No new state: `Interrupted` is reused. Streamed tool-call fragments are never rendered ("preparing" is not shown): they
 //! are only buffered per index until the step's `llm.response` replaces them.
+//! `session.end` also settles every still-open permission prompt as `cancelled`: a closed session
+//! takes no answer, and an isolated end (a replay gap, a capture that lost the server's own
+//! `permission.resolved cancelled`) must not leave a prompt answerable. Settled and stale prompts
+//! keep what the stream said.
 use crate::{
     ProtocolError,
     children::{ChildAgent, ChildStatus},
@@ -93,6 +97,161 @@ mod tests {
             .unwrap();
             assert!(state.conversation.pending_tool_fragments.is_empty());
         }
+    }
+
+    fn permission_envelope(seq: u64, request_id: &str, call_id: &str) -> EventEnvelope {
+        EventEnvelope::new(
+            Ulid::generate(),
+            seq,
+            EventKind::PermissionRequested,
+            json!({
+                "request_id": request_id,
+                "tool_call_id": call_id,
+                "tool": "bash",
+                "arguments": "{\"command\":\"ls\"}",
+                "scope": {"kind": "folder", "value": "/w"},
+                "agent": "build",
+                "reason": "r",
+            }),
+        )
+    }
+
+    fn end_envelope(seq: u64) -> EventEnvelope {
+        EventEnvelope::new(Ulid::generate(), seq, EventKind::SessionEnd, json!({}))
+    }
+
+    #[test]
+    fn session_end_cancels_only_prompts_still_open() {
+        let mut state = SessionState::default();
+        apply(&mut state, permission_envelope(1, "r-open", "c-open")).unwrap();
+        apply(&mut state, permission_envelope(2, "r-done", "c-done")).unwrap();
+        apply(
+            &mut state,
+            EventEnvelope::new(
+                Ulid::generate(),
+                3,
+                EventKind::PermissionResolved,
+                json!({"request_id":"r-done","tool_call_id":"c-done","resolution":"deny"}),
+            ),
+        )
+        .unwrap();
+        // The server said this request was no longer waiting (409) before any
+        // resolution arrived: how it ended stays unknown, not cancelled.
+        apply(&mut state, permission_envelope(4, "r-stale", "c-stale")).unwrap();
+        if let Some(b) = state
+            .conversation
+            .blocks
+            .iter_mut()
+            .find(|b| b.id == "permission:r-stale")
+            && let BlockKind::Permission(p) = &mut b.kind
+        {
+            p.stale = true;
+        }
+        // An answer was sent for the open prompt: the end forgets it, like
+        // the resolution event does.
+        state.answered_permission = Some("r-open".into());
+
+        apply(&mut state, end_envelope(5)).unwrap();
+
+        let resolutions: Vec<(String, Option<String>, bool)> = state
+            .conversation
+            .blocks
+            .iter()
+            .filter_map(|b| match &b.kind {
+                BlockKind::Permission(p) => {
+                    Some((p.request_id.clone(), p.resolution.clone(), p.stale))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            resolutions,
+            vec![
+                ("r-open".into(), Some("cancelled".into()), false),
+                ("r-done".into(), Some("deny".into()), false),
+                ("r-stale".into(), None, true),
+            ]
+        );
+        assert_eq!(state.answered_permission, None);
+        assert!(
+            state.conversation.open_permissions.is_empty()
+                || state
+                    .conversation
+                    .open_permissions
+                    .iter()
+                    .all(|id| id == "permission:r-stale")
+        );
+    }
+
+    #[test]
+    fn session_end_keeps_a_turn_already_interrupted_by_its_own_event() {
+        let session = Ulid::generate();
+        let mut state = SessionState::default();
+        apply(
+            &mut state,
+            EventEnvelope::new(session, 1, EventKind::TurnStart, json!({"turn_id":"t1"})),
+        )
+        .unwrap();
+        apply(
+            &mut state,
+            EventEnvelope::new(
+                session,
+                2,
+                EventKind::ToolPreCall,
+                json!({"tool_call_id":"c1","name":"bash","args":{"command":"sleep 1"}}),
+            ),
+        )
+        .unwrap();
+        apply(
+            &mut state,
+            EventEnvelope::new(
+                session,
+                3,
+                EventKind::TurnEnd,
+                json!({"turn_id":"t1","outcome":"interrupted"}),
+            ),
+        )
+        .unwrap();
+        // The turn's own event already settled its running call: the status
+        // is interrupted BEFORE the session ends, and the end adds nothing.
+        let status = state
+            .conversation
+            .blocks
+            .iter()
+            .find_map(|b| match &b.kind {
+                BlockKind::ToolCall { id, status, .. } if id == "c1" => *status,
+                _ => None,
+            });
+        assert_eq!(status, Some(ToolStatus::Interrupted));
+        let notices = state
+            .conversation
+            .blocks
+            .iter()
+            .filter(|b| matches!(&b.kind, BlockKind::Notice(text) if text == "turn interrupted"))
+            .count();
+        assert_eq!(notices, 1);
+        let before = state.conversation.blocks.len();
+
+        apply(&mut state, end_envelope(4)).unwrap();
+
+        let status = state
+            .conversation
+            .blocks
+            .iter()
+            .find_map(|b| match &b.kind {
+                BlockKind::ToolCall { id, status, .. } if id == "c1" => *status,
+                _ => None,
+            });
+        assert_eq!(status, Some(ToolStatus::Interrupted));
+        let notices = state
+            .conversation
+            .blocks
+            .iter()
+            .filter(|b| matches!(&b.kind, BlockKind::Notice(text) if text == "turn interrupted"))
+            .count();
+        assert_eq!(notices, 1, "the end adds no second interruption notice");
+        assert_eq!(state.conversation.blocks.len(), before);
+        assert_eq!(state.conversation.current_turn, None);
     }
 
     #[test]
@@ -318,8 +477,25 @@ pub fn apply_envelope(
             s.activity = Activity::Stopped;
             // A stopped session switches nothing after its turn.
             s.model_switch = None;
+            s.conversation.current_turn = None;
+            let mut cancelled: Vec<String> = Vec::new();
             for b in &mut s.conversation.blocks {
                 interrupt_block(b);
+                // An isolated `session.end` (a replay gap or a capture that lost
+                // the server's own `permission.resolved cancelled`) must not
+                // leave a prompt answerable: the session is closed and every
+                // answer endpoint is gone. Settled prompts keep their history.
+                if let BlockKind::Permission(p) = &mut b.kind
+                    && p.is_open()
+                {
+                    p.resolution = Some("cancelled".into());
+                    let id = b.id.clone();
+                    s.conversation.open_permissions.retain(|open| open != &id);
+                    cancelled.push(p.request_id.clone());
+                }
+            }
+            for request_id in cancelled {
+                clear_answered(s, &request_id);
             }
         }
         Some(EventKind::MessageReceived) => {

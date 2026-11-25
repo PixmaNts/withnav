@@ -1,6 +1,7 @@
 //! Startup admission for processes that own cognition assignments.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Context as _;
 
@@ -20,7 +21,7 @@ pub struct Preflight {
     config_dir: PathBuf,
     roots: AgentRoots,
     catalog: ModelCatalog,
-    clients: ClientCache,
+    clients: Arc<ClientCache>,
 }
 
 impl Preflight {
@@ -39,6 +40,7 @@ impl Preflight {
         models_path: Option<&Path>,
         workspace: &Path,
         rules_roots: &RulesRoots,
+        clients: Arc<ClientCache>,
     ) -> anyhow::Result<Self> {
         let config_dir = config_dir.to_path_buf();
         let models_path = models_path.map(Path::to_path_buf);
@@ -65,7 +67,7 @@ impl Preflight {
             },
             config_dir,
             catalog: ModelCatalog::system(),
-            clients: ClientCache::new(),
+            clients,
         })
     }
 
@@ -181,8 +183,9 @@ pub async fn check(
     models_path: Option<&Path>,
     workspace: &Path,
     rules_roots: &RulesRoots,
+    clients: Arc<ClientCache>,
 ) -> anyhow::Result<()> {
-    Preflight::capture(config_dir, models_path, workspace, rules_roots)
+    Preflight::capture(config_dir, models_path, workspace, rules_roots, clients)
         .await?
         .check(workspace)
         .await?;

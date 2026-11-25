@@ -771,3 +771,27 @@ test("the session list counts subagents like a full rescan, in time linear in th
   assert.ok(list.every(item => item.subagentCount === 3 && item.subagentsRunning === 1));
   assert.ok(reads < 40 * sessions.length, `${reads} reads for ${sessions.length} sessions`);
 });
+
+test("final response text replaces live deltas lost to a stream reconnect", t => {
+  const { backend, apply } = setup(t);
+  apply("turn.start", { turn_id: "T" });
+  apply("llm.delta", { turn_id: "T", step_id: "S", delta: { delta_type: "text", text: "Hello" } });
+  // The stream drops here; replay brings no deltas, only the stored response.
+  const final = apply("llm.response", { turn_id: "T", step_id: "S", message: { text: "Hello world" } });
+  assert.deepEqual(final, { type: "text", id: "T", stepId: "S", text: "Hello world" });
+  apply("turn.end", { turn_id: "T", outcome: "done" });
+  assert.equal(backend.state.turnTextDelta.size, 0);
+  backend.dispose();
+});
+
+test("live response without a gap replaces with identical text and empty text keeps the stream", t => {
+  const { backend, apply } = setup(t);
+  apply("turn.start", { turn_id: "T" });
+  apply("llm.delta", { turn_id: "T", step_id: "S", delta: { delta_type: "text", text: "Hel" } });
+  apply("llm.delta", { turn_id: "T", step_id: "S", delta: { delta_type: "text", text: "lo" } });
+  assert.deepEqual(apply("llm.response", { turn_id: "T", step_id: "S", message: { text: "Hello" } }), { type: "text", id: "T", stepId: "S", text: "Hello" });
+  apply("llm.delta", { turn_id: "T", step_id: "U", delta: { delta_type: "text", text: "Calling" } });
+  assert.equal(apply("llm.response", { turn_id: "T", step_id: "U", message: { tool_calls: [] } }), undefined);
+  assert.equal(backend.history().filter(m => m.type === "delta").map(m => m.text).join(""), "HelloCalling");
+  backend.dispose();
+});

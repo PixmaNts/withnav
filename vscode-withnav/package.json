@@ -2,7 +2,7 @@
   "name": "withnav",
   "displayName": "WithNav",
   "description": "WithNav pair-programming companion: a language server watches your edits and offers short end-of-line remarks.",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "publisher": "pixmants",
   "repository": {
     "type": "git",
@@ -216,9 +216,9 @@
   "devDependencies": {
     "@types/node": "^22.20.5",
     "@types/vscode": "^1.91.0",
-    "@vscode/vsce": "^4.1.0",
+    "@vscode/vsce": "^4.1.1",
     "esbuild": "^0.28.2",
-    "jsdom": "^31.0.0",
+    "jsdom": "^31.0.1",
     "typescript": "^7.0.2"
   }
 }

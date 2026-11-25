@@ -5,9 +5,11 @@
 //! 0). Producers submit unsequenced [`Candidate`]s over an UNBOUNDED
 //! non-blocking ingress (`tokio::sync::mpsc::unbounded_channel`): an accepted
 //! durable event is never lost, and ingress send failure means the session is
-//! closed ([`BusError::SequencerClosed`]), never silent loss. Per event the
-//! task performs seq-assign → [`Emitter::emit`] (ring append + subscriber
-//! fan-out) plugs in at that seam).
+//! closed ([`BusError::SequencerClosed`]), never silent loss. Per durable event
+//! the task performs seq-assign → store (awaited, before anything is shown) →
+//! [`Emitter::emit`] (ring append + subscriber fan-out plugs in at that seam);
+//! live-only events skip the store. A durable write failure ends the session
+//! with a descriptive `session.end` and leaves the stream gapless.
 //!
 //! AcceptCommand ordering hook (event-before-action): the
 //! `message.received` envelope is sequenced + emitted BEFORE the reserved
@@ -92,12 +94,13 @@ pub enum Ingress {
         command: Box<PendingCommand>,
         reply: oneshot::Sender<Result<AcceptReceipt, BusError>>,
     },
-    /// Sequence + emit `candidate`, then ack with its seq. A candidate queued
-    /// behind a close fence is dropped with the mailbox: the reply channel
-    /// closes and the caller sees `SessionNotFound`.
+    /// Sequence, store and emit `candidate`, then ack with its seq, or with the
+    /// write error when the store fails (the session then ends). A candidate
+    /// queued behind a close fence is dropped with the mailbox: the reply
+    /// channel closes and the caller sees `SequencerClosed`.
     PublishAcked {
         candidate: Candidate,
-        reply: oneshot::Sender<u64>,
+        reply: oneshot::Sender<Result<u64, BusError>>,
     },
     /// Sequence `candidate`, hand the envelope to `commit` and wait for the
     /// write to be durable, and only then emit it. A failed commit emits
@@ -162,6 +165,17 @@ impl Candidate {
 /// concrete [`crate::bus::SessionBus`] implements ring append + bounded
 /// fan-out here.
 pub trait Emitter: Send + 'static {
+    /// Persists `envelopes` before they are emitted. Durability is the
+    /// emitter's concern: a persisting emitter writes the durable kinds and
+    /// returns the first write error; a non-persisting emitter returns `Ok`.
+    /// The sequencer task awaits this for every event that is not committed
+    /// by an explicit commit callback, so a durable event is never fanned out
+    /// to clients before its write succeeded.
+    fn store<'a>(
+        &'a mut self,
+        envelopes: &'a [EventEnvelope],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+
     fn emit(&mut self, envelope: EventEnvelope);
 
     /// Atomic subscribe-then-replay (the SSE handler consumes this): called from the
@@ -236,10 +250,11 @@ impl Sequencer {
         ingress_send(&self.ingress_tx, Ingress::Candidate(candidate))
     }
 
-    /// [`Sequencer::publish`] that waits until the event is sequenced and
-    /// emitted, and returns its seq. Fails when the session is closed, or
-    /// closes before the event is reached: an `Ok` is proof the event is on
-    /// the stream, never discarded behind the close fence.
+    /// [`Sequencer::publish`] that waits until the event is sequenced, stored
+    /// and emitted, and returns its seq. Fails when the session is closed, or
+    /// when the event's store write fails (the event is then not on the
+    /// stream and the session ends): an `Ok` is proof the event is durable and
+    /// on the stream, never discarded behind the close fence.
     pub async fn publish_acked(&self, candidate: Candidate) -> Result<u64, BusError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         ingress_send(
@@ -249,7 +264,7 @@ impl Sequencer {
                 reply: reply_tx,
             },
         )?;
-        reply_rx.await.map_err(|_| BusError::SequencerClosed)
+        reply_rx.await.map_err(|_| BusError::SequencerClosed)?
     }
 
     /// Sequences `candidate`, runs `commit` with the sequenced envelope, and
@@ -278,10 +293,11 @@ impl Sequencer {
     }
 
     /// Event-before-action acceptance. The handler's order is: seq-assign
-    /// `message.received` -> emit it -> invoke `commit` -> ack with the seq.
-    /// The ack therefore PROVES the commit ran after the emit. Commit failure
-    /// or a session ended before handling yields
-    /// `BusError::SessionNotFound`; no event is emitted on the reject path.
+    /// `message.received` -> store it -> emit it -> invoke `commit` -> ack with
+    /// the seq. The ack therefore PROVES the commit ran after the store and the
+    /// emit. A failed store yields `BusError::History` (nothing is emitted or
+    /// committed and the session ends); a session ended before handling yields
+    /// `BusError::SessionNotFound`.
     pub async fn accept_command(
         &self,
         command: PendingCommand,
@@ -410,14 +426,32 @@ async fn run(
                     // practice, but panic-free by policy — end the session.
                     break;
                 };
-                emitter.emit(stamp(session_id, seq, candidate));
+                let envelope = stamp(session_id, seq, candidate);
+                if let Err(why) = emitter.store(std::slice::from_ref(&envelope)).await {
+                    tracing::error!(%session_id, error = %why, "durable event write failed; ending session");
+                    next_seq = seq; // hand the failed event's seq back
+                    end_session_on_store_failure(&mut emitter, session_id, &mut next_seq, &why)
+                        .await;
+                    break;
+                }
+                emitter.emit(envelope);
             }
             Ingress::PublishAcked { candidate, reply } => {
                 let Some(seq) = take_seq(&mut next_seq) else {
+                    let _ = reply.send(Err(BusError::SeqSpaceExhausted));
                     break;
                 };
-                emitter.emit(stamp(session_id, seq, candidate));
-                let _ = reply.send(seq);
+                let envelope = stamp(session_id, seq, candidate);
+                if let Err(why) = emitter.store(std::slice::from_ref(&envelope)).await {
+                    tracing::error!(%session_id, error = %why, "durable event write failed; ending session");
+                    next_seq = seq;
+                    let _ = reply.send(Err(BusError::History(why.clone())));
+                    end_session_on_store_failure(&mut emitter, session_id, &mut next_seq, &why)
+                        .await;
+                    break;
+                }
+                emitter.emit(envelope);
+                let _ = reply.send(Ok(seq));
             }
             Ingress::CommitBatch {
                 candidates,
@@ -483,13 +517,23 @@ async fn run(
                     let _ = reply.send(Err(BusError::SeqSpaceExhausted));
                     break;
                 };
-                // Event-before-action, in this exact order: emit the
-                // sequenced envelope, THEN commit the command, THEN ack —
-                // so the ack is observable proof that commit followed emit.
+                // Store-first, then event-before-action: message.received is
+                // persisted before it is emitted, then emitted before the
+                // command is committed, then acked — so the ack is proof that
+                // both the store and the emit preceded the commit.
                 let command_id = command.command_id;
                 let mut candidate = message_received_candidate(*command);
                 candidate.causation_id = Some(command_id);
-                emitter.emit(stamp(session_id, seq, candidate));
+                let envelope = stamp(session_id, seq, candidate);
+                if let Err(why) = emitter.store(std::slice::from_ref(&envelope)).await {
+                    tracing::error!(%session_id, error = %why, "message.received write failed; ending session");
+                    next_seq = seq;
+                    let _ = reply.send(Err(BusError::History(why.clone())));
+                    end_session_on_store_failure(&mut emitter, session_id, &mut next_seq, &why)
+                        .await;
+                    break;
+                }
+                emitter.emit(envelope);
                 commit();
                 let _ = reply.send(Ok(AcceptReceipt { seq }));
             }
@@ -516,7 +560,7 @@ async fn run(
                 let Some(seq) = take_seq(&mut next_seq) else {
                     break;
                 };
-                emitter.emit(stamp(
+                let envelope = stamp(
                     session_id,
                     seq,
                     Candidate::new(
@@ -526,7 +570,12 @@ async fn run(
                             "final_seq": seq,
                         }),
                     ),
-                ));
+                );
+                // session.end is durable: store it before the fence, best-
+                // effort, so the end marker and its reason reach clients even
+                // when the store itself is failing (the fence still closes).
+                let _ = emitter.store(std::slice::from_ref(&envelope)).await;
+                emitter.emit(envelope);
                 // The fence: the task exits, so nothing can ever be
                 // sequenced after session.end. Queued candidates behind
                 // this CloseSession are dropped (the session is over).
@@ -538,6 +587,30 @@ async fn run(
     // completion signal.
     drop(emitter);
     drop(done);
+}
+
+/// Emits `session.end{reason}` (best-effort persisted) and returns, leaving the
+/// caller to `break` so the fence closes. The failed event's seq was handed
+/// back before this is called, so the end marker reuses it: the stream stays
+/// gapless and no failed event is ever emitted or stored.
+async fn end_session_on_store_failure(
+    emitter: &mut impl Emitter,
+    session_id: Ulid,
+    next_seq: &mut u64,
+    why: &str,
+) {
+    let seq = take_seq(next_seq).unwrap_or(u64::MAX - 1);
+    let reason = format!("history write failed: {why}");
+    let envelope = stamp(
+        session_id,
+        seq,
+        Candidate::new(
+            EventKind::SessionEnd,
+            serde_json::json!({ "reason": reason, "final_seq": seq }),
+        ),
+    );
+    let _ = emitter.store(std::slice::from_ref(&envelope)).await;
+    emitter.emit(envelope);
 }
 
 /// The single seq-assignment point. Takes `&mut u64` so no other code path
@@ -592,6 +665,14 @@ mod tests {
     }
 
     impl Emitter for ForwardEmitter {
+        fn store<'a>(
+            &'a mut self,
+            _envelopes: &'a [EventEnvelope],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+
         fn emit(&mut self, envelope: EventEnvelope) {
             // The receiver outlives the task in these tests; a closed
             // receiver means the test is already gone — dropping is correct.
@@ -758,6 +839,14 @@ mod tests {
             tx: mpsc::UnboundedSender<EventEnvelope>,
         }
         impl Emitter for TimelineEmitter {
+            fn store<'a>(
+                &'a mut self,
+                _envelopes: &'a [EventEnvelope],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+            {
+                Box::pin(async { Ok(()) })
+            }
+
             fn emit(&mut self, envelope: EventEnvelope) {
                 self.timeline.lock().unwrap().push(Step::Emit(envelope.seq));
                 let _ = self.tx.send(envelope);
@@ -1103,5 +1192,167 @@ mod tests {
             (1, Some("after"))
         );
         assert!(rx.try_recv().is_err());
+    }
+
+    /// Records every emitted envelope and fails the store of any envelope
+    /// whose payload carries `"fail": true` (or, for a message, whose content
+    /// is `FAIL`), the way a history write that SQLite refuses would.
+    struct FailingStoreEmitter {
+        tx: mpsc::UnboundedSender<EventEnvelope>,
+        stored: Arc<std::sync::Mutex<Vec<u64>>>,
+    }
+
+    impl Emitter for FailingStoreEmitter {
+        fn store<'a>(
+            &'a mut self,
+            envelopes: &'a [EventEnvelope],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                for envelope in envelopes {
+                    if envelope.payload["fail"] == true || envelope.payload["content"] == "FAIL" {
+                        return Err("disk full".into());
+                    }
+                    self.stored.lock().unwrap().push(envelope.seq);
+                }
+                Ok(())
+            })
+        }
+
+        fn emit(&mut self, envelope: EventEnvelope) {
+            let _ = self.tx.send(envelope);
+        }
+
+        fn subscribe_since(
+            &mut self,
+            _cursor: Option<u64>,
+            _next_seq: u64,
+            reply: oneshot::Sender<SubscribeReply>,
+        ) {
+            drop(reply);
+        }
+
+        fn subscribe_live(&mut self) -> mpsc::Receiver<EventEnvelope> {
+            mpsc::channel(1).1
+        }
+    }
+
+    fn spawn_failing() -> (
+        Sequencer,
+        mpsc::UnboundedReceiver<EventEnvelope>,
+        Arc<std::sync::Mutex<Vec<u64>>>,
+    ) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let stored = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let emitter = FailingStoreEmitter {
+            tx,
+            stored: Arc::clone(&stored),
+        };
+        (Sequencer::spawn(Ulid::generate(), emitter, 0), rx, stored)
+    }
+
+    fn failing_candidate() -> Candidate {
+        Candidate::new(EventKind::TurnStart, serde_json::json!({"fail": true}))
+    }
+
+    // Given a durable event whose store write fails
+    // When it is published fire-and-forget
+    // Then it is never shown: the session ends with a session.end that names
+    //      the write failure, at the failed event's seq (no gap), every event
+    //      queued behind it is dropped, and later publishes fail closed
+    #[tokio::test]
+    async fn a_failed_store_ends_the_session_without_showing_the_event() {
+        let (seq, mut rx, stored) = spawn_failing();
+        seq.publish(start_candidate()).unwrap();
+        seq.publish(failing_candidate()).unwrap();
+        seq.publish(turn_candidate("queued behind")).unwrap();
+        seq.closed().await;
+
+        let start = rx.recv().await.unwrap();
+        assert_eq!((start.seq, start.kind.as_str()), (0, "session.start"));
+        let end = rx.recv().await.unwrap();
+        assert_eq!((end.seq, end.kind.as_str()), (1, "session.end"));
+        assert_eq!(end.payload["final_seq"], 1);
+        let reason = end.payload["reason"].as_str().unwrap();
+        assert!(reason.contains("history write failed") && reason.contains("disk full"));
+        assert!(rx.recv().await.is_none(), "nothing after session.end");
+        assert_eq!(*stored.lock().unwrap(), vec![0, 1], "end marker stored");
+        assert!(matches!(
+            seq.publish(turn_candidate("late")),
+            Err(BusError::SequencerClosed)
+        ));
+    }
+
+    // Given a durable event whose store write fails
+    // When it is published with an acknowledgement
+    // Then the caller gets the write error, the event is never shown, and the
+    //      session ends at that same seq
+    #[tokio::test]
+    async fn a_failed_acked_store_reports_its_error_and_shows_nothing() {
+        let (seq, mut rx, _) = spawn_failing();
+        assert_eq!(seq.publish_acked(start_candidate()).await.unwrap(), 0);
+        let err = seq.publish_acked(failing_candidate()).await.unwrap_err();
+        assert!(
+            matches!(&err, BusError::History(why) if why == "disk full"),
+            "{err:?}"
+        );
+        assert_eq!(rx.recv().await.unwrap().seq, 0);
+        let end = rx.recv().await.unwrap();
+        assert_eq!((end.seq, end.kind.as_str()), (1, "session.end"));
+        assert!(rx.recv().await.is_none());
+    }
+
+    // Given an accepted command whose message.received cannot be stored
+    // Then the command is never committed, the caller gets the write error,
+    //      and the session ends without showing the message
+    #[tokio::test]
+    async fn a_failed_message_store_never_commits_the_command() {
+        let (seq, mut rx, _) = spawn_failing();
+        let committed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&committed);
+        let err = seq
+            .accept_command(
+                PendingCommand {
+                    answer: None,
+                    secret: None,
+                    selected_skill: None,
+                    command_id: Ulid::generate(),
+                    content: "FAIL".into(),
+                    source: "user:cli".into(),
+                    target: "agent:main".into(),
+                    mode: "next-turn".into(),
+                    images: Vec::new(),
+                },
+                Box::new(move || flag.store(true, std::sync::atomic::Ordering::SeqCst)),
+            )
+            .await;
+        assert!(matches!(err, Err(BusError::History(ref why)) if why == "disk full"));
+        assert!(!committed.load(std::sync::atomic::Ordering::SeqCst));
+        let end = rx.recv().await.unwrap();
+        assert_eq!((end.seq, end.kind.as_str()), (0, "session.end"));
+        assert!(rx.recv().await.is_none());
+    }
+
+    // Given two sessions, one of which hits a failed write
+    // Then only that session ends; the other keeps sequencing and showing
+    //      events
+    #[tokio::test]
+    async fn a_failed_store_ends_only_its_own_session() {
+        let (broken, mut broken_rx, _) = spawn_failing();
+        let (healthy, mut healthy_rx, _) = spawn_failing();
+        broken.publish(failing_candidate()).unwrap();
+        broken.closed().await;
+        assert_eq!(broken_rx.recv().await.unwrap().kind, "session.end");
+        assert_eq!(
+            healthy
+                .publish_acked(turn_candidate("still alive"))
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            healthy_rx.recv().await.unwrap().payload["tag"],
+            "still alive"
+        );
     }
 }

@@ -12,6 +12,7 @@ use withnav::tools::bash::BashTool;
 use withnav::tools::control::AskTool;
 use withnav::tools::native::{EditTool, GrepTool, ReadTool, WriteTool};
 use withnav::tools::{Registry, ToolContext};
+use withnav_provider::openai::ClientCache;
 
 mod common;
 use common::sse::{CapturingProvider, http_sse, spawn_responding_provider, sse_body};
@@ -125,6 +126,7 @@ fn build_actor(base_url: String, workspace: PathBuf, cancel: CancellationToken) 
         ReasoningHistory::Preserve,
         Some(256),
         cancel,
+        Arc::new(ClientCache::new()),
     )
 }
 
@@ -250,6 +252,7 @@ async fn live_omniroute_edit_and_test() {
         ReasoningHistory::Preserve,
         Some(4000),
         cancel,
+        Arc::new(ClientCache::new()),
     );
     actor.push_user(
         "In this Rust project, edit src/lib.rs so it defines `pub fn add(a: i32, b: i32) -> i32` \

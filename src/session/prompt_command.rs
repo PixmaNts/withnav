@@ -8,6 +8,7 @@ use serde_json::json;
 use ulid::Ulid;
 
 use super::commands;
+use super::gate::LifecycleGuard;
 use super::run_command::{CommandFailure, Done};
 use super::service::{Service, SessionHandle, SessionId};
 use crate::bus::command::{Command, ContentBlock, DeliveryMode};
@@ -33,13 +34,13 @@ impl Service {
     /// while the server answers (a slow server must not hold a stop or another session's
     /// command), then taken again to send the message and publish the result. A session
     /// stopped or replaced meanwhile gets nothing.
-    pub(super) async fn prompt_command<'a>(
-        &'a self,
+    pub(super) async fn prompt_command(
+        &self,
         session_id: SessionId,
         handle: &SessionHandle,
         prompt: crate::mcp::PromptRun,
         arguments: &str,
-        gate: &mut Option<tokio::sync::MutexGuard<'a, ()>>,
+        gate: &mut Option<LifecycleGuard>,
     ) -> Result<Done, CommandFailure> {
         pending_refusal(handle)?;
         let values = prompt
@@ -56,7 +57,11 @@ impl Service {
                 secrets.redact(text).into_owned()
             })
             .await;
-        *gate = Some(self.lifecycle_gate().await);
+        *gate = Some(
+            self.lifecycle_gate(session_id)
+                .await
+                .map_err(CommandFailure::Server)?,
+        );
         let current = self
             .routable_handle(session_id)
             .await

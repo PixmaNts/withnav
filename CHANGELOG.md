@@ -14,6 +14,10 @@ requests land in `develop`.
   summary no longer drops dead ends.
 ### Added
 
+- The Instinct calls of the subagent and root watchdogs and of the compaction judge are recorded,
+  one line per call in `instinct-calls.jsonl` in the data directory: caller, conversation, model,
+  the size and SHA-256 of the state (never the state itself), the question names, the answers,
+  the latency, and the error kind, `abandoned` when the caller's deadline passed first.
 - The session ledger: what a conversation did (turns and how the last one ended, files changed,
   shell commands with their exit code, commands that failed more than once, the last answer, the
   questions still waiting), rebuilt from the conversation's stored events on each read, with every
@@ -22,6 +26,9 @@ requests land in `develop`.
   turns, files and repeated failures.
 ### Fixed
 
+- The compaction judge's request size estimate no longer assumes one Instinct model: it reserves
+  64 bytes for any model identifier, so a longer identifier cannot push a batch past its size
+  bound.
 - A rejected Instinct request now says why, on one line of at most 300 characters. The flow run
   record shows the provider's reason after "provider rejected the request (HTTP 400)" and leaves
   the whole reason out when it echoes a credential, whole or in part. `nav doctor` shows it after

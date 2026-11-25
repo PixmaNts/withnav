@@ -616,6 +616,7 @@ client ignores a kind it does not know.
 | `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills included in agent sessions | the Captain |
 | `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `app/tui.rs`, `withnav-provider`'s `catalog.rs` |
 | `~/.local/share/withnav/goal-checks.jsonl` | the completion checks of session goals, one line per check or skip, with whether a goal-watch note was sent | `session/goal_check.rs` |
+| `~/.local/share/withnav/instinct-calls.jsonl` | the Instinct calls of the watchdogs and the compaction judge, one line per call: caller, session, model, state size and SHA-256 (never the state), question names, answers, latency, error kind | `layers/recorded.rs` |
 | `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of the permission decisions that were made — not of undecided calls (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
 | `~/.config/withnav/flows/`, `<workspace>/.withnav/flows/` | global and workspace flow definitions; they load only once validated at their current content | the Captain, the Studio |
 | `~/.config/withnav/config.json` key `mcp` | stdio and HTTP MCP server declarations | the Captain |
@@ -879,8 +880,14 @@ the later 0.6 scope, not this contract.
   numbered excerpts), `tools/mod.rs` (`validate_path`).
 - A decision model is exposed by `withnav-provider`'s `systemone.rs::DecisionModel` (implemented by
   `SystemOneClient`). Compaction pruning (`agent/compaction/prune.rs`) and both watchdogs use
-  this same seam; questions and answer interpretation stay with the caller. The standalone
-  `instinct-flow` crate remains independent and owns its own protocol client.
+  this same seam; questions and answer interpretation stay with the caller. Each of them wraps
+  its model in `layers/recorded.rs::Recorded`, which writes one line per call to
+  `<data dir>/instinct-calls.jsonl` (`paths::instinct_call_log`); a new Instinct caller outside
+  flows wraps its model the same way. The standalone `instinct-flow` crate remains independent and
+  owns its own protocol client.
+- An append-only JSON-lines log beside the database (`goal-checks.jsonl`, `instinct-calls.jsonl`)
+  writes through `jsonl::append`, which creates the directory and never lets a write failure reach
+  the session.
 - A new wire family (another provider API, such as a native Anthropic client) goes in
   `crates/withnav-provider/`, next to `fim.rs` and `systemone.rs`, with its wire-golden test in that
   crate's `tests/`; it never imports the root. Which layer or agent uses it is decided in the root

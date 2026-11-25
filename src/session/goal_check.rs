@@ -19,7 +19,6 @@ mod note;
 pub use note::MAX_NOTE_CHARS;
 
 use std::collections::{HashMap, VecDeque};
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -588,24 +587,9 @@ fn record(turn: &Turn, checker: &Checker, outcome: Outcome) -> Record {
     }
 }
 
-/// Appends one line; a failure is logged to tracing and never reaches the session, as with the
-/// decision log (`navigator/log.rs`).
+/// Appends one line; a failure is logged to tracing and never reaches the session.
 fn append(path: &std::path::Path, record: &Record) {
-    let mut line = serde_json::to_string(record).unwrap_or_default();
-    line.push('\n');
-    let result = path
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| {
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-        })
-        .and_then(|mut file| file.write_all(line.as_bytes()));
-    if let Err(error) = result {
-        tracing::warn!(path = %path.display(), %error, "goal check log append failed");
-    }
+    crate::jsonl::append(path, record, "goal check log");
 }
 
 /// The input of one check and the goal it judges, from ONE fold of the ledger, so the criteria

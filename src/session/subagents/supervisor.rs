@@ -1,3 +1,4 @@
+use crate::layers::recorded::{Caller, Recorded};
 use crate::provider::systemone::DecisionModel;
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,12 +46,23 @@ impl Service {
                 self.client_cache.clone(),
             )
         })
-        .map(|client| Arc::new(client) as Arc<dyn DecisionModel>);
+        .map(|client| {
+            Recorded::instinct(client, Caller::ChildWatchdog, child, &self.config.data_dir)
+        });
         let service = self.clone();
         let clock: Arc<dyn Clock> = Arc::new(RealClock);
         #[cfg(any(test, feature = "test-support"))]
         let (clock, judge) = match self.test_points.watchdog_test() {
-            Some(test) => (test.clock, Some(test.judge)),
+            Some(test) => {
+                let judge = Recorded::new(
+                    test.judge,
+                    None,
+                    Caller::ChildWatchdog,
+                    child.to_string(),
+                    crate::paths::instinct_call_log(&self.config.data_dir),
+                );
+                (test.clock, Some(Arc::new(judge) as Arc<dyn DecisionModel>))
+            }
             None => (clock, judge),
         };
         let activity_clock = clock.clone();

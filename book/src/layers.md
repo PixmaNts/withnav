@@ -46,6 +46,23 @@ diagnostic. It does not switch to another model silently.
 `nav doctor` reports each layer and why it is off. See
 [Troubleshooting](troubleshooting.md#check-your-setup-with-nav-doctor).
 
+## What Instinct was asked
+
+Flow runs keep their own records. The other Instinct callers, the subagent and root watchdogs and
+the compaction judge, write one line per call to `instinct-calls.jsonl` in the data directory
+(`~/.local/share/withnav/` on Linux):
+
+| Field | Meaning |
+|---|---|
+| `ts`, `caller`, `session_id` | When, who asked (`child_watchdog`, `root_watchdog`, `prune`), for which conversation. |
+| `model` | The Instinct model identifier sent on the wire. |
+| `state_bytes`, `state_sha256` | The size of the state and its SHA-256. The state itself is never stored. |
+| `questions`, `answers` | The question names (never their text) and the answers. |
+| `latency_ms`, `error` | How long the call took, and on failure `unavailable`, `invalid`, `cancelled`, or `abandoned` when the caller stopped waiting (its deadline passed). |
+
+The state and the question text are left out because they quote tool output. The line has no
+token counts: these callers receive answers only.
+
 ## Where you see the choices
 
 The terminal's right panel and the VS Code chat header tooltip show the model of each lower layer

@@ -21,6 +21,23 @@ Same protocol as `withnav-testing`. `<run>` is the run folder.
   success through paste does not establish that drop works.
 - **S5**: the key icon in the conversation header.
 - **A1**: the subagent chip or the dropdown of the agent strip opens the child's transcript.
+- **N, G, X settings.** The **WithNav: Open Settings** command (or the gear in the chat). A layer
+  model applies after a restart: the Captain runs `nav serve stop` in a terminal; the editor
+  restarts the server by itself, so wait for the chat to reconnect and record whether it did.
+  Notices ("instinct rejected") show in the chat: quote them. The Captain reads this conversation's
+  title in `WithNav: Show Sessions` for the id check. G4c and G5c: what the chat shows of the check
+  result and the note.
+- **R**: the memory conversation is a second chat whose workspace is `<run>/memrepo`: open that
+  folder in a second VS Code window (`code <run>/memrepo`) and start a conversation there. The
+  slash commands are typed in its composer and answer as transcript lines: `Remembered "<title>" ·
+  <scope> · <id> v<n>`, `Forgot …`, `<title> · <id> v<n>`.
+- **D**: the extension has no Projects or Memory page. The Captain runs `nav web --workspace <run>`
+  in a browser and does D1–D10 there as the web skill says; D5's conversation starts in a VS Code
+  window opened on `<run>/memrepo-new` (record where the question appears).
+- **O**: the chat header and the session controls; O1 to O3 are SKIP unless the chat shows the goal
+  or ledger (record what it shows). O4's `Remembered` and `Forgot` lines are checked in E16.
+- **H** (pending): cards show Allow and Reject; record where a Hold for me action and a
+  waiting-for-you notification would appear.
 - **After A2**: wait for the second park, then the Captain clicks the child's Continue button.
   PASS (record as **E9**) when it resumes and its next notice still reports top-ups used 1/3. Then
   run A3 on that park.
@@ -90,6 +107,14 @@ Same protocol as `withnav-testing`. `<run>` is the run folder.
   `empty.png` after typing and sending. They dismiss that refusal explicitly. Open the chooser
   again and cancel: PASS when the draft is unchanged and Send unlocks. The paperclip is editor
   context, not this chooser; verify it still offers editor context separately.
+- **E16 Command answers.** In the memory conversation: `/remember @project WNST-<run id> e16`,
+  `/memory`, `/memory history <id>`, `/forget <id>`. PASS when each shows the readable line of
+  R2/R4/R7 (not raw JSON) and the register agrees (`GET /v1/memory`).
+- **E17 Goal across a reload.** After G, the Captain runs `Developer: Reload Window`, reopens this
+  conversation and types `/goal`. PASS when the goal, its revision and criteria are the same as
+  before the reload. Do it before E11, whose own reload row comes last.
+- **E18 Slash commands offered.** The Captain types `/` in the composer. PASS when `/goal`,
+  `/remember`, `/memory` and `/forget` are listed with their argument hints (record the hints).
 - **E11 Reload.** The Captain runs `Developer: Reload Window` and reopens this conversation. PASS
   when the thumbnails of I1 and C1 show again. Write the report before this check and append its
   row when the Captain is back.

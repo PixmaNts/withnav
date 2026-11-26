@@ -11,7 +11,7 @@ what to type. `<run>` is the run folder.
 ## Hooks in the shared scenarios
 
 - **Actions in the client.** For every check where the Captain acts inside the TUI (C, S4, S5,
-  T1–T4, T6–T9), state the action in plain text and end your turn; the Captain replies with the
+  T1–T4, T6–T12, and every Captain step of N, G, X, R, D, O), state the action in plain text and end your turn; the Captain replies with the
   observation in their own message. Never hold an `ask` question while the Captain has an action to
   do: a pending question owns the keyboard and they cannot type in the client.
 - **V1**: `nav tui` is the `nav` binary, so `nav --version` is the client's version.
@@ -21,6 +21,25 @@ what to type. `<run>` is the run folder.
 - **C1 / C2**: `/attach <run>/ok.png`, then the message.
 - **S5**: `/secrets` lists, `/secrets revoke NAV_SELFTEST_KEY` revokes.
 - **A1**: `alt+s` opens the child's read-only transcript.
+- **N, G, X settings.** `/config` opens Settings; `ctrl+s` writes `config.json`. A layer model
+  applies after a restart: the Captain quits (`ctrl+q`), runs `nav serve stop`, then `nav tui
+  --workspace <run>` and resumes this conversation with `ctrl+o`. `ctrl+o` also lists conversations:
+  the Captain reads this one's title for the id check. Notices ("instinct rejected") and the
+  goal-check result appear where the TUI puts them: ask the Captain to say where and quote it.
+- **G**: `/goal …` in the editor; the right column (`alt+r`) shows the goal before the ledger.
+  G4c and G5c: record what the transcript or column shows of the check result and the note.
+- **R**: the memory conversation is a second terminal, `nav tui --workspace <run>/memrepo`, so this
+  conversation keeps its workspace. The slash commands answer as transcript lines: `Remembered
+  "<title>" · <scope> · <id> v<n>`, `Forgot …`, one `<title> · <id> v<n>` line per item. Quote
+  what the Captain reads (no JSON expected).
+- **D**: the TUI has no Projects or Memory page. The Captain runs `nav web --workspace <run>` and
+  does D1–D10 in the browser as the web skill says (D5: a conversation started from
+  `nav tui --workspace <run>/memrepo-new`; record where the question appears). The accept and
+  reject of R9 and R10 are answered there.
+- **O1**: the right column's goal and ledger sections; O2, O3 are SKIP in the terminal unless
+  the column shows them.
+- **H** (pending): the card is the inline question; keys `o` `a` `r`. Record the key shown for
+  Hold for me when it exists.
 - **After A2**: wait for the second park, then the Captain presses `alt+c` on the child. PASS
   (record as **T5**) when it resumes and its next notice still reports top-ups used 1/3 (the
   Captain's continue is not counted). Then run A3 on that park.
@@ -50,3 +69,14 @@ what to type. `<run>` is the run folder.
 - **T9 Drop.** The Captain drags `<run>/ok.png` from their file manager onto the terminal window,
   then sends "dropped". PASS when the image is attached (a chip or a numbered line) and you receive
   it.
+- **T10 Goal and ledger column** (after G). `alt+r`. PASS when the column shows the goal before
+  the ledger (objective, revision, status, numbered criteria) and the ledger's turns, files and
+  repeated failures equal `GET /v1/sessions/<id>/ledger`. Same check as O1.
+- **T11 Command answers.** In the memory conversation: `/remember @project WNST-<run id> t11`,
+  `/memory`, `/memory history <id>`, `/forget <id>`. PASS when each prints the readable line of
+  R2/R4/R7 (not raw JSON) and the register agrees (`GET /v1/memory`).
+- **T12 Goal across a restart.** After the restart of N1/N2 (or, if N was skipped, `ctrl+q`, `nav
+  serve stop`, `nav tui`, `ctrl+o`), `/goal`. PASS when the goal and its criteria are the same as
+  before and the right column shows them again. Run it before T8.
+
+T10–T12 run before T8, which quits the client.

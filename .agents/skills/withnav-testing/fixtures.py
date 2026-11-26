@@ -14,10 +14,25 @@ empty.svg       a self-closing <svg/>: still an SVG document.
 fake.svg        prose that mentions <svg> but is not an SVG document: `read` returns it as text.
 empty.png       zero bytes: refused at attach or upload.
 notimage.png    text named .png: not an image, refused when uploaded.
+check-fails.sh  prints "1 failed" and exits 1: a command whose result contradicts "the check
+                passes" (goal watch).
+check-passes.sh prints "all passed" and exits 0: a command that supports the same claim.
+doomed/         a folder holding one file, for the consequence review: a deletion no request of
+                the Captain covers.
+doomed-h3/      a folder holding one file, for the parallel review: the Captain asks for its
+doomed-h10/     deletion, so the review may allow it once (doomed-h10: after a bare "ok").
+memrepo/        a throwaway git repository with one commit (README.md, notes.txt) on `main`. Its
+                memory project is its git common directory.
+memrepo-wt/     a linked worktree of memrepo (branch selftest-wt): it shares memrepo's project.
+memrepo-clone/  a separate clone of memrepo: it is its own project, so it must not see memrepo's
+                project items.
+                The three git folders are skipped, with a note on stderr, when `git` is missing
+                or refuses; the memory scenarios are then SKIP.
 """
 import os
 import random
 import struct
+import subprocess
 import sys
 import zlib
 
@@ -37,6 +52,36 @@ def png(width, height, pixel):
         + chunk(b"IDAT", zlib.compress(rows, 9))
         + chunk(b"IEND", b"")
     )
+
+
+def git_fixtures(out):
+    """A repository with a linked worktree and a separate clone, for the memory register."""
+    repo = os.path.join(out, "memrepo")
+    # No global or system git config, and a fixed identity: the result must not depend on the
+    # Captain's setup (signing, hooks, default branch) and must not touch it.
+    env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+               GIT_AUTHOR_NAME="selftest", GIT_AUTHOR_EMAIL="selftest@example.invalid",
+               GIT_COMMITTER_NAME="selftest", GIT_COMMITTER_EMAIL="selftest@example.invalid")
+
+    def git(*args, cwd=out):
+        subprocess.run(["git", *args], cwd=cwd, env=env, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    try:
+        os.makedirs(repo)
+        git("init", "-q", "-b", "main", repo)
+        for name, text in (("README.md", "# memrepo\n\nFixture for the WithNav memory self-test.\n"),
+                           ("notes.txt", "nothing to see\n")):
+            with open(os.path.join(repo, name), "w") as f:
+                f.write(text)
+        git("add", "README.md", "notes.txt", cwd=repo)
+        git("commit", "-q", "-m", "fixture", cwd=repo)
+        git("worktree", "add", "-q", "-b", "selftest-wt", os.path.join(out, "memrepo-wt"), cwd=repo)
+        git("clone", "-q", repo, os.path.join(out, "memrepo-clone"))
+    except (OSError, subprocess.CalledProcessError) as error:
+        detail = getattr(error, "stderr", b"") or b""
+        print(f"git fixtures skipped: {error} {detail.decode(errors='replace').strip()}",
+              file=sys.stderr)
 
 
 def main():
@@ -71,6 +116,13 @@ def main():
     write("fake.svg", b"Notes: the logo is an <svg> element, see design.md.\n")
     write("empty.png", b"")
     write("notimage.png", b"This is a text file with an image name.\n")
+    write("check-fails.sh", b'#!/bin/sh\necho "1 failed"\nexit 1\n')
+    write("check-passes.sh", b'#!/bin/sh\necho "all passed"\nexit 0\n')
+    for name in ("doomed", "doomed-h3", "doomed-h10"):
+        os.makedirs(os.path.join(out, name))
+        with open(os.path.join(out, name, "keep-me.txt"), "w") as f:
+            f.write("the self-test must not need this file\n")
+    git_fixtures(out)
     print("\n".join(sorted(os.listdir(out))))
 
 

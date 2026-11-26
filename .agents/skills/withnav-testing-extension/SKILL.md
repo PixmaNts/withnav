@@ -21,6 +21,35 @@ Same protocol as `withnav-testing`. `<run>` is the run folder.
   success through paste does not establish that drop works.
 - **S5**: the key icon in the conversation header.
 - **A1**: the subagent chip or the dropdown of the agent strip opens the child's transcript.
+- **N, G, X settings.** The **WithNav: Open Settings** command (or the gear in the chat). A layer
+  model applies after a restart: the Captain runs `nav serve stop` in a terminal; the editor
+  restarts the server by itself, so wait for the chat to reconnect and record whether it did.
+  Notices ("instinct rejected") show in the chat: quote them. The Captain reads this conversation's
+  title in `WithNav: Show Sessions` for the id check. G4c and G5c: what the chat shows of the check
+  result and the note. G4c: the chat shows no criterion statuses (no goal panel): `Not shown`, SKIP.
+  G5c: the transcript block `Goal note · automatic observation, not a Captain message` and the
+  note's text, styled as a quiet line.
+- **R**: the memory conversation is a second chat whose workspace is `<run>/memrepo`: open that
+  folder in a second VS Code window (`code <run>/memrepo`) and start a conversation there. The
+  slash commands are typed in its composer and answer as transcript lines: `Remembered: "<title>" ·
+  <scope> · undo with /forget <id>`, `Forgot "<title>" · <scope> · <id> v<n>`, `<title> · <id> v<n>`.
+- **D**: the extension has no Projects or Memory page. The Captain runs `nav web --workspace <run>`
+  in a browser and does D1–D10 there as the web skill says; D5's conversation starts in a VS Code
+  window opened on `<run>/memrepo-new` (record where the question appears).
+- **O**: the editor has no session panel (it shows only the `Remembered` line and the Goal note in
+  the chat): O1 to O3 are SKIP, naming that. O4's `Remembered: … · undo with /forget <id>` and
+  `Forgot` lines are checked in E16; there is no undo link, the Captain types `/forget <id>`.
+- **H**: the card has **Allow**, the Always label when offered, **Reject** with an optional message
+  and, only while the review runs, **Hold for me**. Review lines: "Metacognition is reviewing…",
+  "Waiting for you: Metacognition did not allow this call." (then the conclusion, `Relied on: …`,
+  `Consequence: …`), "Held for you: the review stopped.", "No review; your call."; outcomes "Allowed
+  once by Metacognition", "Denied", "Review cancelled: you answered first.", and "Already started by
+  Metacognition — it ran once." when Allow or Hold came too late. H8: no notification; the tab's
+  status icon shows waiting and `WithNav: Show Sessions` lists the conversation under **Waiting for
+  you**. **Settings for H:** the **WithNav: Open Settings** command or the gear in the chat,
+  `permissions.review` to `on`, then `WithNav: New Conversation` (a session reads the setting when it
+  starts). H7: the editor restarts the server by itself; wait for the chat to reconnect and record
+  whether the card came back.
 - **After A2**: wait for the second park, then the Captain clicks the child's Continue button.
   PASS (record as **E9**) when it resumes and its next notice still reports top-ups used 1/3. Then
   run A3 on that park.
@@ -90,6 +119,14 @@ Same protocol as `withnav-testing`. `<run>` is the run folder.
   `empty.png` after typing and sending. They dismiss that refusal explicitly. Open the chooser
   again and cancel: PASS when the draft is unchanged and Send unlocks. The paperclip is editor
   context, not this chooser; verify it still offers editor context separately.
+- **E16 Command answers.** In the memory conversation: `/remember @project WNST-<run id> e16`,
+  `/memory`, `/memory history <id>`, `/forget <id>`. PASS when each shows the readable line of
+  R2/R4/R7 (not raw JSON) and the register agrees (`GET /v1/memory`).
+- **E17 Goal across a reload.** After G, the Captain runs `Developer: Reload Window`, reopens this
+  conversation and types `/goal`. PASS when the goal, its revision and criteria are the same as
+  before the reload. Do it before E11, whose own reload row comes last.
+- **E18 Slash commands offered.** The Captain types `/` in the composer. PASS when `/goal`,
+  `/remember`, `/memory` and `/forget` are listed with their argument hints (record the hints).
 - **E11 Reload.** The Captain runs `Developer: Reload Window` and reopens this conversation. PASS
   when the thumbnails of I1 and C1 show again. Write the report before this check and append its
   row when the Captain is back.

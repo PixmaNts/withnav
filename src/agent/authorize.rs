@@ -573,9 +573,60 @@ pub(super) async fn authorize(
             )
             .await;
             request.always = always;
+            if reviewable(actor, call, &decision, request.requires_captain)
+                && !flows.evidence().current_request_cut
+            {
+                request.review = Some(Box::new(crate::agent::permissions::ReviewTicket {
+                    input: review_input(actor, call, &flows),
+                    rule_id: decision.trace.rule_id,
+                }));
+            }
             Authorized::Ask(Box::new(request))
         }
     }
+}
+
+/// Reads the rules and the floor again for a call the parallel review allowed: true when
+/// nothing changed since the question (see [`decide::Lookup::unchanged_since_question`]). A
+/// rule table that cannot be read counts as changed.
+pub(super) async fn review_still_holds(
+    actor: &AgentActor,
+    call: &ToolCall,
+    repeats: usize,
+    rule_id: Option<i64>,
+) -> bool {
+    let commands = if call.name == "bash" {
+        shell::split(
+            call.args
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
+    } else {
+        Vec::new()
+    };
+    let (store, call, cx, agent, control) = (
+        actor.permission_store.clone(),
+        call.clone(),
+        floor_context(actor),
+        agent_name(actor),
+        control(actor),
+    );
+    tokio::task::spawn_blocking(move || {
+        decide::lookup(&Input {
+            control,
+            call: &call,
+            commands: &commands,
+            cx: &cx,
+            store: store.as_deref(),
+            agent: &agent,
+            repeats,
+            validated: false,
+        })
+        .is_ok_and(|lookup| lookup.unchanged_since_question(rule_id))
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Bypass answers what a rule `ask` or the permission flow raised, never the
@@ -584,6 +635,113 @@ fn bypassable(decision: &Decision) -> bool {
     decision.trace.floor.is_none()
         && !decision.trace.doom_loop
         && decision.trace.flow_verdict.is_some()
+}
+
+/// Whether the parallel metacognition review may answer this question. Only an ordinary question
+/// of the built-in `permission-default` flow's own verdict qualifies: never a written deny (it
+/// stopped the call before), the fixed floor, a credential, a protected check, a loop, another
+/// flow's objection, a custom flow's ask, a failure fallback (the built-in flow falls back to
+/// `apply_rule`, so its answer then uses the rule), a skill validation, a child session's call
+/// or a question the Captain must answer. With the setting `off` nothing is prepared at all.
+/// The caller also refuses a request whose current request was cut: the review would judge a
+/// request it cannot see whole.
+fn reviewable(
+    actor: &AgentActor,
+    call: &ToolCall,
+    decision: &Decision,
+    requires_captain: bool,
+) -> bool {
+    use crate::agent::flow_hook::FlowAction;
+    let asks: Vec<_> = decision
+        .trace
+        .flow_runs
+        .iter()
+        .filter(|run| run.action == FlowAction::AskCaptain)
+        .collect();
+    actor.review != ReviewMode::Off
+        && !requires_captain
+        && bypassable(decision)
+        && decision.trace.protected_check.is_none()
+        && decision.trace.flow_verdict == Some(decide::FlowAnswer::AskCaptain.as_str())
+        && !asks.is_empty()
+        && asks
+            .iter()
+            .all(|run| run.flow == "permission-default" && !run.used_rule)
+        && call.name != "skill"
+        && actor
+            .parent_captain
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none()
+}
+
+/// The review's input bytes, its instructions excluded: the 16 KiB of the whole call minus 1 KiB
+/// kept for the instructions. Requests of 45 to 54 KB on the call path were what made the
+/// earlier per-call review too slow (2026-10).
+pub const REVIEW_INPUT_BYTES: usize = 15 * 1024;
+
+/// What the review reads: the current request (with the agent's proposal it may accept,
+/// labelled), a delegation labelled as such, the validated skill, the call with the session's
+/// secrets redacted, where it acts and its parsed commands; the goal and the tools already called
+/// as context only. Never memory, tool outputs, compaction prose or an earlier request: the
+/// projection carries none of them.
+fn review_input(actor: &AgentActor, call: &ToolCall, flows: &SessionFlows<'_>) -> String {
+    let evidence = flows.evidence();
+    let goal = actor
+        .goal
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .active()
+        .map(|goal| goal.objective.clone());
+    let mut input = json!({
+        "current_request": evidence.current_request,
+        "call": {"tool": call.name, "arguments": call.args},
+        "location": flows.location,
+        "inside_project": flows.inside_project,
+        "commands": flows.commands.as_ref().map(|commands| {
+            commands.iter().map(|command| command.raw.clone()).collect::<Vec<_>>()
+        }),
+    });
+    if !evidence.delegation.is_empty() {
+        input["delegation_from_parent_agent_not_the_captain"] = json!(evidence.delegation);
+    }
+    if let Some(skill) = &flows.skill {
+        input["validated_skill"] = json!({
+            "name": skill.name,
+            "instructions": crate::tools::bound_output(&skill.instructions, 2048).0,
+        });
+    }
+    input["context_only"] = json!({"goal": goal, "tools_already_called": evidence.tool_trail});
+    if let Some(secrets) = &actor.tool_context.secrets {
+        secrets.redact_json(&mut input);
+    }
+    bound_review_input(input)
+}
+
+/// Fits the input in [`REVIEW_INPUT_BYTES`]: the context goes first, then the call's arguments
+/// are cut, then the oldest messages of the request; a last cut bounds whatever remains.
+fn bound_review_input(mut input: Value) -> String {
+    let fits = |input: &Value| input.to_string().len() <= REVIEW_INPUT_BYTES;
+    if !fits(&input) {
+        input
+            .as_object_mut()
+            .expect("the input is an object")
+            .remove("context_only");
+    }
+    if !fits(&input) {
+        let args = input["call"]["arguments"].to_string();
+        input["call"]["arguments"] = json!(crate::tools::bound_output(&args, 4096).0);
+    }
+    while !fits(&input)
+        && input["current_request"]
+            .as_array()
+            .is_some_and(|messages| messages.len() > 1)
+    {
+        if let Some(messages) = input["current_request"].as_array_mut() {
+            messages.remove(0);
+        }
+    }
+    crate::tools::bound_output(&input.to_string(), REVIEW_INPUT_BYTES).0
 }
 
 fn scope(call: &ToolCall, cx: &FloorContext) -> Scope {

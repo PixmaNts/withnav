@@ -89,6 +89,18 @@ or change what can be put back, would it change nothing, or does the current req
 `shadow` (default) or `on`.
 _Avoid_: approval, second opinion
 
+**Parallel review**:
+With `permissions.review` at `on`, one tool-free Metacognition call that reads the current request
+and a call the permission flow put to the Captain, beside the Captain's card. It can only allow the
+call once (a step the request necessarily implies) or wait; the first decisive answer, the
+Captain's or the review's, wins. Under `shadow` it is only logged beside the Captain's answer.
+_Avoid_: auto-approval, second Captain
+
+**Hold**:
+"Hold for me": the Captain's answer that stops the parallel review and keeps the card for themselves.
+After the review already allowed the call, a hold is told the call already started; it never undoes it.
+_Avoid_: pause (a pause is the watchdog's), cancel
+
 ## Crew
 
 Each member has a name and glyph; colour alone never identifies a member.

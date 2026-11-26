@@ -8,7 +8,7 @@ own model.
 |---|---|---|---|
 | Reflex | one model, editor only | `fim` | Inline completion as you type (Mercury in the example). |
 | Instinct | one model | `systemone` | Typed decisions and supervision: when to speak, the permission flow's questions, progress checks. |
-| Metacognition | one model | `chat` | Remarks beside your code, and the watchdog's doubts about a long turn: the review reads your session goal (or your last message) and the session ledger, and may give a short reason. Reading the ledger and the review share one 60-second limit; past it, Nav asks you. Prefers the `low` variant when the model offers one, otherwise the model's default. |
+| Metacognition | one model | `chat` | Remarks beside your code, the parallel review of a permission question when `permissions.review` is `on` or `shadow` ([Permissions](permissions.md#parallel-review-permissionsreview-on)), and the watchdog's doubts about a long turn: the review reads your session goal (or your last message) and the session ledger, and may give a short reason. Reading the ledger and the review share one 60-second limit; past it, Nav asks you. Prefers the `low` variant when the model offers one, otherwise the model's default. |
 | Cognition | agents, each with its own role and model | `chat` | The agent loop you talk to. |
 
 ## Assign a model
@@ -41,7 +41,7 @@ diagnostic. It does not switch to another model silently.
 |---|---|
 | Reflex | No inline suggestions. |
 | Instinct | The permission flow cannot judge: your rules apply, and a call with no rule asks you. Supervision of long turns falls back to a visible, renewable 500-step cap. |
-| Metacognition | No remarks. Compaction summaries use the session's model. |
+| Metacognition | No remarks, no parallel review of permission questions (you answer every card). Compaction summaries use the session's model. |
 
 `nav doctor` reports each layer and why it is off. See
 [Troubleshooting](troubleshooting.md#check-your-setup-with-nav-doctor).

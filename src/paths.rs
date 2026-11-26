@@ -36,6 +36,12 @@ pub fn goal_check_log(data_dir: &std::path::Path) -> PathBuf {
     data_dir.join(crate::session::goal_check::LOG_FILE)
 }
 
+/// The log of the parallel permission reviews, `<data_dir>/permission-reviews.jsonl`: one line
+/// per review with the Captain's own answer beside it.
+pub fn permission_review_log(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join(crate::session::permission_review::LOG_FILE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

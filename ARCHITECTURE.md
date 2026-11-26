@@ -381,6 +381,28 @@ atomically (temporary file and rename), so a link put at the target is replaced,
 through. A stop or a chat message cancels the request; a resume expires every request that has no
 `permission.resolved`, settles its calls as interrupted, and marks its decisions `expired`.
 
+**Parallel review of a question** (`session/permission_review.rs`, ADR 0015 amendment 2026-11-25).
+`authorize` prepares a `ReviewTicket` (the reviewer's 16 KiB input from the consequence projection,
+secrets redacted, and the matching rule id) only for an ordinary question of the built-in
+`permission-default` flow's own verdict in a root session whose `permissions.review` is not `off`,
+whose current request is not cut, and whose call is not a `skill` (no floor, loop, protected check,
+custom-flow ask or failure fallback). Before `permission.requested` is published the runtime binds
+the request to its `call_digest` (SHA-256 of tool, arguments and call id) and `turn_id`, both on the
+event; then it offers the request to bypass and, through a `ReviewStarter` the service installed on
+`RuntimeStatus` (the bus never imports the service), to the review. The review is one tool-free
+chat call to the metacognition model (`session/metacognition_client.rs`, shared with the goal
+check), 1000 tokens, 60 s, no retry. Every claim goes through the one lock of the permission slot:
+`claim_permission_as` (Captain, bypass), `claim_permission_for_review` (also requires no hold and the
+same digest and turn) and `hold_permission`; a slot that changes (answer, stop, new message) cancels
+the review. With `on`, an `allow_once` claims and sends `PermissionAnswer{AllowOnce, origin:
+Metacognition}`; `run_loop` reads the rules again (`decide::Lookup::unchanged_since_question`) and
+runs the call (`approved_by: metacognition`) or, if anything changed, decides it again. `wait` and
+`unavailable` publish `permission.review`; `hold` on the answer route stops the review (or answers
+409 `permission_already_started` after its claim), and a Captain answer after that claim gets the
+same 409. With `shadow` nothing is published. Each review writes one line to
+`<data dir>/permission-reviews.jsonl` with the Captain's resolution once the request resolves.
+`GET /v1/waiting` lists the live pending requests of every session (`RuntimeStatus::waiting_request`).
+
 **Secret request to answer.** `request_secret` (`tools/secret.rs`, never in a child or read-only
 registry) is a human call like `ask`: a valid call makes `classify_with` yield
 (`PendingInteraction::Ask`, `agent.yield` kind `secret`, `question_call_id` the request id,
@@ -613,8 +635,8 @@ child CAS and bounded partial text before releasing capacity, without taking lif
 `decision.rs` enforces owner and watchdog-doubt state, never answers permissions or budgets.
 The existing owner continue endpoint also resumes doubt. Recovery terminalizes unfinished links
 as before; no supervision state is restored. The event catalog (`bus/event.rs`,
-`EVENT_KIND_COUNT`) has 27 kinds; `goal.updated` and `goal.cleared` are the latest, and every
-client ignores a kind it does not know.
+`EVENT_KIND_COUNT`) has 28 kinds; `permission.review` is the latest, and every client ignores a
+kind it does not know.
 
 | Path | What | Written by |
 | --- | --- | --- |

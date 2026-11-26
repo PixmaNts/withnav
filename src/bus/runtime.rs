@@ -114,6 +114,85 @@ struct VariantSlot {
 struct PermissionSlot {
     id: Option<Ulid>,
     claimed: bool,
+    /// Who holds the claim: the Captain, bypass or the parallel review.
+    claimed_by: Option<crate::agent::permissions::PermissionOrigin>,
+    /// What an answer to this request is bound to: the call digest and the turn that raised it.
+    digest: Option<String>,
+    turn_id: Option<Ulid>,
+    /// The Captain kept the card for themselves: the review may no longer claim it.
+    held: bool,
+    /// Cancels the parallel review of this request; fired whenever the slot changes.
+    review: Option<CancellationToken>,
+    review_state: Option<crate::bus::event::PermissionReviewState>,
+    /// The review's short reasoning once it allowed the call, for `permission.resolved`.
+    review_answer: Option<serde_json::Value>,
+    /// What the waiting list shows for this request.
+    waiting: Option<WaitingRequest>,
+}
+
+impl PermissionSlot {
+    fn reset(&mut self, id: Option<Ulid>) {
+        if let Some(review) = self.review.take() {
+            review.cancel();
+        }
+        *self = Self {
+            id,
+            ..Self::default()
+        };
+    }
+}
+
+/// A pending permission request as the waiting list shows it: no reasoning, no arguments.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WaitingRequest {
+    pub request_id: Ulid,
+    pub tool_call_id: String,
+    pub turn_id: Ulid,
+    pub tool: String,
+    /// The tool and the first words of what it does, at most [`WAITING_SUMMARY_CHARS`]
+    /// characters, secrets redacted.
+    pub summary: String,
+    /// When the question was raised (RFC 3339).
+    pub since: String,
+    /// The parallel review's state; `None` when no review shows (off, shadow, not eligible).
+    pub review_state: Option<crate::bus::event::PermissionReviewState>,
+}
+
+/// The longest waiting-list summary, in characters.
+pub const WAITING_SUMMARY_CHARS: usize = 120;
+
+/// How a Captain's "Hold for me" ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldOutcome {
+    /// The review stopped before it took the request: the card is the Captain's.
+    Held,
+    /// The review had already allowed the call; the call was not undone.
+    AlreadyStarted,
+    /// No such request waits, or another answer already holds it.
+    Stale,
+}
+
+/// What a session hands its parallel reviewer for one pending request.
+pub struct ReviewJob {
+    pub request: crate::agent::permissions::PermissionRequest,
+    pub turn_id: Ulid,
+    /// Fires when the request is answered, cancelled, held or replaced, and when the session
+    /// stops: a review answer after it is never sent.
+    pub cancel: CancellationToken,
+    pub answers: tokio::sync::mpsc::Sender<crate::bus::inbox::PermissionAnswer>,
+}
+
+/// Starts the parallel review of a request. Installed by the session service on a root session
+/// whose `permissions.review` is not `off`, so the bus never imports the service.
+pub type ReviewStarter = Arc<dyn Fn(ReviewJob) + Send + Sync>;
+
+#[derive(Clone)]
+struct ReviewStarterCell(ReviewStarter);
+
+impl std::fmt::Debug for ReviewStarterCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReviewStarter")
+    }
 }
 
 /// What the runtime shares with the session service about its actor, so the
@@ -191,6 +270,8 @@ pub struct RuntimeStatus {
     /// The id of the permission request the actor waits on, if any, so the
     /// service can refuse a stale decision without waiting for the runtime.
     pending_permission: Mutex<PermissionSlot>,
+    /// Starts the parallel review of a pending request; `None` when no review runs.
+    review_starter: Mutex<Option<ReviewStarterCell>>,
     /// The primary agent the session runs as, and the agents it may switch
     /// to. A turn reads it at its start.
     pub selection: crate::agent::selection::AgentSelection,
@@ -666,12 +747,238 @@ impl RuntimeStatus {
     /// gone or another answer already holds it. Check and claim happen under
     /// one lock, so two concurrent answers cannot both win.
     pub fn claim_permission(&self, id: Ulid) -> bool {
+        self.claim_permission_as(id, crate::agent::permissions::PermissionOrigin::Captain)
+    }
+
+    /// [`Self::claim_permission`] for `origin`. A claim by the Captain or bypass stops the
+    /// parallel review of the request.
+    pub fn claim_permission_as(
+        &self,
+        id: Ulid,
+        origin: crate::agent::permissions::PermissionOrigin,
+    ) -> bool {
         let mut slot = self.permission_slot();
         if slot.id == Some(id) && !slot.claimed {
             slot.claimed = true;
+            slot.claimed_by = Some(origin);
+            if origin != crate::agent::permissions::PermissionOrigin::Metacognition
+                && let Some(review) = slot.review.take()
+            {
+                review.cancel();
+            }
             return true;
         }
         false
+    }
+
+    /// The review's claim: also requires that the Captain did not hold the card and that the
+    /// request is still the call (`digest`) of the turn (`turn_id`) the review read. One lock
+    /// with every other claim, so the Captain, bypass and the review never all win.
+    pub fn claim_permission_for_review(&self, id: Ulid, digest: &str, turn_id: Ulid) -> bool {
+        let mut slot = self.permission_slot();
+        if slot.id == Some(id)
+            && !slot.claimed
+            && !slot.held
+            && slot.digest.as_deref() == Some(digest)
+            && slot.turn_id == Some(turn_id)
+            && slot
+                .review
+                .as_ref()
+                .is_some_and(|review| !review.is_cancelled())
+        {
+            slot.claimed = true;
+            slot.claimed_by = Some(crate::agent::permissions::PermissionOrigin::Metacognition);
+            return true;
+        }
+        false
+    }
+
+    /// Who holds the claim of the request `id`, if anyone does.
+    pub fn permission_claimed_by(
+        &self,
+        id: Ulid,
+    ) -> Option<crate::agent::permissions::PermissionOrigin> {
+        let slot = self.permission_slot();
+        (slot.id == Some(id) && slot.claimed)
+            .then_some(slot.claimed_by)
+            .flatten()
+    }
+
+    /// Whether `digest` and `turn_id`, when given, name the waiting request `id`.
+    pub fn permission_binding_matches(
+        &self,
+        id: Ulid,
+        digest: Option<&str>,
+        turn_id: Option<Ulid>,
+    ) -> bool {
+        let slot = self.permission_slot();
+        slot.id == Some(id)
+            && digest.is_none_or(|digest| slot.digest.as_deref() == Some(digest))
+            && turn_id.is_none_or(|turn| slot.turn_id == Some(turn))
+    }
+
+    /// "Hold for me": before the review's claim it stops the review and keeps the card for
+    /// the Captain; after it, the call already started and the hold changes nothing.
+    pub fn hold_permission(&self, id: Ulid) -> HoldOutcome {
+        let mut slot = self.permission_slot();
+        if slot.id != Some(id) {
+            return HoldOutcome::Stale;
+        }
+        if slot.claimed {
+            return if slot.claimed_by
+                == Some(crate::agent::permissions::PermissionOrigin::Metacognition)
+            {
+                HoldOutcome::AlreadyStarted
+            } else {
+                HoldOutcome::Stale
+            };
+        }
+        slot.held = true;
+        if let Some(review) = slot.review.take() {
+            review.cancel();
+        }
+        if slot.review_state.is_some() {
+            slot.review_state = Some(crate::bus::event::PermissionReviewState::Held);
+        }
+        if let Some(waiting) = slot.waiting.as_mut()
+            && waiting.review_state.is_some()
+        {
+            waiting.review_state = Some(crate::bus::event::PermissionReviewState::Held);
+        }
+        HoldOutcome::Held
+    }
+
+    /// Records the state the review of request `id` shows, while it still waits.
+    pub fn set_review_state(&self, id: Ulid, state: crate::bus::event::PermissionReviewState) {
+        let mut slot = self.permission_slot();
+        if slot.id == Some(id) && !slot.held {
+            slot.review_state = Some(state);
+            if let Some(waiting) = slot.waiting.as_mut() {
+                waiting.review_state = Some(state);
+            }
+        }
+    }
+
+    /// Keeps the reasoning of a review that claimed request `id`, for its `permission.resolved`.
+    pub fn set_review_answer(&self, id: Ulid, answer: serde_json::Value) {
+        let mut slot = self.permission_slot();
+        if slot.id == Some(id) {
+            slot.review_answer = Some(answer);
+        }
+    }
+
+    fn take_review_answer(&self, id: Ulid) -> Option<serde_json::Value> {
+        let mut slot = self.permission_slot();
+        (slot.id == Some(id))
+            .then(|| slot.review_answer.take())
+            .flatten()
+    }
+
+    /// The request this session waits on, as the waiting list shows it.
+    pub fn waiting_request(&self) -> Option<WaitingRequest> {
+        let slot = self.permission_slot();
+        slot.waiting
+            .clone()
+            .filter(|waiting| slot.id == Some(waiting.request_id) && !slot.claimed)
+    }
+
+    /// Supplies how this session starts the parallel review of its requests.
+    pub fn install_review_starter(&self, starter: ReviewStarter) {
+        *self
+            .review_starter
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(ReviewStarterCell(starter));
+    }
+
+    /// Binds the request just raised to its call and turn, and fills its waiting-list entry.
+    /// Runs before `permission.requested` is published, so an answer that names the digest
+    /// it read always finds it bound.
+    fn bind_permission(
+        &self,
+        request: &crate::agent::permissions::PermissionRequest,
+        turn_id: Ulid,
+    ) {
+        let summary = self.waiting_summary(request);
+        let mut slot = self.permission_slot();
+        if slot.id != Some(request.id) {
+            return;
+        }
+        slot.digest = Some(request.call_digest.clone());
+        slot.turn_id = Some(turn_id);
+        slot.waiting = Some(WaitingRequest {
+            request_id: request.id,
+            tool_call_id: request.tool_call_id.clone(),
+            turn_id,
+            tool: request.tool.clone(),
+            summary,
+            since: crate::bus::event::now_rfc3339(),
+            review_state: None,
+        });
+    }
+
+    fn waiting_summary(&self, request: &crate::agent::permissions::PermissionRequest) -> String {
+        let args: serde_json::Value = serde_json::from_str(&request.arguments).unwrap_or_default();
+        let what = ["command", "path", "url", "name", "pattern"]
+            .iter()
+            .find_map(|key| args[*key].as_str())
+            .unwrap_or_default();
+        let words = what
+            .split_whitespace()
+            .take(12)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut text = if words.is_empty() {
+            request.tool.clone()
+        } else {
+            format!("{}: {words}", request.tool)
+        };
+        if let Some(secrets) = self.secrets.get() {
+            secrets.redact_in_place(&mut text);
+        }
+        text.chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(WAITING_SUMMARY_CHARS)
+            .collect()
+    }
+
+    /// Offers the request just published to the parallel review, when one is installed, the
+    /// request is eligible and nobody answered it yet.
+    fn start_review(
+        &self,
+        request: &crate::agent::permissions::PermissionRequest,
+        turn_id: Ulid,
+        inbox: &ActorInbox,
+    ) {
+        if request.review.is_none() {
+            return;
+        }
+        let Some(ReviewStarterCell(starter)) = self
+            .review_starter
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        else {
+            return;
+        };
+        let cancel = CancellationToken::new();
+        {
+            let mut slot = self.permission_slot();
+            if slot.id != Some(request.id) || slot.claimed || slot.held {
+                return;
+            }
+            slot.review = Some(cancel.clone());
+        }
+        starter(ReviewJob {
+            request: request.clone(),
+            turn_id,
+            cancel,
+            answers: inbox.permission_sender(),
+        });
     }
 
     /// Whether an answer already holds the waiting request.
@@ -684,11 +991,21 @@ impl RuntimeStatus {
         let mut slot = self.permission_slot();
         if slot.id == Some(id) {
             slot.claimed = false;
+            slot.claimed_by = None;
         }
     }
 
+    /// A different request (or none) cancels the review of the previous one and forgets its
+    /// binding: a steer, a stop or a new message settles the request, and a late review answer
+    /// then finds nothing to claim.
     fn set_pending_permission(&self, id: Option<Ulid>) {
-        *self.permission_slot() = PermissionSlot { id, claimed: false };
+        let mut slot = self.permission_slot();
+        if slot.id == id && id.is_some() {
+            slot.claimed = false;
+            slot.claimed_by = None;
+        } else {
+            slot.reset(id);
+        }
     }
 
     fn permission_slot(&self) -> std::sync::MutexGuard<'_, PermissionSlot> {
@@ -1570,12 +1887,14 @@ async fn runtime_loop(
                         always_error: Some(error),
                     };
                 }
-                publish_resolved_with_origin(
+                let review = status.take_review_answer(request.id);
+                publish_resolved_with_review(
                     &sequencer,
                     active_task_id,
                     &request,
                     resolution,
                     answer.origin,
+                    review,
                 );
                 let _ = answer.reply.send(Ok(()));
                 Some((answer.request_id, decision, answer.origin))
@@ -1892,10 +2211,11 @@ async fn runtime_loop(
                         CompletionOutcome::Parked,
                     );
                 }
-                turn.publish(
-                    EventKind::PermissionRequested,
-                    permission_requested(&request),
-                );
+                status.bind_permission(&request, turn_id);
+                let mut requested = permission_requested(&request);
+                requested["call_digest"] = serde_json::json!(request.call_digest);
+                requested["turn_id"] = serde_json::json!(turn_id);
+                turn.publish(EventKind::PermissionRequested, requested);
                 emit_turn_end(
                     &mut turn,
                     turn_id,
@@ -1914,6 +2234,7 @@ async fn runtime_loop(
                     }
                 }
                 status.resolve_pending_bypass(&actor, &inbox);
+                status.start_review(&request, turn_id, &inbox);
             }
             Ok(RunOutcome::Interrupted) | Ok(RunOutcome::WatchdogBoundary) => {
                 actor.end_skill_turn();
@@ -2059,6 +2380,7 @@ async fn runtime_loop(
 
     // A stop (or the end of the inbox) while a request waits: its calls never
     // run, and the request ends as cancelled.
+    status.set_pending_permission(None);
     if let Some(request) = actor.pending_permission().cloned() {
         actor.interrupt_pending_permission();
         publish_resolved(
@@ -2164,6 +2486,17 @@ fn publish_resolved_with_origin(
     resolution: PermissionResolution,
     origin: crate::agent::permissions::PermissionOrigin,
 ) {
+    publish_resolved_with_review(sequencer, task_id, request, resolution, origin, None);
+}
+
+fn publish_resolved_with_review(
+    sequencer: &Sequencer,
+    task_id: Option<Ulid>,
+    request: &crate::agent::permissions::PermissionRequest,
+    resolution: PermissionResolution,
+    origin: crate::agent::permissions::PermissionOrigin,
+    review: Option<serde_json::Value>,
+) {
     let mut candidate = Candidate::new(
         EventKind::PermissionResolved,
         to_value(&PermissionResolved {
@@ -2173,8 +2506,11 @@ fn publish_resolved_with_origin(
             resolution,
         }),
     );
-    if origin == crate::agent::permissions::PermissionOrigin::Bypass {
-        candidate.payload["approved_by"] = serde_json::json!("bypass");
+    if origin != crate::agent::permissions::PermissionOrigin::Captain {
+        candidate.payload["approved_by"] = serde_json::json!(origin.label());
+        if let Some(review) = review {
+            candidate.payload["review"] = review;
+        }
     } else if matches!(
         candidate.payload["resolution"].as_str(),
         Some("allow_once" | "allow_always" | "allow_folder" | "reject" | "deny")
@@ -2758,6 +3094,8 @@ mod tests {
                 repeats: 1,
                 skill_rule: false,
                 always_saved: None,
+                call_digest: String::new(),
+                review: None,
             }),
             call: crate::provider::ToolCall {
                 id: "held".into(),

@@ -51,6 +51,10 @@ pub enum ParkPoint {
     LifecycleClaim,
     /// A shutdown parks while its snapshot is taken.
     ShutdownSnapshot,
+    /// A parallel permission review that allowed the call parks before it claims the request.
+    ReviewBeforeClaim,
+    /// A parallel permission review parks after its claim, before its answer reaches the runtime.
+    ReviewAfterClaim,
 }
 
 /// A deterministic pause point inside a child admission flow.
@@ -225,6 +229,12 @@ pub(crate) struct TestPoints {
     /// Injected root-publication failure, consumed on the next publication.
     #[cfg(any(test, feature = "test-support"))]
     root_publication_failure: Arc<std::sync::atomic::AtomicBool>,
+    /// Arming slot for the review-before-claim park.
+    #[cfg(any(test, feature = "test-support"))]
+    review_before_claim_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    /// Arming slot for the review-after-claim park.
+    #[cfg(any(test, feature = "test-support"))]
+    review_after_claim_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
     /// Injected child start/publication failure: `Some(true)` fails the
     /// publication pass, `Some(false)` fails the start pass; each is
     /// consumed once.
@@ -239,6 +249,22 @@ impl TestPoints {
     pub(super) fn pause_skill_loading(&self, barrier: ChildPreparationBarrier) {
         *self
             .skill_loading_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    /// Arms the park before a parallel review claims its request.
+    pub(super) fn pause_review_before_claim(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .review_before_claim_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    /// Arms the park after a parallel review claimed its request.
+    pub(super) fn pause_review_after_claim(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .review_after_claim_barrier
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
     }
@@ -479,6 +505,8 @@ impl TestPoints {
             ParkPoint::WatchdogTeardown => &self.watchdog_teardown_barrier,
             ParkPoint::LifecycleClaim => &self.lifecycle_claim_barrier,
             ParkPoint::ShutdownSnapshot => &self.shutdown_snapshot_barrier,
+            ParkPoint::ReviewBeforeClaim => &self.review_before_claim_barrier,
+            ParkPoint::ReviewAfterClaim => &self.review_after_claim_barrier,
         };
         let barrier = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(barrier) = barrier {

@@ -1,7 +1,7 @@
-//! Frozen `EventEnvelope` shape and the 27-kind `EventKind`
+//! Frozen `EventEnvelope` shape and the 28-kind `EventKind`
 //! catalog (the twelve original kinds plus `command.result`,
 //! `context.updated`, `context.compacting`, `session.agent_changed`, `context.compacted`,
-//! `permission.requested`, `permission.resolved`, `model.changed`,
+//! `permission.requested`, `permission.resolved`, `permission.review`, `model.changed`,
 //! `subagent.spawned`, `subagent.done`, `subagent.watchdog`, `session.bypass`, `mcp.status`,
 //! `goal.updated` and `goal.cleared`).
 //!
@@ -27,16 +27,16 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// The single root actor id for this slice (all events are published by it).
 pub const ROOT_ACTOR_ID: &str = "agent:main";
 
-/// The catalog emits EXACTLY 27 kinds: 3 session +
+/// The catalog emits EXACTLY 28 kinds: 3 session +
 /// message + 2 turn + 2 llm + 2 tool + 2 agent + task + command result +
 /// context update + context compacting + agent change + context compacted +
-/// 2 permission + model change + 3 subagent + MCP status + 2 goal = 27. The first twelve are
+/// 3 permission + model change + 3 subagent + MCP status + 2 goal = 28. The first twelve are
 /// frozen; `command.result`, `context.updated`, `context.compacting`, `session.agent_changed`,
-/// `context.compacted`, `permission.requested`, `permission.resolved`, `model.changed`,
+/// `context.compacted`, `permission.requested`, `permission.resolved`, `permission.review`, `model.changed`,
 /// `subagent.spawned`, `subagent.done`, `subagent.watchdog`, `session.bypass`, `mcp.status`,
 /// `goal.updated` and `goal.cleared` were added without changing the envelope version: every
 /// client ignores a kind it does not know.
-pub const EVENT_KIND_COUNT: usize = 27;
+pub const EVENT_KIND_COUNT: usize = 28;
 
 /// Durable kinds are retained in the reconnect ring and the history store;
 /// `llm.delta`, `context.updated`, `context.compacting` and `mcp.status` are live-only (the
@@ -83,6 +83,7 @@ impl EventKind {
             | Self::ContextCompacted
             | Self::PermissionRequested
             | Self::PermissionResolved
+            | Self::PermissionReview
             | Self::ModelChanged
             | Self::SubagentSpawned
             | Self::SubagentDone
@@ -110,6 +111,7 @@ impl EventKind {
                 Self::ContextCompacted,
                 Self::PermissionRequested,
                 Self::PermissionResolved,
+                Self::PermissionReview,
                 Self::ModelChanged,
                 Self::SubagentSpawned,
                 Self::SubagentDone,
@@ -122,7 +124,7 @@ impl EventKind {
         }
     }
 
-    /// The 27 emitted kinds, in catalog order. The bus iterates this to seed
+    /// The 28 emitted kinds, in catalog order. The bus iterates this to seed
     /// the ring/fan-out.
     pub const ALL: [EventKind; EVENT_KIND_COUNT] = Self::all_variants();
 }
@@ -131,7 +133,7 @@ const _: () = assert!(EventKind::ALL.len() == EVENT_KIND_COUNT);
 
 macro_rules! event_kinds {
     ($($variant:ident => $wire:literal),+ $(,)?) => {
-        /// Typed catalog of the 27 emitted event kinds; the wire name is the dotted
+        /// Typed catalog of the 28 emitted event kinds; the wire name is the dotted
         /// string (serialized verbatim, e.g. `"llm.delta"`).
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         pub enum EventKind {
@@ -170,6 +172,7 @@ event_kinds! {
     ContextCompacted => "context.compacted",
     PermissionRequested => "permission.requested",
     PermissionResolved => "permission.resolved",
+    PermissionReview => "permission.review",
     ModelChanged => "model.changed",
     SubagentSpawned => "subagent.spawned",
     SubagentDone => "subagent.done",
@@ -707,6 +710,43 @@ pub struct PermissionResolved {
     pub resolution: PermissionResolution,
 }
 
+/// Where the parallel metacognition review of a permission request stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionReviewState {
+    /// The review was started beside the Captain's card.
+    Reviewing,
+    /// The review judged that the call goes beyond what the request needs: the Captain decides.
+    Wait,
+    /// The review gave no usable answer (timeout, malformed answer, no model): the Captain decides.
+    Unavailable,
+    /// The Captain asked to keep the card for themselves: the review stopped.
+    Held,
+}
+
+/// The longest conclusion, basis or consequence a `permission.review` carries, in characters.
+pub const PERMISSION_REVIEW_TEXT_MAX_CHARS: usize = 600;
+
+/// The state of the metacognition review of a pending permission request. Published only when
+/// `permissions.review` is `on`; a client that does not know the kind ignores it. Each text is
+/// one line of at most [`PERMISSION_REVIEW_TEXT_MAX_CHARS`] characters, secrets redacted: a short
+/// conclusion, the part of the request it relied on and the consequence, never a chain of
+/// thought.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionReview {
+    pub request_id: Ulid,
+    pub tool_call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session_id: Option<Ulid>,
+    pub state: PermissionReviewState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conclusion: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consequence: Option<String>,
+}
+
 /// Largest serialized `data` a `command.result` carries.
 pub const COMMAND_RESULT_DATA_MAX_BYTES: usize = 16 * 1024;
 
@@ -930,7 +970,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const KIND_NAMES: [&str; 27] = [
+    const KIND_NAMES: [&str; 28] = [
         "session.start",
         "session.end",
         "message.received",
@@ -950,6 +990,7 @@ mod tests {
         "context.compacted",
         "permission.requested",
         "permission.resolved",
+        "permission.review",
         "model.changed",
         "subagent.spawned",
         "subagent.done",
@@ -963,8 +1004,8 @@ mod tests {
     #[test]
     fn event_kind_catalog_is_exactly_the_twenty_one() {
         let kinds = EventKind::ALL;
-        assert_eq!(EVENT_KIND_COUNT, 27);
-        assert_eq!(kinds.len(), 27);
+        assert_eq!(EVENT_KIND_COUNT, 28);
+        assert_eq!(kinds.len(), 28);
         assert_eq!(SCHEMA_VERSION, 1);
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, KIND_NAMES);
@@ -1253,6 +1294,19 @@ mod tests {
                     request_id: Ulid::generate(),
                     tool_call_id: "call_1".into(),
                     resolution: PermissionResolution::Expired,
+                })
+                .unwrap(),
+            ),
+            (
+                "permission.review",
+                serde_json::to_value(&PermissionReview {
+                    request_id: Ulid::generate(),
+                    tool_call_id: "call_1".into(),
+                    child_session_id: None,
+                    state: PermissionReviewState::Wait,
+                    conclusion: Some("The push goes beyond the request.".into()),
+                    basis: Some("tidy the notes".into()),
+                    consequence: Some("publishes commits".into()),
                 })
                 .unwrap(),
             ),

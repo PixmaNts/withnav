@@ -42,13 +42,13 @@ pub enum SettingsError {
 /// the file when they start.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ReviewMode {
-    /// No review: the consequence flow does not start.
+    /// No review: neither the consequence flow nor the metacognition review starts.
     Off,
-    /// The review runs beside the decision and is only logged.
+    /// Both reviews run beside the decision and are only logged; no decision changes.
     #[default]
     Shadow,
-    /// Accepted so a file written for a later release stays valid; today it behaves as
-    /// `Shadow`, because no review answers for the Captain yet.
+    /// The consequence flow still only logs; the metacognition review of an ordinary question
+    /// runs beside the Captain's card and may allow the call once, or leave it waiting for him.
     On,
 }
 

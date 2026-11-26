@@ -877,6 +877,8 @@ mod tests {
                 repeats: 1,
                 skill_rule: false,
                 always_saved: None,
+                call_digest: String::new(),
+                review: None,
             }),
             call: crate::provider::ToolCall {
                 id: "w1".into(),

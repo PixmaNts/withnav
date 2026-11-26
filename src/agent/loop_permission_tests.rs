@@ -2548,3 +2548,278 @@ fn the_trail_reads_what_the_loop_writes() {
             .collect::<Vec<_>>()
     );
 }
+
+/// Permission flows whose only answer is an `ask_captain` of `flow`, from its own verdict or
+/// (`used_rule`) from the rule it applied, as a failure fallback does.
+#[derive(Debug)]
+struct AskingFlow {
+    flow: &'static str,
+    used_rule: bool,
+}
+
+impl ToolCallFlows for AskingFlow {
+    fn permission_pre_call<'a>(
+        &'a self,
+        _: PermissionCallContext,
+        _: RuleResult,
+        _: &'a CancellationToken,
+    ) -> futures::future::BoxFuture<'a, PermissionVerdict> {
+        Box::pin(async move {
+            PermissionVerdict {
+                verdict: FlowVerdict::AskCaptain {
+                    note: "not requested".into(),
+                    flow: self.flow.into(),
+                    run_id: "run".into(),
+                },
+                flows: vec![crate::agent::flow_hook::PermissionFlowAnswer {
+                    flow: self.flow.into(),
+                    run_id: "run".into(),
+                    action: FlowAction::AskCaptain,
+                    used_rule: self.used_rule,
+                    scores: Default::default(),
+                    definition_digest: String::new(),
+                    model: String::new(),
+                }],
+            }
+        })
+    }
+
+    fn protected_check<'a>(
+        &'a self,
+        _: PermissionCallContext,
+        _: &'a CancellationToken,
+    ) -> futures::future::BoxFuture<'a, ProtectedCheck> {
+        Box::pin(async { ProtectedCheck::Failed })
+    }
+}
+
+/// A root actor reviewed `on`, asked by the built-in flow's own verdict.
+fn reviewed_actor() -> AgentActor {
+    let mut actor = actor_with(None);
+    actor.review = crate::settings::ReviewMode::On;
+    actor.tool_flows = Some(Arc::new(AskingFlow {
+        flow: "permission-default",
+        used_rule: false,
+    }));
+    actor.push_user("release la version 0.8.4");
+    actor
+}
+
+fn push_call() -> crate::provider::ToolCall {
+    crate::provider::ToolCall {
+        id: "b1".into(),
+        name: "bash".into(),
+        args: json!({"command": "git push origin v0.8.4"}),
+        args_valid: true,
+    }
+}
+
+/// The review ticket of the question `call` raises; `None` when it raises no question or the
+/// question is not the review's to answer.
+async fn ticket_of(
+    actor: &AgentActor,
+    call: &crate::provider::ToolCall,
+    repeats: usize,
+) -> Option<Box<crate::agent::permissions::ReviewTicket>> {
+    match crate::agent::authorize::authorize(actor, call, repeats, None, false).await {
+        crate::agent::authorize::Authorized::Ask(request) => request.review,
+        _ => None,
+    }
+}
+
+// Given an ordinary question of the built-in flow's own verdict, and the same question raised by
+//       the fixed floor, a credential, a protected write, a loop or the review set to off
+// When the question is raised
+// Then only the ordinary question carries a review ticket
+#[tokio::test]
+async fn the_review_never_starts_for_the_floor_a_protected_write_a_loop_or_a_credential() {
+    let actor = reviewed_actor();
+    assert!(
+        ticket_of(&actor, &push_call(), 1).await.is_some(),
+        "the ordinary question is reviewed"
+    );
+
+    std::fs::write(actor.tool_context.workspace.join(".env"), "TOKEN=1").unwrap();
+    let credential = crate::provider::ToolCall {
+        id: "r1".into(),
+        name: "read".into(),
+        args: json!({"path": ".env"}),
+        args_valid: true,
+    };
+    assert!(
+        ticket_of(&actor, &credential, 1).await.is_none(),
+        "credential"
+    );
+
+    let config = actor
+        .permission_dirs
+        .config
+        .clone()
+        .unwrap()
+        .join("config.json");
+    let protected = crate::provider::ToolCall {
+        id: "w1".into(),
+        name: "write".into(),
+        args: json!({"path": config, "content": "{}"}),
+        args_valid: true,
+    };
+    assert!(
+        ticket_of(&actor, &protected, 1).await.is_none(),
+        "protected"
+    );
+
+    let looping = crate::permission::decide::DOOM_LOOP_THRESHOLD;
+    assert!(
+        ticket_of(&actor, &push_call(), looping).await.is_none(),
+        "loop"
+    );
+
+    let mut off = reviewed_actor();
+    off.review = crate::settings::ReviewMode::Off;
+    assert!(ticket_of(&off, &push_call(), 1).await.is_none(), "off");
+
+    // A written deny never reaches a question at all.
+    let denied = reviewed_actor();
+    add_rule(&denied, "bash", "git push *", Effect::Deny);
+    assert!(matches!(
+        crate::agent::authorize::authorize(&denied, &push_call(), 1, None, false).await,
+        crate::agent::authorize::Authorized::Denied { .. }
+    ));
+}
+
+// Given a question raised by a flow the Captain wrote, by the built-in flow's failure fallback
+//       (it applies the rule), for a skill, or in a child session
+// When the question is raised
+// Then no review ticket is prepared
+#[tokio::test]
+async fn a_custom_flow_ask_and_a_failure_fallback_are_not_reviewed() {
+    for (flow, used_rule) in [("my-flow", false), ("permission-default", true)] {
+        let mut actor = reviewed_actor();
+        actor.tool_flows = Some(Arc::new(AskingFlow { flow, used_rule }));
+        assert!(
+            ticket_of(&actor, &push_call(), 1).await.is_none(),
+            "{flow} used_rule={used_rule}"
+        );
+    }
+    let child = reviewed_actor();
+    *child.parent_captain.lock().unwrap() = Some((vec!["release".into()], false));
+    assert!(
+        ticket_of(&child, &push_call(), 1).await.is_none(),
+        "a child's request is its parent's Captain's"
+    );
+}
+
+// Given a transcript rewritten under the turn, so the current request cannot be trusted whole
+// When the question is raised
+// Then no review ticket is prepared, so no model is called for it
+#[tokio::test]
+async fn a_cut_request_starts_no_review_and_makes_no_model_call() {
+    let mut actor = reviewed_actor();
+    actor.end_skill_turn();
+    actor.push_user("and push it");
+    actor.transcript.remove(0);
+    assert!(ticket_of(&actor, &push_call(), 1).await.is_none());
+}
+
+// Given a question the review may answer
+// When an answer of the review's origin asks to save a rule, or names a request it was not given
+// Then the runtime refuses it as stale, and the question still waits
+#[tokio::test]
+async fn the_review_never_offers_or_saves_always() {
+    let mut actor = reviewed_actor();
+    actor.transcript.clear();
+    script(
+        &mut actor,
+        vec![owned(&[bash("b1", "git push origin v0.8.4")]), done("ok")],
+    )
+    .await;
+    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+        panic!("the push asks");
+    };
+    assert!(request.review.is_some());
+    for decision in [
+        PermissionDecision::AllowAlways,
+        PermissionDecision::Reject { message: None },
+    ] {
+        assert!(
+            resolve_permission_with_origin(
+                &mut actor,
+                request.id,
+                decision,
+                PermissionOrigin::Metacognition,
+                &mut |_| {}
+            )
+            .await
+            .is_err()
+        );
+        assert!(actor.has_pending());
+    }
+    let rules = actor
+        .permission_store
+        .as_ref()
+        .unwrap()
+        .list(&RuleFilter::default())
+        .unwrap();
+    assert!(rules.is_empty(), "no rule was saved");
+}
+
+// Given a question the review allowed once
+// When a deny rule was written while the review ran
+// Then the call is decided again before it runs: the rule denies it, and the row says so
+#[tokio::test]
+async fn a_deny_rule_written_during_the_review_still_denies_the_call() {
+    let mut actor = reviewed_actor();
+    actor.transcript.clear();
+    let marker = actor.tool_context.workspace.join("pushed");
+    let command = format!("touch {}", marker.display());
+    script(&mut actor, vec![owned(&[bash("b1", &command)]), done("ok")]).await;
+    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+        panic!("the call asks");
+    };
+    add_rule(&actor, "bash", "touch *", Effect::Deny);
+    let mut approved = Vec::new();
+    resolve_permission_with_origin(
+        &mut actor,
+        request.id,
+        PermissionDecision::AllowOnce,
+        PermissionOrigin::Metacognition,
+        &mut |event| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                approved.push(result.metadata.clone());
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!marker.exists(), "the call never ran");
+    assert_eq!(approved[0]["denied_by"], json!("rule"), "{approved:?}");
+    let rows = decisions(&actor);
+    assert_eq!(rows.last().unwrap().outcome, Outcome::Denied);
+
+    // Nothing changed: the call runs on the review's word, and the row names it.
+    let mut actor = reviewed_actor();
+    actor.transcript.clear();
+    script(&mut actor, vec![owned(&[bash("b1", &command)]), done("ok")]).await;
+    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+        panic!("the call asks");
+    };
+    let mut approved = Vec::new();
+    resolve_permission_with_origin(
+        &mut actor,
+        request.id,
+        PermissionDecision::AllowOnce,
+        PermissionOrigin::Metacognition,
+        &mut |event| {
+            if let AgentEvent::PostCall { result, .. } = event {
+                approved.push(result.metadata["approved_by"].clone());
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert!(marker.exists());
+    assert_eq!(approved, [json!("metacognition")]);
+    let rows = decisions(&actor);
+    assert_eq!(rows[0].approved_by.as_deref(), Some("metacognition"));
+    assert_eq!(rows[0].outcome, Outcome::Allowed);
+}

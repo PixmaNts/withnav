@@ -16,6 +16,7 @@ pub mod routes;
 pub mod session;
 mod settings;
 pub mod sse;
+mod waiting;
 mod web;
 
 pub use config::{HttpConfig, ServerConfig, WebConfig};

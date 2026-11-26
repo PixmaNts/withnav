@@ -224,6 +224,20 @@ pub struct Lookup {
     doom: Result<Option<Rule>, Error>,
 }
 
+impl Lookup {
+    /// Whether a call the parallel review allowed may still run as the question left it: no
+    /// floor, no written `deny` (a loop's included) and the same matching rule as when the
+    /// question was raised. Anything else sends the call back through the whole decision, so a
+    /// deny rule written while the review ran still stops it.
+    pub fn unchanged_since_question(&self, rule_id: Option<i64>) -> bool {
+        self.floor == Floor::None
+            && self.rules.deny.is_none()
+            && self.rules.rule.as_ref().map(|rule| rule.id) == rule_id
+            && !matches!(&self.doom, Ok(Some(rule)) if rule.effect == Effect::Deny)
+            && self.doom.is_ok()
+    }
+}
+
 /// Reads what deciding `input` needs. Blocking: the database may wait up to
 /// its busy timeout on another connection's write, so async callers run this
 /// on the blocking pool.

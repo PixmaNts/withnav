@@ -18,8 +18,12 @@ requests land in `develop`.
   read whole is replaced by the elision marker. The two questions now ask whether the assistant
   will still need a value, path, name or error in the output, and whether removing the middle
   would lose exact evidence, each with its no-cases written out. The drop and middle-removal
-  cuts moved off the decision model's no-information value of 0.5 (a usefulness below 0.4 to
-  drop, below 0.45 to shorten to head and tail), so a score at the value keeps the output.
+  cuts moved off the decision model's no-information value of 0.5: a useful result is shortened
+  to head and tail when its `full` score is below 0.45, and a result is elided when its `useful`
+  score is below 0.4, so a score at the cut keeps the output. The excerpt kept of an unneeded
+  output is sized to what the summary writer can take: widest first, it narrows until the range
+  fits the source budget and every call-and-result exchange fits one chunk, so a judged-needed
+  output is never elided by the size-based fallback and an excerpt never makes compaction fail.
 - Compaction summaries keep the evidence Nav continues from: each verified change names the check
   that confirmed it and its observed result, unconfirmed claims are listed apart, failed attempts
   stay with what not to retry, and the open criteria and the next check close the summary. A

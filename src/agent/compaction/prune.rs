@@ -48,6 +48,22 @@ const ARGUMENTS_HEAD_CHARS: usize = 400;
 /// candidate's output. The same bound shapes the head-and-tail excerpt kept
 /// when unseen text must not be elided.
 const OUTPUT_WINDOW_CHARS: usize = 2_500;
+/// Per-side excerpt widths tried in turn for an output the judge did not need
+/// and never read whole, widest first. Past the last one the output is elided.
+/// The widest rung is the window the judge read; the narrower ones exist
+/// because a fixed width broke two real shapes (checked 2026-11): a 30 000-byte
+/// result under a 1 024-token chunk budget left a single call-and-result
+/// exchange larger than any chunk, so compaction failed where the elision it
+/// replaced had succeeded; and three reads under a 5 400-token source budget
+/// kept the first read's excerpt, so the two outputs the judge marked needed no
+/// longer fit and the size-based fallback elided them instead.
+const EXCERPT_RUNGS: [usize; 5] = [OUTPUT_WINDOW_CHARS, 1_250, 600, 300, 150];
+/// Width a shortened (still useful) output keeps at the narrowest rung.
+const SHORTENED_FLOOR_CHARS: usize = 150;
+
+/// Whether a projection of the pruned range can still be summarized: the
+/// caller owns the budgets that decide it (source size, chunk size).
+pub type Fits<'a> = &'a (dyn Fn(&[ChatMessage]) -> bool + Send + Sync);
 
 fn head(text: &str, chars: usize) -> String {
     text.chars().take(chars).collect()
@@ -313,8 +329,8 @@ fn request_bytes(input: &PruneBatch) -> usize {
         + 256
 }
 
-/// All-or-nothing projection: an unavailable judge, bad answer, timeout or
-/// savings below 25% leaves the ordinary size-based summary path untouched.
+/// [`prune_fitting`] without a size constraint beyond the savings floor.
+#[cfg(test)]
 pub async fn prune(
     transcript: &[ChatMessage],
     first: usize,
@@ -322,6 +338,26 @@ pub async fn prune(
     earlier: Option<&str>,
     decision: &dyn DecisionModel,
     cancel: &CancellationToken,
+) -> Option<Vec<ChatMessage>> {
+    prune_fitting(transcript, first, end, earlier, decision, cancel, &|_| true).await
+}
+
+/// All-or-nothing projection: an unavailable judge, bad answer, timeout or
+/// savings below 25% leaves the ordinary size-based summary path untouched.
+///
+/// `fits` says whether a projection of `first..end` can be summarized within
+/// the writer's source and chunk budgets. The excerpts kept of unneeded
+/// outputs are sized against it, widest first, so the judge's plan never
+/// pushes the size-based fallback into eliding an output the judge marked
+/// needed, and an excerpt never makes one exchange larger than a chunk.
+pub async fn prune_fitting(
+    transcript: &[ChatMessage],
+    first: usize,
+    end: usize,
+    earlier: Option<&str>,
+    decision: &dyn DecisionModel,
+    cancel: &CancellationToken,
+    fits: Fits<'_>,
 ) -> Option<Vec<ChatMessage>> {
     let pins = pinned(transcript);
     let pairs = pairs(transcript);
@@ -435,52 +471,54 @@ pub async fn prune(
         };
         answers.extend(result.ok()?.ok()?);
     }
-    let mut projection = transcript.to_vec();
-    for (index, (pair, _, _, whole)) in candidates.iter().enumerate() {
+    // What the judge decided per candidate, before any width is chosen.
+    enum Verdict {
+        Keep,
+        Shorten,
+        Elide { whole: bool },
+    }
+    let mut verdicts = Vec::with_capacity(candidates.len());
+    for (index, (_, _, _, whole)) in candidates.iter().enumerate() {
         let key = format!("t{index}");
         let useful = probability(&answers, &format!("useful_{key}"))?;
         let full = probability(&answers, &format!("full_{key}"))?;
-        if let ChatMessage::Tool { content, .. } = &mut projection[pair.result_index] {
-            // Elide whole only what the judge read whole. An output longer
-            // than every window the judge saw was never read as a whole, so a
-            // whole elision would drop text no decision was grounded in; the
-            // reviewed projects keep such outputs unelided entirely, which
-            // also removes the largest savings. A head-and-tail excerpt of
-            // the same windows the judge read keeps the evidence in the
-            // projection and the savings.
-            //
-            // The cuts sit below 0.5, not at it. 0.5 is a yes-probability
-            // model's no-information value — the score a question earns when
-            // it cannot tell signal from noise — and the compaction research
-            // synthesis (2026-11) asks the elide cut to sit under it. Elision
-            // is the destructive step, so it asks the judge to lean clearly
-            // below the no-information value: 0.4, strict, so an at-cut score
-            // keeps. Middle-removal keeps head and tail, a milder loss, so
-            // its cut sits closer: 0.45. Both comparisons are strict for the
-            // same reason. These are our own cuts, not any other project's
-            // numbers: other models and wordings calibrate differently, and
-            // their thresholds were explicitly not to be copied.
-            if useful < 0.4 {
-                *content = if *whole {
-                    super::elision_marker(content.len())
-                } else {
-                    excerpt(content, OUTPUT_WINDOW_CHARS)
-                };
-            } else if full < 0.45 {
-                *content = windows(content, (content.chars().count() / 4).min(2500), false);
-            }
-        }
+        // Elide whole only what the judge read whole. An output longer than
+        // every window the judge saw was never read as a whole, so a whole
+        // elision would drop text no decision was grounded in; the reviewed
+        // projects keep such outputs unelided entirely, which also removes the
+        // largest savings. A head-and-tail excerpt of the same windows keeps
+        // the evidence in the projection and the savings.
+        //
+        // The cuts sit below 0.5, not at it. 0.5 is a yes-probability model's
+        // no-information value — the score a question earns when it cannot
+        // tell signal from noise — and the compaction research synthesis
+        // (2026-11) asks the elide cut to sit under it. Elision is the
+        // destructive step, so it asks the judge to lean clearly below the
+        // no-information value: 0.4, strict, so an at-cut score keeps.
+        // Middle-removal keeps head and tail, a milder loss, so its cut sits
+        // closer: 0.45. Both comparisons are strict for the same reason. These
+        // are our own cuts, not any other project's numbers: other models and
+        // wordings calibrate differently, and their thresholds were explicitly
+        // not to be copied.
+        verdicts.push(if useful < 0.4 {
+            Verdict::Elide { whole: *whole }
+        } else if full < 0.45 {
+            Verdict::Shorten
+        } else {
+            Verdict::Keep
+        });
     }
+    let mut base = transcript.to_vec();
     for pair in pairs.iter().filter(|pair| {
         pair.call_index >= first && pair.result_index < end && pair.mutation && !pair.error
     }) {
-        if let ChatMessage::Tool { content, .. } = &mut projection[pair.result_index]
+        if let ChatMessage::Tool { content, .. } = &mut base[pair.result_index]
             && content.chars().count() > 640
         {
             *content = format!("{}\n[mutation output shortened]", head(content, 600));
         }
         if matches!(pair.name.as_str(), "edit" | "write")
-            && let ChatMessage::Assistant { tool_calls, .. } = &mut projection[pair.call_index]
+            && let ChatMessage::Assistant { tool_calls, .. } = &mut base[pair.call_index]
         {
             for call in tool_calls.iter_mut().filter(|call| call.id == pair.id) {
                 let mut args: Value = serde_json::from_str(&call.function.arguments).ok()?;
@@ -504,8 +542,41 @@ pub async fn prune(
             .ok()
     };
     let before = bytes(transcript)?;
-    let after = bytes(&projection)?;
-    (before.saturating_sub(after) >= before / 4).then_some(projection)
+    let saves_enough = |messages: &[ChatMessage]| {
+        bytes(messages).is_some_and(|after| before.saturating_sub(after) >= before / 4)
+    };
+    // The widest excerpts that keep the range summarizable and the savings at
+    // 25%; failing both everywhere, the narrowest plan that reaches the floor
+    // (elision, as before excerpts existed), or none.
+    let mut narrowest = None;
+    for width in EXCERPT_RUNGS.into_iter().map(Some).chain([None]) {
+        let mut projection = base.clone();
+        for ((pair, _, _, _), verdict) in candidates.iter().zip(&verdicts) {
+            let ChatMessage::Tool { content, .. } = &mut projection[pair.result_index] else {
+                continue;
+            };
+            match (verdict, width) {
+                (Verdict::Keep, _) => {}
+                (Verdict::Shorten, _) => {
+                    let side =
+                        (content.chars().count() / 4).min(width.unwrap_or(SHORTENED_FLOOR_CHARS));
+                    *content = windows(content, side, false);
+                }
+                (Verdict::Elide { whole: false }, Some(width)) => {
+                    *content = excerpt(content, width);
+                }
+                (Verdict::Elide { .. }, _) => *content = super::elision_marker(content.len()),
+            }
+        }
+        if !saves_enough(&projection) {
+            continue;
+        }
+        if fits(&projection) {
+            return Some(projection);
+        }
+        narrowest = Some(projection);
+    }
+    narrowest
 }
 
 #[cfg(test)]

@@ -125,13 +125,15 @@ pub async fn prepare(
         .current
         .map_or(0, |c| c.checkpoint.through_message + 1);
     let projection = if let Some(judge) = input.decision {
-        super::prune::prune(
+        let end = planned.through_message + 1;
+        super::prune::prune_fitting(
             input.transcript,
             first,
-            planned.through_message + 1,
+            end,
             input.current.map(|c| c.checkpoint.summary.as_str()),
             judge,
             cancel,
+            &|projection| summarizable(&input, projection, first, end),
         )
         .await
     } else {
@@ -205,6 +207,58 @@ fn chunk_end(
     Ok(accepted)
 }
 
+/// The largest part of a chunk a rolling request may use: the writer's own
+/// bounds, learned or configured, and half the source budget.
+fn chunk_cap(input: &PrepareInput<'_>) -> u64 {
+    let learned = input
+        .catalog
+        .and_then(|catalog| catalog.message_limit(&input.provider.base_url, input.model));
+    input
+        .chunk_tokens
+        .min(input.max_message_tokens.unwrap_or(u64::MAX))
+        .min(learned.unwrap_or(u64::MAX))
+        .min(input.source_budget / 2)
+        .max(1)
+}
+
+/// Outputs elided by the checkpoint now installed.
+fn installed_elisions(input: &PrepareInput<'_>) -> HashSet<usize> {
+    input
+        .current
+        .map(|c| c.pruned_message_indices.iter().copied().collect())
+        .unwrap_or_default()
+}
+
+/// Whether `transcript[first..end]` can be summarized as it stands: it fits the
+/// source budget whole (otherwise the size-based fallback would start eliding)
+/// and every call-and-result exchange fits one chunk (otherwise the rolling
+/// summary fails).
+fn summarizable(
+    input: &PrepareInput<'_>,
+    transcript: &[ChatMessage],
+    first: usize,
+    end: usize,
+) -> bool {
+    let elided = installed_elisions(input);
+    let whole = ChatMessage::User {
+        provenance: Default::default(),
+        content: render_part(None, transcript, first, end - first, &elided),
+        images: Vec::new(),
+    };
+    if message_tokens(&whole) > input.source_budget {
+        return false;
+    }
+    let cap = chunk_cap(input);
+    let mut at = first;
+    while at < end {
+        match chunk_end(transcript, at, end, cap, &elided) {
+            Ok(next) => at = next,
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
 async fn rolling_summary(
     input: &PrepareInput<'_>,
     planned: &Plan,
@@ -214,19 +268,8 @@ async fn rolling_summary(
         .current
         .map_or(0, |c| c.checkpoint.through_message + 1);
     let end = planned.through_message + 1;
-    let learned = input
-        .catalog
-        .and_then(|catalog| catalog.message_limit(&input.provider.base_url, input.model));
-    let mut cap = input
-        .chunk_tokens
-        .min(input.max_message_tokens.unwrap_or(u64::MAX))
-        .min(learned.unwrap_or(u64::MAX))
-        .min(input.source_budget / 2)
-        .max(1);
-    let mut elided: HashSet<usize> = input
-        .current
-        .map(|c| c.pruned_message_indices.iter().copied().collect())
-        .unwrap_or_default();
+    let mut cap = chunk_cap(input);
+    let mut elided = installed_elisions(input);
     // Preserve the existing biggest-first elision before splitting the prefix.
     let whole = ChatMessage::User {
         provenance: Default::default(),

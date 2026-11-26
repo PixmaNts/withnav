@@ -14,6 +14,8 @@ requests land in `develop`.
   summary no longer drops dead ends.
 ### Added
 
+- A memory register for Captain-authored knowledge, with scoped items, version history, and explicit confirmation for scope widening. Use `/remember`, `/memory`, and `/forget` to work with items from a session.
+
 - The session ledger: what a conversation did (turns and how the last one ended, files changed,
   shell commands with their exit code, commands that failed more than once, the last answer, the
   questions still waiting), rebuilt from the conversation's stored events on each read, with every

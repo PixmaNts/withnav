@@ -553,15 +553,16 @@ impl MemoryStore {
     fn amend(
         &self,
         id: &str,
-        expected_version: u32,
+        expected_version: impl Into<Option<u32>>,
         reason: Option<&str>,
         by: &Provenance,
         next: impl FnOnce(&Connection, MemoryItem) -> Result<Amendment, Error>,
     ) -> Result<MemoryItem, Error> {
+        let expected_version = expected_version.into();
         let reason = optional(reason, "reason", MAX_REASON_CHARS)?;
         self.write(|transaction| {
             let item = require(transaction, id)?;
-            if item.current_version != expected_version {
+            if expected_version.is_some_and(|expected| item.current_version != expected) {
                 return Err(Error::VersionConflict {
                     current: item.current_version,
                 });
@@ -665,6 +666,26 @@ impl MemoryStore {
         &self,
         id: &str,
         expected_version: u32,
+        reason: Option<&str>,
+        by: &Provenance,
+    ) -> Result<MemoryItem, Error> {
+        self.invalidate_at(id, Some(expected_version), reason, by)
+    }
+
+    /// Invalidates whichever version is current in the write transaction.
+    pub fn invalidate_current(
+        &self,
+        id: &str,
+        reason: Option<&str>,
+        by: &Provenance,
+    ) -> Result<MemoryItem, Error> {
+        self.invalidate_at(id, None, reason, by)
+    }
+
+    fn invalidate_at(
+        &self,
+        id: &str,
+        expected_version: Option<u32>,
         reason: Option<&str>,
         by: &Provenance,
     ) -> Result<MemoryItem, Error> {

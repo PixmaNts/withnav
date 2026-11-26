@@ -1262,11 +1262,15 @@ async fn run_decided(
     // WithNav's own conversation controls act on this session and its
     // children, never on files, commands or the network: no rule covers them.
     // Each child's own calls go through the decision.
-    if actor.permission_store.is_some()
-        && matches!(
-            call.name.as_str(),
-            "task" | "steer_subagent" | "decide_subagent" | "intent" | "reveal"
-        )
+    if actor
+        .registry
+        .get(&call.name)
+        .is_some_and(|tool| tool.is_memory_scope_control())
+        || actor.permission_store.is_some()
+            && matches!(
+                call.name.as_str(),
+                "task" | "steer_subagent" | "decide_subagent" | "intent" | "reveal"
+            )
     {
         return execute_and_settle(actor, call, None, None, observe).await;
     }

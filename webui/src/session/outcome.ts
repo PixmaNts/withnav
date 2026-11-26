@@ -13,6 +13,15 @@ export function outcomeText(name: string, ok: boolean, data: any, error?: string
   if (data.applies === "after_turn" || data.applies === "next_turn") return "accepted, applies when this turn ends";
   const text = (key: string) => (typeof data[key] === "string" ? data[key] : "");
   switch (name) {
+    case "remember":
+    case "forget":
+    case "memory": {
+      const render = (item: { id: string; current_version: number; current: { title: string } }) =>
+        `${item.current.title} · ${item.id} v${item.current_version}`;
+      if (data.item?.current) return `${name === "remember" ? "Remembered" : name === "forget" ? "Forgot" : "Memory"}: ${render(data.item)}`;
+      if (Array.isArray(data.items)) return data.items.length ? data.items.map(render).join("\n") : "No memory items.";
+      return JSON.stringify(data);
+    }
     case "help":
       return Array.isArray(data.commands)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -1,5 +1,5 @@
-//! Old-prefix tool-output pruning inspired by pi-compact-jev 0.5.1
-//! (MIT, Copyright (c) 2026 dev-willbird1936). Calls and the stored transcript
+//! Old-prefix tool-output pruning adapted from an MIT-licensed compaction plugin
+//! (Copyright (c) 2026 dev-willbird1936). Calls and the stored transcript
 //! stay intact; only the summary's temporary projection is reduced.
 //!
 //! Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -253,8 +253,8 @@ fn probability(answers: &Answers, key: &str) -> Option<f64> {
 }
 
 /// An upper bound of the request body for any Instinct model identifier of up to
-/// [`MODEL_ID_ALLOWANCE`] bytes, plus a 256-byte margin. The estimate once named one model
-/// (`typesafe/jev-1.13`) and so underestimated every longer identifier; the assigned model is
+/// [`MODEL_ID_ALLOWANCE`] bytes, plus a 256-byte margin. The estimate once used one fixed
+/// identifier and so underestimated every longer one; the assigned model is
 /// not known here, and the bound needs none.
 fn request_bytes(input: &PruneBatch) -> usize {
     serde_json::to_vec(&json!({"model":"", "state":input.state,"questions":input.questions}))

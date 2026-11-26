@@ -30,7 +30,7 @@ fn provider_at(base: String) -> ProviderConfig {
 fn model_config() -> ModelConfig {
     ModelConfig {
         provider: "omniroute".to_string(),
-        model: "typesafe/jev-1.13".to_string(),
+        model: "example/decision-model".to_string(),
         api: ApiKind::SystemOne,
         context_window: Some(64_000),
         max_input_tokens: None,
@@ -87,7 +87,7 @@ async fn posts_model_state_questions_and_parses_answers() {
         .and(path("/v1/systemone"))
         .and(header("authorization", "Bearer test-key"))
         .and(body_partial_json(serde_json::json!({
-            "model": "typesafe/jev-1.13",
+            "model": "example/decision-model",
             "state": "Intent: add retry",
             "questions": {
                 "worth_attention": { "type": "noul" },

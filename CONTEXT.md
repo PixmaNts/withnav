@@ -35,7 +35,7 @@ _Avoid_: autocomplete layer, FIM layer
 **Instinct · Triage**:
 The decision layer: answers bounded, typed questions (choice, score, yes-probability) about the
 current situation to sort, route, filter and gate; it never produces free text.
-_Avoid_: classifier, router, Jev (Jev is one provider of this layer, not the layer)
+_Avoid_: classifier, router, or the name of a model (a model is one provider of this layer, not the layer)
 
 **Metacognition · Beacon**:
 The fast reflective layer: watches both the code being written and the conversation, judges whether

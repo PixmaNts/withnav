@@ -1,6 +1,6 @@
 {
   "request": {
-    "model": "typesafe/jev-1.13",
+    "model": "example/decision-model",
     "state": "Intent: add retry with backoff to the HTTP client.\nDiff:\n+    let resp = client.get(url).send().await.unwrap();\n+    // TODO retry",
     "questions": {
       "worth_attention": {
@@ -37,7 +37,7 @@
     }
   },
   "response": {
-    "model": "typesafe/jev-1.13-20260917",
+    "model": "example/decision-model-20260917",
     "answers": {
       "worth_attention": {
         "type": "noul",
@@ -84,6 +84,6 @@
       "output_tokens": 96,
       "cost": 1.9068e-05
     },
-    "provider": "TypeSafe"
+    "provider": "example"
   }
 }

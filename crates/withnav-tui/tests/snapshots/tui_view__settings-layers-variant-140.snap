@@ -13,7 +13,7 @@ expression: snapshot
 ▌2 Layers            │    model          inception/mercury-edit-2                                       │                                   
  reflex · instinct · │                                                                                  │ type    choice                    
  meta · cognition    │  Instinct · Triage  systemone · 2 s deadline                                     │ values  — · off · low · medium ·  
- 3 Agents            │    model          omniroute/typesafe/jev-1.13                                    │ high                              
+ 3 Agents            │    model          omniroute/example/decision-model                               │ high                              
  build               │                                                                                  │ saved   low                       
                      │  Metacognition · Beacon  chat · fast model                                       │ applies to new sessions and       
  4 Permissions       │    model          omniroute/combo/deepseek-v4-flash                              │ subagents                         

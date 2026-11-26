@@ -485,12 +485,12 @@ mod tests {
     #[tokio::test]
     async fn a_rejection_carries_the_providers_reason() {
         let json = wiremock::ResponseTemplate::new(400).set_body_json(serde_json::json!({
-            "error": {"message": "model jev-router does not support\nthe systemone API", "code": 400}
+            "error": {"message": "model decision-router does not support\nthe systemone API", "code": 400}
         }));
         let error = rejection(json).await;
         assert_eq!(
             error.to_string(),
-            "provider rejected the request (HTTP 400): model jev-router does not support the systemone API"
+            "provider rejected the request (HTTP 400): model decision-router does not support the systemone API"
         );
         assert!(!error.is_outage());
 

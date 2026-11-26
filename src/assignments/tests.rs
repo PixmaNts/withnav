@@ -9,7 +9,7 @@ fn catalog() -> ModelsConfig {
         "models": {
             "omniroute/cc/chat": {"provider":"omniroute", "model":"cc/chat", "default_variant":"high", "variants":{"low":{"reasoning_effort":"low"},"high":{"reasoning_effort":"high"}}},
             "inception/mercury": {"provider":"inception", "model":"mercury", "api":"fim"},
-            "omniroute/typesafe/jev": {"provider":"omniroute", "model":"typesafe/jev", "api":"systemone"},
+            "omniroute/example/decision-model": {"provider":"omniroute", "model":"example/decision-model", "api":"systemone"},
             "omniroute/cc/discovered": {"provider":"omniroute", "model":"cc/discovered", "default_variant":"high"},
             "omniroute/cc/empty": {"provider":"omniroute", "model":"cc/empty", "variants":{}},
             "omniroute/cc/no-low": {"provider":"omniroute", "model":"cc/no-low", "default_variant":"high", "variants":{"high":{}}}
@@ -96,7 +96,7 @@ fn enabled(outcome: LayerAssignment) -> AssignedModel {
 fn layers_have_config_keys_required_apis_and_resolve_matching_models() {
     let catalog = catalog();
     let settings = settings(
-        json!({"layers":{"reflex":"inception/mercury", "instinct":"omniroute/typesafe/jev", "metacognition":{"model":"omniroute/cc/chat", "variant":"high"}}}),
+        json!({"layers":{"reflex":"inception/mercury", "instinct":"omniroute/example/decision-model", "metacognition":{"model":"omniroute/cc/chat", "variant":"high"}}}),
     );
     let resolver = AssignmentResolver::new(&catalog, &settings);
     for (layer, key, api) in [
@@ -385,7 +385,7 @@ fn duplicate_identities_are_ambiguous_and_legacy_keys_are_not_resolvable() {
 #[test]
 fn agent_apis_are_chat_only_in_config_and_headers_and_default() {
     let catalog = catalog();
-    for model in ["inception/mercury", "omniroute/typesafe/jev"] {
+    for model in ["inception/mercury", "omniroute/example/decision-model"] {
         for from_config in [false, true] {
             let settings = self::settings(if from_config {
                 json!({"agents":{"build":{"model":model}}})

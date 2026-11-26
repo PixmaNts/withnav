@@ -16,7 +16,10 @@
 //!   `message.received`, `session.end`: what still waits for the Captain;
 //! - `context.compacted`: the compaction count;
 //! - `goal.updated` / `goal.cleared`: the Captain's goal, through [`GoalLog`], the fold a resume
-//!   uses too.
+//!   uses too;
+//! - `command.result` named `goal_check`: the last finished goal check, kept only while the goal
+//!   is still the revision it judged. It is for the Captain's clients: [`digest`] never renders
+//!   it, because a check that read its own earlier verdict would take it for evidence.
 //!
 //! Every text is model or tool output, so it is untrusted: control characters are stripped
 //! before it is kept, and the digest prints each item on its own `- ` line, so no text can start a
@@ -80,6 +83,9 @@ struct Folder {
     failures: HashMap<String, Failure>,
     failures_seen: usize,
     goal: GoalLog,
+    /// The last `goal_check` result published; [`Folder::finish`] keeps it only for the goal
+    /// revision it judged.
+    goal_check: Option<GoalCheck>,
 }
 
 impl Folder {
@@ -176,6 +182,15 @@ impl Folder {
                 self.drop_questions(|q| q.kind == QuestionKind::Permission);
             }
             EventKind::ContextCompacted => self.ledger.compactions += 1,
+            // A `data` that does not read (the bounded marker of an oversized result) leaves
+            // the earlier check as it was.
+            EventKind::CommandResult
+                if payload["name"] == "goal_check" && payload["ok"] == true =>
+            {
+                if let Ok(check) = serde_json::from_value(payload["data"].clone()) {
+                    self.goal_check = Some(check);
+                }
+            }
             _ => {}
         }
     }
@@ -283,6 +298,11 @@ impl Folder {
     }
 
     fn finish(mut self) -> SessionLedger {
+        // Goal revisions only grow, so a check of another revision describes a goal that was
+        // changed or cleared since: it is dropped, never shown against the wrong criteria.
+        self.ledger.goal_check = self
+            .goal_check
+            .filter(|check| self.goal.current.as_ref().map(|g| g.revision) == Some(check.revision));
         self.ledger.goal = self.goal.current;
         self.ledger.commands = self.commands.into();
         let mut repeated: Vec<(String, Failure)> = self

@@ -2698,7 +2698,8 @@ impl Service {
         actor.compaction_decision = compaction_decision(
             self.config.models_path.as_deref(),
             &workspace,
-            &self.config.config_dir,
+            &self.config,
+            session_id,
             self.client_cache.clone(),
         );
         actor.compaction_catalog = Some(self.catalog.clone());
@@ -2956,7 +2957,7 @@ impl Service {
             emitter = emitter.with_permission_mirror(session_id, parent_id, parent.sequencer);
         }
         let root_watchdog = if child_parent.is_none() {
-            Some(self.prepare_root_watchdog(&workspace)?)
+            Some(self.prepare_root_watchdog(&workspace, session_id)?)
         } else {
             None
         };
@@ -3630,16 +3631,24 @@ mod scratch_candidate_tests {
 }
 
 /// The session's Instinct layer as the judge compaction asks which old tool
-/// outputs still matter; `None` when Instinct is unavailable.
+/// outputs still matter, each call recorded; `None` when Instinct is unavailable.
 fn compaction_decision(
     models_path: Option<&std::path::Path>,
     workspace: &std::path::Path,
-    config_dir: &std::path::Path,
+    config: &SessionConfig,
+    session_id: SessionId,
     cache: Arc<crate::provider::openai::ClientCache>,
 ) -> Option<Arc<dyn crate::provider::systemone::DecisionModel>> {
+    let config_dir = &config.config_dir;
     let (models, _) = crate::provider::config::load_models(models_path, workspace, config_dir)
         .map_err(|error| tracing::warn!(%error, "compaction judge disabled: catalog unavailable"))
         .ok()?;
     let client = crate::provider::layers::available_instinct(&models, config_dir, cache)?;
-    Some(Arc::new(client))
+    use crate::layers::recorded::{Caller, Recorded};
+    Some(Recorded::instinct(
+        client,
+        Caller::Prune,
+        session_id,
+        &config.data_dir,
+    ))
 }

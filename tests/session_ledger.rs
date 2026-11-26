@@ -19,6 +19,9 @@ use withnav::session::ledger::{
     fold,
 };
 use withnav_client_api::goal::{GoalChange, GoalStatus, GoalUpdated, MAX_CRITERIA, SessionGoal};
+use withnav_client_api::ledger::{
+    ClaimCheck, ClaimStatus, CriterionCheck, CriterionStatus, GoalCheck,
+};
 use withnav_client_api::permissions::Scope;
 use withnav_client_api::tools::ToolStatus;
 
@@ -238,6 +241,19 @@ impl Log {
 
     fn fold(&self) -> SessionLedger {
         fold(&self.events)
+    }
+
+    /// A published goal check: the `command.result` the server writes when a check finishes.
+    fn goal_check(&mut self, check: &GoalCheck) {
+        self.push(
+            EventKind::CommandResult,
+            json!({
+                "operation_id": Ulid::generate(),
+                "name": "goal_check",
+                "ok": true,
+                "data": to_value(check).unwrap(),
+            }),
+        );
     }
 
     /// A `goal.updated` carrying this goal.
@@ -914,4 +930,98 @@ async fn the_http_endpoint_serves_the_ledger_of_a_live_and_a_stopped_session() {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!((status, &ledger), (context_status, &context));
     }
+}
+
+fn a_check(revision: u64, claim: &str) -> GoalCheck {
+    GoalCheck {
+        revision,
+        turn_id: "turn-1".into(),
+        statuses: vec![CriterionCheck {
+            index: 1,
+            status: CriterionStatus::Contradicted,
+            evidence: "exit 101 · cargo test".into(),
+        }],
+        claims: vec![ClaimCheck {
+            claim: claim.into(),
+            status: ClaimStatus::Unverified,
+            evidence: String::new(),
+        }],
+        note_sent: false,
+        note: None,
+    }
+}
+
+#[test]
+fn the_last_goal_check_of_the_current_revision_is_folded_into_the_ledger() {
+    let mut log = Log::new();
+    log.goal(2, "ship", &["cargo test passes"], false);
+    assert_eq!(log.fold().goal_check, None);
+    log.goal_check(&a_check(2, "first claim"));
+    log.goal_check(&a_check(2, "second claim"));
+    assert_eq!(log.fold().goal_check, Some(a_check(2, "second claim")));
+    // A result carried by another command, or one that does not read, changes nothing.
+    log.push(
+        EventKind::CommandResult,
+        json!({"operation_id": Ulid::generate(), "name": "mcp_tools", "ok": true,
+            "data": to_value(a_check(2, "not a check")).unwrap()}),
+    );
+    log.push(
+        EventKind::CommandResult,
+        json!({"operation_id": Ulid::generate(), "name": "goal_check", "ok": true,
+            "data": {"truncated": true, "bytes": 99999}}),
+    );
+    assert_eq!(log.fold().goal_check, Some(a_check(2, "second claim")));
+}
+
+#[test]
+fn a_check_stands_for_its_goal_revision_only() {
+    let mut log = Log::new();
+    log.goal(2, "ship", &["cargo test passes"], false);
+    log.goal_check(&a_check(2, "tests pass"));
+    log.goal(3, "ship", &["cargo test passes", "docs"], false);
+    assert_eq!(log.fold().goal_check, None, "a new revision starts clean");
+    log.goal_check(&a_check(3, "docs written"));
+    assert_eq!(log.fold().goal_check, Some(a_check(3, "docs written")));
+    // A check that finishes after the goal moved on describes a goal that is gone.
+    log.goal(4, "ship", &["lint"], false);
+    log.goal_check(&a_check(3, "late"));
+    assert_eq!(log.fold().goal_check, None);
+    log.push(EventKind::GoalCleared, json!({"revision": 5}));
+    log.goal_check(&a_check(4, "after the clear"));
+    assert_eq!(log.fold().goal_check, None, "no goal, no check");
+}
+
+#[test]
+fn the_digest_never_renders_a_goal_check() {
+    let mut log = busy_log();
+    log.goal(3, "ship the parser", &["cargo test passes"], false);
+    let before = digest(&log.fold());
+    log.goal_check(&GoalCheck {
+        claims: vec![ClaimCheck {
+            claim: "PRIOR-CLAIM tests pass".into(),
+            status: ClaimStatus::Supported,
+            evidence: "PRIOR-EVIDENCE exit 0 · cargo test".into(),
+        }],
+        note_sent: true,
+        note: Some("PRIOR-NOTE criterion 1".into()),
+        ..a_check(3, "unused")
+    });
+    let ledger = log.fold();
+    assert!(ledger.goal_check.is_some());
+    let after = digest(&ledger);
+    assert_eq!(
+        after, before,
+        "a check must not read its own earlier verdict"
+    );
+    for marker in ["PRIOR", "goal_check", "unverified", "contradicted"] {
+        assert!(!after.contains(marker), "{marker}: {after}");
+    }
+}
+
+#[test]
+fn a_ledger_without_a_check_serializes_as_it_did_before() {
+    let wire = to_value(SessionLedger::default()).unwrap();
+    assert!(wire.get("goal_check").is_none(), "{wire}");
+    let old: SessionLedger = serde_json::from_value(wire).unwrap();
+    assert_eq!(old.goal_check, None);
 }

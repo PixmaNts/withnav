@@ -90,6 +90,10 @@ No other model is chosen for you. A layer that is off never falls back silently:
   asks you.
 - Without Metacognition, there are no remarks.
 
+When Instinct is on but a watchdog or compaction seems not to act, read the last lines of
+`instinct-calls.jsonl` in the data directory: each call shows its latency and, on failure, why (an
+`abandoned` call ran past its deadline). See [Layers](layers.md#what-instinct-was-asked).
+
 An unknown model for a non-default agent falls back to the default agent's model, with a warning
 that names the agent and the requested model.
 

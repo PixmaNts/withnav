@@ -617,6 +617,7 @@ client ignores a kind it does not know.
 | `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills included in agent sessions | the Captain |
 | `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `app/tui.rs`, `withnav-provider`'s `catalog.rs` |
 | `~/.local/share/withnav/goal-checks.jsonl` | the completion checks of session goals, one line per check or skip, with whether a goal-watch note was sent | `session/goal_check.rs` |
+| `~/.local/share/withnav/instinct-calls.jsonl` | the Instinct calls of the watchdogs and the compaction judge, one line per call: caller, session, model, state size and SHA-256 (never the state), question names, answers, latency, error kind | `layers/recorded.rs` |
 | `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of the permission decisions that were made — not of undecided calls (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
 | `withnav.db` tables `memory_items`, `memory_versions`, `projects`, `project_aliases`, `memory_groups`, `project_groups`, `session_projects`, `membership_changes` | the memory register: items with every dated version (triggers refuse to update or delete a version), projects and their aliases (canonical git common dir or folder), groups (retired, never deleted), the session↔project and project↔group links, and the append-only history of their changes | `memory/` (`MemoryStore`) |
 | `~/.config/withnav/flows/`, `<workspace>/.withnav/flows/` | global and workspace flow definitions; they load only once validated at their current content | the Captain, the Studio |
@@ -669,7 +670,7 @@ session overrides. Editor context adds prompt/intent/feed independently of the c
 | `GET /v1/models?workspace=...` | `models` entries: `name`, `gateway`, `provider_group`, `upstream_id`, API, capabilities, variants/default and existing limit/diagnostic fields; top-level `default_agent` |
 | `GET /v1/agents?workspace=...&session_id=...` | `default_agent`, all definitions with `id`, description, mode, `assignment`, `effective`, optional `override`, warning; without session id omit override; an unassigned child without parent context has null choices and `inherits_parent: true` |
 | `GET /v1/layers?workspace=...` | exactly reflex/instinct/metacognition entries: `layer`, `status` (`usable` or `disabled`), `model`, `variant`, `gateway`, `upstream_id`, `api`, `reason` and optional `variant_diagnostic`; usable validates assignment/API, not future network access |
-| `GET /v1/sessions/{id}/ledger` | the session ledger (`withnav-client-api`'s `ledger.rs`): `through_seq`, `turns{count,last}`, `files_touched`, `commands`, `repeated_failures`, `last_turn_text`, `open_questions`, `compactions`, `goal` (`{revision, objective, criteria, status}` or null); folded on every read from the stored events, so a stopped session and a child have one; an unknown id is the same 404 as `/context` |
+| `GET /v1/sessions/{id}/ledger` | the session ledger (`withnav-client-api`'s `ledger.rs`): `through_seq`, `turns{count,last}`, `files_touched`, `commands`, `repeated_failures`, `last_turn_text`, `open_questions`, `compactions`, `goal` (`{revision, objective, criteria, status}` or null), `goal_check` (the last published goal check of the goal's revision, absent when none); folded on every read from the stored events, so a stopped session and a child have one; an unknown id is the same 404 as `/context` |
 | `/v1/memory`, `/v1/memory/{id}`, `/v1/memory/{id}/{action}` | Captain memory items and versions, with expected-version writes and confirmation for scope widening; DTOs in `withnav-client-api/src/memory.rs` |
 | `/v1/projects`, `/v1/groups`, `/v1/projects/{id}/group-answer`, `/v1/projects/{id}/groups/{group}`, `/v1/sessions/{id}/project`, `/v1/memory/needs-you` | Project and group inventory, membership controls, and pending scope proposals; see the [memory register](book/src/memory.md) for methods and bodies |
 | `POST /v1/sessions` | `workspace`, optional `editor` (default false), `agent` (default agent), `model`/`variant` overrides; variant-only allowed; response `session_id`; resume uses workspace + resume only and rejects conflicting selection fields |
@@ -785,7 +786,9 @@ the later 0.6 scope, not this contract.
   no table, no live state and no model call; `digest` renders it in at most 16 KiB for a bounded
   model call, sections in a fixed priority order, each item on its own `- ` line so untrusted text
   cannot open or close a section. The bounds and the wire type live in `withnav-client-api`'s
-  `ledger.rs`; readers go through `Service::ledger` (`GET /v1/sessions/{id}/ledger`).
+  `ledger.rs`; readers go through `Service::ledger` (`GET /v1/sessions/{id}/ledger`). The one fact
+  that is not about what the agent did is `goal_check`, the last published goal check, for clients
+  only (see the shadow completion check below).
 - The session goal (what the Captain recorded as done, `/goal`): `session/goal.rs` parses and
   bounds the command and publishes one durable `goal.updated` (the whole goal) or `goal.cleared`
   under the tree's lifecycle gate; nothing else writes it and no tool reaches it. The current goal
@@ -812,7 +815,18 @@ the later 0.6 scope, not this contract.
   in flight per session and `MAX_CHECKS_PER_WINDOW` (10) starts per `RATE_WINDOW` (one hour). Every
   check or skip is one line of `<data dir>/goal-checks.jsonl` (`paths::goal_check_log`), a rate
   skip once per window. With `goal_watch.notes` off (the default, `Settings::goal_watch_notes`,
-  read at each check) nothing reaches the session, its events or a client. On, a finished `ok`
+  read at each check) nothing reaches the agent. A finished `ok` check, whatever that setting
+  says, is published once to the session's clients as a `command.result` named `goal_check`
+  (the pattern of `flow_notice`, no event kind of its own; `goal_check.rs` `publish`, data a
+  `withnav-client-api` `GoalCheck`: revision, turn id, `statuses`, `claims`, `note_sent`, `note`),
+  before its log line is written; a skipped, timed-out, malformed or outdated check and a stopped
+  session publish nothing, and quotes then the note are dropped from a result that would pass the
+  16 KiB `command.result` bound. The same call reads at most five completion claims of the last
+  turn text (`input::parse_claims`): `supported` or `contradicted` stands only on a quote of a
+  command or file-change line that was sent, the rule of the criteria, otherwise `unverified`.
+  `ledger::fold` keeps the last such result in `SessionLedger::goal_check` for the goal's current
+  revision only (revisions only grow, so a result of an older one is dropped), and `ledger::digest`
+  never renders it: a check must not read its own earlier verdict as evidence. On, a finished `ok`
   check passes its findings (`goal_check/note.rs`: every `contradicted`, plus every `not_checked`
   when the turn ended `done`) as one note of at most `MAX_NOTE_CHARS` (2000) built from the
   statuses alone, criterion and evidence text through `ledger::one_line` with angle brackets
@@ -883,8 +897,14 @@ the later 0.6 scope, not this contract.
   numbered excerpts), `tools/mod.rs` (`validate_path`).
 - A decision model is exposed by `withnav-provider`'s `systemone.rs::DecisionModel` (implemented by
   `SystemOneClient`). Compaction pruning (`agent/compaction/prune.rs`) and both watchdogs use
-  this same seam; questions and answer interpretation stay with the caller. The standalone
-  `instinct-flow` crate remains independent and owns its own protocol client.
+  this same seam; questions and answer interpretation stay with the caller. Each of them wraps
+  its model in `layers/recorded.rs::Recorded`, which writes one line per call to
+  `<data dir>/instinct-calls.jsonl` (`paths::instinct_call_log`); a new Instinct caller outside
+  flows wraps its model the same way. The standalone `instinct-flow` crate remains independent and
+  owns its own protocol client.
+- An append-only JSON-lines log beside the database (`goal-checks.jsonl`, `instinct-calls.jsonl`)
+  writes through `jsonl::append`, which creates the directory and never lets a write failure reach
+  the session.
 - A new wire family (another provider API, such as a native Anthropic client) goes in
   `crates/withnav-provider/`, next to `fim.rs` and `systemone.rs`, with its wire-golden test in that
   crate's `tests/`; it never imports the root. Which layer or agent uses it is decided in the root

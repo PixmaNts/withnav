@@ -546,6 +546,64 @@ async fn stuck_root_settles_tool_results_without_requesting_another_step() {
     service.close_all().await;
 }
 
+#[tokio::test]
+async fn a_watchdog_judgement_is_recorded_with_its_latency() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir(&ws).unwrap();
+    let mut provider = spawn_streaming_provider().await;
+    let service = TestServerConfig::mock(tmp.path(), &provider.url)
+        .chat_tools(128000)
+        .state();
+    let (tx, mut sleeps) = mpsc::unbounded_channel();
+    let clock = Arc::new(FakeClock {
+        now: Mutex::new(Instant::now()),
+        sleeps: tx,
+    });
+    service.install_root_watchdog_test(
+        clock.clone(),
+        Arc::new(ConstantJudge(Verdict::Active)),
+        None,
+    );
+    let id = service.create_session(&ws, None, false).await.unwrap();
+    send_text(&service, id, "find the parser files").await;
+    let (_, stream) = provider
+        .requests
+        .recv()
+        .bounded(file!(), line!())
+        .await
+        .unwrap();
+    let tick = sleeps.recv().bounded(file!(), line!()).await.unwrap();
+    *clock.now.lock().unwrap() += Duration::from_secs(300);
+    tick.send(()).unwrap();
+
+    let log = withnav::paths::instinct_call_log(&tmp.path().join("data"));
+    let line: serde_json::Value = common::deadline::eventually("the watchdog record", || {
+        let log = log.clone();
+        async move {
+            let text = std::fs::read_to_string(&log).ok()?;
+            serde_json::from_str(text.lines().next()?).ok()
+        }
+    })
+    .await;
+
+    assert_eq!(line["caller"], "root_watchdog");
+    assert_eq!(line["session_id"], id.to_string());
+    assert_eq!(line["questions"], serde_json::json!(["subagent_progress"]));
+    assert_eq!(line["answers"]["subagent_progress"]["choice"], "active");
+    assert_eq!(line["error"], serde_json::Value::Null);
+    assert!(line["latency_ms"].is_u64());
+    assert!(line["state_bytes"].as_u64().is_some_and(|bytes| bytes > 0));
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        !text.contains("find the parser files"),
+        "the goal is part of the state: {text}"
+    );
+    stream.send(text_chunk("done")).unwrap();
+    drop(stream);
+    service.close_all().await;
+}
+
 /// Records each review request and answers with one fixed outcome.
 struct CapturingReviewer {
     seen: mpsc::UnboundedSender<ReviewRequest>,

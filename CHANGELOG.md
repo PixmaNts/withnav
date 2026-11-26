@@ -22,8 +22,9 @@ requests land in `develop`.
   to head and tail when its `full` score is below 0.45, and a result is elided when its `useful`
   score is below 0.4, so a score at the cut keeps the output. The excerpt kept of an unneeded
   output is sized to what the summary writer can take: widest first, it narrows until the range
-  fits the source budget and every call-and-result exchange fits one chunk, so a judged-needed
-  output is never elided by the size-based fallback and an excerpt never makes compaction fail.
+  fits the source budget and every call-and-result exchange fits one chunk, so an excerpt never
+  makes compaction fail and judged-needed outputs reach the summary whenever they fit the writer's
+  budget; when the needed outputs alone exceed it, the size-based fallback elides as before.
 - Compaction summaries keep the evidence Nav continues from: each verified change names the check
   that confirmed it and its observed result, unconfirmed claims are listed apart, failed attempts
   stay with what not to retry, and the open criteria and the next check close the summary. A

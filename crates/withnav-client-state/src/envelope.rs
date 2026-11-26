@@ -15,10 +15,10 @@
 use crate::{
     ProtocolError,
     children::{ChildAgent, ChildStatus},
-    command::{outcome_text, tokens},
+    command::{goal_note_line, outcome_text, remembered_line, tokens},
     conversation::{
-        Activity, Block, BlockKind, PermissionPrompt, QuestionPrompt, SecretPrompt, SecretState,
-        block,
+        Activity, Block, BlockKind, PermissionPrompt, PermissionReview, QuestionPrompt,
+        ReviewState, SecretPrompt, SecretState, block,
     },
     projection::{
         SessionState, apply_selection, clear_answered, keep_bypass, keep_newer_context,
@@ -180,6 +180,193 @@ mod tests {
                     .open_permissions
                     .iter()
                     .all(|id| id == "permission:r-stale")
+        );
+    }
+
+    fn bound_permission_envelope(seq: u64, request_id: &str) -> EventEnvelope {
+        let mut envelope = permission_envelope(seq, request_id, "c1");
+        envelope.payload["call_digest"] = json!("digest-1");
+        envelope.payload["turn_id"] = json!("turn-1");
+        envelope
+    }
+
+    fn review_envelope(seq: u64, request_id: &str, payload: serde_json::Value) -> EventEnvelope {
+        let mut body = json!({"request_id": request_id, "tool_call_id": "c1"});
+        for (key, value) in payload.as_object().unwrap() {
+            body[key] = value.clone();
+        }
+        EventEnvelope::new(Ulid::generate(), seq, EventKind::PermissionReview, body)
+    }
+
+    fn resolved_envelope(seq: u64, payload: serde_json::Value) -> EventEnvelope {
+        let mut body = json!({"request_id": "r1", "tool_call_id": "c1"});
+        for (key, value) in payload.as_object().unwrap() {
+            body[key] = value.clone();
+        }
+        EventEnvelope::new(Ulid::generate(), seq, EventKind::PermissionResolved, body)
+    }
+
+    fn prompt<'a>(state: &'a SessionState, request_id: &str) -> &'a PermissionPrompt {
+        state
+            .conversation
+            .blocks
+            .iter()
+            .find_map(|b| match &b.kind {
+                BlockKind::Permission(p) if p.request_id == request_id => Some(p),
+                _ => None,
+            })
+            .expect("the prompt")
+    }
+
+    #[test]
+    fn a_request_keeps_the_digest_and_turn_its_answer_is_bound_to() {
+        let mut state = SessionState::default();
+        apply(&mut state, bound_permission_envelope(1, "r1")).unwrap();
+        let p = prompt(&state, "r1");
+        assert_eq!(p.call_digest.as_deref(), Some("digest-1"));
+        assert_eq!(p.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(p.review, None);
+        assert!(!p.can_hold());
+    }
+
+    #[test]
+    fn the_review_follows_its_state_and_keeps_its_texts() {
+        let mut state = SessionState::default();
+        apply(&mut state, bound_permission_envelope(1, "r1")).unwrap();
+        apply(
+            &mut state,
+            review_envelope(2, "r1", json!({"state": "reviewing"})),
+        )
+        .unwrap();
+        assert!(prompt(&state, "r1").can_hold());
+        apply(
+            &mut state,
+            review_envelope(
+                3,
+                "r1",
+                json!({"state": "wait", "conclusion": "Deletes files\u{1b}[31m", "basis": "fix warnings", "consequence": "3 files lost"}),
+            ),
+        )
+        .unwrap();
+        let p = prompt(&state, "r1");
+        assert_eq!(
+            p.review,
+            Some(PermissionReview {
+                state: ReviewState::Wait,
+                conclusion: Some("Deletes files".into()),
+                basis: Some("fix warnings".into()),
+                consequence: Some("3 files lost".into()),
+            })
+        );
+        assert!(!p.can_hold(), "a finished review has nothing left to hold");
+        assert!(p.is_open());
+        apply(
+            &mut state,
+            review_envelope(4, "r1", json!({"state": "held"})),
+        )
+        .unwrap();
+        assert_eq!(
+            prompt(&state, "r1").review.as_ref().unwrap().state,
+            ReviewState::Held
+        );
+    }
+
+    #[test]
+    fn a_review_of_an_unknown_or_ended_request_changes_nothing() {
+        let mut state = SessionState::default();
+        apply(&mut state, bound_permission_envelope(1, "r1")).unwrap();
+        apply(
+            &mut state,
+            review_envelope(2, "other", json!({"state": "reviewing"})),
+        )
+        .unwrap();
+        apply(
+            &mut state,
+            resolved_envelope(
+                3,
+                json!({"resolution": "allow_once", "approved_by": "captain"}),
+            ),
+        )
+        .unwrap();
+        apply(
+            &mut state,
+            review_envelope(4, "r1", json!({"state": "reviewing"})),
+        )
+        .unwrap();
+        assert_eq!(prompt(&state, "r1").review, None);
+        // A state the client does not know is ignored rather than failing the stream.
+        let mut state = SessionState::default();
+        apply(&mut state, bound_permission_envelope(1, "r1")).unwrap();
+        apply(
+            &mut state,
+            review_envelope(2, "r1", json!({"state": "sleeping"})),
+        )
+        .unwrap();
+        assert_eq!(prompt(&state, "r1").review, None);
+    }
+
+    #[test]
+    fn a_call_allowed_by_metacognition_carries_its_review() {
+        let mut state = SessionState::default();
+        apply(&mut state, bound_permission_envelope(1, "r1")).unwrap();
+        apply(
+            &mut state,
+            review_envelope(2, "r1", json!({"state": "reviewing"})),
+        )
+        .unwrap();
+        apply(
+            &mut state,
+            resolved_envelope(
+                3,
+                json!({"resolution": "allow_once", "approved_by": "metacognition",
+                    "review": {"conclusion": "Release implies the push", "basis": "release 0.8.4", "consequence": "pushes the tag"}}),
+            ),
+        )
+        .unwrap();
+        let p = prompt(&state, "r1");
+        assert_eq!(p.resolution.as_deref(), Some("allow_once"));
+        assert_eq!(p.approved_by.as_deref(), Some("metacognition"));
+        assert_eq!(
+            p.review,
+            Some(PermissionReview {
+                state: ReviewState::Allowed,
+                conclusion: Some("Release implies the push".into()),
+                basis: Some("release 0.8.4".into()),
+                consequence: Some("pushes the tag".into()),
+            })
+        );
+        assert!(!p.review_cancelled);
+    }
+
+    #[test]
+    fn the_review_is_cancelled_only_when_the_captain_answers_while_it_runs() {
+        let answered = |review: Option<serde_json::Value>, resolved: serde_json::Value| {
+            let mut state = SessionState::default();
+            apply(&mut state, bound_permission_envelope(1, "r1")).unwrap();
+            if let Some(review) = review {
+                apply(&mut state, review_envelope(2, "r1", review)).unwrap();
+            }
+            apply(&mut state, resolved_envelope(3, resolved)).unwrap();
+            prompt(&state, "r1").clone()
+        };
+        let captain = json!({"resolution": "allow_once", "approved_by": "captain"});
+        assert!(answered(Some(json!({"state": "reviewing"})), captain.clone()).review_cancelled);
+        assert!(
+            !answered(
+                Some(json!({"state": "wait", "conclusion": "c"})),
+                captain.clone()
+            )
+            .review_cancelled
+        );
+        assert!(!answered(Some(json!({"state": "held"})), captain.clone()).review_cancelled);
+        assert!(!answered(None, captain).review_cancelled);
+        // A stopped turn is not an answer.
+        assert!(
+            !answered(
+                Some(json!({"state": "reviewing"})),
+                json!({"resolution": "cancelled"})
+            )
+            .review_cancelled
         );
     }
 
@@ -869,6 +1056,11 @@ pub fn apply_envelope(
                 message: None,
                 always_saved: true,
                 stale: false,
+                call_digest: v["call_digest"].as_str().map(strip_controls),
+                turn_id: v["turn_id"].as_str().map(strip_controls),
+                review: None,
+                approved_by: None,
+                review_cancelled: false,
             };
             // A fresh request for the call just approved (it now lands
             // elsewhere) replaces that prompt instead of adding a second one.
@@ -918,6 +1110,30 @@ pub fn apply_envelope(
                 s.activity = Activity::AwaitingUser;
             }
         }
+        Some(EventKind::PermissionReview) => {
+            let v = e.payload;
+            let Some(request_id) = v["request_id"].as_str() else {
+                return Err(bad());
+            };
+            let Some(state) = review_state(v["state"].as_str()) else {
+                return Ok(());
+            };
+            let id = format!("permission:{request_id}");
+            // A late review of a request that already ended changes nothing.
+            if let Some(Block {
+                kind: BlockKind::Permission(prompt),
+                ..
+            }) = s.conversation.blocks.iter_mut().find(|b| b.id == id)
+                && prompt.is_open()
+            {
+                prompt.review = Some(PermissionReview {
+                    state,
+                    conclusion: review_text(&v["conclusion"]),
+                    basis: review_text(&v["basis"]),
+                    consequence: review_text(&v["consequence"]),
+                });
+            }
+        }
         Some(EventKind::PermissionResolved) => {
             let v = e.payload;
             if let Some(child) = v["child_session_id"].as_str().and_then(|id| {
@@ -944,6 +1160,29 @@ pub fn apply_envelope(
                     .or(v["always_error"].as_str())
                     .map(strip_controls);
                 prompt.resolution = Some(resolution.clone());
+                let approved_by = v["approved_by"].as_str().map(strip_controls);
+                match approved_by.as_deref() {
+                    Some("metacognition") => {
+                        prompt.review = Some(PermissionReview {
+                            state: ReviewState::Allowed,
+                            conclusion: review_text(&v["review"]["conclusion"]),
+                            basis: review_text(&v["review"]["basis"]),
+                            consequence: review_text(&v["review"]["consequence"]),
+                        });
+                    }
+                    // The Captain answered while the review still ran: it was stopped, not
+                    // finished. A stopped turn or a restart is not an answer.
+                    Some("captain")
+                        if prompt
+                            .review
+                            .as_ref()
+                            .is_some_and(|r| r.state == ReviewState::Reviewing) =>
+                    {
+                        prompt.review_cancelled = true;
+                    }
+                    _ => {}
+                }
+                prompt.approved_by = approved_by;
             }
             let call_id = strip_controls(v["tool_call_id"].as_str().unwrap_or_default());
             if v["child_session_id"].is_null() {
@@ -1109,6 +1348,26 @@ pub fn apply_envelope(
                 }
                 set_variant_offer(s, data);
             }
+            // A line of its own, not a command's output: what `/remember` stored, and the note a
+            // goal check queued (a check without one adds nothing: the panel reads its result).
+            let line = v
+                .get("data")
+                .filter(|_| ok)
+                .and_then(|d| match name.as_str() {
+                    "remember" => remembered_line(d),
+                    "goal_check" => goal_note_line(d),
+                    _ => None,
+                });
+            if let Some(line) = line {
+                s.conversation.blocks.push(block(
+                    e.seq.to_string(),
+                    BlockKind::Notice(strip_controls(&line)),
+                ));
+                return Ok(());
+            }
+            if ok && name == "goal_check" {
+                return Ok(());
+            }
             let text = outcome_text(
                 &name,
                 ok,
@@ -1238,6 +1497,25 @@ fn settle_turn_tools(s: &mut SessionState, actor: &str, turn: &str, outcome: &st
             }
         }
     }
+}
+
+/// The review state a `permission.review` names; `None` for one this client does not know.
+fn review_state(state: Option<&str>) -> Option<ReviewState> {
+    match state? {
+        "reviewing" => Some(ReviewState::Reviewing),
+        "wait" => Some(ReviewState::Wait),
+        "unavailable" => Some(ReviewState::Unavailable),
+        "held" => Some(ReviewState::Held),
+        _ => None,
+    }
+}
+
+/// One of a review's short texts, drawn on the terminal: control characters are removed first.
+fn review_text(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(strip_controls)
+        .filter(|text| !text.is_empty())
 }
 
 /// Whether an open permission request holds the tool call `call_id`.

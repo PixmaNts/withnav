@@ -1232,7 +1232,8 @@ fn child_permission_is_labelled_and_answered_on_the_parent() {
         vec![Effect::AnswerPermission {
             session_id: Ulid(1).to_string(),
             request_id: "request-1".into(),
-            answer
+            answer,
+            binding: None,
         }]
     );
     subagent_event(
@@ -3134,7 +3135,8 @@ fn every_stream_connection_reads_the_context_back() {
         vec![
             fetch("s1", &s),
             Effect::FetchMcp,
-            Effect::FetchLedger("s1".into())
+            Effect::FetchLedger("s1".into()),
+            Effect::FetchMemory("s1".into())
         ]
     );
 }
@@ -3178,7 +3180,8 @@ fn a_snapshot_missed_during_a_disconnect_is_read_back_on_reconnect() {
         vec![
             fetch("s1", &s),
             Effect::FetchMcp,
-            Effect::FetchLedger("s1".into())
+            Effect::FetchLedger("s1".into()),
+            Effect::FetchMemory("s1".into())
         ]
     );
     let fetched = ClientEvent::Context {
@@ -3444,7 +3447,8 @@ fn each_tab_keeps_its_own_context_epoch() {
         vec![
             fetch("S2", &s),
             Effect::FetchMcp,
-            Effect::FetchLedger("S2".into())
+            Effect::FetchLedger("S2".into()),
+            Effect::FetchMemory("S2".into())
         ]
     );
     assert_eq!(s.tabs[0].conversation.context_epoch, before);
@@ -3459,6 +3463,7 @@ fn each_tab_keeps_its_own_context_epoch() {
             },
             Effect::FetchMcp,
             Effect::FetchLedger("S1".into()),
+            Effect::FetchMemory("S1".into()),
         ]
     );
     assert_eq!(s.tabs[0].conversation.context_epoch, before + 1);
@@ -4799,6 +4804,7 @@ fn answering_posts_once_and_a_stale_answer_drops_the_prompt_with_a_notice() {
                 decision: "allow_once".into(),
                 message: None,
             },
+            binding: None,
         }]
     );
     assert!(
@@ -6296,4 +6302,133 @@ fn enter_on_an_empty_message_sends_when_images_wait() {
         route_key(enter, &s, &mut ui(), &mut editor),
         Some(Action::SubmitAt { .. })
     ));
+}
+
+// ---------------------------------------------------------------- parallel review of a request
+
+/// An open `write` request bound to `digest-{request}` and `turn-{request}`, with its review in
+/// `review` (a `permission.review` payload) when there is one.
+fn reviewed_request(request: u128, review: Option<Value>) -> State {
+    let mut s = st();
+    created_now(&mut s, "S1").unwrap();
+    let mut script = permission_script(request);
+    let requested = script
+        .out
+        .iter_mut()
+        .find(|e| e.kind == "permission.requested")
+        .unwrap();
+    requested.payload["call_digest"] = json!(format!("digest-{request}"));
+    requested.payload["turn_id"] = json!(format!("turn-{request}"));
+    if let Some(mut review) = review {
+        review["request_id"] = json!(Ulid(request).to_string());
+        review["tool_call_id"] = json!("w1");
+        script.raw("permission.review", review);
+    }
+    feed(&mut s, &script.out);
+    s
+}
+
+fn answer_with(request: u128, decision: &str) -> Action {
+    Action::AnswerPermission {
+        request_id: Ulid(request).to_string(),
+        answer: PermissionAnswer {
+            decision: decision.into(),
+            message: None,
+        },
+    }
+}
+
+#[test]
+fn an_answer_carries_the_digest_and_turn_of_its_request() {
+    let (mut s, mut ui) = (reviewed_request(50, None), ui());
+    assert_eq!(
+        handle_action(&mut s, &mut ui, answer_with(50, "allow_once")),
+        vec![Effect::AnswerPermission {
+            session_id: "S1".into(),
+            request_id: Ulid(50).to_string(),
+            answer: PermissionAnswer {
+                decision: "allow_once".into(),
+                message: None,
+            },
+            binding: Some(PermissionBinding {
+                call_digest: "digest-50".into(),
+                turn_id: "turn-50".into(),
+            }),
+        }]
+    );
+}
+
+#[test]
+fn hold_for_me_is_sent_while_the_review_runs_and_leaves_the_card_answerable() {
+    let (mut s, mut ui) = (
+        reviewed_request(51, Some(json!({"state": "reviewing"}))),
+        ui(),
+    );
+    let effects = handle_action(&mut s, &mut ui, answer_with(51, "hold"));
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::AnswerPermission { answer, binding: Some(_), .. }] if answer.decision == "hold"
+        ),
+        "{effects:?}"
+    );
+    // A hold is not an answer: the card stays the Captain's and the keys stay live.
+    assert!(s.answered_permission.is_none());
+    assert_eq!(
+        handle_action(&mut s, &mut ui, answer_with(51, "allow_once")).len(),
+        1
+    );
+}
+
+#[test]
+fn hold_for_me_is_not_sent_when_no_review_can_still_be_stopped() {
+    for review in [
+        None,
+        Some(json!({"state": "wait", "conclusion": "c"})),
+        Some(json!({"state": "held"})),
+        Some(json!({"state": "unavailable"})),
+    ] {
+        let (mut s, mut ui) = (reviewed_request(52, review.clone()), ui());
+        assert!(
+            handle_action(&mut s, &mut ui, answer_with(52, "hold")).is_empty(),
+            "{review:?}"
+        );
+    }
+}
+
+#[test]
+fn a_hold_refused_because_the_call_started_says_it_ran_once() {
+    let (mut s, mut ui) = (
+        reviewed_request(53, Some(json!({"state": "reviewing"}))),
+        ui(),
+    );
+    handle_action(&mut s, &mut ui, answer_with(53, "hold"));
+    let refused = ClientEvent::PermissionAnswered {
+        generation: s.generation.clone(),
+        request_id: Ulid(53).to_string(),
+        result: Err(AnswerError::AlreadyStarted),
+    };
+    update(&mut s, refused).unwrap();
+    let notice = s
+        .conversation
+        .blocks
+        .iter()
+        .find_map(|b| match &b.kind {
+            BlockKind::Notice(text) => Some(text.clone()),
+            _ => None,
+        })
+        .expect("a notice");
+    assert_eq!(notice, "Already started by Metacognition — it ran once");
+    // Not stale: the server's own resolution says how it ended.
+    assert!(s.open_permission().is_some_and(|p| !p.stale));
+    let mut script = Script::new();
+    script.seq = 1000;
+    script.raw(
+        "permission.resolved",
+        json!({"request_id": Ulid(53).to_string(), "tool_call_id": "w1",
+            "resolution": "allow_once", "approved_by": "metacognition",
+            "review": {"conclusion": "Release implies the push"}}),
+    );
+    feed(&mut s, &script.out);
+    assert!(s.open_permission().is_none());
 }

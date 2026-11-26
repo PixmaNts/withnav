@@ -7,7 +7,7 @@
 // for a step's text and reasoning; deltas only fill it in while it streams.
 
 import type { ContextSnapshot, Envelope, ImageRef } from "../api/types";
-import { outcomeText } from "./outcome";
+import { goalNote, outcomeText, remembered } from "./outcome";
 import { parseWake, type WakeNote } from "./wake";
 
 export type ToolStatus = "running" | "ok" | "error" | "denied" | "interrupted";
@@ -100,6 +100,35 @@ export interface Permission {
   message?: string;
   /** False when an Always answer could not save its rules: the call ran once. */
   alwaysSaved?: false;
+  /** The answer is bound to this call and turn: another call under the same id is stale. */
+  callDigest?: string;
+  turnId?: string;
+  /** The parallel metacognition review, when the server runs one for this request. */
+  review?: PermissionReview;
+  /** Who answered: `captain`, `bypass` or `metacognition`. Absent when the request was cancelled or expired. */
+  approvedBy?: string;
+  /** The Captain answered while the review was still running: it was stopped, not finished. */
+  reviewCancelled?: true;
+}
+
+/** `allowed` is the review's own decision, read from `permission.resolved`; the rest come from `permission.review`. */
+export interface PermissionReview {
+  state: "reviewing" | "wait" | "unavailable" | "held" | "allowed";
+  conclusion?: string;
+  basis?: string;
+  consequence?: string;
+}
+
+const REVIEW_STATES = new Set(["reviewing", "wait", "unavailable", "held"]);
+
+/** The short texts a review carries; absent ones stay absent. */
+function reviewTexts(source: { conclusion?: unknown; basis?: unknown; consequence?: unknown } | undefined) {
+  const out: { conclusion?: string; basis?: string; consequence?: string } = {};
+  for (const key of ["conclusion", "basis", "consequence"] as const) {
+    const value = source?.[key];
+    if (typeof value === "string" && value) out[key] = value;
+  }
+  return out;
 }
 
 export type Item =
@@ -110,7 +139,11 @@ export type Item =
   | Turn
   /** A permission asked outside any turn shown here (a stream cut mid-turn). */
   | { kind: "permission"; key: string; requestId: string }
-  | { kind: "notice"; key: string; text: string; tone: "info" | "error" };
+  | { kind: "notice"; key: string; text: string; tone: "info" | "error" }
+  /** What `/remember` stored: `version` is the one an undo invalidates. */
+  | { kind: "remembered"; key: string; itemId: string; version: number; title: string; scope: string; notice?: string }
+  /** What a goal check told the agent: an automatic observation, never a Captain message. */
+  | { kind: "goal-note"; key: string; text: string; revision: number; at: string };
 
 export interface Child {
   id: string;
@@ -147,6 +180,8 @@ export interface SessionView {
   workspace: string | null;
   startedAt: string | null;
   endedAt: string | null;
+  /** Goes up whenever what the session panel shows (ledger, goal, memory) may have changed. */
+  sessionEpoch: number;
 }
 
 export const emptyView = (): SessionView => ({
@@ -167,6 +202,7 @@ export const emptyView = (): SessionView => ({
   workspace: null,
   startedAt: null,
   endedAt: null,
+  sessionEpoch: 0,
 });
 
 const str = (value: unknown, fallback = ""): string => (typeof value === "string" ? value : fallback);
@@ -304,6 +340,7 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
         outcome === "error" ? "error" : outcome === "interrupted" ? "interrupted" : outcome === "yielded" ? "yielded" : "done";
       const error = p.error ? str(p.error.message, JSON.stringify(p.error)) : undefined;
       next.currentTurn = null;
+      next.sessionEpoch += 1;
       // A turn yielded to a waiting permission is not over for the Captain.
       const waiting = status === "yielded" && Object.values(next.permissions).some((perm) => !perm.resolution);
       next.activity = next.activity === "stopped" ? "stopped" : waiting ? "running" : "idle";
@@ -353,6 +390,8 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
           alwaysLabel: typeof p.always_label === "string" ? p.always_label : undefined,
           skillName: typeof p.skill_script?.skill === "string" ? p.skill_script.skill : undefined,
           childSessionId: typeof p.child_session_id === "string" ? p.child_session_id : undefined,
+          callDigest: typeof p.call_digest === "string" ? p.call_digest : undefined,
+          turnId: typeof p.turn_id === "string" ? p.turn_id : undefined,
         },
       };
       // Shown where it happened: inside the running turn, else on its own.
@@ -363,19 +402,29 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       next.items = [...next.items, { kind: "permission", key: `perm:${requestId}`, requestId }];
       return next;
     }
+    case "permission.review": {
+      const requestId = str(p.request_id);
+      const perm = next.permissions[requestId];
+      // A late review of a request that already ended changes nothing.
+      if (!perm || perm.resolution || !REVIEW_STATES.has(p.state)) return next;
+      next.permissions = { ...next.permissions, [requestId]: { ...perm, review: { state: p.state, ...reviewTexts(p) } } };
+      return next;
+    }
     case "permission.resolved": {
       const requestId = str(p.request_id);
       const perm = next.permissions[requestId];
       if (!perm) return next;
-      next.permissions = {
-        ...next.permissions,
-        [requestId]: {
-          ...perm,
-          resolution: str(p.resolution, "expired"),
-          message: typeof p.message === "string" ? p.message : typeof p.always_error === "string" ? p.always_error : undefined,
-          alwaysSaved: p.always_saved === false ? false : undefined,
-        },
+      const approvedBy = typeof p.approved_by === "string" ? p.approved_by : undefined;
+      const resolved: Permission = {
+        ...perm,
+        resolution: str(p.resolution, "expired"),
+        message: typeof p.message === "string" ? p.message : typeof p.always_error === "string" ? p.always_error : undefined,
+        alwaysSaved: p.always_saved === false ? false : undefined,
+        approvedBy,
       };
+      if (approvedBy === "metacognition") resolved.review = { state: "allowed", ...reviewTexts(p.review) };
+      else if (approvedBy === "captain" && perm.review?.state === "reviewing") resolved.reviewCancelled = true;
+      next.permissions = { ...next.permissions, [requestId]: resolved };
       return next;
     }
     case "model.changed": {
@@ -412,7 +461,20 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       return next;
     case "context.compacted":
       return notice(next, envelope.seq, `Context compacted: about ${tokens(p.estimate_before)} → ${tokens(p.estimate_after)} tokens`, "info");
+    case "goal.updated":
+    case "goal.cleared":
+      next.sessionEpoch += 1;
+      return next;
     case "command.result": {
+      const name = str(p.name);
+      if (p.ok !== false && ["goal_check", "remember", "forget", "memory"].includes(name)) next.sessionEpoch += 1;
+      if (p.ok !== false && name === "goal_check") {
+        const note = goalNote(p.data);
+        if (!note) return next;
+        return { ...next, items: [...next.items, { kind: "goal-note", key: `n:${envelope.seq}`, ...note, at: envelope.occurred_at }] };
+      }
+      const stored = p.ok !== false && name === "remember" ? remembered(p.data) : null;
+      if (stored) return { ...next, items: [...next.items, { kind: "remembered", key: `n:${envelope.seq}`, ...stored }] };
       // Selection switches already show up as `model.changed`.
       const text = outcomeText(str(p.name), p.ok !== false, p.data, typeof p.error === "string" ? p.error : undefined);
       if (text === null) return next;

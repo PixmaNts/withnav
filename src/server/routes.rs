@@ -168,6 +168,7 @@ pub fn app(state: AppState) -> Router {
         .merge(super::lsp_route::router())
         .merge(super::pairing::router())
         .merge(super::permissions::router())
+        .merge(super::memory::router())
         .route("/v1/models", get(list_models))
         .route("/v1/mcp", get(mcp_status))
         .route("/v1/mcp/{server}/resource", get(get_mcp_resource))

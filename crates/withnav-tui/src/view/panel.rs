@@ -1,8 +1,9 @@
 //! The right column: what the conversation runs with, only from what the server and git report.
 //! Agents (the session's agent and the agents it started), Context (the breakdown of the
 //! last snapshot and the last compaction), Goal (the Captain's `/goal`: objective, status and
-//! criteria count, from the ledger), Ledger (the turns, the files changed and the commands
-//! that keep failing, from the server's session ledger), Skills · MCP · Plugins (the skill catalog counts, the
+//! each criterion's last check status and the agent's claims, from the ledger), Ledger (the
+//! turns, the files changed and the commands that keep failing, from the server's session
+//! ledger), Memory (the register items the session may be given), Skills · MCP · Plugins (the skill catalog counts, the
 //! skills the model loaded, a dot per MCP server of the service), Layers (one dot each, from
 //! the assignment check and the conversation's activity) and Changes (the files git reports). A
 //! section with nothing reported yet shows `—`; none is made up.
@@ -19,7 +20,12 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use withnav_client_api::{event::TurnEndOutcome, goal::GoalStatus, tools::ToolStatus};
+use withnav_client_api::{
+    event::TurnEndOutcome,
+    goal::GoalStatus,
+    ledger::{ClaimStatus, CriterionStatus},
+    tools::ToolStatus,
+};
 use withnav_client_state::strip_controls;
 
 /// Columns the column takes, its left border included.
@@ -247,6 +253,87 @@ fn goal(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         width,
         theme,
     ));
+    // A check of an older revision says nothing about the criteria as they stand now.
+    let check = state
+        .conversation
+        .ledger
+        .as_ref()
+        .and_then(|l| l.goal_check.as_ref())
+        .filter(|c| c.revision == goal.revision);
+    for (n, criterion) in goal.criteria.iter().enumerate() {
+        let status = check
+            .and_then(|c| c.statuses.iter().find(|s| s.index == n as u64 + 1))
+            .map_or(CriterionStatus::NotChecked, |s| s.status);
+        let (mark, style) = match status {
+            CriterionStatus::Supported => ("✓", theme.success()),
+            CriterionStatus::Contradicted => ("✗", theme.error()),
+            CriterionStatus::NotChecked => ("·", theme.muted()),
+        };
+        lines.push(mark_line(mark, style, criterion, width, theme));
+    }
+    if let Some(check) = check.filter(|c| !c.claims.is_empty()) {
+        lines.push(row("claims", check.claims.len().to_string(), width, theme));
+        for claim in &check.claims {
+            let (mark, style) = match claim.status {
+                ClaimStatus::Supported => ("✓", theme.success()),
+                ClaimStatus::Contradicted => ("✗", theme.error()),
+                // Never read as false: no ledger line settles it.
+                ClaimStatus::Unverified => ("?", theme.muted()),
+            };
+            lines.push(mark_line(mark, style, &claim.claim, width, theme));
+        }
+    }
+    lines
+}
+
+/// ` ✓ text` with the text on one line, cut to the width that is left.
+fn mark_line(mark: &str, style: Style, text: &str, width: usize, theme: &Theme) -> Line<'static> {
+    let flat = strip_controls(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    Line::from(vec![
+        Span::styled(format!("   {mark} "), style),
+        Span::styled(fit(&flat, width.saturating_sub(5)), theme.text()),
+    ])
+}
+
+/// Items listed under the memory section; the others are counted on one line.
+const MEMORY_ROWS: usize = 8;
+
+/// The register items the session may be given, each a title with its scope.
+fn memory(state: &State, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = vec![title("Memory", theme)];
+    let Some(items) = &state.conversation.memory else {
+        lines.push(none(theme));
+        return lines;
+    };
+    if items.is_empty() {
+        lines.push(Line::styled(" no item applies", theme.muted()));
+        return lines;
+    }
+    let shown = if items.len() <= MEMORY_ROWS {
+        items.len()
+    } else {
+        MEMORY_ROWS - 1
+    };
+    for item in &items[..shown] {
+        let scope = strip_controls(&item.scope);
+        let room = width.saturating_sub(columns(&scope) + 3);
+        lines.push(styled_row(
+            &fit(&strip_controls(&item.title), room),
+            scope,
+            width,
+            theme.text(),
+            theme.muted(),
+        ));
+    }
+    if items.len() > shown {
+        lines.push(Line::styled(
+            format!("   {} more", items.len() - shown),
+            theme.muted(),
+        ));
+    }
     lines
 }
 
@@ -489,6 +576,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &State, theme: &Theme) {
         context(state, width, theme),
         goal(state, width, theme),
         ledger(state, width, theme),
+        memory(state, width, theme),
         extensions(state, width, theme),
         layers(state, width, theme),
     ] {
@@ -509,8 +597,8 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
     use withnav_client_api::event::{Breakdown, SkillCounts};
     use withnav_client_api::ledger::{
-        FileTouched, GoalStatus, LedgerTurns, RepeatedFailure, SessionGoal, SessionLedger,
-        SettledTurn,
+        ClaimCheck, ClaimStatus, CriterionCheck, CriterionStatus, FileTouched, GoalCheck,
+        GoalStatus, LedgerTurns, RepeatedFailure, SessionGoal, SessionLedger, SettledTurn,
     };
     use withnav_client_api::protocol::ContextSnapshot;
 
@@ -643,6 +731,8 @@ mod tests {
                 "  docs for every flag the comman…",
                 "  status                    paused",
                 "  criteria                       2",
+                "    · tests pass",
+                "    · docs",
             ]
         );
         state.conversation.ledger.as_mut().unwrap().goal = Some(SessionGoal {
@@ -660,6 +750,137 @@ mod tests {
                 "  criteria                       0",
             ]
         );
+    }
+
+    fn checked_goal(revision: u64, check_revision: u64) -> SessionLedger {
+        SessionLedger {
+            goal: Some(SessionGoal {
+                revision,
+                objective: "ship".into(),
+                criteria: vec![
+                    "clippy is clean".into(),
+                    "Windows CI passes".into(),
+                    "docs".into(),
+                ],
+                status: GoalStatus::Active,
+            }),
+            goal_check: Some(GoalCheck {
+                revision: check_revision,
+                turn_id: "T".into(),
+                statuses: vec![
+                    CriterionCheck {
+                        index: 1,
+                        status: CriterionStatus::Supported,
+                        evidence: "cargo clippy exited 0".into(),
+                    },
+                    CriterionCheck {
+                        index: 2,
+                        status: CriterionStatus::Contradicted,
+                        evidence: "cargo test exited 101".into(),
+                    },
+                ],
+                claims: vec![
+                    ClaimCheck {
+                        claim: "tests pass".into(),
+                        status: ClaimStatus::Contradicted,
+                        evidence: String::new(),
+                    },
+                    ClaimCheck {
+                        claim: "committed".into(),
+                        status: ClaimStatus::Unverified,
+                        evidence: String::new(),
+                    },
+                ],
+                note_sent: false,
+                note: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn each_criterion_shows_the_status_of_its_last_check_and_the_claims_follow() {
+        let mut state = State::default();
+        state.conversation.ledger = Some(checked_goal(3, 3));
+        assert_eq!(
+            section(&rows(&state), "GOAL"),
+            vec![
+                " GOAL",
+                "  ship",
+                "  status                    active",
+                "  criteria                       3",
+                "    ✓ clippy is clean",
+                "    ✗ Windows CI passes",
+                "    · docs",
+                "  claims                         2",
+                "    ✗ tests pass",
+                "    ? committed",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_check_of_another_revision_leaves_every_criterion_unchecked_and_hides_its_claims() {
+        let mut state = State::default();
+        state.conversation.ledger = Some(checked_goal(4, 3));
+        let shown = section(&rows(&state), "GOAL");
+        assert_eq!(
+            &shown[4..],
+            [
+                "    · clippy is clean",
+                "    · Windows CI passes",
+                "    · docs"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_memory_section_shows_a_dash_before_the_server_answered_and_follows_the_ledger() {
+        let shown = rows(&State::default());
+        assert_eq!(section(&shown, "MEMORY"), vec![" MEMORY", "  —"]);
+        let ledger = shown.iter().position(|r| r.ends_with("LEDGER")).unwrap();
+        let memory = shown.iter().position(|r| r.ends_with("MEMORY")).unwrap();
+        let extensions = shown
+            .iter()
+            .position(|r| r.ends_with("SKILLS · MCP · PLUGINS"))
+            .unwrap();
+        assert!(ledger < memory && memory < extensions);
+        let mut state = State::default();
+        state.conversation.memory = Some(vec![]);
+        assert_eq!(
+            section(&rows(&state), "MEMORY"),
+            vec![" MEMORY", "  no item applies"]
+        );
+    }
+
+    fn entry(title: &str, scope: &str) -> withnav_client_state::MemoryEntry {
+        withnav_client_state::MemoryEntry {
+            id: format!("id-{title}"),
+            title: title.into(),
+            scope: scope.into(),
+        }
+    }
+
+    #[test]
+    fn the_memory_section_lists_titles_with_their_scope_and_counts_what_does_not_fit() {
+        let mut state = State::default();
+        let mut items = vec![
+            entry("Conventional commits", "project"),
+            entry("Reply in French\x1b[31m", "global"),
+            entry(
+                "A title that is far too long to fit beside its scope",
+                "group",
+            ),
+        ];
+        items.extend((4..=10).map(|n| entry(&format!("item {n}"), "session")));
+        state.conversation.memory = Some(items);
+        let shown = section(&rows(&state), "MEMORY");
+        assert_eq!(shown.len(), 1 + 7 + 1, "{shown:#?}");
+        assert_eq!(shown[1], "  Conventional commits     project");
+        assert_eq!(shown[2], "  Reply in French           global");
+        assert_eq!(shown[3], "  A title that is far too …  group");
+        assert_eq!(shown[7], "  item 7                   session");
+        assert_eq!(shown[8], "    3 more");
     }
 
     #[test]

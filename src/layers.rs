@@ -6,6 +6,8 @@ use std::{path::Path, sync::Arc};
 use crate::assignments::{AssignedModel, AssignmentResolver, Layer, LayerAssignment};
 use crate::provider::{config::ModelsConfig, openai::ClientCache, systemone::SystemOneClient};
 
+pub mod recorded;
+
 /// Loads one layer from config.json and validates its catalog identity and API.
 pub fn assigned(
     models: &ModelsConfig,

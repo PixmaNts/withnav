@@ -62,6 +62,7 @@ pub fn generation(e: &ClientEvent) -> &Generation {
         | ClientEvent::Metadata { generation, .. }
         | ClientEvent::Context { generation, .. }
         | ClientEvent::Ledger { generation, .. }
+        | ClientEvent::Memory { generation, .. }
         | ClientEvent::Submitted { generation, .. }
         | ClientEvent::AttachmentChecked { generation, .. }
         | ClientEvent::AttachmentsUploaded { generation, .. }
@@ -103,6 +104,17 @@ pub(crate) fn read_ledger(s: &mut State) -> Option<Effect> {
     }
     s.conversation.ledger_reading = true;
     Some(Effect::FetchLedger(id))
+}
+
+/// Reads the memory items the session may be given, one read at a time like the ledger.
+pub(crate) fn read_memory(s: &mut State) -> Option<Effect> {
+    let id = s.session.as_ref().map(|m| m.session_id.clone())?;
+    if s.conversation.memory_reading {
+        s.conversation.memory_again = true;
+        return None;
+    }
+    s.conversation.memory_reading = true;
+    Some(Effect::FetchMemory(id))
 }
 
 /// Appends a reducer-made block with a unique, stable id (`local:<n>`).
@@ -365,6 +377,20 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                 withnav_client_api::event::EventKind::GoalCleared.as_str(),
             ]
             .contains(&envelope.kind.as_str());
+            // A finished goal check puts its statuses in the ledger; a register command changes
+            // what the session may be given. Only a result that succeeded changed anything.
+            let command = (envelope.kind
+                == withnav_client_api::event::EventKind::CommandResult.as_str()
+                && envelope.payload["ok"].as_bool() == Some(true))
+            .then(|| {
+                envelope.payload["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            });
+            let goal_checked = command.as_deref() == Some("goal_check");
+            let register_changed =
+                matches!(command.as_deref(), Some("remember" | "forget" | "memory"));
             if s.read_only()
                 && s.last_applied_seq.is_none_or(|seq| envelope.seq > seq)
                 && let Some(id) = s
@@ -451,8 +477,11 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             if turn_end {
                 effects.extend(read_git(s));
                 effects.extend(read_ledger(s));
-            } else if goal_changed {
+                effects.extend(read_memory(s));
+            } else if goal_changed || goal_checked {
                 effects.extend(read_ledger(s));
+            } else if register_changed {
+                effects.extend(read_memory(s));
             }
         }
         ClientEvent::Git { status, .. } => {
@@ -498,6 +527,7 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             }
             effects.push(Effect::FetchMcp);
             effects.extend(read_ledger(s));
+            effects.extend(read_memory(s));
         }
         ClientEvent::StreamDisconnected { .. } => s.connection = ConnectionStatus::Disconnected,
         ClientEvent::Reconnecting { .. } => s.connection = ConnectionStatus::Reconnecting,
@@ -633,6 +663,13 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                         ),
                     );
                 }
+                // The review allowed the call before this answer reached the server: it started
+                // and ran once. Nothing here says it was undone; the server's own resolution
+                // follows and says how it ended.
+                Err(AnswerError::AlreadyStarted) => push_local(
+                    s,
+                    BlockKind::Notice("Already started by Metacognition — it ran once".into()),
+                ),
                 Err(AnswerError::Other(error)) => {
                     // Not taken: the keys answer it again.
                     clear_answered(s, &request_id);
@@ -1010,6 +1047,16 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
             }
             if std::mem::take(&mut s.conversation.ledger_again) {
                 effects.extend(read_ledger(s));
+            }
+        }
+        ClientEvent::Memory { result, .. } => {
+            s.conversation.memory_reading = false;
+            // An older server answers 404 or 400: the section keeps its dash.
+            if let Ok(items) = result {
+                s.conversation.memory = Some(items);
+            }
+            if std::mem::take(&mut s.conversation.memory_again) {
+                effects.extend(read_memory(s));
             }
         }
         ClientEvent::ImageOpened { result, .. } => {

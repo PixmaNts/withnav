@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api } from "./client";
-import type { McpStatus } from "./types";
+import type { MemoryFilter, McpStatus } from "./types";
 
 // Query keys in one place, so mutations invalidate exactly what they change.
 export const keys = {
@@ -13,9 +13,17 @@ export const keys = {
   skills: (id: string) => ["skills", id] as const,
   intent: (ws: string) => ["intent", ws] as const,
   context: (id: string) => ["context", id] as const,
+  ledger: (id: string) => ["ledger", id] as const,
+  sessionMemory: (id: string) => ["memory", "session", id] as const,
   settings: (ws: string) => ["settings", ws] as const,
   layers: (ws: string) => ["layers", ws] as const,
   mcp: ["mcp"] as const,
+  memory: ["memory"] as const,
+  memoryList: (filter: MemoryFilter) => ["memory", "list", filter] as const,
+  memoryItem: (id: string) => ["memory", "item", id] as const,
+  needsYou: ["needs-you"] as const,
+  projects: ["projects"] as const,
+  waiting: ["waiting"] as const,
 };
 
 /** Everything a workspace removal or reopening changes: the list and every session list. */
@@ -54,6 +62,14 @@ export const useIntent = (ws: string | null) =>
 export const useContextSnapshot = (id: string | null, live: boolean) =>
   useQuery({ queryKey: keys.context(id ?? ""), queryFn: () => api.context(id!), enabled: !!id && live, retry: false });
 
+/** What the session did, from the server's fold of its stored events; read again by the caller on each change. */
+export const useLedger = (id: string | null) =>
+  useQuery({ queryKey: keys.ledger(id ?? ""), queryFn: () => api.ledger(id!), enabled: !!id, retry: false });
+
+/** The register items this session may be given: its own, its project's, its groups' and the global ones. */
+export const useSessionMemory = (id: string | null) =>
+  useQuery({ queryKey: keys.sessionMemory(id ?? ""), queryFn: () => api.memoryItems({ session: id! }), enabled: !!id, retry: false });
+
 export const useSettings = (ws: string | null) =>
   useQuery({ queryKey: keys.settings(ws ?? ""), queryFn: () => api.settings(ws!), enabled: !!ws, retry: false });
 export const useLayers = (ws: string | null) =>
@@ -85,3 +101,30 @@ export const useMcp = () => {
 /** Applies an `mcp.status` payload to the cache, unless the one held is newer. */
 export const keepMcpStatus = (qc: QueryClient, next: McpStatus) =>
   qc.setQueryData<McpStatus>(keys.mcp, (held) => (newerMcp(held, next) ? next : held));
+
+// ---- memory register ----
+
+/** Items matching the filter; every status unless `status` is set. */
+export const useMemoryItems = (filter: MemoryFilter) =>
+  useQuery({ queryKey: keys.memoryList(filter), queryFn: () => api.memoryItems(filter), retry: false, refetchInterval: 30_000 });
+
+export const useMemoryItem = (id: string | null) =>
+  useQuery({ queryKey: keys.memoryItem(id ?? ""), queryFn: () => api.memoryItem(id!), enabled: !!id, retry: false });
+
+/** The few changes that wait for the Captain; the server caps the list. */
+export const useNeedsYou = () =>
+  useQuery({ queryKey: keys.needsYou, queryFn: api.needsYou, retry: false, refetchInterval: 20_000 });
+
+export const useProjects = () => useQuery({ queryKey: keys.projects, queryFn: api.projects, retry: false, refetchInterval: 30_000 });
+
+/** After any write to the register: lists, open items, the waiting changes and the projects are read again. */
+export const registerChanged = (qc: QueryClient) =>
+  Promise.all([
+    qc.invalidateQueries({ queryKey: keys.memory }),
+    qc.invalidateQueries({ queryKey: keys.needsYou }),
+    qc.invalidateQueries({ queryKey: keys.projects }),
+  ]);
+
+/** Every permission request the live sessions wait on, read every 5 s; a failed read keeps the last list. */
+export const useWaiting = () =>
+  useQuery({ queryKey: keys.waiting, queryFn: api.waiting, refetchInterval: 5_000, retry: false });

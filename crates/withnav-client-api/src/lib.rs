@@ -10,6 +10,7 @@ pub mod command;
 pub mod event;
 pub mod goal;
 pub mod ledger;
+pub mod memory;
 pub mod permissions;
 pub mod protocol;
 pub mod provider;

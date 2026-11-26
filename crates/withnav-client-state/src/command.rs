@@ -136,8 +136,100 @@ pub fn outcome_text(name: &str, ok: bool, data: Option<&Value>, error: Option<&s
         }
         "new" => format!("new conversation {}", text("session_id")),
         "goal" => goal_text(data),
+        "remember" | "forget" | "memory" => {
+            if name == "remember"
+                && let Some(line) = remembered_line(data)
+            {
+                return line;
+            }
+            let item = &data["item"];
+            if let Some(title) = item["current"]["title"].as_str() {
+                let label = match name {
+                    "remember" => "Remembered",
+                    "forget" => "Forgot",
+                    _ => "Memory",
+                };
+                format!(
+                    "{label} \"{title}\" · {} · {} v{}{}",
+                    data["scope_label"]
+                        .as_str()
+                        .or_else(|| item["scope"].as_str())
+                        .unwrap_or_default(),
+                    item["id"].as_str().unwrap_or_default(),
+                    item["current_version"],
+                    data["notice"]
+                        .as_str()
+                        .map_or_else(String::new, |notice| format!("\n{notice}"))
+                )
+            } else if let Some(items) = data["items"].as_array() {
+                if items.is_empty() {
+                    "No memory items.".into()
+                } else {
+                    items
+                        .iter()
+                        .map(|item| {
+                            format!(
+                                "{} · {} v{}",
+                                item["current"]["title"].as_str().unwrap_or_default(),
+                                item["id"].as_str().unwrap_or_default(),
+                                item["current_version"]
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+            } else if let Some(versions) = data["versions"].as_array() {
+                versions
+                    .iter()
+                    .map(|v| {
+                        format!(
+                            "v{} · {} · {}",
+                            v["version"],
+                            v["change"].as_str().unwrap_or_default(),
+                            v["title"].as_str().unwrap_or_default()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                data.to_string()
+            }
+        }
         _ => data.to_string(),
     }
+}
+
+/// The transcript line for an item `/remember` stored: its title and scope, and how to take it
+/// back (`/forget <id>` invalidates the current version). `None` when the result holds no item.
+pub fn remembered_line(data: &Value) -> Option<String> {
+    let item = &data["item"];
+    let title = item["current"]["title"].as_str()?;
+    let scope = data["scope_label"]
+        .as_str()
+        .or_else(|| item["scope"].as_str())
+        .unwrap_or_default();
+    let mut line = format!(
+        "Remembered: \"{title}\" · {scope} · undo with /forget {}",
+        item["id"].as_str().unwrap_or_default()
+    );
+    if let Some(notice) = data["notice"].as_str() {
+        line.push('\n');
+        line.push_str(notice);
+    }
+    Some(line)
+}
+
+/// The transcript block for a finished goal check that queued a note for the agent: said to be an
+/// automatic observation so it is never read as something the Captain wrote. `None` when the
+/// check queued no note (its statuses reach the panel through the ledger instead).
+pub fn goal_note_line(data: &Value) -> Option<String> {
+    if data["note_sent"].as_bool() != Some(true) {
+        return None;
+    }
+    let note = data["note"].as_str().filter(|note| !note.is_empty())?;
+    Some(format!(
+        "Goal note · automatic observation, not a Captain message\n{note}"
+    ))
 }
 
 /// `/goal`: the goal (status, revision, objective, numbered criteria), or what ended.
@@ -193,6 +285,24 @@ pub fn tokens(n: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn memory_outcomes_show_scope_and_format_history() {
+        let body = serde_json::json!({"scope_label":"project WithNav","item":{"id":"abc123","current_version":1,"current":{"title":"Checklist"}}});
+        assert_eq!(
+            super::outcome_text("remember", true, Some(&body), None),
+            "Remembered: \"Checklist\" · project WithNav · undo with /forget abc123"
+        );
+        assert_eq!(
+            super::outcome_text("forget", true, Some(&body), None),
+            "Forgot \"Checklist\" · project WithNav · abc123 v1"
+        );
+        let history =
+            serde_json::json!({"versions":[{"version":1,"change":"created","title":"Checklist"}]});
+        assert_eq!(
+            super::outcome_text("memory", true, Some(&history), None),
+            "v1 · created · Checklist"
+        );
+    }
     use super::{outcome_text, tokens};
 
     #[test]

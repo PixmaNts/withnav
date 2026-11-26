@@ -30,8 +30,9 @@ pub(crate) use transcript::copy_block;
 pub(crate) use transcript::permission_sections;
 
 use hints::{
-    ARCHIVE, CHILD_PAUSED, CHILD_TRANSCRIPT, COPY_MODE, IDLE, PERMISSION, PERMISSION_ONCE,
-    QUESTION, QUESTION_CUSTOM, REJECT_MESSAGE, SUBAGENTS, TYPING, WATCHDOG_PAUSED,
+    ARCHIVE, CHILD_PAUSED, CHILD_TRANSCRIPT, COPY_MODE, IDLE, PERMISSION, PERMISSION_HOLD,
+    PERMISSION_ONCE, PERMISSION_ONCE_HOLD, QUESTION, QUESTION_CUSTOM, REJECT_MESSAGE, SUBAGENTS,
+    TYPING, WATCHDOG_PAUSED,
 };
 /// Parsed markdown, one cache per tab conversation: block ids are only unique within a session, so
 /// two tabs never share an entry.
@@ -104,6 +105,9 @@ enum KeyContext {
     /// An open permission request with no reusable approval offered.
     PermissionOnce,
     Permission,
+    /// The same two, while the parallel review runs: `h` holds the request.
+    PermissionOnceHold,
+    PermissionHold,
     Idle,
     Typing,
 }
@@ -161,6 +165,8 @@ fn key_context(state: &State, ui: &UiState, editor: &Editor) -> KeyContext {
     match (ui.deny_draft(&open.request_id), empty) {
         (Some(_), _) => RejectMessage,
         // Without a server-supplied label, no reusable approval is offered.
+        (None, true) if !permission::offers_always(open) && open.can_hold() => PermissionOnceHold,
+        (None, true) if open.can_hold() => PermissionHold,
         (None, true) if !permission::offers_always(open) => PermissionOnce,
         (None, true) => Permission,
         (None, false) => Typing,
@@ -183,6 +189,8 @@ fn hints(state: &State, ui: &UiState, editor: &Editor) -> &'static [Hints] {
         KeyContext::RejectMessage => REJECT_MESSAGE,
         KeyContext::PermissionOnce => PERMISSION_ONCE,
         KeyContext::Permission => PERMISSION,
+        KeyContext::PermissionOnceHold => PERMISSION_ONCE_HOLD,
+        KeyContext::PermissionHold => PERMISSION_HOLD,
         KeyContext::Idle => IDLE,
         KeyContext::Typing => TYPING,
     }

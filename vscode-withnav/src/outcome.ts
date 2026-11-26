@@ -13,6 +13,24 @@ export function outcomeText(name: string, ok: boolean, data: any, error?: string
   if (data.applies === "after_turn" || data.applies === "next_turn") return "accepted, applies when this turn ends";
   const text = (key: string) => (typeof data[key] === "string" ? data[key] : "");
   switch (name) {
+    // A finished goal check shows only the note it queued for the agent, marked as an automatic
+    // observation so it is never read as a Captain message; its statuses reach the panel.
+    case "goal_check":
+      return data.note_sent === true && typeof data.note === "string" && data.note
+        ? `Goal note · automatic observation, not a Captain message\n${data.note}`
+        : null;
+    case "remember":
+    case "forget":
+    case "memory": {
+      const render = (item: { id: string; current_version: number; current: { title: string } }) =>
+        `${item.current.title} · ${item.id} v${item.current_version}`;
+      if (name === "remember" && data.item?.current)
+        return `Remembered: "${data.item.current.title}" · ${data.scope_label ?? data.item.scope} · undo with /forget ${data.item.id}${data.notice ? `\n${data.notice}` : ""}`;
+      if (data.item?.current) return `${name === "remember" ? "Remembered" : name === "forget" ? "Forgot" : "Memory"} "${data.item.current.title}" · ${data.scope_label ?? data.item.scope} · ${data.item.id} v${data.item.current_version}${data.notice ? `\n${data.notice}` : ""}`;
+      if (Array.isArray(data.items)) return data.items.length ? data.items.map(render).join("\n") : "No memory items.";
+      if (Array.isArray(data.versions)) return data.versions.map((v: { version: number; change: string; title: string }) => `v${v.version} · ${v.change} · ${v.title}`).join("\n");
+      return JSON.stringify(data);
+    }
     case "help":
       return Array.isArray(data.commands)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

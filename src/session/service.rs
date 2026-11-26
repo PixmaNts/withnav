@@ -349,6 +349,7 @@ pub type SessionSummary = SessionMetadata;
 /// clone (all fields are `Arc`).
 #[derive(Clone, Debug)]
 pub struct Service {
+    pub(crate) memory: Arc<tokio::sync::OnceCell<Arc<crate::memory::MemoryStore>>>,
     pub(crate) mcp: Arc<crate::mcp::McpManager>,
     /// The Captain's secrets: every conversation's, and the saved workspace ones.
     pub(crate) secrets: Arc<crate::secrets::SecretStore>,
@@ -657,6 +658,7 @@ impl Service {
         let mcp_bridge = Arc::new(super::mcp::McpBridge::start(&mcp, &sessions));
         let secrets = Arc::new(crate::secrets::SecretStore::open(&config.data_dir));
         Ok(Self {
+            memory: Arc::default(),
             mcp,
             secrets,
             mcp_bridge,
@@ -1711,8 +1713,11 @@ impl Service {
         variant: VariantChoice,
         agent: Option<&str>,
     ) -> Result<SessionId, ServerError> {
-        self.spawn_session(workspace, model, editor, agent, None, workspace, &variant)
-            .await
+        let id = self
+            .spawn_session(workspace, model, editor, agent, None, workspace, &variant)
+            .await?;
+        self.initialize_memory_project(id, workspace).await;
+        Ok(id)
     }
 
     /// [`create_session`] with an optional `resume` id (the POST
@@ -2693,6 +2698,16 @@ impl Service {
             None => session_id,
         };
         actor.tool_context.secrets = Some(self.secret_access(secret_owner, &workspace));
+        if root_tools_enabled && role.access != crate::agent::definitions::AgentAccess::ReadOnly {
+            use crate::tools::memory_scope::{Action, MemoryScope};
+            for action in [Action::Add, Action::Remove, Action::Attach, Action::Detach] {
+                actor.registry.register(Box::new(MemoryScope {
+                    service: self.clone(),
+                    session: session_id,
+                    action,
+                }));
+            }
+        }
         if root_tools_enabled && role.mode.is_primary() {
             actor.registry.register(Box::new(
                 crate::tools::decide_subagent::DecideSubagent::new(self.clone(), session_id),
@@ -2768,7 +2783,8 @@ impl Service {
         actor.compaction_decision = compaction_decision(
             self.config.models_path.as_deref(),
             &workspace,
-            &self.config.config_dir,
+            &self.config,
+            session_id,
             self.client_cache.clone(),
         );
         actor.compaction_catalog = Some(self.catalog.clone());
@@ -3035,7 +3051,7 @@ impl Service {
             emitter = emitter.with_permission_mirror(session_id, parent_id, parent.sequencer);
         }
         let root_watchdog = if child_parent.is_none() {
-            Some(self.prepare_root_watchdog(&workspace)?)
+            Some(self.prepare_root_watchdog(&workspace, session_id)?)
         } else {
             None
         };
@@ -3720,16 +3736,24 @@ mod scratch_candidate_tests {
 }
 
 /// The session's Instinct layer as the judge compaction asks which old tool
-/// outputs still matter; `None` when Instinct is unavailable.
+/// outputs still matter, each call recorded; `None` when Instinct is unavailable.
 fn compaction_decision(
     models_path: Option<&std::path::Path>,
     workspace: &std::path::Path,
-    config_dir: &std::path::Path,
+    config: &SessionConfig,
+    session_id: SessionId,
     cache: Arc<crate::provider::openai::ClientCache>,
 ) -> Option<Arc<dyn crate::provider::systemone::DecisionModel>> {
+    let config_dir = &config.config_dir;
     let (models, _) = crate::provider::config::load_models(models_path, workspace, config_dir)
         .map_err(|error| tracing::warn!(%error, "compaction judge disabled: catalog unavailable"))
         .ok()?;
     let client = crate::provider::layers::available_instinct(&models, config_dir, cache)?;
-    Some(Arc::new(client))
+    use crate::layers::recorded::{Caller, Recorded};
+    Some(Recorded::instinct(
+        client,
+        Caller::Prune,
+        session_id,
+        &config.data_dir,
+    ))
 }

@@ -1,5 +1,8 @@
 //! The inline permission prompt: what the gated call would do, and the keys that answer it.
-use crate::{state::PermissionPrompt, theme::Theme};
+use crate::{
+    state::{PermissionPrompt, PermissionReview, ReviewState},
+    theme::Theme,
+};
 use ratatui::{
     style::Modifier,
     text::{Line, Span},
@@ -28,6 +31,11 @@ pub(crate) fn test_prompt() -> PermissionPrompt {
         message: None,
         always_saved: true,
         stale: false,
+        call_digest: None,
+        turn_id: None,
+        review: None,
+        approved_by: None,
+        review_cancelled: false,
     }
 }
 
@@ -91,8 +99,10 @@ pub(crate) fn copy_sections(p: &PermissionPrompt, call: Option<&Value>, sent: bo
             scope_text(p)
         ),
         match &p.always_label {
-            Some(label) => format!("{}\n{label}", p.reason),
-            None => p.reason.clone(),
+            Some(label) if p.approved_by.as_deref() != Some("metacognition") => {
+                format!("{}\n{label}", p.reason)
+            }
+            _ => p.reason.clone(),
         },
         payload,
         outcome,
@@ -133,11 +143,15 @@ pub fn lines(
     theme: &Theme,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let mut rendered: Vec<_> = build(p, call, keys, theme)
-        .into_iter()
-        .map(|line| cut(line, width))
-        .collect();
-    if let Some(label) = &p.always_label {
+    let (built, status_at) = build(p, call, keys, theme);
+    let mut rendered: Vec<_> = built.into_iter().map(|line| cut(line, width)).collect();
+    // A call the review allowed was never an "Always": the rules the card proposed are not shown
+    // beside it.
+    let proposed = p
+        .always_label
+        .as_ref()
+        .filter(|_| p.approved_by.as_deref() != Some("metacognition"));
+    if let Some(label) = proposed {
         let mut row = String::new();
         let mut rules = Vec::new();
         for grapheme in label.graphemes(true) {
@@ -150,8 +164,7 @@ pub fn lines(
         if !row.is_empty() {
             rules.push(Line::styled(row, theme.muted()));
         }
-        let before_outcome = rendered.len().saturating_sub(1);
-        rendered.splice(before_outcome..before_outcome, rules);
+        rendered.splice(status_at..status_at, rules);
     }
     rendered
 }
@@ -188,12 +201,14 @@ fn cut(line: Line<'static>, width: usize) -> Line<'static> {
     Line::from(spans).style(line.style)
 }
 
+/// The prompt's lines, and the index of the status line (the keys, or how it ended): the proposed
+/// "Always" rules go right before it.
 fn build(
     p: &PermissionPrompt,
     call: Option<&Value>,
     keys: Keys<'_>,
     theme: &Theme,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, usize) {
     let mut lines = vec![Line::from(vec![
         Span::styled(
             "PERMISSION",
@@ -231,6 +246,14 @@ fn build(
         };
         lines.push(Line::styled(format!(" {line}"), style));
     }
+    // While the request waits, where the review stands comes above the keys, so the Captain reads
+    // it before answering.
+    if p.is_open()
+        && let Some(review) = &p.review
+    {
+        lines.extend(review_lines(review, theme));
+    }
+    let status_at = lines.len();
     match (&p.resolution, keys) {
         (None, _) if p.stale => lines.push(Line::styled(" no longer waiting", theme.muted())),
         (None, Keys::Denying(message)) => {
@@ -244,20 +267,7 @@ fn build(
                 theme.muted(),
             ));
         }
-        (None, Keys::Ready) if !offers_always(p) => lines.push(Line::from(vec![
-            Span::styled(" o", theme.strong()),
-            Span::styled(" once · ", theme.muted()),
-            Span::styled("r", theme.strong()),
-            Span::styled(" reject", theme.muted()),
-        ])),
-        (None, Keys::Ready) => lines.push(Line::from(vec![
-            Span::styled(" o", theme.strong()),
-            Span::styled(" once   ", theme.muted()),
-            Span::styled("a", theme.strong()),
-            Span::styled(" Always   ", theme.muted()),
-            Span::styled("r", theme.strong()),
-            Span::styled(" reject", theme.muted()),
-        ])),
+        (None, Keys::Ready) => lines.push(ready_keys(p, theme)),
         (None, Keys::Sent) => {
             lines.push(Line::styled(" sent, waiting for the server", theme.muted()))
         }
@@ -269,6 +279,86 @@ fn build(
             theme.muted(),
         )),
         (Some(resolution), _) => lines.push(outcome(p, resolution, theme)),
+    }
+    // How a finished request was settled by the review comes after its outcome.
+    if !p.is_open() {
+        if p.approved_by.as_deref() == Some("metacognition")
+            && let Some(review) = &p.review
+        {
+            lines.extend(review_text_lines(review, theme));
+        } else if p.review_cancelled {
+            lines.push(Line::styled(
+                " review cancelled: you answered first",
+                theme.muted(),
+            ));
+        }
+    }
+    (lines, status_at)
+}
+
+/// The keys of an open request: `o` once, `a` Always when offered, `r` reject, `h` hold while a
+/// review runs. The separators are the ones the prompt always used.
+fn ready_keys(p: &PermissionPrompt, theme: &Theme) -> Line<'static> {
+    let always = offers_always(p);
+    let mut keys = vec![("o", "once")];
+    if always {
+        keys.push(("a", "Always"));
+    }
+    keys.push(("r", "reject"));
+    if p.can_hold() {
+        keys.push(("h", "hold"));
+    }
+    let separator = if always { "   " } else { " · " };
+    let mut spans = Vec::new();
+    for (at, (key, what)) in keys.iter().enumerate() {
+        if at > 0 {
+            spans.push(Span::styled(separator, theme.muted()));
+        }
+        spans.push(Span::styled(
+            if at == 0 {
+                format!(" {key}")
+            } else {
+                (*key).to_string()
+            },
+            theme.strong(),
+        ));
+        spans.push(Span::styled(format!(" {what}"), theme.muted()));
+    }
+    Line::from(spans)
+}
+
+/// Where the review of a waiting request stands. The Captain's keys stay live in every state.
+fn review_lines(review: &PermissionReview, theme: &Theme) -> Vec<Line<'static>> {
+    match review.state {
+        ReviewState::Reviewing => vec![Line::styled(" Metacognition is reviewing…", theme.muted())],
+        ReviewState::Wait => {
+            let mut lines = vec![Line::styled(
+                " waiting for you: Metacognition did not allow this call",
+                theme.warning(),
+            )];
+            lines.extend(review_text_lines(review, theme));
+            lines
+        }
+        ReviewState::Held => vec![Line::styled(
+            " held for you: the review stopped",
+            theme.muted(),
+        )],
+        ReviewState::Unavailable => vec![Line::styled(" no review; your call", theme.muted())],
+        ReviewState::Allowed => vec![],
+    }
+}
+
+/// The review's short conclusion, the part of the request it relied on and the consequence.
+fn review_text_lines(review: &PermissionReview, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if let Some(text) = &review.conclusion {
+        lines.push(Line::styled(format!(" {text}"), theme.text()));
+    }
+    if let Some(text) = &review.basis {
+        lines.push(Line::styled(format!(" relied on: {text}"), theme.muted()));
+    }
+    if let Some(text) = &review.consequence {
+        lines.push(Line::styled(format!(" consequence: {text}"), theme.muted()));
     }
     lines
 }
@@ -315,6 +405,10 @@ fn always_text(p: &PermissionPrompt) -> &'static str {
 }
 
 fn outcome(p: &PermissionPrompt, resolution: &str, theme: &Theme) -> Line<'static> {
+    // The review only ever allows a call once, whatever the resolution word says.
+    if p.approved_by.as_deref() == Some("metacognition") && resolution.starts_with("allow") {
+        return Line::styled(" allowed once by Metacognition", theme.success());
+    }
     let (text, style) = match resolution {
         "allow_always" if !p.always_saved => (
             format!(
@@ -499,4 +593,126 @@ fn an_unsaved_always_says_it_ran_once() {
     prompt.message = None;
     let line = outcome(&prompt, "allow_always", &Theme::default()).to_string();
     assert_eq!(line, " allowed always");
+}
+
+#[cfg(test)]
+mod review_snapshots {
+    use super::*;
+
+    fn card(review: Option<(ReviewState, [Option<&str>; 3])>) -> PermissionPrompt {
+        let mut p = test_prompt();
+        p.resolution = None;
+        p.call_digest = Some("d".into());
+        p.turn_id = Some("t".into());
+        p.review = review.map(
+            |(state, [conclusion, basis, consequence])| PermissionReview {
+                state,
+                conclusion: conclusion.map(Into::into),
+                basis: basis.map(Into::into),
+                consequence: consequence.map(Into::into),
+            },
+        );
+        p
+    }
+
+    fn shown(p: &PermissionPrompt, keys: Keys<'_>) -> String {
+        lines(p, None, keys, &Theme::default(), 60)
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn reviewing() {
+        insta::assert_snapshot!(shown(&card(Some((ReviewState::Reviewing, [None; 3]))), Keys::Ready), @r"
+        PERMISSION · build wants to run bash in /workspace
+         long reason
+         $ echo long command
+         Metacognition is reviewing…
+         o once · r reject · h hold
+        ");
+    }
+
+    #[test]
+    fn waiting_for_you() {
+        let p = card(Some((
+            ReviewState::Wait,
+            [
+                Some("Deletes files the request did not mention"),
+                Some("fix the warnings"),
+                Some("removes 3 files"),
+            ],
+        )));
+        insta::assert_snapshot!(shown(&p, Keys::Ready), @r"
+        PERMISSION · build wants to run bash in /workspace
+         long reason
+         $ echo long command
+         waiting for you: Metacognition did not allow this call
+         Deletes files the request did not mention
+         relied on: fix the warnings
+         consequence: removes 3 files
+         o once · r reject
+        ");
+    }
+
+    #[test]
+    fn allowed_by_metacognition() {
+        let mut p = card(Some((
+            ReviewState::Allowed,
+            [
+                Some("Releasing implies the push"),
+                Some("release 0.8.4"),
+                Some("pushes the tag to origin"),
+            ],
+        )));
+        p.resolution = Some("allow_once".into());
+        p.approved_by = Some("metacognition".into());
+        insta::assert_snapshot!(shown(&p, Keys::Inactive), @r"
+        PERMISSION · build wants to run bash in /workspace
+         long reason
+         $ echo long command
+         allowed once by Metacognition
+         Releasing implies the push
+         relied on: release 0.8.4
+         consequence: pushes the tag to origin
+        ");
+    }
+
+    #[test]
+    fn cancelled_because_the_captain_answered_first() {
+        let mut p = card(Some((ReviewState::Reviewing, [None; 3])));
+        p.resolution = Some("allow_once".into());
+        p.approved_by = Some("captain".into());
+        p.review_cancelled = true;
+        insta::assert_snapshot!(shown(&p, Keys::Inactive), @r"
+        PERMISSION · build wants to run bash in /workspace
+         long reason
+         $ echo long command
+         allowed once
+         review cancelled: you answered first
+        ");
+    }
+
+    #[test]
+    fn held() {
+        insta::assert_snapshot!(shown(&card(Some((ReviewState::Held, [None; 3]))), Keys::Ready), @r"
+        PERMISSION · build wants to run bash in /workspace
+         long reason
+         $ echo long command
+         held for you: the review stopped
+         o once · r reject
+        ");
+    }
+
+    #[test]
+    fn unavailable() {
+        insta::assert_snapshot!(shown(&card(Some((ReviewState::Unavailable, [None; 3]))), Keys::Ready), @r"
+        PERMISSION · build wants to run bash in /workspace
+         long reason
+         $ echo long command
+         no review; your call
+         o once · r reject
+        ");
+    }
 }

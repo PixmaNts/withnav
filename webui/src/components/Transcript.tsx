@@ -10,6 +10,7 @@ import { QuestionCard } from "./QuestionCard";
 import { SecretCard, type SecretActions } from "./SecretCard";
 import { ToolList } from "./ToolList";
 import { Thumbnails } from "./Images";
+import { GoalNoteBlock, RememberedLine } from "./SessionPanelLines";
 
 type Answer = (requestId: string, decision: "allow_once" | "allow_always" | "reject", message?: string) => Promise<void>;
 
@@ -102,6 +103,10 @@ function ItemView({ item, view, agent, onAnswer, onAnswerQuestion, onOpenChild, 
     }
     case "notice":
       return <div className={`notice${item.tone === "error" ? " error" : ""}`}>{item.text}</div>;
+    case "remembered":
+      return <RememberedLine item={item} readOnly={readOnly} />;
+    case "goal-note":
+      return <GoalNoteBlock item={item} />;
   }
 }
 

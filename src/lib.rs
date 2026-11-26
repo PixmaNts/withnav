@@ -4,10 +4,12 @@ pub mod assignments;
 pub mod bus;
 pub mod error;
 pub mod flows;
+pub mod jsonl;
 #[cfg(test)]
 pub(crate) mod layer_fixture;
 pub mod layers;
 pub mod mcp;
+pub mod memory;
 pub mod navigator;
 pub mod paths;
 pub mod permission;

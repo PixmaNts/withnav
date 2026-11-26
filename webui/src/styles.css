@@ -847,6 +847,26 @@ a:hover {
 .outcome .bad {
   color: var(--rd);
 }
+/* parallel review of a permission request */
+.review {
+  margin: 6px 0;
+  font-size: 12px;
+}
+.review.wait {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--or);
+  background: color-mix(in srgb, var(--or) 8%, transparent);
+}
+.review-text {
+  font-size: 12px;
+  margin: 4px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 
 /* wake / subagent result / notices */
 .wake {
@@ -2102,3 +2122,105 @@ a:hover {
 .composer.dropping { outline: 2px dashed var(--accent, #4af); outline-offset: 2px; }
 .image-view { display: block; margin-top: 8px; }
 .image-view img { max-width: 100%; height: auto; display: block; border-radius: 6px; }
+
+/* ---------- session panel, "Remembered" lines and goal notes ---------- */
+.session-panel { display: flex; flex-direction: column; min-width: 0; }
+.session-panel .sp-gap { margin-top: 14px; }
+.sp-empty { border: 1px dashed var(--bd); border-radius: 6px; padding: 10px 12px; line-height: 1.5; }
+.sp-objective { font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.sp-objective.clamp3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.sp-meta { display: flex; gap: 8px; align-items: center; margin: 6px 0; font-size: 12px; flex-wrap: wrap; }
+.sp-checked { margin-left: auto; font-size: 11.5px; }
+.sp-status.active { color: var(--gr); }
+.sp-status.paused { color: var(--or); }
+.sp-list { display: flex; flex-direction: column; border: 1px solid var(--bd); border-radius: 6px; overflow: hidden; }
+.sp-row { padding: 6px 10px; font-size: 12.5px; overflow-wrap: anywhere; }
+.sp-row + .sp-row, .sp-crit + .sp-crit { border-top: 1px solid var(--bd); }
+.sp-crit { padding: 6px 10px; display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; line-height: 1.4; }
+.sp-crit-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.sp-crit-text .muted { font-size: 11px; }
+.sp-state { font-size: 11px; white-space: nowrap; color: var(--mu); }
+[data-status="supported"] > .sp-state { color: var(--gr); }
+[data-status="contradicted"] > .sp-state { color: var(--rd); }
+.sp-kv { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; margin: 3px 0; }
+.sp-kv .bad { color: var(--rd); }
+.sp-file { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-note { font-size: 11.5px; line-height: 1.45; margin: 3px 0 6px; overflow-wrap: anywhere; }
+.sp-cmd { color: var(--tx); }
+.sp-memory-head { display: flex; align-items: center; gap: 6px; margin-top: 14px; }
+.sp-memory-head .link-btn { margin-left: auto; }
+.remembered { color: var(--mu); font-size: 12px; }
+.remembered .link-btn:disabled { opacity: 0.5; }
+.remembered-error { color: var(--rd); font-size: 11.5px; }
+.goal-note {
+  min-width: 0;
+  max-width: 84%;
+  border-left: 2px solid var(--bl);
+  padding: 6px 12px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--bl) 9%, transparent), transparent 80%);
+  font-size: 12.5px;
+}
+.goal-note-head { color: var(--bl); display: flex; gap: 6px; align-items: center; font-size: 11.5px; }
+.goal-note-head .right { margin-left: auto; }
+.goal-note-text { margin-top: 2px; overflow-wrap: anywhere; }
+
+/* sessions that wait for the Captain */
+.waiting-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--or);
+  flex-shrink: 0;
+  display: inline-block;
+}
+.waiting-badge {
+  position: relative;
+  display: inline-flex;
+}
+.waiting-badge > .bypass-badge {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  background: transparent;
+  cursor: pointer;
+}
+.waiting-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 280px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  background: var(--sf);
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+}
+.waiting-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.waiting-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+.waiting-open:hover {
+  background: color-mix(in srgb, var(--tx) 5%, transparent);
+}
+.waiting-open .muted {
+  font-size: 12px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

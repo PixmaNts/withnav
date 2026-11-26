@@ -136,6 +136,60 @@ pub fn outcome_text(name: &str, ok: bool, data: Option<&Value>, error: Option<&s
         }
         "new" => format!("new conversation {}", text("session_id")),
         "goal" => goal_text(data),
+        "remember" | "forget" | "memory" => {
+            let item = &data["item"];
+            if let Some(title) = item["current"]["title"].as_str() {
+                let label = match name {
+                    "remember" => "Remembered",
+                    "forget" => "Forgot",
+                    _ => "Memory",
+                };
+                format!(
+                    "{label} \"{title}\" · {} · {} v{}{}",
+                    data["scope_label"]
+                        .as_str()
+                        .or_else(|| item["scope"].as_str())
+                        .unwrap_or_default(),
+                    item["id"].as_str().unwrap_or_default(),
+                    item["current_version"],
+                    data["notice"]
+                        .as_str()
+                        .map_or_else(String::new, |notice| format!("\n{notice}"))
+                )
+            } else if let Some(items) = data["items"].as_array() {
+                if items.is_empty() {
+                    "No memory items.".into()
+                } else {
+                    items
+                        .iter()
+                        .map(|item| {
+                            format!(
+                                "{} · {} v{}",
+                                item["current"]["title"].as_str().unwrap_or_default(),
+                                item["id"].as_str().unwrap_or_default(),
+                                item["current_version"]
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+            } else if let Some(versions) = data["versions"].as_array() {
+                versions
+                    .iter()
+                    .map(|v| {
+                        format!(
+                            "v{} · {} · {}",
+                            v["version"],
+                            v["change"].as_str().unwrap_or_default(),
+                            v["title"].as_str().unwrap_or_default()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                data.to_string()
+            }
+        }
         _ => data.to_string(),
     }
 }
@@ -193,6 +247,20 @@ pub fn tokens(n: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn memory_outcomes_show_scope_and_format_history() {
+        let body = serde_json::json!({"scope_label":"project WithNav","item":{"id":"abc123","current_version":1,"current":{"title":"Checklist"}}});
+        assert_eq!(
+            super::outcome_text("remember", true, Some(&body), None),
+            "Remembered \"Checklist\" · project WithNav · abc123 v1"
+        );
+        let history =
+            serde_json::json!({"versions":[{"version":1,"change":"created","title":"Checklist"}]});
+        assert_eq!(
+            super::outcome_text("memory", true, Some(&history), None),
+            "v1 · created · Checklist"
+        );
+    }
     use super::{outcome_text, tokens};
 
     #[test]

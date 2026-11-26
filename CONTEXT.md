@@ -350,6 +350,8 @@ commands are refused, `/stop` included, until it is answered. The stop endpoint
 
 ## Shared context
 
+A **memory item** is Captain-authored knowledge with append-only versions. Its **scope** controls which sessions can read it, never what tools they may run. A **project** identifies a repository across linked Git worktrees, or a standalone folder. A **group** shares items among explicitly joined projects. A session has at most one active project; scope widening requested by the agent needs the Captain's confirmation.
+
 **Shared context**:
 What every layer knows about the work in progress, so that fast layers can be relevant, not just
 fast. It has two parts: the intent record and the live state.

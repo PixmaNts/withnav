@@ -14,6 +14,8 @@ requests land in `develop`.
   summary no longer drops dead ends.
 ### Added
 
+- A memory register for Captain-authored knowledge, with scoped items, version history, and confirmation for agent-requested widening or removal from another project. Use `/remember`, `/memory`, and `/forget`. Start `/remember` text with `@global`, `@group:<name>`, `@project`, or `@session` to choose a scope explicitly.
+
 - The session ledger: what a conversation did (turns and how the last one ended, files changed,
   shell commands with their exit code, commands that failed more than once, the last answer, the
   questions still waiting), rebuilt from the conversation's stored events on each read, with every

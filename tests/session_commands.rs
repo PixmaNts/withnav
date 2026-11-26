@@ -156,10 +156,10 @@ async fn help_lists_commands_and_publishes_a_result() {
         names,
         [
             "help", "model", "new", "stop", "context", "variant", "compact", "agent", "bypass",
-            "goal"
+            "goal", "remember", "memory", "forget"
         ]
     );
-    assert_eq!(state.list_commands().len(), 10);
+    assert_eq!(state.list_commands().len(), 13);
 
     let events = results(&state, id).await;
     assert_eq!(events.len(), 1);

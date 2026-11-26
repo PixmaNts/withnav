@@ -432,6 +432,24 @@ impl Executor {
                     }
                 });
             }
+            Effect::FetchMemory(session_id) => {
+                let client = self.client.clone();
+                self.spawn_event(async move {
+                    ClientEvent::Memory {
+                        generation,
+                        result: client.session_memory(&session_id).await.map(|items| {
+                            items
+                                .into_iter()
+                                .map(|item| crate::state::MemoryEntry {
+                                    id: item.id,
+                                    title: item.current.title,
+                                    scope: scope_word(item.scope).to_owned(),
+                                })
+                                .collect()
+                        }),
+                    }
+                });
+            }
             Effect::Subscribe { session_id, cursor } => {
                 self.subscribe(session_id, cursor, generation);
             }
@@ -511,13 +529,19 @@ impl Executor {
                 session_id,
                 request_id,
                 answer,
+                binding,
             } => {
                 let client = self.client.clone();
                 self.spawn_event(async move {
                     ClientEvent::PermissionAnswered {
                         generation,
                         result: client
-                            .answer_permission(&session_id, &request_id, answer)
+                            .answer_permission_bound(
+                                &session_id,
+                                &request_id,
+                                answer,
+                                binding.as_ref(),
+                            )
                             .await,
                         request_id,
                     }
@@ -1252,6 +1276,17 @@ pub(super) enum SubmitFailure {
     /// The request may have reached the server; the draft stays and the user
     /// must check the conversation before sending again.
     Uncertain(String),
+}
+
+/// The scope word the memory section shows next to a title.
+fn scope_word(scope: withnav_client_api::memory::Scope) -> &'static str {
+    use withnav_client_api::memory::Scope;
+    match scope {
+        Scope::Global => "global",
+        Scope::Group => "group",
+        Scope::Project => "project",
+        Scope::Session => "session",
+    }
 }
 
 /// The one place that adapts the client's send error to `SubmitFailure`.

@@ -14,6 +14,11 @@ use crate::provider::config::{ProviderConfig, ReasoningHistory};
 use crate::provider::openai::{ChatMessage, Producer};
 use crate::tools::{Registry, ToolContext};
 
+/// What the model reads for a call that was waiting or running when the process ended: whether
+/// it ran is unknown.
+pub(crate) const UNFINISHED: &str =
+    "interrupted: the session ended before this call finished; it may not have run";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
     Idle,
@@ -108,6 +113,21 @@ pub struct AgentActor {
     pub scratch_roots: Vec<std::path::PathBuf>,
     /// Captain setting `yolo`: no permission control at all for this session.
     pub yolo: bool,
+    /// Captain setting `permissions.review`: the metacognition second opinion on eligible asks.
+    /// Fixed for the session, like `yolo`. An actor nobody configured does not
+    /// ask: the session sets the mode from the setting, and a child session reads the setting
+    /// itself when it starts.
+    pub review: crate::settings::ReviewMode,
+    /// Index in `transcript` of the message that began the turn running now, set when a batch
+    /// of commands starts a turn and left alone when it only answers a pending `ask`. The
+    /// permission flow's current request begins here, because a turn that ended without a
+    /// final assistant message (interrupted, provider error, step limit) leaves nothing in the
+    /// transcript that says the Captain began again. `None` until a turn begins, as in a
+    /// session resumed from disk.
+    pub request_start: Option<usize>,
+    /// Fingerprint of the message just before `request_start` when the turn began, so a
+    /// transcript that was rewritten under the turn is noticed: see [`AgentActor::request_boundary`].
+    request_anchor: Option<u64>,
     /// The Instinct judge compaction asks which old tool outputs still matter.
     pub compaction_decision: Option<Arc<dyn crate::provider::systemone::DecisionModel>>,
     pub safe_boundary: Option<super::boundary::SafeBoundary>,
@@ -205,6 +225,10 @@ impl AgentActor {
                                 | "steer_subagent"
                                 | "decide_subagent"
                                 | "intent"
+                                | "project_group_add"
+                                | "project_group_remove"
+                                | "session_attach"
+                                | "session_detach"
                         ))
             })
     }
@@ -269,6 +293,9 @@ impl AgentActor {
             parent_captain: Arc::default(),
             scratch_roots: Vec::new(),
             yolo: false,
+            review: crate::settings::ReviewMode::Off,
+            request_start: None,
+            request_anchor: None,
             bypass: Arc::default(),
             goal: Arc::default(),
             compaction_decision: None,
@@ -360,10 +387,43 @@ impl AgentActor {
     }
 
     pub fn begin_skill_turn(&mut self) {
+        // A Captain message that reaches a turn still running (the agent works, nothing was
+        // asked) corrects the request being carried out: it does not begin another one.
+        let turn_running = self.skill_turn_open;
         self.end_skill_turn();
         self.skill_turn_generation = self.skill_turn_generation.wrapping_add(1);
         self.skill_turn_start = self.transcript.len();
         self.skill_turn_open = true;
+        if !turn_running && !matches!(self.pending, Some(PendingInteraction::Ask { .. })) {
+            let start = self.transcript.len();
+            self.request_start = Some(start);
+            self.request_anchor = start
+                .checked_sub(1)
+                .and_then(|before| self.transcript.get(before))
+                .map(message_fingerprint);
+        }
+    }
+
+    /// Where the current request begins in `transcript`, and whether that
+    /// boundary was lost. The index is only good while the transcript holds the same message
+    /// just before it as when the turn began; when it does not (a message was removed or
+    /// inserted ahead of it) the index points at some other message, so it is not used: the
+    /// request falls back on the last finished turn and the caller reports it as cut.
+    pub fn request_boundary(&self) -> (Option<usize>, bool) {
+        let Some(start) = self.request_start else {
+            return (None, false);
+        };
+        let intact = match start.checked_sub(1) {
+            None => true,
+            Some(before) => {
+                self.transcript.get(before).map(message_fingerprint) == self.request_anchor
+            }
+        };
+        if intact && start <= self.transcript.len() {
+            (Some(start), false)
+        } else {
+            (None, true)
+        }
     }
 
     pub fn end_skill_turn(&mut self) {
@@ -556,9 +616,6 @@ impl AgentActor {
     /// the process ended; it is never run again. Returns how many were
     /// settled.
     pub fn settle_unanswered_calls(&mut self) -> usize {
-        /// The process ended while the call waited or ran: whether it ran is unknown.
-        const UNFINISHED: &str =
-            "interrupted: the session ended before this call finished; it may not have run";
         let Some(last) = self
             .transcript
             .iter()
@@ -754,4 +811,15 @@ pub fn compose_role_message(agent: Option<&str>, editor: Option<&str>) -> Option
         (Some(only), None) | (None, Some(only)) => Some(only.to_string()),
         (None, None) => None,
     }
+}
+
+/// A hash of a message's serialised form, to tell whether the message at an index is still the
+/// one that was there.
+fn message_fingerprint(message: &ChatMessage) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_vec(message)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    hasher.finish()
 }

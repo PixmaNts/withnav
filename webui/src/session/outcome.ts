@@ -5,6 +5,22 @@
 
 import { tokens } from "./reducer";
 
+/** The item a `/remember` result stored, for the transcript's "Remembered" line; null when the result holds none. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function remembered(data: any): { itemId: string; version: number; title: string; scope: string; notice?: string } | null {
+  const item = data?.item;
+  if (typeof item?.id !== "string" || typeof item?.current?.title !== "string" || typeof item?.current_version !== "number") return null;
+  const scope = typeof data.scope_label === "string" ? data.scope_label : typeof item.scope === "string" ? item.scope : "";
+  return { itemId: item.id, version: item.current_version, title: item.current.title, scope, notice: typeof data.notice === "string" ? data.notice : undefined };
+}
+
+/** The note a finished goal check queued for the agent; null when it queued none. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function goalNote(data: any): { text: string; revision: number } | null {
+  if (data?.note_sent !== true || typeof data.note !== "string" || !data.note) return null;
+  return { text: data.note, revision: typeof data.revision === "number" ? data.revision : 0 };
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function outcomeText(name: string, ok: boolean, data: any, error?: string): string | null {
   if (!ok) return error || "the command failed";
@@ -13,6 +29,16 @@ export function outcomeText(name: string, ok: boolean, data: any, error?: string
   if (data.applies === "after_turn" || data.applies === "next_turn") return "accepted, applies when this turn ends";
   const text = (key: string) => (typeof data[key] === "string" ? data[key] : "");
   switch (name) {
+    case "remember":
+    case "forget":
+    case "memory": {
+      const render = (item: { id: string; current_version: number; current: { title: string } }) =>
+        `${item.current.title} · ${item.id} v${item.current_version}`;
+      if (data.item?.current) return `${name === "remember" ? "Remembered" : name === "forget" ? "Forgot" : "Memory"} "${data.item.current.title}" · ${data.scope_label ?? data.item.scope} · ${data.item.id} v${data.item.current_version}${data.notice ? `\n${data.notice}` : ""}`;
+      if (Array.isArray(data.items)) return data.items.length ? data.items.map(render).join("\n") : "No memory items.";
+      if (Array.isArray(data.versions)) return data.versions.map((v: { version: number; change: string; title: string }) => `v${v.version} · ${v.change} · ${v.title}`).join("\n");
+      return JSON.stringify(data);
+    }
     case "help":
       return Array.isArray(data.commands)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

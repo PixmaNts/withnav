@@ -25,6 +25,9 @@ expression: snapshot
                      │                                                                                  │ LEDGER                            
                      │                                                                                  │  —                                
                      │                                                                                  │                                   
+                     │                                                                                  │ MEMORY                            
+                     │                                                                                  │  —                                
+                     │                                                                                  │                                   
                      │                                                                                  │ SKILLS · MCP · PLUGINS            
                      │                                                                                  │  skills listed                 12 
                      │                                                                                  │  omitted, no room               3 
@@ -35,7 +38,8 @@ expression: snapshot
                      │                                                                                  │                                   
                      │                                                                                  │ CHANGES                           
                      │                                                                                  │  M src/tui/view/file_0.rs         
-                     │                                                                                  │    13 more                        
+                     │                                                                                  │  A src/tui/view/file_1.rs         
+                     │                                                                                  │    12 more                        
                      │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                      │ ready                                                                                              session 31.2k tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────────────────────────────────────────────┐

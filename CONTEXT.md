@@ -35,7 +35,7 @@ _Avoid_: autocomplete layer, FIM layer
 **Instinct · Triage**:
 The decision layer: answers bounded, typed questions (choice, score, yes-probability) about the
 current situation to sort, route, filter and gate; it never produces free text.
-_Avoid_: classifier, router, Jev (Jev is one provider of this layer, not the layer)
+_Avoid_: classifier, router, or the name of a model (a model is one provider of this layer, not the layer)
 
 **Metacognition · Beacon**:
 The fast reflective layer: watches both the code being written and the conversation, judges whether
@@ -74,6 +74,31 @@ _Avoid_: autopilot, vibe mode
 **Verdict**:
 The Captain's rating of a remark: useful, noise, or dismissed.
 _Avoid_: feedback, vote
+
+**Current request**:
+What the Captain has asked in the turn being run: the agent's message that ended the previous turn,
+then the Captain's messages and answers since, corrections included. A request already carried out
+is not part of it, nor is one the agent never finished (interrupted, provider error, step limit). The live permission flow judges a call against it, never against the
+command's name.
+_Avoid_: prompt, task (a task is what the `task` tool delegates)
+
+**Consequence criterion**:
+The live Instinct permission decision asks what the whole call changes and whether the current
+request covers it. A release can cover the push it implies. `permissions.review` controls only
+the parallel review (`off`, `shadow`, or `on` by default).
+_Avoid_: approval, second opinion
+
+**Parallel review**:
+With `permissions.review` at `on`, one tool-free Metacognition call that reads the current request
+and a call the permission flow put to the Captain, beside the Captain's card. It can only allow the
+call once (a step the request necessarily implies) or wait; the first decisive answer, the
+Captain's or the review's, wins. Under `shadow` it is only logged beside the Captain's answer.
+_Avoid_: auto-approval, second Captain
+
+**Hold**:
+"Hold for me": the Captain's answer that stops the parallel review and keeps the card for themselves.
+After the review already allowed the call, a hold is told the call already started; it never undoes it.
+_Avoid_: pause (a pause is the watchdog's), cancel
 
 ## Crew
 
@@ -350,6 +375,8 @@ commands are refused, `/stop` included, until it is answered. The stop endpoint
 
 ## Shared context
 
+A **memory item** is Captain-authored knowledge with append-only versions. Its **scope** controls which sessions can read it, never what tools they may run. A **project** identifies a repository across linked Git worktrees, or a standalone folder. A **group** shares items among explicitly joined projects. A session has at most one active project; scope widening requested by the agent needs the Captain's confirmation.
+
 **Shared context**:
 What every layer knows about the work in progress, so that fast layers can be relevant, not just
 fast. It has two parts: the intent record and the live state.
@@ -366,8 +393,40 @@ success criteria, a revision number and a status (active or paused). It lives in
 conversation's own event log, so it survives compaction, resume and restart, and while it is
 active every request carries it. It is per conversation, unlike the intent record
 (`.withnav/intent.md`), which is the project's durable intent. Only the Captain sets it, and
-recording it neither delegates work nor authorizes the agent to go on alone.
+recording it neither delegates work nor authorizes the agent to go on alone. After a turn ends, a
+bounded **goal check** sets each criterion, and the **claims** the agent made in its last answer
+("tests pass", "committed"), against the conversation's ledger: a status of either stands only on a
+quoted command or file-change line that was sent, and a claim the ledger cannot settle is
+**unverified**, never false. The Captain's clients see each finished check; the agent hears it only
+through an opt-in note.
 _Avoid_: task, objective file, intent (the intent record is the project's)
+
+**Memory item**:
+One durable piece of knowledge the Captain asked WithNav to keep, in the memory register of
+`withnav.db`: a decision, a convention, a preference, an environment fact or a pitfall, with a
+scope. It is never rewritten: each new wording, invalidation, restoration or move to another scope
+appends a dated version naming its author and source session, and a writer states the version it
+read, so a stale writer is refused. Memory informs answers; it never authorizes a tool call and
+never enters the permission input.
+_Avoid_: decision (a decision is a flow node), fact, note, memory entry
+
+**Scope** (of a memory item):
+Who reads a memory item: every session (global), the sessions working in a group's projects, those
+working in one project, or one session. A move that lets more projects read an item (a widening)
+is written only with the Captain's confirmation.
+_Avoid_: visibility, namespace
+
+**Project**:
+One repository whatever the checkout: linked git worktrees share a project (they share a git
+common directory), a separate clone or a folder outside git is its own. A session works in one
+active project at a time; worktrees share its memory items, never its permissions.
+_Avoid_: workspace (a workspace is one folder), repo
+
+**Group**:
+Projects that share memory items without making them global. A project is asked its group once,
+when it is first seen; joining a group is a widening and waits for the Captain, leaving one
+applies at once. Every membership change is kept as history.
+_Avoid_: team, collection, tag
 
 **Live state**:
 The ephemeral part of the shared context: recent edits, compiler diagnostics, a running summary of
@@ -508,6 +567,25 @@ _Avoid_: flow file (the file is where it is stored), script
 **Flow run**:
 One evaluation of a flow definition for one event, within explicit call, input and time limits; it ends in proposed actions and a trace.
 _Avoid_: execution, job
+
+**Score line**:
+What a live flow run leaves for 90 days in `scores.jsonl`, beside its capture: the run and call
+ids, the model, the flow definition's digest, the projection version, the answer of each decision
+and the actions. No state, input, argument or action text. It joins an Instinct answer to the
+Captain's answer in the decision history long after the 7-day capture is gone.
+_Avoid_: score (one decision's answer), run record (the full capture)
+
+**Projection version**:
+The version of the host's shaping of the permission evidence (which messages count, their cuts,
+labels and byte budgets), sent as `projection` on `tool.pre_call`. Scores are only comparable
+within one version.
+_Avoid_: schema version, prompt version
+
+**Instinct rejection**:
+A decision request the Instinct provider refused (HTTP 4xx): a configuration fault, not an outage.
+It opens no outage window; the Captain gets one "instinct rejected" notice per episode, until
+Instinct answers again.
+_Avoid_: outage, provider error (an unreachable or failing endpoint)
 
 **Observation**:
 Evaluating a flow on real events, possibly calling the instinct, without applying any action or changing any production state.

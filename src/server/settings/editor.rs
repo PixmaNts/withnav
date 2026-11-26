@@ -18,6 +18,7 @@ pub fn keys(agents: &Agents) -> Vec<String> {
         "goal_watch.notes",
         "default_agent",
         "permissions.scratch_dirs",
+        "permissions.review",
         "subagents.max_concurrent",
         "subagents.watchdog_interval_secs",
         "agent.watchdog_interval_secs",
@@ -41,6 +42,7 @@ pub fn default_value(key: &str) -> Value {
                 .permissions_scratch_dirs()
                 .unwrap_or_default()
         ),
+        "permissions.review" => json!(crate::settings::ReviewMode::default().as_str()),
         "subagents.max_concurrent" => json!(4),
         "subagents.watchdog_interval_secs" | "agent.watchdog_interval_secs" => json!(300),
         _ => Value::Null,
@@ -62,6 +64,7 @@ pub fn label(key: &str) -> &str {
         "compaction.writer" => "Compaction summary writer",
         "compaction.chunk_tokens" => "Compaction chunk tokens",
         "goal_watch.notes" => "Goal watch notes",
+        "permissions.review" => "Permission review",
         "layers.reflex" => "Reflex · Completion",
         "layers.instinct" => "Instinct · Triage",
         "layers.metacognition" => "Metacognition · Beacon",
@@ -80,6 +83,9 @@ pub fn description(key: &str) -> &'static str {
         }
         "goal_watch.notes" => {
             "Passes goal check findings to Nav as a note at its next turn; off by default."
+        }
+        "permissions.review" => {
+            "Second opinion on eligible permission questions: off, shadow (logged only), or on (the default; may allow once)."
         }
         "layers.reflex" => "Completes as you type from code around the cursor.",
         "layers.instinct" => "Triages events and judges the permission flow's questions.",
@@ -147,6 +153,13 @@ pub fn validate(
             return Err(invalid());
         }
         "goal_watch.notes" if !value.is_boolean() => {
+            return Err(invalid());
+        }
+        "permissions.review"
+            if !value
+                .as_str()
+                .is_some_and(|word| crate::settings::ReviewMode::parse(word).is_some()) =>
+        {
             return Err(invalid());
         }
         "permissions.scratch_dirs"

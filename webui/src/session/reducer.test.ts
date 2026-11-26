@@ -175,6 +175,63 @@ describe("transcript projection", () => {
     expect(view.permissions.R!.alwaysSaved).toBeUndefined();
   });
 
+  describe("parallel review of a permission request", () => {
+    const requested = (extra: object = {}) =>
+      env("permission.requested", { request_id: "R", tool_call_id: "c1", tool: "bash", arguments: "{}", scope: { kind: "folder", value: "/w" }, agent: "build", reason: "r", call_digest: "d1", turn_id: "T1", ...extra });
+    const review = (state: string, extra: object = {}) => env("permission.review", { request_id: "R", tool_call_id: "c1", state, ...extra });
+    const open = () => {
+      seq = 0;
+      return reduceAll(emptyView(), [env("turn.start", { turn_id: "T1", task_id: "K", actor_id: "agent:main" }), requested()]);
+    };
+
+    it("keeps the call digest and turn the answer is bound to", () => {
+      expect(open().permissions.R).toMatchObject({ callDigest: "d1", turnId: "T1" });
+    });
+
+    it("follows the review state while the request waits, keeping the last text", () => {
+      let view = reduce(open(), review("reviewing"));
+      expect(view.permissions.R!.review).toEqual({ state: "reviewing" });
+      view = reduce(view, review("wait", { conclusion: "Deletes files", basis: "fix warnings", consequence: "3 files lost" }));
+      expect(view.permissions.R!.review).toEqual({ state: "wait", conclusion: "Deletes files", basis: "fix warnings", consequence: "3 files lost" });
+      view = reduce(view, review("held"));
+      expect(view.permissions.R!.review?.state).toBe("held");
+      expect(openPermissions(view).map((p) => p.requestId)).toEqual(["R"]);
+    });
+
+    it("ignores a review of a request it does not know", () => {
+      const view = reduce(open(), env("permission.review", { request_id: "other", tool_call_id: "x", state: "reviewing" }));
+      expect(Object.keys(view.permissions)).toEqual(["R"]);
+    });
+
+    it("records a call allowed by metacognition with its review", () => {
+      let view = reduce(open(), review("reviewing"));
+      view = reduce(view, env("permission.resolved", { request_id: "R", tool_call_id: "c1", resolution: "allow_once", approved_by: "metacognition", review: { conclusion: "Release implies the push", basis: "release 0.8.4", consequence: "pushes the tag" } }));
+      expect(view.permissions.R).toMatchObject({ resolution: "allow_once", approvedBy: "metacognition", review: { state: "allowed", conclusion: "Release implies the push", basis: "release 0.8.4", consequence: "pushes the tag" } });
+      expect(view.permissions.R!.reviewCancelled).toBeUndefined();
+    });
+
+    it("derives a cancelled review when the Captain answers while it is reviewing", () => {
+      let view = reduce(open(), review("reviewing"));
+      view = reduce(view, env("permission.resolved", { request_id: "R", tool_call_id: "c1", resolution: "allow_once", approved_by: "captain" }));
+      expect(view.permissions.R).toMatchObject({ resolution: "allow_once", approvedBy: "captain", reviewCancelled: true });
+    });
+
+    it("does not call a review cancelled when it had already finished, or when the turn stopped", () => {
+      let view = reduce(open(), review("wait", { conclusion: "c" }));
+      view = reduce(view, env("permission.resolved", { request_id: "R", tool_call_id: "c1", resolution: "deny", approved_by: "captain", message: "no" }));
+      expect(view.permissions.R!.reviewCancelled).toBeUndefined();
+      let stopped = reduce(open(), review("reviewing"));
+      stopped = reduce(stopped, env("permission.resolved", { request_id: "R", tool_call_id: "c1", resolution: "cancelled" }));
+      expect(stopped.permissions.R!.reviewCancelled).toBeUndefined();
+    });
+
+    it("never turns a late review into a state of a resolved request", () => {
+      let view = reduce(open(), env("permission.resolved", { request_id: "R", tool_call_id: "c1", resolution: "allow_once", approved_by: "captain" }));
+      view = reduce(view, review("reviewing"));
+      expect(view.permissions.R!.review).toBeUndefined();
+    });
+  });
+
   it("labels messages by author: Captain, Nav wake, subagent result", () => {
     seq = 0;
     const view = reduceAll(emptyView(), [
@@ -239,5 +296,42 @@ describe("transcript projection", () => {
     expect(view.items).toEqual([
       { kind: "notice", key: "n:0", text: "/mcp_tools · MCP tools added: mcp__a__x\nMCP tools removed: mcp__a__y, and 2 more", tone: "info" },
     ]);
+  });
+  it("shows a remembered item as a line with its version, and an item-less result as before", () => {
+    seq = 0;
+    const item = { id: "abc123", scope: "project", current_version: 2, current: { title: "Use conventional commits" } };
+    const view = reduceAll(emptyView(), [
+      env("command.result", { operation_id: "o", name: "remember", ok: true, data: { item, scope_label: "project WithNav" } }, "2026-11-25T22:17:00.000Z"),
+      env("command.result", { operation_id: "p", name: "remember", ok: false, error: "usage: /remember [@scope] <text>" }),
+    ]);
+    expect(view.items).toEqual([
+      { kind: "remembered", key: "n:0", itemId: "abc123", version: 2, title: "Use conventional commits", scope: "project WithNav", notice: undefined },
+      { kind: "notice", key: "n:1", text: "/remember · usage: /remember [@scope] <text>", tone: "error" },
+    ]);
+  });
+
+  it("shows a goal note only when the check queued one, marked as an automatic observation", () => {
+    seq = 0;
+    const note = "Goal check (revision 3): criterion 2 is contradicted.";
+    const view = reduceAll(emptyView(), [
+      env("command.result", { operation_id: "o", name: "goal_check", ok: true, data: { revision: 3, turn_id: "T", statuses: [], claims: [], note_sent: false } }),
+      env("command.result", { operation_id: "p", name: "goal_check", ok: true, data: { revision: 3, turn_id: "T", statuses: [], claims: [], note_sent: true, note } }, "2026-11-25T22:17:00.000Z"),
+    ]);
+    expect(view.items).toEqual([{ kind: "goal-note", key: "n:1", text: note, revision: 3, at: "2026-11-25T22:17:00.000Z" }]);
+  });
+
+  it("asks the session panel to read again on a turn end, a goal change, a goal check and the register commands, once each", () => {
+    seq = 0;
+    const epochAfter = (...events: Envelope[]) => reduceAll(emptyView(), events).sessionEpoch;
+    expect(epochAfter(env("turn.end", { turn_id: "t", outcome: "done" }))).toBe(1);
+    expect(epochAfter(env("goal.updated", { revision: 1, objective: "x", criteria: [], status: "active", change: "set" }))).toBe(1);
+    expect(epochAfter(env("goal.cleared", { revision: 1 }))).toBe(1);
+    expect(epochAfter(env("command.result", { operation_id: "o", name: "goal_check", ok: true, data: { revision: 1, turn_id: "T", statuses: [], claims: [], note_sent: false } }))).toBe(1);
+    for (const name of ["remember", "forget", "memory"]) expect(epochAfter(env("command.result", { operation_id: "o", name, ok: true, data: { items: [] } }))).toBe(1);
+    expect(epochAfter(env("command.result", { operation_id: "o", name: "remember", ok: false, error: "no" }))).toBe(0);
+    expect(epochAfter(env("command.result", { operation_id: "o", name: "model", ok: true, data: {} }))).toBe(0);
+    // A replayed envelope is not applied twice.
+    const first = env("turn.end", { turn_id: "t", outcome: "done" });
+    expect(epochAfter(first, first)).toBe(1);
   });
 });

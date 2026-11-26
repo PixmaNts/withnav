@@ -856,3 +856,48 @@ test('final step text replaces a truncated stream and leaves a complete one rend
   assert.equal(d.querySelector('.message-body').textContent.trim(), 'Hello world');
   dom.window.close();
 });
+
+test('permission card states: reviewing with hold, wait above the buttons, allowed, cancelled, already started', () => {
+  const { dom, d, posts, receive } = keyboardPage();
+  const card = id => ({ requestId: id, callId: 'C' + id, tool: 'bash', agent: 'build', scope: { kind: 'folder', value: '/a' }, reason: 'Review', call: 'pwd', alwaysLabel: 'Always (project): bash pwd', callDigest: 'D', turnId: 'T' });
+  const last = () => [...d.querySelectorAll('.permission-card')].at(-1);
+  const hold = c => [...c.querySelectorAll('button')].find(b => b.textContent === 'Hold for me');
+  receive({ type: 'permission', card: card('R1') });
+  assert.ok(hold(last()).hidden, 'no review, no hold');
+  receive({ type: 'permission', card: card('R2') });
+  receive({ type: 'permissionReview', requestId: 'R2', state: 'reviewing' });
+  let c = last();
+  assert.match(c.querySelector('.permission-review').textContent, /Metacognition is reviewing…/);
+  assert.equal(hold(c).hidden, false);
+  hold(c).click();
+  assert.deepEqual(posts.at(-1), { type: 'answerPermission', sessionId: 'S', requestId: 'R2', decision: 'hold', generation: 1 });
+  assert.equal(c.querySelector('.control-outcome').textContent, 'Waiting for your answer', 'hold is not an answer');
+  receive({ type: 'permissionReview', requestId: 'R2', state: 'wait', conclusion: 'Deletes files', basis: 'rm -rf', consequence: 'Data loss' });
+  assert.equal(hold(c).hidden, true);
+  const review = c.querySelector('.permission-review');
+  assert.match(review.textContent, /Deletes files/);
+  assert.match(review.textContent, /Relied on: rm -rf/);
+  assert.match(review.textContent, /Consequence: Data loss/);
+  assert.ok(review.compareDocumentPosition(c.querySelector('.control-controls, .permission-controls') ?? c.querySelector('button')) & 4, 'the conclusion sits above the buttons');
+  receive({ type: 'permissionReview', requestId: 'R2', state: 'unavailable' });
+  assert.doesNotMatch(c.querySelector('.permission-review').textContent, /error|fail/i);
+  // Allowed by metacognition: never "always", with the reasons.
+  receive({ type: 'permission', card: card('R3') });
+  receive({ type: 'permissionReview', requestId: 'R3', state: 'reviewing' });
+  receive({ type: 'permissionState', requestId: 'R3', resolution: 'allow_always', approvedBy: 'metacognition', review: { conclusion: 'Safe', basis: 'Read-only', consequence: 'Nothing changes' } });
+  c = last();
+  assert.equal(c.querySelector('.control-outcome').textContent, 'Allowed once by Metacognition');
+  assert.match(c.querySelector('.permission-review').textContent, /Safe/);
+  assert.doesNotMatch(c.textContent.replace('Always (project): bash pwd', ''), /always/i);
+  // The Captain answered while it was reviewing.
+  receive({ type: 'permission', card: card('R4') });
+  receive({ type: 'permissionReview', requestId: 'R4', state: 'reviewing' });
+  receive({ type: 'permissionState', requestId: 'R4', resolution: 'allow_once', approvedBy: 'captain' });
+  assert.match(last().querySelector('.permission-review').textContent, /Review cancelled: you answered first\./);
+  // The review had already started the call.
+  receive({ type: 'permission', card: card('R5') });
+  receive({ type: 'permissionState', requestId: 'R5', resolution: 'already_started' });
+  assert.equal(last().querySelector('.control-outcome').textContent, 'Already started by Metacognition — it ran once.');
+  assert.doesNotMatch(last().textContent, /undone|reverted/i);
+  dom.window.close();
+});

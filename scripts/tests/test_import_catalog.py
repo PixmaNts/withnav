@@ -55,7 +55,7 @@ class CatalogTests(unittest.TestCase):
 
     def test_manual_api_limits_unmanaged_provider(self):
         providers, models = self.converted()
-        instinct = {"provider": "omniroute", "model": "typesafe/jev-1.13",
+        instinct = {"provider": "omniroute", "model": "example/decision-model",
                "api": "systemone", "context_window": 64000, "max_output_tokens": 2048}
         mercury = {"provider": "inception", "model": "mercury-edit-2",
                    "api": "fim", "context_window": 128000, "max_output_tokens": 512}
@@ -63,7 +63,7 @@ class CatalogTests(unittest.TestCase):
                                           "api_key_env": "FIM_KEY"}},
                "models": {"instinct": instinct, "reflex": mercury}}
         providers, models = importer.merge_catalog(providers, models, old)
-        self.assertEqual(models["omniroute/typesafe/jev-1.13"], instinct)
+        self.assertEqual(models["omniroute/example/decision-model"], instinct)
         self.assertEqual(models["inception/mercury-edit-2"], mercury)
         self.assertEqual(providers["inception"], old["providers"]["inception"])
 
@@ -215,15 +215,15 @@ class CatalogTests(unittest.TestCase):
     def test_source_matching_dedicated_api_limits_stay_manual(self):
         oc = source()
         models = oc["provider"]["omniroute"]["models"]
-        models["typesafe/jev-1.13"] = {"limit": {"context": 90000, "output": 9000}}
+        models["example/decision-model"] = {"limit": {"context": 90000, "output": 9000}}
         models["mercury-edit-2"] = {"limit": {"context": 90000, "output": 9000}}
-        models["typesafe/jev-1.13"]["api"] = "systemone"
+        models["example/decision-model"]["api"] = "systemone"
         models["mercury-edit-2"]["api"] = "fim"
         p, m, _, _ = importer.convert(oc, True, lambda _: None)
         old = {"models": {mid: {"provider": "omniroute", "model": mid, "api": api,
                                  "context_window": window, "max_output_tokens": output}
                           for mid, api, window, output in (
-                              ("typesafe/jev-1.13", "systemone", 64000, 2048),
+                              ("example/decision-model", "systemone", 64000, 2048),
                               ("mercury-edit-2", "fim", 128000, 512))}}
         _, merged = importer.merge_catalog(p, m, old)
         for mid, entry in old["models"].items():

@@ -234,3 +234,51 @@ test("an Always answer that saved nothing says it ran once", () => {
   assert.equal(saved.alwaysSaved, undefined);
   assert.equal(permissionOutcome(saved.resolution, saved.message, saved.alwaysSaved), "Allowed always");
 });
+
+const { reviewAfterResolution, reviewStatus, reviewLines } = require("../out/tests/eventView.js");
+
+test("a request keeps the digest and turn its answer is bound to", () => {
+  const { card } = eventView(request({ call_digest: "D", turn_id: "T" }));
+  assert.equal(card.callDigest, "D");
+  assert.equal(card.turnId, "T");
+  assert.equal("callDigest" in eventView(request()).card, false);
+});
+
+test("a review follows its request and an unknown state is ignored", () => {
+  const controls = new ConversationControls();
+  controls.apply(eventView(request()));
+  for (const state of ["reviewing", "wait", "held", "unavailable"]) {
+    const message = eventView(envelope("permission.review", { request_id: "R", state, conclusion: "Needs a look" }));
+    assert.equal(message.type, "permissionReview");
+    assert.equal(message.conclusion, "Needs a look");
+    controls.apply(message);
+    assert.equal(controls.permissions.get("R").reviewState, state);
+  }
+  assert.equal(eventView(envelope("permission.review", { request_id: "R", state: "later" })), undefined);
+});
+
+test("a metacognition resolution reads as allowed once, with its reasons, whatever the word says", () => {
+  const message = eventView(envelope("permission.resolved", { request_id: "R", resolution: "allow_always", approved_by: "metacognition",
+    review: { conclusion: "Safe", basis: "Read-only command", consequence: "Nothing changes", ignored: 1 } }));
+  assert.equal(message.approvedBy, "metacognition");
+  assert.deepEqual(message.review, { conclusion: "Safe", basis: "Read-only command", consequence: "Nothing changes" });
+  assert.equal(permissionOutcome(message.resolution, message.message, message.alwaysSaved, message.approvedBy), "Allowed once by Metacognition");
+  assert.doesNotMatch(permissionOutcome("allow_always", undefined, undefined, "metacognition"), /always/i);
+  assert.deepEqual(reviewLines(message.review), ["Safe", "Relied on: Read-only command", "Consequence: Nothing changes"]);
+  assert.equal(permissionOutcome("allow_once", undefined, undefined, "captain"), permissionOutcome("allow_once"));
+});
+
+test("the review is cancelled only when the Captain answered while it ran", () => {
+  assert.equal(reviewAfterResolution("reviewing", "captain"), "Review cancelled: you answered first.");
+  assert.equal(reviewAfterResolution("wait", "captain"), undefined);
+  assert.equal(reviewAfterResolution("reviewing", undefined), undefined);
+  assert.equal(reviewAfterResolution("reviewing", "metacognition"), undefined);
+});
+
+test("each waiting review state has its own neutral line and unavailable is not alarming", () => {
+  assert.equal(reviewStatus("reviewing"), "Metacognition is reviewing…");
+  assert.match(reviewStatus("held"), /Held for you/);
+  assert.doesNotMatch(reviewStatus("unavailable"), /error|fail|warning/i);
+  assert.equal(reviewStatus(undefined), undefined);
+  assert.equal(permissionOutcome("already_started"), "Already started by Metacognition — it ran once.");
+});

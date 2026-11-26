@@ -207,7 +207,7 @@ async fn explicit_window_makes_no_network_call() {
 
 #[tokio::test]
 async fn max_input_tokens_is_the_labelled_fallback() {
-    let (r, _server) = resolve_fixture("typesafe/jev-1.13", None).await;
+    let (r, _server) = resolve_fixture("example/decision-model", None).await;
     assert_eq!(r.window, 64_000);
     assert_eq!(r.window_source, "discovered.max_input_tokens (fallback)");
 }
@@ -297,7 +297,7 @@ async fn fim_and_systemone_never_look_the_catalog_up() {
 #[tokio::test]
 async fn the_list_is_fetched_once_and_then_served_from_the_cache() {
     let (dir, server) = (tempfile::tempdir().unwrap(), serve(FIXTURE).await);
-    for model in ["cc/claude-opus-5-5", "typesafe/jev-1.13"] {
+    for model in ["cc/claude-opus-5-5", "example/decision-model"] {
         resolve(&dir, &server, model, ApiKind::Chat, None)
             .await
             .unwrap();
@@ -654,7 +654,7 @@ async fn an_unwritable_cache_dir_degrades_to_memory_with_one_warning() {
     let first = lookup(&catalog, &base, OPUS).await;
     assert_eq!(first.limits.unwrap().context_length, Some(1_000_000));
     // Served from memory: no second request.
-    let second = lookup(&catalog, &base, "typesafe/jev-1.13").await;
+    let second = lookup(&catalog, &base, "example/decision-model").await;
     assert_eq!(second.limits.unwrap().max_input_tokens, Some(64_000));
     assert_eq!(requests(&server).await, 1);
 }

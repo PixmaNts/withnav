@@ -57,7 +57,7 @@ root; that is step 9's `client` and `tui` already out.
 
 ## Open questions for the Captain
 
-1. **Jev and a written `ask`.** The project decision says "Jev only escalates, never relaxes a written
+1. **Instinct and a written `ask`.** The project decision says "Instinct only escalates, never relaxes a written
    rule". The code (`decide.rs`: `FlowAnswer::Allow` → run, whatever the rule) and ADR 0015 let a flow
    allow over a written `ask`. Which one is right? Fixing it is a behaviour change, separate from the refactor.
    Still open: `decide.rs` runs on `FlowAnswer::Allow` whatever the written rule.

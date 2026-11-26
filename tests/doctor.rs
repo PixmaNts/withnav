@@ -860,3 +860,70 @@ async fn mcp_doctor_reports_a_hung_initialisation_as_failed_with_its_stderr() {
     );
     assert!(started.elapsed() < Duration::from_secs(10));
 }
+
+// Given a configuration that names `permissions.review` with each valid mode, then a word that is none
+// When the doctor inspects it offline
+// Then a valid mode is a known key (no unknown-key warning, no review check), and an invalid word is
+//      a failed check that names the allowed words, without echoing the setting's neighbours
+#[tokio::test]
+async fn permissions_review_is_a_known_key_and_an_invalid_mode_fails_the_check() {
+    for (mode, valid) in [
+        ("off", true),
+        ("shadow", true),
+        ("on", true),
+        ("sometimes", false),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1/v1");
+        args.offline = true;
+        std::fs::write(
+            config.join("config.json"),
+            json!({"permissions":{"review":mode}}).to_string(),
+        )
+        .unwrap();
+        let report = inspect(&args, &config, None, None).await;
+        assert!(
+            !report
+                .checks
+                .iter()
+                .any(|c| c.id.starts_with("unknown.config.permissions")),
+            "{mode}: {}",
+            report.human()
+        );
+        let review = report
+            .checks
+            .iter()
+            .find(|c| c.id == "config.permissions_review");
+        if valid {
+            assert!(review.is_none(), "{mode}: {}", report.human());
+        } else {
+            let review = review.unwrap_or_else(|| panic!("{}", report.human()));
+            assert_eq!(review.status, Status::Failed);
+            assert!(
+                review.value.contains("off, shadow or on"),
+                "{}",
+                review.value
+            );
+            assert!(
+                review
+                    .hint
+                    .as_deref()
+                    .is_some_and(|h| h.contains("permissions"))
+            );
+        }
+    }
+    // A key that is none of the permission keys is still reported.
+    let root = tempfile::tempdir().unwrap();
+    let (config, mut args) = fixture(root.path(), "http://127.0.0.1:1/v1");
+    args.offline = true;
+    std::fs::write(
+        config.join("config.json"),
+        json!({"permissions":{"reveiw":"on"}}).to_string(),
+    )
+    .unwrap();
+    let report = inspect(&args, &config, None, None).await;
+    assert_eq!(
+        check(&report, "unknown.config.permissions.reveiw").status,
+        Status::Warning
+    );
+}

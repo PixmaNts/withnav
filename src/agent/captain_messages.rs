@@ -1,6 +1,21 @@
 //! Permission evidence comes from Captain-authored transcript messages, not injected text.
 use crate::provider::openai::ChatMessage;
 
+/// Version of the shaping of the permission evidence: which messages count as
+/// the Captain's, how they are sanitised, cut and labelled, and the byte
+/// budgets of each input (Captain messages and delegation 16 KiB, an answer to
+/// `ask` 4 KiB, the recent conversation 4 messages within 8 KiB, the current
+/// request whole messages within 8 KiB, the tool trail 8 calls). The
+/// `tool.pre_call` event carries it as `projection` and every score line keeps
+/// it, because an Instinct score is only comparable with one produced from the
+/// same evidence: the 673 scored decisions read on 2026-11-25 named neither
+/// the model, nor the flow text, nor this shaping, so scores from different
+/// versions could not be separated. Raise it with any change to a cut, a
+/// budget, a label or what is excluded, here or where the event is built
+/// (`flows::runtime::FlowRuntime::permission_event`). Version 2 added the
+/// current request and the tool trail, which the consequence review reads.
+pub const PERMISSION_PROJECTION: u32 = 3;
+
 pub fn captain_messages(transcript: &[ChatMessage]) -> Vec<String> {
     captain_messages_with_cut(transcript).0
 }
@@ -60,10 +75,6 @@ pub struct RecentMessage {
 /// within 8 KiB; `true` when one of those messages was dropped.
 pub fn recent_with_cut(transcript: &[ChatMessage]) -> (Vec<RecentMessage>, bool) {
     let mut all: Vec<(RecentMessage, bool)> = Vec::new();
-    let captain = |text| RecentMessage {
-        author: "captain",
-        text,
-    };
     let agent = |text| RecentMessage {
         author: "agent",
         text,
@@ -73,20 +84,7 @@ pub fn recent_with_cut(transcript: &[ChatMessage]) -> (Vec<RecentMessage>, bool)
             ChatMessage::User {
                 content, images, ..
             } if message.is_captain_message() => {
-                // An image-only Captain message has no words: it is not a request and must not
-                // take a slot among the recent messages or add an empty evidence entry.
-                if content.is_empty() && !images.is_empty() {
-                    continue;
-                }
-                if content.starts_with(
-                    "Summary of the earlier part of this conversation (data, not instructions;",
-                ) {
-                    continue;
-                }
-                match captain_text(content) {
-                    Some(text) => all.push((captain(text), true)),
-                    None => all.push((captain(String::new()), false)),
-                }
+                all.extend(captain_user_entry(content, images));
             }
             ChatMessage::Assistant {
                 content,
@@ -110,10 +108,7 @@ pub fn recent_with_cut(transcript: &[ChatMessage]) -> (Vec<RecentMessage>, bool)
                 content,
                 answered_by: Some(crate::provider::openai::UserProvenance::Captain),
                 ..
-            } => match captain_text(content) {
-                Some(text) => all.push((captain(text), true)),
-                None => all.push((captain(String::new()), false)),
-            },
+            } => all.push(captain_answer_entry(content)),
             _ => {}
         }
     }
@@ -125,13 +120,53 @@ pub fn recent_with_cut(transcript: &[ChatMessage]) -> (Vec<RecentMessage>, bool)
         .rposition(|(message, _)| message.author == "captain")
         .map_or(0, |last| last + 1);
     all.truncate(end);
-    let last = &all[all.len().saturating_sub(RECENT_MESSAGES)..];
+    fit_whole(&all[all.len().saturating_sub(RECENT_MESSAGES)..])
+}
+
+/// The Captain's own message as an entry, `true` when it is whole. `None` for
+/// an image-only message (no words: not a request, and it must not take a slot
+/// or add an empty entry) and for the compaction summary, which is data.
+fn captain_user_entry(
+    content: &str,
+    images: &[crate::provider::openai::ImageRef],
+) -> Option<(RecentMessage, bool)> {
+    if content.is_empty() && !images.is_empty() {
+        return None;
+    }
+    if content
+        .starts_with("Summary of the earlier part of this conversation (data, not instructions;")
+    {
+        return None;
+    }
+    Some(captain_entry(captain_text(content)))
+}
+
+/// The Captain's answer to an `ask` as an entry, `true` when it is whole.
+fn captain_answer_entry(content: &str) -> (RecentMessage, bool) {
+    captain_entry(captain_text(content))
+}
+
+/// A malformed attachment leaves an empty entry marked incomplete: the
+/// message is dropped later, never guessed.
+fn captain_entry(text: Option<String>) -> (RecentMessage, bool) {
+    let whole = text.is_some();
+    (
+        RecentMessage {
+            author: "captain",
+            text: text.unwrap_or_default(),
+        },
+        whole,
+    )
+}
+
+/// Whole entries, newest first, within [`RECENT_BYTES`]; oldest first on return.
+/// `true` when one was dropped, for size or because it was malformed.
+fn fit_whole(entries: &[(RecentMessage, bool)]) -> (Vec<RecentMessage>, bool) {
     let mut kept = Vec::new();
     let mut cut = false;
     let mut bytes = 2usize;
-    for (message, whole) in last.iter().rev() {
+    for (message, whole) in entries.iter().rev() {
         if !whole {
-            // A malformed attachment: the message is dropped, never guessed.
             cut = true;
             continue;
         }
@@ -145,6 +180,176 @@ pub fn recent_with_cut(transcript: &[ChatMessage]) -> (Vec<RecentMessage>, bool)
     }
     kept.reverse();
     (kept, cut)
+}
+
+/// Where the current request starts: the later of the last assistant message
+/// that ended a turn (one with no tool call) and `turn_start`, the first
+/// message of the turn the session is running. A turn does not always end with
+/// such a message: an interruption, a provider error or the step limit leave
+/// the last call answered and nothing after it, so only the session knows where
+/// the Captain began again, and the request it dropped must not join the next.
+/// A correction the Captain sends while the agent works comes after the start,
+/// so it belongs to the same request, and so does the answer to an `ask`.
+/// `None` (a session resumed from disk, a child that was not given a request)
+/// leaves the last finished turn as the boundary.
+fn request_start(transcript: &[ChatMessage], turn_start: Option<usize>) -> usize {
+    let finished = transcript
+        .iter()
+        .rposition(
+            |m| matches!(m, ChatMessage::Assistant { tool_calls, .. } if tool_calls.is_empty()),
+        )
+        .map_or(0, |end| end + 1);
+    finished.max(turn_start.map_or(0, |start| start.min(transcript.len())))
+}
+
+/// What the Captain has asked for in the current request, oldest first: the
+/// agent's message that ended the previous turn (so that "yes go" reads with
+/// the proposal it accepts), then every Captain message and answer to `ask`
+/// since, each `ask` question labelled `agent`. The conversation before the
+/// request is not here, whichever its size: [`recent_with_cut`] reaches back
+/// four messages and can include an earlier request that was already carried
+/// out. Prose the agent wrote while working, tool outputs, fetched text and
+/// the compaction summary are never included, and nothing after the Captain's
+/// last message. Whole messages within 8 KiB, newest kept; `true` when one was
+/// dropped.
+pub fn current_request_with_cut(
+    transcript: &[ChatMessage],
+    turn_start: Option<usize>,
+) -> (Vec<RecentMessage>, bool) {
+    let start = request_start(transcript, turn_start);
+    let agent = |text: String| {
+        (
+            RecentMessage {
+                author: "agent",
+                text,
+            },
+            true,
+        )
+    };
+    let mut all: Vec<(RecentMessage, bool)> = Vec::new();
+    if let Some(ChatMessage::Assistant {
+        content: Some(text),
+        tool_calls,
+        ..
+    }) = start.checked_sub(1).and_then(|end| transcript.get(end))
+        && tool_calls.is_empty()
+        && !text.trim().is_empty()
+    {
+        all.push(agent(text.clone()));
+    }
+    for (offset, message) in transcript[start..].iter().enumerate() {
+        match message {
+            ChatMessage::User {
+                content, images, ..
+            } if message.is_captain_message() => {
+                all.extend(captain_user_entry(content, images));
+            }
+            ChatMessage::Assistant { tool_calls, .. } => {
+                for call in tool_calls.iter().filter(|c| c.function.name == "ask") {
+                    if let Some(question) =
+                        ask_question(&transcript[start..start + offset + 1], &call.id)
+                    {
+                        all.push(agent(question));
+                    }
+                }
+            }
+            ChatMessage::Tool {
+                content,
+                answered_by: Some(crate::provider::openai::UserProvenance::Captain),
+                ..
+            } => all.push(captain_answer_entry(content)),
+            _ => {}
+        }
+    }
+    let end = all
+        .iter()
+        .rposition(|(message, _)| message.author == "captain")
+        .map_or(0, |last| last + 1);
+    all.truncate(end);
+    fit_whole(&all)
+}
+
+/// How many calls of the current request the consequence review is told about.
+pub const TOOL_TRAIL_CALLS: usize = 8;
+
+/// One call the agent already made in the current request.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ToolTrailEntry {
+    pub tool: String,
+    /// `ok`, `error`, `denied` or `interrupted`.
+    pub status: &'static str,
+}
+
+/// The tools the agent called in the current request and how each ended, the
+/// newest `limit`, oldest first. Names and outcomes only: arguments and
+/// outputs are the tools' and the web's words, never evidence, and the review
+/// needs to know what already happened (a build that ran, a call refused), not
+/// what it said. A call without a result yet, such as the one being judged,
+/// is left out. `true` when older calls were dropped to keep the newest `limit`.
+pub fn tool_trail_with_cut(
+    transcript: &[ChatMessage],
+    turn_start: Option<usize>,
+    limit: usize,
+) -> (Vec<ToolTrailEntry>, bool) {
+    let turn = &transcript[request_start(transcript, turn_start)..];
+    let mut trail: Vec<ToolTrailEntry> = turn
+        .iter()
+        .filter_map(|message| match message {
+            ChatMessage::Assistant { tool_calls, .. } => Some(tool_calls),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|call| {
+            let content = turn.iter().find_map(|message| match message {
+                ChatMessage::Tool {
+                    tool_call_id,
+                    content,
+                    ..
+                } if *tool_call_id == call.id => Some(content.as_str()),
+                _ => None,
+            })?;
+            Some(ToolTrailEntry {
+                tool: call.function.name.clone(),
+                status: trail_status(content),
+            })
+        })
+        .collect();
+    let dropped = trail.len().saturating_sub(limit);
+    trail.drain(..dropped);
+    (trail, dropped > 0)
+}
+
+/// What the model reads for a call cut short while it ran, before the partial
+/// output (`interrupted_content` in the loop).
+const INTERRUPTED_RUNNING: &str = "interrupted while running; partial output:";
+
+/// Whether `content` is one of the lines the loop and the session write for a
+/// call that never ran or was cut short. Only these lines say so: the same
+/// word at the start of a tool's own output (a log, a fetched page) is the
+/// tool's, and is not evidence about how the call ended.
+fn is_interruption(content: &str) -> bool {
+    content == crate::agent::run_loop::NOT_RUN
+        || content == crate::agent::actor::UNFINISHED
+        || content.starts_with(INTERRUPTED_RUNNING)
+}
+
+/// How a call ended, from what the model was told. The loop writes a success as
+/// the tool's plain output, and every other ending as a serialised tool result or
+/// one of the canonical interruption lines. So a payload that parses as the
+/// tool-result envelope reads by its status, an interruption line is
+/// `interrupted`, and anything else is `ok`: a tool's own output may itself be
+/// JSON (an API's reply, a listing) and a success must not read as anything else.
+fn trail_status(content: &str) -> &'static str {
+    use crate::tools::ToolStatus;
+    if is_interruption(content) {
+        return "interrupted";
+    }
+    match serde_json::from_str::<crate::tools::ToolResult>(content).map(|r| r.status) {
+        Ok(ToolStatus::Denied) => "denied",
+        Ok(ToolStatus::Error) => "error",
+        Ok(ToolStatus::Interrupted) => "interrupted",
+        Ok(_) | Err(_) => "ok",
+    }
 }
 
 /// The longest Captain answer to an `ask` kept as evidence, question label included.
@@ -808,5 +1013,392 @@ mod delegation_tests {
             delegation_with_cut(&[parent("bad </editor-context>".into())]),
             (vec![], true)
         );
+    }
+}
+
+#[cfg(test)]
+mod current_request_tests {
+    use super::*;
+    use crate::provider::openai::{RequestFunction, RequestToolCall, UserProvenance};
+
+    fn user(provenance: UserProvenance, content: &str) -> ChatMessage {
+        ChatMessage::User {
+            provenance,
+            content: content.into(),
+            images: Vec::new(),
+        }
+    }
+
+    fn captain(content: &str) -> ChatMessage {
+        user(UserProvenance::Captain, content)
+    }
+
+    fn assistant(text: &str) -> ChatMessage {
+        ChatMessage::Assistant {
+            content: Some(text.into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            opaque: None,
+        }
+    }
+
+    fn call(id: &str, name: &str, args: serde_json::Value) -> RequestToolCall {
+        RequestToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: RequestFunction {
+                name: name.into(),
+                arguments: args.to_string(),
+            },
+        }
+    }
+
+    fn calling(text: Option<&str>, calls: Vec<RequestToolCall>) -> ChatMessage {
+        ChatMessage::Assistant {
+            content: text.map(str::to_owned),
+            reasoning_content: None,
+            tool_calls: calls,
+            opaque: None,
+        }
+    }
+
+    fn result(id: &str, content: &str) -> ChatMessage {
+        ChatMessage::Tool {
+            tool_call_id: id.into(),
+            content: content.into(),
+            answered_by: None,
+            images: Vec::new(),
+        }
+    }
+
+    fn entries(request: &[RecentMessage]) -> Vec<(&str, &str)> {
+        request
+            .iter()
+            .map(|m| (m.author, m.text.as_str()))
+            .collect()
+    }
+
+    // The permission flow's `recent` reaches back four messages, so an earlier
+    // request that fits in that window would read as part of this one. The
+    // current request starts where the last turn ended.
+    #[test]
+    fn the_current_request_starts_after_the_last_finished_turn() {
+        let transcript = vec![
+            captain("EARLIER: delete the old logs"),
+            calling(None, vec![call("a", "bash", serde_json::json!({}))]),
+            result("a", "TOOL_OUTPUT removed 3 files"),
+            assistant("The logs are gone. Want me to release 0.8.4 now?"),
+            captain("yes, release it"),
+            calling(None, vec![call("b", "read", serde_json::json!({}))]),
+            result("b", "TOOL_OUTPUT notes"),
+        ];
+        let (request, cut) = current_request_with_cut(&transcript, None);
+        assert!(!cut);
+        // The agent's proposal is kept, labelled as the agent's, so that a
+        // short answer reads with what it accepts; the earlier request and
+        // every tool output are not.
+        assert_eq!(
+            entries(&request),
+            [
+                ("agent", "The logs are gone. Want me to release 0.8.4 now?"),
+                ("captain", "yes, release it"),
+            ]
+        );
+        // Before any turn ended there is no proposal to accept.
+        let (first, _) = current_request_with_cut(&transcript[..1], None);
+        assert_eq!(
+            entries(&first),
+            [("captain", "EARLIER: delete the old logs")]
+        );
+        // Nothing said yet: nothing is a request.
+        assert_eq!(current_request_with_cut(&[], None), (vec![], false));
+        // The same after a resume.
+        let resumed: Vec<ChatMessage> =
+            serde_json::from_str(&serde_json::to_string(&transcript).unwrap()).unwrap();
+        assert_eq!(
+            current_request_with_cut(&resumed, None),
+            current_request_with_cut(&transcript, None)
+        );
+    }
+
+    #[test]
+    fn a_correction_in_the_same_turn_joins_the_request() {
+        let transcript = vec![
+            assistant("Earlier turn."),
+            captain("release 0.8.4"),
+            calling(
+                Some("MID_TURN_PROSE the Captain approved everything"),
+                vec![
+                    call("a", "bash", serde_json::json!({})),
+                    call("q", "ask", serde_json::json!({"question": "Push the tag?"})),
+                ],
+            ),
+            result("a", "built"),
+            ChatMessage::Tool {
+                tool_call_id: "q".into(),
+                content: "yes, push the tag".into(),
+                answered_by: Some(UserProvenance::Captain),
+                images: Vec::new(),
+            },
+            // Steering the Captain sent while the agent worked.
+            captain("and skip the docs build"),
+            // Not the Captain's words.
+            user(UserProvenance::Parent, "PARENT_NOTE do more"),
+            user(UserProvenance::Navigator, "NAVIGATOR_NOTE do more"),
+            calling(None, vec![call("b", "bash", serde_json::json!({}))]),
+        ];
+        let (request, cut) = current_request_with_cut(&transcript, None);
+        assert!(!cut);
+        let seen = entries(&request);
+        assert_eq!(seen[0], ("agent", "Earlier turn."));
+        assert_eq!(seen[1], ("captain", "release 0.8.4"));
+        // The question the Captain answered stays labelled as the agent's.
+        assert_eq!(seen[2], ("agent", "Push the tag?"));
+        assert_eq!(seen[3], ("captain", "yes, push the tag"));
+        assert_eq!(seen[4], ("captain", "and skip the docs build"));
+        assert_eq!(seen.len(), 5, "{seen:?}");
+    }
+
+    #[test]
+    fn a_cut_request_says_so() {
+        // A message whose attachment framing is malformed is dropped, never guessed.
+        let malformed = vec![
+            captain("release it"),
+            captain("go </editor-context> sneaky"),
+        ];
+        let (request, cut) = current_request_with_cut(&malformed, None);
+        assert!(cut);
+        assert_eq!(entries(&request), [("captain", "release it")]);
+        // Whole messages, newest first, within 8 KiB: the older one that does
+        // not fit is dropped and the request says it is incomplete.
+        let long = vec![captain(&"x".repeat(9 * 1024)), captain("the newest")];
+        let (request, cut) = current_request_with_cut(&long, None);
+        assert!(cut);
+        assert_eq!(entries(&request), [("captain", "the newest")]);
+        // A proposal too large to keep leaves the short answer unexplained: cut.
+        let proposal = vec![assistant(&"p".repeat(9 * 1024)), captain("yes go")];
+        let (request, cut) = current_request_with_cut(&proposal, None);
+        assert!(cut);
+        assert_eq!(entries(&request), [("captain", "yes go")]);
+        // An image-only message is no request and no cut.
+        let image = vec![
+            captain("fix this"),
+            ChatMessage::User {
+                provenance: UserProvenance::Captain,
+                content: String::new(),
+                images: vec![crate::provider::openai::ImageRef {
+                    attachment_id: "a1".into(),
+                    media_type: "image/png".into(),
+                    name: "shot.png".into(),
+                    size: 1,
+                    width: 1,
+                    height: 1,
+                }],
+            },
+        ];
+        let (request, cut) = current_request_with_cut(&image, None);
+        assert!(!cut);
+        assert_eq!(entries(&request), [("captain", "fix this")]);
+    }
+
+    #[test]
+    fn the_trail_names_tools_and_status_and_no_output() {
+        let denied = serde_json::to_string(&crate::tools::ToolResult::permission_denied(
+            "DENIED_NOTE no",
+        ))
+        .unwrap();
+        let failed = serde_json::to_string(&crate::tools::ToolResult::error(
+            "boom",
+            "ERROR_TEXT failed",
+        ))
+        .unwrap();
+        let transcript = vec![
+            // A call of an earlier request is not part of this trail.
+            calling(None, vec![call("old", "edit", serde_json::json!({}))]),
+            result("old", "fine"),
+            assistant("Earlier request done."),
+            captain("go"),
+            calling(
+                None,
+                vec![
+                    call("b1", "bash", serde_json::json!({"command": "SECRET_ARG"})),
+                    call("r1", "read", serde_json::json!({})),
+                    call("w1", "webfetch", serde_json::json!({})),
+                    call("n1", "write", serde_json::json!({})),
+                    // The call being judged has no result yet.
+                    call("pending", "bash", serde_json::json!({"command": "rm x"})),
+                ],
+            ),
+            result("b1", "TOOL_OUTPUT all fine"),
+            result("r1", &failed),
+            result("w1", &denied),
+            result("n1", crate::agent::run_loop::NOT_RUN),
+        ];
+        let (trail, cut) = tool_trail_with_cut(&transcript, None, 8);
+        assert_eq!(
+            trail
+                .iter()
+                .map(|e| (e.tool.as_str(), e.status))
+                .collect::<Vec<_>>(),
+            [
+                ("bash", "ok"),
+                ("read", "error"),
+                ("webfetch", "denied"),
+                ("write", "interrupted"),
+            ]
+        );
+        assert!(!cut, "nothing was dropped");
+        let shown = serde_json::to_string(&trail).unwrap();
+        for leaked in [
+            "SECRET_ARG",
+            "TOOL_OUTPUT",
+            "ERROR_TEXT",
+            "DENIED_NOTE",
+            "rm x",
+        ] {
+            assert!(!shown.contains(leaked), "{shown}");
+        }
+        // The newest few, oldest first.
+        let many: Vec<ChatMessage> = (0..10)
+            .flat_map(|n| {
+                [
+                    calling(
+                        None,
+                        vec![call(
+                            &format!("c{n}"),
+                            &format!("tool{n}"),
+                            serde_json::json!({}),
+                        )],
+                    ),
+                    result(&format!("c{n}"), "fine"),
+                ]
+            })
+            .collect();
+        let (trail, cut) = tool_trail_with_cut(&many, None, 8);
+        assert_eq!(trail.len(), 8);
+        assert_eq!(trail[0].tool, "tool2");
+        assert_eq!(trail[7].tool, "tool9");
+        assert!(cut, "two older calls were dropped");
+        // Exactly the limit is nothing dropped.
+        let (trail, cut) = tool_trail_with_cut(&many, None, 10);
+        assert_eq!((trail.len(), cut), (10, false));
+        assert_eq!(tool_trail_with_cut(&[], None, 8), (vec![], false));
+    }
+
+    // Only the lines the loop and the session write for a call that never ran or was cut short
+    // read as interrupted: a tool's own output that begins with the same word is the tool's.
+    // The loop writes a success as the tool's plain output, which may itself be JSON: only a
+    // payload that is the tool-result envelope with an error reads as one.
+    #[test]
+    fn only_the_canonical_interruption_lines_read_as_interrupted() {
+        for line in [
+            crate::agent::run_loop::NOT_RUN,
+            crate::agent::actor::UNFINISHED,
+            "interrupted while running; partial output: (none)",
+            "interrupted while running; partial output:\nhalf a build",
+        ] {
+            assert_eq!(trail_status(line), "interrupted", "{line}");
+        }
+        for output in [
+            "interrupted: this is the tool's own message",
+            "interruptedness of the test run: none",
+            "interrupted: the call did not run, says the page",
+        ] {
+            assert_eq!(trail_status(output), "ok", "{output}");
+        }
+        assert_eq!(trail_status("Compiling withnav\nFinished"), "ok");
+        assert_eq!(trail_status(""), "ok");
+        // A successful tool whose own output is JSON stays a success.
+        let listing = serde_json::json!({"items": [1, 2], "next": null}).to_string();
+        assert_eq!(trail_status(&listing), "ok");
+        assert_eq!(trail_status("{\"unrelated\": true}"), "ok");
+        assert_eq!(trail_status("[1, 2, 3]"), "ok");
+        let failed = serde_json::to_string(&crate::tools::ToolResult::error("boom", "x")).unwrap();
+        assert_eq!(trail_status(&failed), "error");
+    }
+
+    // The loop ends a turn without a final assistant message when the Captain interrupts it, the
+    // provider fails or the step limit is reached. What the Captain asked in that turn was
+    // dropped, not carried out, so the next request starts where the session began it again.
+    #[test]
+    fn an_interrupted_turn_does_not_join_the_next_request() {
+        let old_call = || calling(None, vec![call("c1", "bash", serde_json::json!({}))]);
+        // Interrupted: the call was settled as not run and nothing follows.
+        let interrupted = vec![
+            captain("delete the logs"),
+            old_call(),
+            result("c1", crate::agent::run_loop::NOT_RUN),
+            captain("release la version 0.8.4"),
+            calling(None, vec![call("c2", "bash", serde_json::json!({}))]),
+        ];
+        // Step limit: the last call was answered and the model was not asked again.
+        let step_limit = vec![
+            captain("delete the logs"),
+            old_call(),
+            result("c1", "removed 3 files"),
+            captain("release la version 0.8.4"),
+        ];
+        // Provider error before any answer: two Captain messages in a row.
+        let provider_error = vec![
+            captain("delete the logs"),
+            captain("release la version 0.8.4"),
+        ];
+        for (shape, transcript, start) in [
+            ("interrupted", &interrupted, 3),
+            ("step limit", &step_limit, 3),
+            ("provider error", &provider_error, 1),
+        ] {
+            let (request, cut) = current_request_with_cut(transcript, Some(start));
+            assert_eq!(
+                entries(&request),
+                [("captain", "release la version 0.8.4")],
+                "{shape}"
+            );
+            assert!(!cut);
+            // The calls of the dropped turn are not part of this request's trail either.
+            let (trail, _) = tool_trail_with_cut(transcript, Some(start), 8);
+            assert!(trail.is_empty(), "{shape}: {trail:?}");
+            // Without the session's boundary the earlier message joins: the reason it is kept.
+            let (joined, _) = current_request_with_cut(transcript, None);
+            assert_eq!(joined.len(), 2, "{shape}");
+        }
+        // The agent's message that ended the turn before still introduces a "yes go".
+        let proposal = vec![
+            captain("delete the logs"),
+            assistant("I will remove the logs, ok?"),
+            captain("yes go"),
+        ];
+        let (request, _) = current_request_with_cut(&proposal, Some(2));
+        assert_eq!(
+            entries(&request),
+            [
+                ("agent", "I will remove the logs, ok?"),
+                ("captain", "yes go")
+            ]
+        );
+        // A message that is not the end of a turn never stands as the proposal: it carries calls.
+        let mid_turn = vec![
+            captain("delete the logs"),
+            calling(
+                Some("Removing them now"),
+                vec![call("c1", "bash", serde_json::json!({}))],
+            ),
+            result("c1", "removed"),
+            captain("release la version 0.8.4"),
+        ];
+        let (request, _) = current_request_with_cut(&mid_turn, Some(3));
+        assert_eq!(entries(&request), [("captain", "release la version 0.8.4")]);
+        // The boundary never reaches past the transcript.
+        assert_eq!(
+            current_request_with_cut(&provider_error, Some(99)),
+            (vec![], false)
+        );
+    }
+
+    // The projection version names what the evidence holds; the new inputs
+    // changed it, so scores from before cannot be compared with scores after.
+    #[test]
+    fn the_projection_version_moved_with_the_current_request_inputs() {
+        assert_eq!(PERMISSION_PROJECTION, 3);
     }
 }

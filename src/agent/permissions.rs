@@ -21,6 +21,48 @@ pub const MAX_REVIEW_ARGUMENT_BYTES: usize = 4 * 1024;
 pub enum PermissionOrigin {
     Captain,
     Bypass,
+    /// The parallel metacognition review (`permissions.review` = `on`): it may only allow one
+    /// call, once, and the call reads the rules again before it runs.
+    Metacognition,
+}
+
+impl PermissionOrigin {
+    /// The `approved_by` label a call, an event and a decision row carry for this origin.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Captain => "captain",
+            Self::Bypass => "bypass",
+            Self::Metacognition => "metacognition",
+        }
+    }
+}
+
+/// What the parallel review of one request reads and is bound to, prepared when the question is
+/// raised. Present only on a request the review may answer (see `authorize::reviewable`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewTicket {
+    /// The reviewer's input: the projection of the current request, the call and its context,
+    /// already bounded and with the session's secrets redacted.
+    pub input: String,
+    /// The rule that matched when the question was raised; a different one at dispatch sends
+    /// the call back through the normal decision.
+    pub rule_id: Option<i64>,
+    /// The Captain's messages of `input`'s current request, as sent (redacted): an `allow_once`
+    /// counts only when it quotes one of them verbatim.
+    pub captain_words: Vec<String>,
+}
+
+/// Hex SHA-256 of the tool, its arguments and the call id: what an answer to a request is bound
+/// to, so an answer meant for another call (a retried or rewritten one) is stale.
+pub fn call_digest(call: &ToolCall) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(call.name.as_bytes());
+    hash.update([0]);
+    hash.update(serde_json::to_vec(&call.args).unwrap_or_default());
+    hash.update([0]);
+    hash.update(call.id.as_bytes());
+    hex::encode(hash.finalize())
 }
 
 /// A Captain's answer to a [`PermissionRequest`].
@@ -112,6 +154,12 @@ pub struct PermissionRequest {
     /// answer was published: the saved rule ids, or why they were not saved.
     #[serde(skip)]
     pub always_saved: Option<Result<Vec<i64>, String>>,
+    /// [`call_digest`] of the held call.
+    #[serde(skip)]
+    pub call_digest: String,
+    /// The parallel review's input, when the review may answer this request.
+    #[serde(skip)]
+    pub review: Option<Box<ReviewTicket>>,
 }
 
 impl PermissionRequest {
@@ -140,6 +188,8 @@ impl PermissionRequest {
             repeats: 1,
             skill_rule: false,
             always_saved: None,
+            call_digest: call_digest(call),
+            review: None,
         }
     }
 }

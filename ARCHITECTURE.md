@@ -79,6 +79,7 @@ Dependencies point down this list. A module never imports one above it.
 | --- | --- | --- |
 | `mcp/` | global stdio and Streamable HTTP MCP servers: configuration under `mcp` in `config.json` (`config.rs`), the shared `McpManager`, bounded discovery and tool-list refresh, process-group supervision and the HTTP connection (`connection.rs`), provider-safe `mcp__<server>__<tool>` names and schemas, cancellable bounded calls (`tool.rs`), the `list_resources`/`read_resource` tools of a server that offers resources (`resource.rs`), its prompts as `/<server>:<prompt>` commands: discovery, argument checks, the bounded prompt block (`prompt.rs`), output redaction (`redaction.rs`), the clients' redacted status snapshot and its change `watch` | permission policy (an MCP tool is decided like any other), session persistence, OAuth, publishing to sessions (`session/mcp.rs`), applying an idle session's registry refresh (`bus/runtime/mcp_tools.rs`) |
 | `permission/` | the permission model of ADR 0015, shared by the agent loop and `nav permissions`: the SQLite tables in `withnav.db` (`store.rs`), rules and their matching (`rules.rs`), the decision history (`decisions.rs`), skill and flow validations (`validation.rs`), shell splitting and arity prefixes (`shell.rs`), the fixed floor (`floor.rs`) and the decision order (`decide.rs`: a pure `decide` over a `PermissionFlows` trait, plus `DoomTracker`) | running tools, flows, events |
+| `memory/` | the memory register in `withnav.db` (`MemoryStore`, `store.rs`: its own connection, WAL, 5 s busy timeout, immediate write transactions): memory items and their append-only versions with expected-version writes, widening checks and current-only search (`items.rs`); projects identified by their git common directory or folder (`projects::identity`, git bounded by a 2 s deadline), groups, the one active project of a session, proposed/applied/rejected membership changes and their history (`projects.rs`) | permissions, flows and the agent: it imports none of them and its text never enters the permission input, so memory can never authorize a tool call; commands, routes and tools; redacting secrets (its callers do, before storing) |
 | `flows/` | the flow store (built-in, global and workspace definitions, validation-gated loading, reload marker; `store.rs`), the runtime that evaluates a trigger, aggregates the permission verdicts and runs the compiled-in protected check (`runtime.rs`), the built-in flows (`builtin/`), run records, redaction, the decision client to Instinct | the decision order, which lives in `permission/` |
 | `app/` | `nav` command dispatch; `entry.rs` selects stderr-only LSP logging; `lsp.rs` dispatches editor startup and offline replay | language-server wiring and replay reports, which live in `navigator/` |
 | `settings.rs` | the user settings file `<config_dir>/config.json`: `load`, atomic `save` that keeps keys it does not know; each client reads its own key (`tui.theme`) | what a setting means |
@@ -325,7 +326,14 @@ steering text never counts as Captain evidence. It is supplied separately as
 whole messages within 16 KiB, with a cut flag). The ordinary flow may accept the parent's request;
 the protected check never reads delegation. Both the flow and the protected check also get
 `conversation.recent` (`recent_with_cut`): the last 4 Captain and agent messages up to the Captain's last one, labelled
-with their author, so a short Captain answer is read with the proposal it answers. A skill is decided after its validation, with action `skill` and its
+with their author, so a short Captain answer is read with the proposal it answers. Live request coverage reads
+`conversation.current_request` (`current_request_with_cut`: from `AgentActor::request_start`, the message that began the turn running (not moved by the
+answer to an `ask` or a correction sent while the turn runs, and distrusted, the request flagged cut, when `AgentActor::request_boundary` finds the transcript rewritten under it), or the last assistant message that ended a turn if later, the Captain's messages and answers to `ask`
+since, so a correction joins the request, and neither an earlier request nor a turn that ended without a final message
+(interruption, provider error, step limit) does). Its isolated template keeps approval claims
+in the call separate from the Captain's words. `conversation.tool_trail` carries tool names and
+outcomes, never arguments or output. `permissions.review` controls only the parallel second
+opinion and defaults to `on`. `PERMISSION_PROJECTION` is 3 for live coverage. A skill is decided after its validation, with action `skill` and its
 name as resource: a `deny` rule refuses it on both entry points, no rule loads it
 (`approved_by: validation`), and a Captain selection counts as the Captain's request. A session
 whose permission database cannot be opened starts with `permissions_unavailable` in its status,
@@ -369,6 +377,30 @@ decision (ADR 0015: symlink races are out of scope). `write` and `edit` replace 
 atomically (temporary file and rename), so a link put at the target is replaced, not written
 through. A stop or a chat message cancels the request; a resume expires every request that has no
 `permission.resolved`, settles its calls as interrupted, and marks its decisions `expired`.
+
+**Parallel review of a question** (`session/permission_review.rs`, ADR 0015 amendment 2026-11-25).
+`authorize` prepares a `ReviewTicket` (the reviewer's 16 KiB input from the consequence projection,
+secrets redacted, and the matching rule id) only for an ordinary question of the built-in
+`permission-default` flow's own verdict in a root session whose `permissions.review` is not `off`,
+whose current request is not cut, and whose call is not a `skill` (no floor, loop, protected check,
+custom-flow ask or failure fallback). Before `permission.requested` is published the runtime binds
+the request to its `call_digest` (SHA-256 of tool, arguments and call id) and `turn_id`, both on the
+event; then it offers the request to bypass and, through a `ReviewStarter` the service installed on
+`RuntimeStatus` (the bus never imports the service), to the review. The review is one tool-free
+chat call to the metacognition model (`session/metacognition_client.rs`, shared with the goal
+check), 1000 tokens, 60 s, no retry. Every claim goes through the one lock of the permission slot:
+`claim_permission_as` (Captain, bypass), `claim_permission_for_review` (also requires no hold and the
+same digest and turn) and `hold_permission`; a slot that changes (answer, stop, new message) cancels
+the review under `on` (under `shadow` it runs to its end, for the log). An `allow_once` counts only
+with a `request_quote` found verbatim in the Captain messages sent (`verify_quote`), else it is
+`wait`; a refused answer gives the claim back. With `on`, an `allow_once` claims and sends `PermissionAnswer{AllowOnce, origin:
+Metacognition}`; `run_loop` reads the rules again (`decide::Lookup::unchanged_since_question`) and
+runs the call (`approved_by: metacognition`) or, if anything changed, decides it again. `wait` and
+`unavailable` publish `permission.review`; `hold` on the answer route stops the review (or answers
+409 `permission_already_started` after its claim), and a Captain answer after that claim gets the
+same 409. With `shadow` nothing is published. Each review writes one line to
+`<data dir>/permission-reviews.jsonl` with the Captain's resolution once the request resolves.
+`GET /v1/waiting` lists the live pending requests of every session (`RuntimeStatus::waiting_request`).
 
 **Secret request to answer.** `request_secret` (`tools/secret.rs`, never in a child or read-only
 registry) is a human call like `ask`: a valid call makes `classify_with` yield
@@ -602,8 +634,8 @@ child CAS and bounded partial text before releasing capacity, without taking lif
 `decision.rs` enforces owner and watchdog-doubt state, never answers permissions or budgets.
 The existing owner continue endpoint also resumes doubt. Recovery terminalizes unfinished links
 as before; no supervision state is restored. The event catalog (`bus/event.rs`,
-`EVENT_KIND_COUNT`) has 27 kinds; `goal.updated` and `goal.cleared` are the latest, and every
-client ignores a kind it does not know.
+`EVENT_KIND_COUNT`) has 28 kinds; `permission.review` is the latest, and every client ignores a
+kind it does not know.
 
 | Path | What | Written by |
 | --- | --- | --- |
@@ -616,7 +648,10 @@ client ignores a kind it does not know.
 | `~/.agents/AGENTS.md`, `~/.agents/rules.md`, `~/.agents/skills/` | user rules and skills included in agent sessions | the Captain |
 | `~/.local/share/withnav/withnav.db`, `withnav.jsonl`, `tui.log`, `model-catalog/` | conversations, decision log, TUI log and cached provider model lists | `session/store.rs`, `navigator/log.rs`, `app/tui.rs`, `withnav-provider`'s `catalog.rs` |
 | `~/.local/share/withnav/goal-checks.jsonl` | the completion checks of session goals, one line per check or skip, with whether a goal-watch note was sent | `session/goal_check.rs` |
+| `~/.local/share/withnav/flows/runs/<workspace hash>/` `runs.jsonl`, `scores.jsonl`, `health.json` | flow run captures (7 days, 1000 records); one score line per live run (90 days, 16 MiB: ids, model, flow digest, projection version, answers, actions; no state, input or argument); 24 hours of per-flow counters, refusals and timeouts apart | `flows/records.rs` (`Records`, written by its capture thread) |
+| `~/.local/share/withnav/instinct-calls.jsonl` | the Instinct calls of the watchdogs and the compaction judge, one line per call: caller, session, model, state size and SHA-256 (never the state), question names, answers, latency, error kind | `layers/recorded.rs` |
 | `withnav.db` tables `permission_rules`, `permission_decisions`, `validations` | permission rules (revoked, never deleted), the history of the permission decisions that were made — not of undecided calls (arguments redacted and bounded), skill and flow validations bound to a content hash | `permission/` (the agent loop, `nav permissions`, the Studio and flow store) |
+| `withnav.db` tables `memory_items`, `memory_versions`, `projects`, `project_aliases`, `memory_groups`, `project_groups`, `session_projects`, `membership_changes` | the memory register: items with every dated version (triggers refuse to update or delete a version), projects and their aliases (canonical git common dir or folder), groups (retired, never deleted), the session↔project and project↔group links, and the append-only history of their changes | `memory/` (`MemoryStore`) |
 | `~/.config/withnav/flows/`, `<workspace>/.withnav/flows/` | global and workspace flow definitions; they load only once validated at their current content | the Captain, the Studio |
 | `~/.config/withnav/config.json` key `mcp` | stdio and HTTP MCP server declarations | the Captain |
 | `~/.local/share/withnav/withnav.db.owner.lock` | the owner lock: held by the one `nav serve` for its whole life, never deleted; its identity follows the database's real path, so a symlinked data dir finds the same owner | `server/owner.rs` (`OwnerLock`) |
@@ -667,7 +702,9 @@ session overrides. Editor context adds prompt/intent/feed independently of the c
 | `GET /v1/models?workspace=...` | `models` entries: `name`, `gateway`, `provider_group`, `upstream_id`, API, capabilities, variants/default and existing limit/diagnostic fields; top-level `default_agent` |
 | `GET /v1/agents?workspace=...&session_id=...` | `default_agent`, all definitions with `id`, description, mode, `assignment`, `effective`, optional `override`, warning; without session id omit override; an unassigned child without parent context has null choices and `inherits_parent: true` |
 | `GET /v1/layers?workspace=...` | exactly reflex/instinct/metacognition entries: `layer`, `status` (`usable` or `disabled`), `model`, `variant`, `gateway`, `upstream_id`, `api`, `reason` and optional `variant_diagnostic`; usable validates assignment/API, not future network access |
-| `GET /v1/sessions/{id}/ledger` | the session ledger (`withnav-client-api`'s `ledger.rs`): `through_seq`, `turns{count,last}`, `files_touched`, `commands`, `repeated_failures`, `last_turn_text`, `open_questions`, `compactions`, `goal` (`{revision, objective, criteria, status}` or null); folded on every read from the stored events, so a stopped session and a child have one; an unknown id is the same 404 as `/context` |
+| `GET /v1/sessions/{id}/ledger` | the session ledger (`withnav-client-api`'s `ledger.rs`): `through_seq`, `turns{count,last}`, `files_touched`, `commands`, `repeated_failures`, `last_turn_text`, `open_questions`, `compactions`, `goal` (`{revision, objective, criteria, status}` or null), `goal_check` (the last published goal check of the goal's revision, absent when none); folded on every read from the stored events, so a stopped session and a child have one; an unknown id is the same 404 as `/context` |
+| `/v1/memory`, `/v1/memory/{id}`, `/v1/memory/{id}/{action}` | Captain memory items and versions, with expected-version writes and confirmation for scope widening; DTOs in `withnav-client-api/src/memory.rs` |
+| `/v1/projects`, `/v1/groups`, `/v1/projects/{id}/group-answer`, `/v1/projects/{id}/groups/{group}`, `/v1/sessions/{id}/project`, `/v1/memory/needs-you` | Project and group inventory, membership controls, and pending scope proposals; see the [memory register](book/src/memory.md) for methods and bodies |
 | `POST /v1/sessions` | `workspace`, optional `editor` (default false), `agent` (default agent), `model`/`variant` overrides; variant-only allowed; response `session_id`; resume uses workspace + resume only and rejects conflicting selection fields |
 
 Catalogue `name` and active `model` are canonical identities; internal provider `model` remains
@@ -781,7 +818,9 @@ the later 0.6 scope, not this contract.
   no table, no live state and no model call; `digest` renders it in at most 16 KiB for a bounded
   model call, sections in a fixed priority order, each item on its own `- ` line so untrusted text
   cannot open or close a section. The bounds and the wire type live in `withnav-client-api`'s
-  `ledger.rs`; readers go through `Service::ledger` (`GET /v1/sessions/{id}/ledger`).
+  `ledger.rs`; readers go through `Service::ledger` (`GET /v1/sessions/{id}/ledger`). The one fact
+  that is not about what the agent did is `goal_check`, the last published goal check, for clients
+  only (see the shadow completion check below).
 - The session goal (what the Captain recorded as done, `/goal`): `session/goal.rs` parses and
   bounds the command and publishes one durable `goal.updated` (the whole goal) or `goal.cleared`
   under the tree's lifecycle gate; nothing else writes it and no tool reaches it. The current goal
@@ -808,7 +847,18 @@ the later 0.6 scope, not this contract.
   in flight per session and `MAX_CHECKS_PER_WINDOW` (10) starts per `RATE_WINDOW` (one hour). Every
   check or skip is one line of `<data dir>/goal-checks.jsonl` (`paths::goal_check_log`), a rate
   skip once per window. With `goal_watch.notes` off (the default, `Settings::goal_watch_notes`,
-  read at each check) nothing reaches the session, its events or a client. On, a finished `ok`
+  read at each check) nothing reaches the agent. A finished `ok` check, whatever that setting
+  says, is published once to the session's clients as a `command.result` named `goal_check`
+  (the pattern of `flow_notice`, no event kind of its own; `goal_check.rs` `publish`, data a
+  `withnav-client-api` `GoalCheck`: revision, turn id, `statuses`, `claims`, `note_sent`, `note`),
+  before its log line is written; a skipped, timed-out, malformed or outdated check and a stopped
+  session publish nothing, and quotes then the note are dropped from a result that would pass the
+  16 KiB `command.result` bound. The same call reads at most five completion claims of the last
+  turn text (`input::parse_claims`): `supported` or `contradicted` stands only on a quote of a
+  command or file-change line that was sent, the rule of the criteria, otherwise `unverified`.
+  `ledger::fold` keeps the last such result in `SessionLedger::goal_check` for the goal's current
+  revision only (revisions only grow, so a result of an older one is dropped), and `ledger::digest`
+  never renders it: a check must not read its own earlier verdict as evidence. On, a finished `ok`
   check passes its findings (`goal_check/note.rs`: every `contradicted`, plus every `not_checked`
   when the turn ended `done`) as one note of at most `MAX_NOTE_CHARS` (2000) built from the
   statuses alone, criterion and evidence text through `ledger::one_line` with angle brackets
@@ -879,8 +929,14 @@ the later 0.6 scope, not this contract.
   numbered excerpts), `tools/mod.rs` (`validate_path`).
 - A decision model is exposed by `withnav-provider`'s `systemone.rs::DecisionModel` (implemented by
   `SystemOneClient`). Compaction pruning (`agent/compaction/prune.rs`) and both watchdogs use
-  this same seam; questions and answer interpretation stay with the caller. The standalone
-  `instinct-flow` crate remains independent and owns its own protocol client.
+  this same seam; questions and answer interpretation stay with the caller. Each of them wraps
+  its model in `layers/recorded.rs::Recorded`, which writes one line per call to
+  `<data dir>/instinct-calls.jsonl` (`paths::instinct_call_log`); a new Instinct caller outside
+  flows wraps its model the same way. The standalone `instinct-flow` crate remains independent and
+  owns its own protocol client.
+- An append-only JSON-lines log beside the database (`goal-checks.jsonl`, `instinct-calls.jsonl`)
+  writes through `jsonl::append`, which creates the directory and never lets a write failure reach
+  the session.
 - A new wire family (another provider API, such as a native Anthropic client) goes in
   `crates/withnav-provider/`, next to `fim.rs` and `systemone.rs`, with its wire-golden test in that
   crate's `tests/`; it never imports the root. Which layer or agent uses it is decided in the root
@@ -909,6 +965,11 @@ the later 0.6 scope, not this contract.
   `validation.rs`. The agent loop reaches it only through `agent/authorize.rs`. A judgement a
   Captain may want to tune goes in the permission flow (`src/flows/builtin/permission-default.toml`),
   not in Rust. Never add a per-tool bypass: an unknown tool, MCP included, is decided like any other.
+- What a session remembers goes through `src/memory/` (`MemoryStore`): a change to an item is a
+  new version written with the expected current version, never an `UPDATE` of its text; a move
+  that lets more projects read something returns `WideningRequiresConfirmation` unless the
+  Captain confirmed it. The register imports nothing of `permission/`, `flows/` or `agent/`, and
+  its text never enters the permission input: memory informs, it never authorizes.
 - A new MCP capability goes in `src/mcp/`; its tools reach the agent as ordinary registry tools named
   `mcp__<server>__<tool>`, so permissions, events and the context budget need no MCP-specific code.
 - Historical `pipeline.toml` parsing belongs only in `src/flows/migrate/legacy.rs`; it has no runtime engine.

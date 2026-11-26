@@ -37,6 +37,39 @@ pub enum SettingsError {
     },
 }
 
+/// The `permissions.review` setting. The Captain's file is behind the fixed floor, so the agent
+/// cannot switch the mode; a session reads it once, at its start, and its children keep reading
+/// the file when they start.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReviewMode {
+    /// No metacognition review.
+    Off,
+    /// The metacognition review is logged and cannot answer the card.
+    Shadow,
+    /// A review of an ordinary question may allow the call once or leave it waiting.
+    #[default]
+    On,
+}
+
+impl ReviewMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Shadow => "shadow",
+            Self::On => "on",
+        }
+    }
+
+    pub fn parse(word: &str) -> Option<Self> {
+        match word {
+            "off" => Some(Self::Off),
+            "shadow" => Some(Self::Shadow),
+            "on" => Some(Self::On),
+            _ => None,
+        }
+    }
+}
+
 /// The whole settings object, unknown keys included.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Settings {
@@ -83,6 +116,16 @@ impl Settings {
             Some(value) => value
                 .as_bool()
                 .ok_or_else(|| "goal_watch.notes must be a boolean".into()),
+        }
+    }
+    /// `permissions.review`: the metacognition review mode, on when absent.
+    pub fn permissions_review(&self) -> Result<ReviewMode, String> {
+        match self.get_dotted("permissions.review") {
+            None => Ok(ReviewMode::default()),
+            Some(value) => value
+                .as_str()
+                .and_then(ReviewMode::parse)
+                .ok_or_else(|| "permissions.review must be off, shadow or on".into()),
         }
     }
     /// Reads a dotted settings key without dropping unknown sibling keys.
@@ -633,6 +676,41 @@ mod tests {
                 Err("goal_watch.notes must be a boolean".into())
             );
         }
+    }
+
+    #[test]
+    fn permissions_review_defaults_to_on_and_takes_three_words() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.permissions_review(), Ok(ReviewMode::On));
+        for (word, mode) in [
+            ("off", ReviewMode::Off),
+            ("shadow", ReviewMode::Shadow),
+            ("on", ReviewMode::On),
+        ] {
+            settings.set_dotted("permissions.review", serde_json::json!(word));
+            assert_eq!(settings.permissions_review(), Ok(mode));
+            assert_eq!(mode.as_str(), word);
+        }
+        for bad in [
+            serde_json::json!("Shadow"),
+            serde_json::json!(true),
+            serde_json::json!(1),
+            Value::Null,
+        ] {
+            settings.root.insert(
+                "permissions".into(),
+                serde_json::json!({ "review": bad.clone() }),
+            );
+            assert_eq!(
+                settings.permissions_review(),
+                Err("permissions.review must be off, shadow or on".into()),
+                "{bad}"
+            );
+        }
+        // The sibling key keeps its own reading.
+        settings.set_dotted("permissions", serde_json::json!({"scratch_dirs": []}));
+        assert_eq!(settings.permissions_review(), Ok(ReviewMode::On));
+        assert!(settings.permissions_scratch_dirs().unwrap().is_empty());
     }
 
     #[test]

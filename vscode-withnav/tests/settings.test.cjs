@@ -15,7 +15,7 @@ function settingsBody(revision = "rev-1") {
     paths: { config: "/home/u/.config/withnav/config.json", models: "/home/u/.config/withnav/models.json", agents: ["/home/u/.config/withnav/agents", "/ws/.withnav/agents"] },
     fields: [
       field("layers.reflex", { model: "inception/mercury-edit-2", variant: null }, null, true, "restart"),
-      field("layers.instinct", { model: "omniroute/typesafe/jev-1.13", variant: null }, null, true, "restart"),
+      field("layers.instinct", { model: "omniroute/example/decision-model", variant: null }, null, true, "restart"),
       field("layers.metacognition", { model: "omniroute/combo/flash", variant: "low" }, null, true, "restart"),
       field("default_agent", "build", "build", true),
       field("permissions.scratch_dirs", null, ["/run/user/1000/withnav", "/tmp/withnav"], false),
@@ -34,7 +34,7 @@ function settingsBody(revision = "rev-1") {
 }
 const modelsBody = { models: [
   { name: "inception/mercury-edit-2", gateway: "inception", provider_group: "inception", upstream_id: "mercury-edit-2", api: "fim", context_window: 128000 },
-  { name: "omniroute/typesafe/jev-1.13", gateway: "omniroute", provider_group: "typesafe", upstream_id: "typesafe/jev-1.13", api: "systemone", context_window: 64000 },
+  { name: "omniroute/example/decision-model", gateway: "omniroute", provider_group: "example", upstream_id: "example/decision-model", api: "systemone", context_window: 64000 },
   { name: "omniroute/combo/flash", gateway: "omniroute", provider_group: "combo", upstream_id: "combo/flash", api: "chat", context_window: 128000, variants: ["low", "high"] },
   { name: "omniroute/cc/opus", gateway: "omniroute", provider_group: "cc", upstream_id: "cc/opus", api: "chat", context_window: 1000000, reported_output: 128000, variants: ["high", "max"] },
 ] };

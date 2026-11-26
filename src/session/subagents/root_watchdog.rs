@@ -1,4 +1,5 @@
 //! Root supervision reuses child evidence and scheduling, but settles tools before stopping.
+use crate::layers::recorded::{Caller, Recorded};
 use crate::provider::systemone::DecisionModel;
 use std::sync::Arc;
 use std::time::Duration;
@@ -508,6 +509,7 @@ impl Service {
     pub(crate) fn prepare_root_watchdog(
         &self,
         workspace: &std::path::Path,
+        session_id: crate::session::service::SessionId,
     ) -> Result<RootWatchdog, crate::error::ServerError> {
         let settings = crate::settings::load(&self.config.config_dir)
             .map_err(|e| crate::error::ServerError::History(e.to_string()))?;
@@ -532,7 +534,14 @@ impl Service {
                     cache.clone(),
                 )
             })
-            .map(|client| Arc::new(client) as Arc<dyn DecisionModel>);
+            .map(|client| {
+                Recorded::instinct(
+                    client,
+                    Caller::RootWatchdog,
+                    session_id,
+                    &self.config.data_dir,
+                )
+            });
         let reviewer = models.as_ref().and_then(|models| {
             let assigned = match crate::provider::layers::assigned(
                 models,
@@ -576,7 +585,17 @@ impl Service {
         let clock: Arc<dyn Clock> = Arc::new(RealClock);
         #[cfg(any(test, feature = "test-support"))]
         let (clock, judge, reviewer) = match self.test_points.root_watchdog_test() {
-            Some(test) => (test.clock, Some(test.judge), test.reviewer),
+            Some(test) => {
+                let judge = Recorded::new(
+                    test.judge,
+                    None,
+                    Caller::RootWatchdog,
+                    session_id.to_string(),
+                    crate::paths::instinct_call_log(&self.config.data_dir),
+                );
+                let judge = Arc::new(judge) as Arc<dyn DecisionModel>;
+                (test.clock, Some(judge), test.reviewer)
+            }
             None => (clock, judge, reviewer),
         };
         Ok(RootWatchdog {

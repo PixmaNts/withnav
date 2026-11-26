@@ -1,5 +1,5 @@
-//! Old-prefix tool-output pruning inspired by pi-compact-jev 0.5.1
-//! (MIT, Copyright (c) 2026 dev-willbird1936). Calls and the stored transcript
+//! Old-prefix tool-output pruning adapted from an MIT-licensed compaction plugin
+//! (Copyright (c) 2026 dev-willbird1936). Calls and the stored transcript
 //! stay intact; only the summary's temporary projection is reduced.
 //!
 //! Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -37,6 +37,8 @@ use crate::provider::systemone::{Answer, Answers, Question, Questions};
 // no more than one estimated token per UTF-8 byte, including escaped envelopes.
 const STATE_BYTES: usize = 28_000;
 const REQUEST_BYTES: usize = 64_000;
+/// The bytes the request size estimate reserves for the model identifier.
+const MODEL_ID_ALLOWANCE: usize = 64;
 
 fn head(text: &str, chars: usize) -> String {
     text.chars().take(chars).collect()
@@ -250,11 +252,14 @@ fn probability(answers: &Answers, key: &str) -> Option<f64> {
     }
 }
 
+/// An upper bound of the request body for any Instinct model identifier of up to
+/// [`MODEL_ID_ALLOWANCE`] bytes, plus a 256-byte margin. The estimate once used one fixed
+/// identifier and so underestimated every longer one; the assigned model is
+/// not known here, and the bound needs none.
 fn request_bytes(input: &PruneBatch) -> usize {
-    serde_json::to_vec(
-        &json!({"model":"typesafe/jev-1.13", "state":input.state,"questions":input.questions}),
-    )
-    .map_or(usize::MAX, |bytes| bytes.len())
+    serde_json::to_vec(&json!({"model":"", "state":input.state,"questions":input.questions}))
+        .map_or(usize::MAX, |bytes| bytes.len())
+        + MODEL_ID_ALLOWANCE
         + 256
 }
 
@@ -392,3 +397,37 @@ pub async fn prune(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod sizing_tests {
+    use super::*;
+
+    // The wire body names the model the Instinct layer is assigned, which the
+    // estimate cannot know: it must stay an upper bound for any identifier up
+    // to the allowance, not only for the one model that was assigned when the
+    // estimate was written.
+    #[test]
+    fn prune_sizes_requests_without_naming_a_model() {
+        let batch = PruneBatch {
+            state: json!({"context":"x".repeat(500)}).to_string(),
+            questions: [(
+                "useful_t0".to_owned(),
+                Question::Noul {
+                    instructions: "y".repeat(300),
+                },
+            )]
+            .into(),
+        };
+        let wire = |model: &str| {
+            serde_json::to_vec(
+                &json!({"model":model,"state":batch.state,"questions":batch.questions}),
+            )
+            .unwrap()
+            .len()
+        };
+        let longest = "m".repeat(MODEL_ID_ALLOWANCE);
+
+        assert!(request_bytes(&batch) >= wire(&longest) + 256);
+        assert_eq!(request_bytes(&batch), wire(&longest) + 256);
+    }
+}

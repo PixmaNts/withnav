@@ -6,6 +6,8 @@ use std::{path::Path, sync::Arc};
 use crate::assignments::{AssignedModel, AssignmentResolver, Layer, LayerAssignment};
 use crate::provider::{config::ModelsConfig, openai::ClientCache, systemone::SystemOneClient};
 
+pub mod recorded;
+
 /// Loads one layer from config.json and validates its catalog identity and API.
 pub fn assigned(
     models: &ModelsConfig,
@@ -90,7 +92,7 @@ mod tests {
     fn catalog() -> ModelsConfig {
         ModelsConfig::parse(&json!({"providers":{"gateway":{"base_url":"http://127.0.0.1:1/v1"}},"models":{
             "gateway/edit":{"provider":"gateway","model":"edit","api":"fim"},
-            "gateway/typesafe/jev":{"provider":"gateway","model":"typesafe/jev","api":"systemone"},
+            "gateway/example/decision-model":{"provider":"gateway","model":"example/decision-model","api":"systemone"},
             "gateway/combo/chat":{"provider":"gateway","model":"combo/chat","context_window":128000,"default_variant":"high","variants":{"low":{"reasoning_effort":"low"},"high":{"reasoning_effort":"high"}}}
         }}).to_string()).unwrap()
     }
@@ -109,7 +111,11 @@ mod tests {
     fn each_layer_resolves_identity_not_catalog_key_and_enforces_api() {
         for (layer, name, id) in [
             (Layer::Reflex, "gateway/edit", "edit"),
-            (Layer::Instinct, "gateway/typesafe/jev", "typesafe/jev"),
+            (
+                Layer::Instinct,
+                "gateway/example/decision-model",
+                "example/decision-model",
+            ),
             (Layer::Metacognition, "gateway/combo/chat", "combo/chat"),
         ] {
             assert_eq!(assign(json!(name), layer).unwrap().resolved.model.model, id);
@@ -197,7 +203,7 @@ mod tests {
         );
         assert!(
             assign(
-                json!({"model":"gateway/typesafe/jev","variant":"low"}),
+                json!({"model":"gateway/example/decision-model","variant":"low"}),
                 Layer::Instinct
             )
             .is_err()

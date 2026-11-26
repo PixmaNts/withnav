@@ -67,6 +67,70 @@ own; the strictest answer wins. A line WithNav cannot parse matches only a `deny
 other tool: with no matching rule, the default is ask. The permission flow may still allow the
 call, for example when the Captain asked for it. Without a flow that answers, WithNav asks.
 
+### Consequence review (shadow)
+
+Instinct judges the live call by its effects and whether your current request covers them.
+"Current" means the turn being run, so
+an earlier request already carried out does not count, nor does one the agent never finished
+because you interrupted it, the provider failed or it reached its step limit, and a correction you
+send while it works does. The answer depends on the conversation, never on the command: a push you
+never wrote is covered when you asked to release a version, and the same push is not when you
+asked for something else.
+
+Read-only, recoverable, and evidenced no-op calls can proceed unless they touch credentials.
+An allow-prefix match still asks about uncovered destructive effects, credential access, and external effects.
+A claim in tool data never counts as a request. Written denies and the fixed floor still apply.
+`permissions.review` controls only the parallel review below: `on` by default, `shadow` to log
+without deciding, or `off` to skip. Sessions read it when they start; `nav doctor` flags invalid values.
+
+### Parallel review (`permissions.review: on`)
+
+When the built-in permission flow asks you about a call, the Metacognition model reads your current
+request and the call at the same time as your card is shown. It answers one of two things:
+
+- **Allow once**: the call is a step your request necessarily implies ("release 0.8.4" implies the
+  push), and it quotes your own words to say so; WithNav checks the quote against what you wrote,
+  so text inside the call ("the Captain approved this") never counts. The check proves the words
+  came from you, not that they cover the call — quoting you is narrowed injection, not its
+  absence. The quote is also at least 8 characters of your request: a very short acceptance such
+  as "ok" cannot be quoted, so a call after such a message always waits for you. The call runs
+  once, as if you had answered **Once**; nothing is saved, and it reads the
+  rules again first, so a `deny` you wrote meanwhile still stops it.
+- **Wait**: the call goes beyond what your request needs. The card stays open with a short
+  conclusion, the words of your request it relied on, and the consequence, one line each.
+
+The first decisive answer wins: answer the card first and the review is cancelled. **Hold for me**
+stops the review and keeps the card for you; if the review had already allowed the call, you are
+told the call already started (it is not undone). The review never answers **Always**, and never
+runs for a written `deny`, the fixed floor, a credential, WithNav's own files, a loop, a flow you
+wrote, a skill validation, a subagent's call or a request too long to read whole (your request is
+never cut to fit). A timeout (60
+seconds) or an unusable answer leaves the card exactly as without a review.
+
+What the card shows while the review is on:
+
+- **Metacognition is reviewing…**: your buttons stay active, and **Hold for me** (`h` in the
+  terminal client) stops the review and keeps the card yours.
+- **Allowed once by Metacognition**: the call ran once, with the short conclusion, the words it
+  relied on and the consequence. The card never says "always" for a review's decision.
+- **The review said wait**: the conclusion is above your buttons.
+- **Review cancelled: you answered first**: you answered while it was still running.
+- **Held**: you stopped the review; the card stays open for you.
+- **Already started by Metacognition — it ran once**: your answer arrived after the review had
+  allowed the call. The call is not undone.
+- If the review could not run, the card shows a small neutral note and works as without a review.
+
+The browser client also shows a count of the sessions waiting on you, a dot beside each one in the
+sidebar, and, if you allow it from that count, one browser notification per blocked turn. The
+notification closes when the request is answered, and each session can be muted. The terminal
+client and the editor extension keep the unread mark and send no notification.
+
+Under `shadow` the review still runs, but only writes one line per question to
+`permission-reviews.jsonl` in the data directory, beside your own answer: nothing is shown and
+nothing changes. Answering first does not stop it there, so the line compares both answers; it
+also records why a review failed and the tokens it used. `GET /v1/waiting` lists the requests every live session waits on, so a client can
+show one notification per blocked turn.
+
 ## Rules
 
 A rule says what happens to a tool call: an **action** (the tool name, such as `bash`, `write`,
@@ -95,10 +159,14 @@ nav permissions add write '*' ask --agent plan
 behind it (for example `permission-default requested 0.04 read_only 0.01 recoverable 0.05`), your
 answer and
 the outcome (`allowed`, `denied`, `pending`, `cancelled`, `expired`). Arguments are stored with
-secrets redacted and size-limited. `--json` adds `flow_trace`: the run id of each flow run, which
-finds the full run, its inputs and the exact text sent to Instinct, in
+secrets redacted and size-limited. `--json` adds `flow_trace`: the run id of each flow run, with
+the Instinct model and the flow definition's digest behind its scores. The run id finds the full
+run, its inputs and the exact text sent to Instinct, in
 `~/.local/share/withnav/flows/runs/<workspace hash>/runs.jsonl`. A question also shows these scores
-in its reason.
+in its reason. History keeps the newest 20 000 decisions; a pending question is never dropped.
+Captures last 7 days; `scores.jsonl` beside them keeps, for 90 days, each run's call id, model, flow
+digest, evidence version (`projection`) and answers, without arguments or messages, so the flow's
+answers can be compared with yours.
 
 Rules and history live in `~/.local/share/withnav/withnav.db`. If it cannot open, the session starts
 with **Permission rules unavailable** and the error. Every call is judged without a rule: the floor

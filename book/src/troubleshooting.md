@@ -36,7 +36,7 @@ validated; a flow that is not validated does not load.
 ### Read the output
 
 ```text
-✓ ok assignment.layer.instinct: gateway/typesafe/jev variant=off
+✓ ok assignment.layer.instinct: gateway/example/decision-model variant=off
 ✓ ok live.instinct.editor: valid answer (145 ms)
 ⚠ warning flows.workspace.guard: current flow version not validated; not loaded
 ✕ failed live.metacognition.chat: HTTP 401 rejected: invalid api key; Check provider authentication, model id and API support.
@@ -90,8 +90,27 @@ No other model is chosen for you. A layer that is off never falls back silently:
   asks you.
 - Without Metacognition, there are no remarks.
 
+When Instinct is on but a watchdog or compaction seems not to act, read the last lines of
+`instinct-calls.jsonl` in the data directory: each call shows its latency and, on failure, why (an
+`abandoned` call ran past its deadline). See [Layers](layers.md#what-instinct-was-asked).
+
 An unknown model for a non-default agent falls back to the default agent's model, with a warning
 that names the agent and the requested model.
+
+### "instinct rejected" notice
+
+The Instinct provider refused a request (HTTP 4xx): usually a model id it does not serve, a model
+without the `systemone` API, or a refused key. The notice names the status and the provider's
+reason (left out when it echoes a credential). It is not an outage: every later call still tries
+Instinct, so a fixed configuration works at once. Until then, the permission flow falls back on your
+rules. You get the notice once; it comes again only after Instinct has answered in between.
+
+Check `assignment.layer.instinct` and `live.instinct.*` in `nav doctor --layer instinct`. The flow
+health counters show `rejections` apart from `timeouts`, and the failed run record holds
+`provider_status`.
+
+"instinct unavailable" is the other notice: a timeout or an unreachable endpoint. Instinct is then
+skipped for a cooldown, and one answer clears it.
 
 ### `✕ failed auth.provider.<name>`
 

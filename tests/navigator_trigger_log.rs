@@ -283,7 +283,7 @@ impl instinct_flow::DecisionClient for RejectingInstinct {
         Box::pin(async {
             Err(instinct_flow::DecisionError::ProviderRejected {
                 status: 400,
-                reason: Some("model jev-router is not served".into()),
+                reason: Some("model decision-router is not served".into()),
             })
         })
     }
@@ -321,10 +321,15 @@ async fn a_failed_flow_trigger_names_the_run_that_holds_the_rejection() {
         let failure = run.failure.as_ref().expect("a failed run");
         assert!(
             failure.message.contains(
-                "provider rejected the request (HTTP 400): model jev-router is not served"
+                "provider rejected the request (HTTP 400): model decision-router is not served"
             ),
             "{}",
             failure.message
+        );
+        assert_eq!(
+            failure.provider_status,
+            Some(400),
+            "the record names the refusal without parsing the message"
         );
     }
 }

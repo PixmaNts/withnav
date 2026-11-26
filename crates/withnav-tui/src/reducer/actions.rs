@@ -2,7 +2,10 @@
 use super::{push_local, refresh_model, send_for_tab, start_conversation};
 use crate::{
     commands,
-    protocol::{Action, CommandRequest, CreateSessionRequest, Effect, Generation, Overlay},
+    protocol::{
+        Action, CommandRequest, CreateSessionRequest, Effect, Generation, Overlay,
+        PermissionBinding,
+    },
     state::{
         Activity, BlockKind, DEFAULT_AGENT, MAX_TABS, NO_VARIANT, PLAN_AGENT, SessionState, State,
         Tab, TabView, UiState, VariantPick,
@@ -749,16 +752,34 @@ pub fn handle_action(s: &mut State, ui: &mut UiState, a: Action) -> Vec<Effect> 
             } else {
                 s.session.as_ref().map(|m| m.session_id.clone())
             };
+            let hold = answer.decision == "hold";
+            let (can_hold, binding) = s
+                .open_permission()
+                .map(|p| {
+                    let binding = p.call_digest.clone().zip(p.turn_id.clone()).map(
+                        |(call_digest, turn_id)| PermissionBinding {
+                            call_digest,
+                            turn_id,
+                        },
+                    );
+                    (p.can_hold(), binding)
+                })
+                .unwrap_or_default();
             match (open, session) {
                 (Some(open), Some(session_id))
                     if open == request_id
-                        && s.answered_permission.as_deref() != Some(request_id.as_str()) =>
+                        && s.answered_permission.as_deref() != Some(request_id.as_str())
+                        && (!hold || can_hold) =>
                 {
-                    s.answered_permission = Some(request_id.clone());
+                    // A hold is not an answer: the card stays the Captain's and answerable.
+                    if !hold {
+                        s.answered_permission = Some(request_id.clone());
+                    }
                     vec![Effect::AnswerPermission {
                         session_id,
                         request_id,
                         answer,
+                        binding,
                     }]
                 }
                 _ => vec![],

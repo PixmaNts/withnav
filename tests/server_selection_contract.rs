@@ -48,13 +48,13 @@ async fn http_selection_catalog_events_and_assignments_share_canonical_identity(
             "mock/direct":{"provider":"mock","model":"direct","supports_tools":true,"context_window":200000,
                 "variants":{"high":{"reasoning_effort":"high"}},"default_variant":"high"},
             "mock/fill":{"provider":"mock","model":"fill","api":"fim"},
-            "mock/typesafe/jev":{"provider":"mock","model":"typesafe/jev","api":"systemone"}
+            "mock/example/decision-model":{"provider":"mock","model":"example/decision-model","api":"systemone"}
         }
     }).to_string()).unwrap();
     std::fs::write(tmp.path().join("cfg/config.json"), json!({
         "default_agent":"build", "permissions":{"scratch_dirs":[]},
         "agents":{"build":{"model":"mock/combo/base"},"plan":{"model":"mock/combo/base"}},
-        "layers":{"reflex":"mock/fill","instinct":"mock/typesafe/jev","metacognition":"mock/combo/base"}
+        "layers":{"reflex":"mock/fill","instinct":"mock/example/decision-model","metacognition":"mock/combo/base"}
     }).to_string()).unwrap();
     let (addr, task) = spawn_server(state.clone()).await;
     let base = format!("http://{addr}");

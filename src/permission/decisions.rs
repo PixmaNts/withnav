@@ -362,6 +362,26 @@ mod tests {
         );
     }
 
+    // The ceiling was 1 000 rows until 2026-11-25: 673 scored decisions were
+    // all the history left to compare Instinct's answers with the Captain's,
+    // and a two-week comparison would have lost its first days to the prune.
+    #[test]
+    fn a_thousand_decisions_no_longer_evict_the_first_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PermissionStore::in_memory().unwrap();
+        let first = store
+            .record(&decision("session", Outcome::Allowed, dir.path()))
+            .unwrap();
+        for _ in 0..1_001 {
+            store
+                .record(&decision("session", Outcome::Allowed, dir.path()))
+                .unwrap();
+        }
+        let rows = sessions_and_ids(&store, 5_000);
+        assert_eq!(rows.len(), 1_002);
+        assert!(rows.iter().any(|(_, id)| *id == first));
+    }
+
     #[test]
     fn recording_past_the_ceiling_prunes_the_oldest_settled_rows() {
         let dir = tempfile::tempdir().unwrap();
@@ -589,12 +609,16 @@ const SHORT_TEXT_BYTES: usize = 256;
 /// which questions could become rules, not to be a ledger of every call (owner
 /// decision of 2026-11-10), so it is bounded rather than kept for the life of
 /// the installation: a call argument the user never turns into a rule is not
-/// worth storing forever. `nav permissions history` prints the newest 100 by
-/// default and the flow captures are bounded at 1000 records a workspace, so a
-/// thousand recent decisions is well past what rule promotion reads: a row is
-/// a 4 KiB snapshot plus the bounded matches, trace and answer, which keeps
-/// the whole table to single-digit MiB.
-pub const MAX_DECISION_ROWS: usize = 1_000;
+/// worth storing forever.
+///
+/// It is also the only place the Captain's answer to a question is kept, and
+/// so the label an Instinct score is compared with. At the 1 000 rows kept
+/// until 2026-11-25, 673 scored decisions were the whole history left and a
+/// two-week comparison would have lost its first days to the prune. Twenty
+/// thousand rows cover those weeks at more than a thousand judged calls a
+/// day. Every row is bounded (a 4 KiB redacted snapshot, a 2 KiB answer,
+/// short matches and trace), so the ceiling bounds the table as well.
+pub const MAX_DECISION_ROWS: usize = 20_000;
 
 /// Cut `text` at a character boundary; returns whether it was cut.
 fn cut(text: &mut String, limit: usize) -> bool {

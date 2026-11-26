@@ -586,14 +586,25 @@ pub async fn resolve_permission_with_origin(
     {
         return Err(PermissionError::Stale.into());
     }
+    if origin == super::permissions::PermissionOrigin::Metacognition
+        && (decision != PermissionDecision::AllowOnce
+            || !matches!(&actor.pending, Some(PendingInteraction::Permission { request, .. })
+                if request.id == request_id && request.review.is_some()))
+    {
+        return Err(PermissionError::Stale.into());
+    }
     if matches!(&actor.pending, Some(PendingInteraction::Permission { request, .. }) if request.id == request_id && request.tool == "skill" && !request.skill_rule)
     {
         return resolve_skill(actor, decision, origin, observe).await;
     }
     let bypass = origin == super::permissions::PermissionOrigin::Bypass;
+    let reviewed = origin == super::permissions::PermissionOrigin::Metacognition;
     match &actor.pending {
         Some(PendingInteraction::Permission { request, .. }) if request.id == request_id => {
-            if (bypass && (request.requires_captain || decision != PermissionDecision::AllowOnce))
+            // The review may only allow once, and only a request it was given.
+            if (reviewed && (request.review.is_none() || decision != PermissionDecision::AllowOnce))
+                || (bypass
+                    && (request.requires_captain || decision != PermissionDecision::AllowOnce))
                 || (decision == PermissionDecision::AllowAlways && request.always.is_empty())
                 || decision == PermissionDecision::AllowSkillMachine
             {
@@ -631,6 +642,27 @@ pub async fn resolve_permission_with_origin(
         // deny rule written since the question still stops it.
         PermissionDecision::AllowOnce if bypass => {
             run_decided(actor, &call, observe, request.repeats, request.decision_id).await
+        }
+        // The review answered a question raised earlier: the rules and the floor are read again
+        // first, and anything changed since (a deny rule, a floor, another rule) sends the call
+        // through the normal decision instead of running it on the review's word.
+        PermissionDecision::AllowOnce if reviewed => {
+            let rule_id = request.review.as_ref().and_then(|ticket| ticket.rule_id);
+            if authorize::review_still_holds(actor, &call, request.repeats, rule_id).await {
+                if let Some(id) = request.decision_id {
+                    authorize::update(
+                        actor,
+                        id,
+                        Outcome::Allowed,
+                        answer.as_ref(),
+                        Some("metacognition"),
+                    );
+                }
+                let note = authorize::answered_approval(&request, "metacognition");
+                run_approved(actor, &call, destination.as_deref(), note, observe).await
+            } else {
+                run_decided(actor, &call, observe, request.repeats, request.decision_id).await
+            }
         }
         PermissionDecision::AllowOnce | PermissionDecision::AllowAlways => {
             let mut answer = answer.unwrap_or_default();
@@ -1262,11 +1294,16 @@ async fn run_decided(
     // WithNav's own conversation controls act on this session and its
     // children, never on files, commands or the network: no rule covers them.
     // Each child's own calls go through the decision.
-    if actor.permission_store.is_some()
-        && matches!(
-            call.name.as_str(),
-            "task" | "steer_subagent" | "decide_subagent" | "intent" | "reveal"
-        )
+    // Native memory controls enforce their own scope and confirmation rules.
+    if actor
+        .registry
+        .get(&call.name)
+        .is_some_and(|tool| tool.is_memory_scope_control())
+        || (actor.permission_store.is_some()
+            && matches!(
+                call.name.as_str(),
+                "task" | "steer_subagent" | "decide_subagent" | "intent" | "reveal"
+            ))
     {
         return execute_and_settle(actor, call, None, None, observe).await;
     }

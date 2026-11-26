@@ -20,7 +20,10 @@ mod instance;
 pub mod ledger;
 mod lifecycle;
 mod mcp;
+pub(crate) mod memory;
 mod message;
+mod metacognition_client;
+pub mod permission_review;
 pub mod preflight;
 mod prompt_command;
 mod rules_log;
@@ -43,6 +46,7 @@ pub use hooks::{NoHooks, SessionHooks, StartedSession};
 pub use message::MessageAccepted;
 pub use sender::SessionSender;
 pub use service::{
-    CLEAR_WORD, Service, SessionId, SessionMetadata, SkillEntry, SkillsBody, VariantChoice,
+    AnswerOutcome, CLEAR_WORD, CaptainAnswer, Service, SessionId, SessionMetadata, SkillEntry,
+    SkillsBody, VariantChoice,
 };
 pub use subscription::Subscription;

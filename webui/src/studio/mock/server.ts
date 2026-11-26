@@ -406,7 +406,7 @@ function record(def: Definition, payload: Record<string, unknown>, w: Walk, mode
     duration_ms: duration,
     budget_ms: def.flow.blocking ? def.flow.budget_ms : null,
     event: { trigger: def.flow.on, payload },
-    identity: { model: "typesafe/jev-1.13", variant: null },
+    identity: { model: "example/decision-model", variant: null },
     inputs: {},
     nodes: w.nodes,
     batches: w.batches,

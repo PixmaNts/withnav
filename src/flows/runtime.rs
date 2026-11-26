@@ -36,10 +36,13 @@ fn bounded_captain_messages(messages: Vec<String>) -> InputValue {
     }
 }
 
-/// The run id and the score of every node of `outcome` that asked Instinct.
+/// The run id, the model, the flow digest and the score of every node of
+/// `outcome` that asked Instinct.
 fn run_scores(outcome: &RunOutcome) -> RunScores {
     RunScores {
         run_id: outcome.trace.run_id.clone(),
+        definition_digest: outcome.trace.definition_digest.clone(),
+        model: outcome.trace.identity.model.clone(),
         scores: outcome
             .trace
             .nodes
@@ -91,6 +94,7 @@ fn resolve_permissions(
             } => fallback_actions,
             RunResult::Skipped => continue,
         };
+        let run = run_scores(outcome);
         let verdicts: Vec<_> = actions
             .iter()
             .filter_map(|a| FlowAction::parse(&a.action).map(|action| (action, a)))
@@ -114,10 +118,12 @@ fn resolve_permissions(
             );
             answers.push(PermissionFlowAnswer {
                 flow: outcome.trace.flow_name.clone(),
-                run_id: outcome.trace.run_id.clone(),
+                run_id: run.run_id.clone(),
                 action: FlowAction::AskCaptain,
                 used_rule: false,
-                scores: run_scores(outcome).scores,
+                scores: run.scores.clone(),
+                definition_digest: run.definition_digest.clone(),
+                model: run.model.clone(),
             });
             candidates.push((
                 FlowAction::AskCaptain,
@@ -128,10 +134,12 @@ fn resolve_permissions(
         } else if verdicts.is_empty() {
             answers.push(PermissionFlowAnswer {
                 flow: outcome.trace.flow_name.clone(),
-                run_id: outcome.trace.run_id.clone(),
+                run_id: run.run_id.clone(),
                 action: rule_action,
                 used_rule: true,
-                scores: run_scores(outcome).scores,
+                scores: run.scores.clone(),
+                definition_digest: run.definition_digest.clone(),
+                model: run.model.clone(),
             });
             candidates.push((
                 rule_action,
@@ -147,10 +155,12 @@ fn resolve_permissions(
             let resolved = if used_rule { rule_action } else { parsed };
             answers.push(PermissionFlowAnswer {
                 flow: outcome.trace.flow_name.clone(),
-                run_id: outcome.trace.run_id.clone(),
+                run_id: run.run_id.clone(),
                 action: resolved,
                 used_rule,
-                scores: run_scores(outcome).scores,
+                scores: run.scores.clone(),
+                definition_digest: run.definition_digest.clone(),
+                model: run.model.clone(),
             });
             candidates.push((
                 resolved,
@@ -285,6 +295,13 @@ mod tests {
             delegation_cut: false,
             recent: vec![],
             recent_cut: false,
+            current_request: vec![],
+            current_request_cut: false,
+            tool_trail: vec![],
+            tool_trail_cut: false,
+            // Off unless a test asks for the review: the review dials Instinct beside the
+            // decision and would change what the other tests count.
+            review: crate::settings::ReviewMode::Off,
             protected_check: None,
         }
     }
@@ -891,18 +908,18 @@ mod tests {
             ),
             (false, RuleResult::Ask, vec![], false),
             // Under an allow rule a dangerous call asks unless it was requested.
-            (false, RuleResult::Allow, vec![("danger", 0.5)], false),
+            (false, RuleResult::Allow, vec![("destroys", 0.6)], false),
             (
                 false,
                 RuleResult::Allow,
-                vec![("danger", 0.5), ("requested", 0.6)],
+                vec![("destroys", 0.6), ("requested", 0.6)],
                 true,
             ),
             // A dangerous unrequested call is never let through as a read.
             (
                 false,
                 RuleResult::Allow,
-                vec![("danger", 0.5), ("read_only", 1.0), ("recoverable", 1.0)],
+                vec![("destroys", 0.6), ("read_only", 1.0), ("recoverable", 1.0)],
                 false,
             ),
             (false, RuleResult::Allow, vec![], true),
@@ -1002,12 +1019,25 @@ mod tests {
         }
     }
 
-    /// Each round trip to Instinct adds its latency to the permission decision, and the overall
-    /// flow deadline can cut a second or third one: the questions of one path are asked together.
+    /// Outcome questions batch separately from current-request coverage.
     #[tokio::test]
-    async fn the_builtin_flow_asks_the_questions_of_a_path_in_one_request() {
-        let ask_path = ["read_only", "recoverable", "requested"];
-        let allow_path = ["danger", "requested"];
+    async fn the_builtin_flow_separates_coverage_from_outcome_questions() {
+        let ask_path = [
+            "external_effect",
+            "inert",
+            "read_only",
+            "recoverable",
+            "requested",
+            "self_advocating",
+            "touches_credentials",
+        ];
+        let allow_path = [
+            "destroys",
+            "external_effect",
+            "requested",
+            "self_advocating",
+            "touches_credentials",
+        ];
         for (rule, answers, batch, allowed) in [
             (RuleResult::None, vec![], &ask_path[..], false),
             (
@@ -1041,26 +1071,26 @@ mod tests {
             // A danger answer is not read without an allow rule.
             (
                 RuleResult::None,
-                vec![("danger", 1.0)],
+                vec![("destroys", 1.0)],
                 &ask_path[..],
                 false,
             ),
             (RuleResult::Allow, vec![], &allow_path[..], true),
             (
                 RuleResult::Allow,
-                vec![("danger", 0.49)],
+                vec![("destroys", 0.59)],
                 &allow_path[..],
                 true,
             ),
             (
                 RuleResult::Allow,
-                vec![("danger", 0.5)],
+                vec![("destroys", 0.6)],
                 &allow_path[..],
                 false,
             ),
             (
                 RuleResult::Allow,
-                vec![("danger", 0.5), ("requested", 0.6)],
+                vec![("destroys", 0.6), ("requested", 0.6)],
                 &allow_path[..],
                 true,
             ),
@@ -1086,7 +1116,10 @@ mod tests {
                 result.verdict
             );
             let requests = client.1.lock().unwrap().clone();
-            assert_eq!(requests, vec![batch.to_vec()], "{rule:?}");
+            assert!(requests.iter().any(|r| r == &["requested"]));
+            let mut ids: Vec<_> = requests.into_iter().flatten().collect();
+            ids.sort();
+            assert_eq!(ids, batch, "{rule:?}");
         }
     }
 
@@ -1147,6 +1180,7 @@ mod tests {
                 text: "yes go".into(),
             },
         ];
+        call.current_request = call.recent.clone();
         call
     }
 
@@ -1345,6 +1379,7 @@ mod tests {
                 application: Default::default(),
             },
             provider_outage: false,
+            provider_rejection: None,
         }
     }
 
@@ -1459,10 +1494,13 @@ mod tests {
             action: FlowAction::AskCaptain,
             used_rule: false,
             scores: Default::default(),
+            definition_digest: String::new(),
+            model: String::new(),
         };
         assert_eq!(
-            serde_json::to_value(&answer).unwrap()["action"],
-            json!("ask_captain")
+            serde_json::to_value(&answer).unwrap(),
+            json!({"flow": "f", "run_id": "r", "action": "ask_captain", "used_rule": false}),
+            "an answer no flow produced keeps its shape: no empty digest or model"
         );
     }
 
@@ -1883,6 +1921,286 @@ mod tests {
             "the probe renewed the window"
         );
     }
+    /// Refuses every decision as a provider does for a wrong model id (HTTP
+    /// 400), except the call `answer_at`, which it answers.
+    struct Refusing {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        answer_at: Option<usize>,
+    }
+    impl DecisionClient for Refusing {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/refusing".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            Box::pin(async move {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if Some(call) == self.answer_at {
+                    Ok(instinct_flow::protocol::DecisionResponse {
+                        answers: request
+                            .questions
+                            .keys()
+                            .map(|id| {
+                                (
+                                    id.clone(),
+                                    instinct_flow::protocol::Answer::Noul { noul: 1.0 },
+                                )
+                            })
+                            .collect(),
+                        usage: None,
+                    })
+                } else {
+                    Err(DecisionError::ProviderRejected {
+                        status: 400,
+                        reason: Some("model x has no systemone API".into()),
+                    })
+                }
+            })
+        }
+    }
+    /// Keeps every notice a runtime raises: outages counted, refusals in full.
+    #[derive(Default)]
+    struct NoticeLog {
+        unavailable: std::sync::atomic::AtomicUsize,
+        rejected: std::sync::Mutex<Vec<(u16, Option<String>)>>,
+    }
+    impl NoticeLog {
+        fn rejected(&self) -> Vec<(u16, Option<String>)> {
+            self.rejected
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        }
+    }
+    impl FlowEffects for NoticeLog {
+        fn effect<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: &'a ProposedAction,
+            _: &'a CancellationToken,
+        ) -> BoxFuture<'a, Result<(), ApplyError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn instinct_unavailable(&self) {
+            self.unavailable.fetch_add(1, Ordering::SeqCst);
+        }
+        fn instinct_rejected(&self, status: u16, reason: Option<&str>) {
+            self.rejected
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((status, reason.map(str::to_owned)));
+        }
+    }
+    // Every Instinct call was refused with HTTP 400 for three days
+    // (2026-11-23..25, a model id the gateway did not serve) and the Captain
+    // was never told: a refusal is not an outage, so the outage notice stayed
+    // silent while the permission flow fell back on every call. A refusal is
+    // reported once, with the status and the provider's reason, and again only
+    // after Instinct answered in between.
+    #[tokio::test]
+    async fn a_rejected_request_notifies_once_until_an_answer_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let notices = Arc::new(NoticeLog::default());
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Refusing {
+                calls: calls.clone(),
+                answer_at: Some(2),
+            }),
+            notices.clone(),
+        );
+        let call = || permission_call(dir.path().into(), false);
+        let refusal = (400, Some("model x has no systemone API".to_string()));
+        for _ in 0..2 {
+            let verdict = runtime
+                .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+                .await
+                .verdict;
+            assert!(
+                matches!(verdict, FlowVerdict::AskCaptain { .. }),
+                "a refused decision still applies the rule: {verdict:?}"
+            );
+        }
+        assert_eq!(
+            notices.rejected(),
+            vec![refusal.clone()],
+            "two refusals in a row are one episode"
+        );
+        // The third call is answered: the episode is over.
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        assert_eq!(notices.rejected().len(), 1, "an answer raises nothing");
+        runtime
+            .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+            .await;
+        assert_eq!(
+            notices.rejected(),
+            vec![refusal.clone(), refusal],
+            "a refusal after an answer is a new episode"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert_eq!(
+            notices.unavailable.load(Ordering::SeqCst),
+            0,
+            "a refusal is never reported as an outage"
+        );
+    }
+    // A refusal fails at once, so remembering it saves no wait; a window would
+    // only keep a configuration that was just fixed from being tried for the
+    // length of the cooldown.
+    #[tokio::test]
+    async fn a_rejection_does_not_open_the_outage_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let notices = Arc::new(NoticeLog::default());
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Refusing {
+                calls: calls.clone(),
+                answer_at: None,
+            }),
+            notices.clone(),
+        );
+        let call = || permission_call(dir.path().into(), false);
+        for dialled in 1..=3 {
+            runtime
+                .permission_pre_call(call(), RuleResult::None, CancellationToken::new())
+                .await;
+            assert!(!runtime.outage.active(), "no window after a refusal");
+            assert_eq!(
+                runtime
+                    .outage
+                    .state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .until,
+                None
+            );
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                dialled,
+                "every call still dials Instinct"
+            );
+        }
+        assert_eq!(notices.rejected().len(), 1);
+        assert_eq!(notices.unavailable.load(Ordering::SeqCst), 0);
+    }
+    // The Captain messages, the delegation and the recent conversation are
+    // cut and labelled by the host before a flow reads them; a score is only
+    // comparable with another one produced from the same shaping. The event
+    // names its version, and the catalogue must declare the field: an
+    // undeclared one fails every permission run as an invalid event.
+    #[tokio::test]
+    async fn the_permission_event_carries_its_projection_version() {
+        let (event, _, _) = FlowRuntime::permission_event(
+            permission_call(PathBuf::from("/project"), false),
+            RuleResult::None,
+            ContextSnapshot::default(),
+        );
+        assert_eq!(
+            event.payload["projection"],
+            json!(crate::agent::flow_hook::PERMISSION_PROJECTION)
+        );
+        assert_eq!(event.payload["projection"], json!(3));
+
+        let dir = tempfile::tempdir().unwrap();
+        let records = Arc::new(crate::flows::records::Records::new(dir.path(), dir.path()));
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Scripted {
+                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                answer_at: 0,
+            }),
+            Arc::new(NoEffects),
+        )
+        .with_records(records.clone());
+        let verdict = runtime
+            .permission_pre_call(
+                permission_call(dir.path().into(), false),
+                RuleResult::Allow,
+                CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(verdict.verdict, FlowVerdict::Allow);
+        records.shutdown(Duration::from_secs(2));
+        let captured = records.read().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(
+            captured[0].status, "success",
+            "the event is valid with its projection: {:?}",
+            captured[0].failure
+        );
+        assert_eq!(captured[0].event.payload["projection"], json!(3));
+        // The score line kept for 90 days joins the answer to its versions:
+        // the call, the model, the flow text and the evidence shaping.
+        let scores = records.scores().unwrap();
+        assert_eq!(scores.len(), 1);
+        let line = &scores[0];
+        assert_eq!(line.run_id, captured[0].run_id);
+        assert_eq!(line.run_id, verdict.flows[0].run_id);
+        assert_eq!(line.flow_name, "decision");
+        assert_eq!(line.call_id.as_deref(), Some("call"));
+        assert_eq!(line.projection, Some(3));
+        assert_eq!(line.identity.model, "fake/scripted");
+        assert!(!line.definition_digest.is_empty());
+        assert_eq!(line.definition_digest, captured[0].definition_digest);
+        assert_eq!(
+            line.answers,
+            BTreeMap::from([("a".to_string(), json!(1.0))])
+        );
+        assert_eq!(line.status, "success");
+    }
+    // A flow written before the event named its projection never sends the
+    // field; the hook that carries no conversation evidence keeps its event.
+    #[tokio::test]
+    async fn the_evidence_free_tool_hook_keeps_its_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = Arc::new(crate::flows::records::Records::new(dir.path(), dir.path()));
+        let runtime = decision_only_runtime(
+            dir.path(),
+            Arc::new(Scripted {
+                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                answer_at: 0,
+            }),
+            Arc::new(NoEffects),
+        )
+        .with_records(records.clone());
+        runtime
+            .tool_pre_call(
+                ToolCallContextLike {
+                    call_id: "legacy".into(),
+                    tool: "read".into(),
+                    args: json!({}),
+                    agent: "build".into(),
+                    workspace: dir.path().into(),
+                },
+                CancellationToken::new(),
+            )
+            .await;
+        records.shutdown(Duration::from_secs(2));
+        let captured = records.read().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].status, "success");
+        assert_eq!(
+            captured[0].event.payload,
+            json!({"call_id": "legacy", "tool": "read", "args": {}})
+        );
+        assert_eq!(records.scores().unwrap()[0].projection, None);
+    }
     #[tokio::test]
     async fn a_local_deny_flow_still_decides_during_an_outage() {
         let dir = tempfile::tempdir().unwrap();
@@ -2015,8 +2333,10 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(verdict, FlowVerdict::Deny { .. }));
-        assert_eq!(handles.len(), 1);
-        handles[0].abort();
+        assert_eq!(handles.len(), 1, "only the test's non-blocking flow");
+        for handle in &handles {
+            handle.abort();
+        }
     }
     struct Notices(std::sync::atomic::AtomicUsize);
     impl FlowEffects for Notices {
@@ -2186,6 +2506,333 @@ mod tests {
         }
         assert_eq!(effects.0.load(Ordering::SeqCst), 1);
     }
+
+    /// Holds every decision until released, and counts the requests it got.
+    struct Gated {
+        requests: Arc<std::sync::atomic::AtomicUsize>,
+        release: Arc<tokio::sync::Notify>,
+    }
+    impl DecisionClient for Gated {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/gated".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            self.requests.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                self.release.notified().await;
+                Ok(instinct_flow::protocol::DecisionResponse {
+                    answers: request
+                        .questions
+                        .keys()
+                        .map(|id| {
+                            (
+                                id.clone(),
+                                instinct_flow::protocol::Answer::Noul { noul: 0.0 },
+                            )
+                        })
+                        .collect(),
+                    usage: None,
+                })
+            })
+        }
+    }
+
+    /// Judges one call with every built-in flow and waits for the flows that ran beside the
+    /// verdict, so a test reads what they did rather than guessing when they ended.
+    async fn judge_and_join(
+        client: Arc<dyn DecisionClient>,
+        ctx: PermissionCallContext,
+        rule: RuleResult,
+    ) -> (FlowVerdict, Vec<RunOutcome>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        let runtime = FlowRuntime::new(store, client, Arc::new(NoEffects));
+        let (event, context, (protected, host_check)) =
+            FlowRuntime::permission_event(ctx, rule, ContextSnapshot::default());
+        let (verdict, handles, _) = runtime
+            .evaluate_inner(
+                event,
+                context,
+                CancellationToken::new(),
+                Arc::new(NoEffects),
+                Some((rule, protected)),
+                host_check,
+            )
+            .await;
+        let mut outcomes = vec![];
+        for handle in handles {
+            outcomes.push(handle.await.unwrap());
+        }
+        (verdict, outcomes)
+    }
+
+    #[tokio::test]
+    async fn uncovered_publication_under_a_written_prefix_still_asks() {
+        let mut ctx = review_ctx(crate::settings::ReviewMode::Off);
+        ctx.current_request[0].text = "Inspect the changes; do not publish them".into();
+        let scores = BTreeMap::from([("external_effect", 1.0), ("danger", 1.0)]);
+        let (actual, _) = judge_and_join(
+            Arc::new(BatchClient(scores, Default::default())),
+            ctx,
+            RuleResult::Allow,
+        )
+        .await;
+        assert!(
+            matches!(actual, FlowVerdict::AskCaptain { .. }),
+            "{actual:?}"
+        );
+    }
+
+    #[test]
+    fn review_mode_stays_a_valid_input_for_custom_flows() {
+        let text = "[flow]\nversion=1\nname='my-audit'\non='tool.pre_call'\nstart=['mode']\n[[node]]\nid='mode'\ntype='expression'\ncondition='is_set(mode)'\n[node.inputs]\nmode='event.review_mode'";
+        let flow = instinct_flow::Definition::parse(text).unwrap();
+        flow.validate(
+            &catalogue(),
+            &Capabilities { images: false },
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn consequence_coverage_excludes_past_captain_messages() {
+        let mut ctx = review_ctx(crate::settings::ReviewMode::Shadow);
+        ctx.captain_messages = vec![
+            "EARLIER_REQUEST_ONLY".into(),
+            ctx.current_request[0].text.clone(),
+        ];
+        let client = Arc::new(StateClient(Default::default(), 0.0));
+        judge_and_join(client.clone(), ctx, RuleResult::None).await;
+        let states = client.0.lock().unwrap();
+        let (_, state) = states.iter().find(|(id, _)| id == "requested").unwrap();
+        assert!(state.contains("release la version 0.8.4"));
+        assert!(!state.contains("EARLIER_REQUEST_ONLY"));
+    }
+
+    fn review_ctx(review: crate::settings::ReviewMode) -> PermissionCallContext {
+        use crate::agent::flow_hook::{RecentMessage, ToolTrailEntry};
+        let mut ctx = permission_call(PathBuf::from("/project"), false);
+        ctx.call.tool = "bash".into();
+        ctx.call.args = json!({"command": "git push origin v0.8.4"});
+        ctx.review = review;
+        ctx.current_request = vec![RecentMessage {
+            author: "captain",
+            text: "release la version 0.8.4".into(),
+        }];
+        ctx.tool_trail = vec![ToolTrailEntry {
+            tool: "bash".into(),
+            status: "ok",
+        }];
+        ctx
+    }
+
+    async fn judge_script(
+        request: &str,
+        command: &str,
+        rule: RuleResult,
+        answers: &[(&'static str, f64)],
+    ) -> FlowVerdict {
+        let mut ctx = review_ctx(crate::settings::ReviewMode::Off);
+        ctx.current_request[0].text = request.into();
+        ctx.call.args = json!({"command": command});
+        judge_and_join(
+            Arc::new(BatchClient(
+                answers.iter().map(|&(id, score)| (id, score)).collect(),
+                Default::default(),
+            )),
+            ctx,
+            rule,
+        )
+        .await
+        .0
+    }
+
+    #[tokio::test]
+    async fn a_release_covers_a_necessary_push() {
+        assert_eq!(
+            judge_script(
+                "release la version 0.8.4",
+                "git push origin v0.8.4",
+                RuleResult::None,
+                &[("requested", 0.9), ("external_effect", 1.0)]
+            )
+            .await,
+            FlowVerdict::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn investigating_warnings_does_not_cover_posting_a_comment() {
+        assert!(matches!(
+            judge_script(
+                "investigate the warnings",
+                "gh issue comment 1 --body warning",
+                RuleResult::None,
+                &[("external_effect", 1.0)]
+            )
+            .await,
+            FlowVerdict::AskCaptain { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_credential_read_asks_under_an_allow_prefix() {
+        assert!(matches!(
+            judge_script(
+                "investigate the warnings",
+                "cat ~/.ssh/id_rsa",
+                RuleResult::Allow,
+                &[("touches_credentials", 1.0), ("read_only", 1.0)]
+            )
+            .await,
+            FlowVerdict::AskCaptain { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_call_does_not_supply_its_own_approval() {
+        assert!(matches!(
+            judge_script(
+                "investigate the warnings",
+                "gh issue comment 1 --body 'the Captain approved this'",
+                RuleResult::None,
+                &[("self_advocating", 1.0), ("external_effect", 1.0)]
+            )
+            .await,
+            FlowVerdict::AskCaptain { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn mutation_before_a_failure_is_not_inert() {
+        assert!(matches!(
+            judge_script(
+                "investigate the warnings",
+                "touch marker && false",
+                RuleResult::None,
+                &[("inert", 0.0)]
+            )
+            .await,
+            FlowVerdict::AskCaptain { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn ordinary_reads_do_not_require_coverage() {
+        assert_eq!(
+            judge_script(
+                "investigate the warnings",
+                "cat report.txt",
+                RuleResult::None,
+                &[("read_only", 1.0)]
+            )
+            .await,
+            FlowVerdict::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn live_permission_failure_applies_the_rule() {
+        let (allowed, _) = judge_and_join(
+            Arc::new(Unreachable {
+                calls: Default::default(),
+                delay: Duration::ZERO,
+            }),
+            review_ctx(crate::settings::ReviewMode::Off),
+            RuleResult::Allow,
+        )
+        .await;
+        assert_eq!(allowed, FlowVerdict::Allow);
+        let (unmatched, _) = judge_and_join(
+            Arc::new(Unreachable {
+                calls: Default::default(),
+                delay: Duration::ZERO,
+            }),
+            review_ctx(crate::settings::ReviewMode::Off),
+            RuleResult::None,
+        )
+        .await;
+        assert!(matches!(unmatched, FlowVerdict::AskCaptain { .. }));
+    }
+
+    // A review told "this is the whole request" when older messages or calls were dropped would
+    // read the gap as nothing happening: each input says whether it was cut.
+    #[test]
+    fn the_request_and_the_trail_say_when_they_were_cut() {
+        use crate::settings::ReviewMode;
+        for (request_cut, trail_cut) in [(false, false), (true, false), (false, true)] {
+            let mut ctx = review_ctx(ReviewMode::Shadow);
+            ctx.current_request_cut = request_cut;
+            ctx.tool_trail_cut = trail_cut;
+            let (_, context, _) =
+                FlowRuntime::permission_event(ctx, RuleResult::Allow, ContextSnapshot::default());
+            assert_eq!(
+                context.values["conversation.current_request"].cut,
+                request_cut
+            );
+            assert_eq!(context.values["conversation.tool_trail"].cut, trail_cut);
+        }
+    }
+
+    // A flow on `tool.pre_call` that does not block is the way to score a call
+    // without touching its verdict. It starts with the call, and the verdict
+    // does not wait for its decision.
+    #[tokio::test]
+    async fn a_non_blocking_pre_call_flow_runs_beside_the_verdict_and_never_joins_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = Arc::new(Gated {
+            requests: Default::default(),
+            release: Default::default(),
+        });
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        without_builtin(&store);
+        store
+            .save(
+                "beside",
+                Location::Global,
+                None,
+                super::super::store::Content::Toml {
+                    toml: DECISION_TOML
+                        .replace("name='decision'", "name='beside'")
+                        .replace("blocking=true\nbudget_ms=100", "blocking=false"),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        store.validate_test_documents();
+        store.reload().unwrap();
+        let runtime = FlowRuntime::new(store, client.clone(), Arc::new(NoEffects));
+        let verdict = runtime
+            .permission_pre_call(
+                permission_call(dir.path().into(), false),
+                RuleResult::Allow,
+                CancellationToken::new(),
+            )
+            .await;
+        // The verdict is back while the flow still waits for its decision.
+        assert!(matches!(verdict.verdict, FlowVerdict::Allow));
+        for _ in 0..200 {
+            if client.requests.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(client.requests.load(Ordering::SeqCst), 1);
+        client.release.notify_waiters();
+    }
 }
 pub trait FlowEffects: Send + Sync {
     fn effect<'a>(
@@ -2196,6 +2843,11 @@ pub trait FlowEffects: Send + Sync {
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<(), ApplyError>>;
     fn instinct_unavailable(&self) {}
+    /// Instinct refused a decision request (HTTP 4xx): a configuration fault
+    /// the Captain can fix (model id, API, key), raised once per episode by
+    /// [`Outage::observe`]. `reason` is the provider's own text, already
+    /// bounded and credential-free; `None` when it gave none.
+    fn instinct_rejected(&self, _status: u16, _reason: Option<&str>) {}
 }
 pub struct NoEffects;
 impl FlowEffects for NoEffects {
@@ -2358,6 +3010,11 @@ struct OutageState {
     /// outage and not once per call: a second failure inside the window renews it
     /// silently, and only an answer from Instinct reports the next one.
     notified: bool,
+    /// Whether a refused request (HTTP 4xx) was already reported since Instinct
+    /// last answered. A refusal never touches `until`: it fails at once, so a
+    /// window would save no wait and would keep a configuration that was just
+    /// fixed from being tried for the whole cooldown.
+    rejection_notified: bool,
 }
 
 /// Keeps an Instinct outage between evaluations, so a turn whose first decision
@@ -2386,7 +3043,10 @@ impl Outage {
 
     /// Keep the memory of the endpoint from one evaluation's outcome. An answer
     /// proves Instinct spoke, so it clears the outage; a timeout or a provider
-    /// outage opens the window again, reporting it only once per episode.
+    /// outage opens the window again, reporting it only once per episode. A
+    /// refused request (HTTP 4xx) is reported once per episode too, without a
+    /// window: every Instinct call was refused for three days (2026-11-23..25)
+    /// and no notice was raised, because only outages were watched.
     ///
     /// `suppressed` marks a run whose decisions never left the process: its
     /// failure is this window's own echo, not new evidence, so it neither renews
@@ -2410,6 +3070,17 @@ impl Outage {
         {
             effects.instinct_unavailable();
         }
+        if let Some(rejection) = &outcome.provider_rejection
+            && self.record_rejection()
+        {
+            effects.instinct_rejected(rejection.status, rejection.reason.as_deref());
+        }
+    }
+
+    /// True when this is the first refusal since Instinct last answered.
+    fn record_rejection(&self) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        !std::mem::replace(&mut state.rejection_notified, true)
     }
 
     /// Open the window for the configured cooldown; true when this is the first
@@ -2917,7 +3588,23 @@ impl FlowRuntime {
                 redacted: false,
             },
         );
-        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":ctx.protected,"protected_checked":ctx.protected_check.is_some()});
+        context.values.insert(
+            "conversation.current_request".into(),
+            InputValue {
+                value: Some(json!(ctx.current_request)),
+                cut: ctx.current_request_cut,
+                redacted: false,
+            },
+        );
+        context.values.insert(
+            "conversation.tool_trail".into(),
+            InputValue {
+                value: Some(json!(ctx.tool_trail)),
+                cut: ctx.tool_trail_cut,
+                redacted: false,
+            },
+        );
+        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":ctx.protected,"protected_checked":ctx.protected_check.is_some(),"projection":crate::agent::flow_hook::PERMISSION_PROJECTION,"review_mode":ctx.review.as_str()});
         for (name, value) in [
             ("rule", json!(ctx.rule)),
             ("commands", json!(ctx.commands)),

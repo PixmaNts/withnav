@@ -904,29 +904,40 @@ export class CognitionBackend implements ChatBackend {
     const card = this.state.controls.permissions.get(requestId);
     const owner = this.state.controlOwners.get(`permission:${requestId}`);
     if (sessionId !== this.state.session || owner?.session !== sessionId || owner.generation !== generation || !card ||
-        !["allow_once", "allow_always", "reject", "allow_skill_machine", "deny"].includes(decision) ||
+        !["allow_once", "allow_always", "reject", "allow_skill_machine", "deny", "hold"].includes(decision) ||
+        // "Hold for me" only means something while the parallel review runs.
+        (decision === "hold" && card.reviewState !== "reviewing") ||
         (decision === "allow_always" && card.alwaysLabel === undefined) ||
         (decision === "allow_skill_machine" && !card.skillName) ||
         (message !== undefined && typeof message !== "string")) {
       throw new Error("This permission request does not belong to the open conversation.");
     }
-    const key = `${sessionId}:permission:${requestId}`;
+    // A hold is not an answer: the card stays the Captain's, so it never shows as sent.
+    const holding = decision === "hold";
+    const key = `${sessionId}:permission:${requestId}${holding ? ":hold" : ""}`;
     const origin = this.state;
     const operation = Symbol(key);
     if (origin.pendingControls.has(key)) return;
     this.state.pendingControls.set(key, operation);
-    this.emit({ type: "permissionState", requestId, resolution: "pending" });
+    if (!holding) this.emit({ type: "permissionState", requestId, resolution: "pending" });
     try {
+      // The answer is bound to the call and turn the card shows: another call under the same
+      // request is refused as stale.
       const result = await this.request(`/v1/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}`, {
-        method: "POST", body: JSON.stringify({ decision, ...((decision === "reject" || decision === "deny") && message ? { message } : {}) }),
+        method: "POST", body: JSON.stringify({ decision, ...((decision === "reject" || decision === "deny") && message ? { message } : {}),
+          ...(card.callDigest ? { call_digest: card.callDigest } : {}), ...(card.turnId ? { turn_id: card.turnId } : {}) }),
       }, "operation");
       if (result?.accepted === false) throw new Error("Permission answer refused by the server.");
+      if (holding) origin.pendingControls.delete(key);
     } catch (error) {
       if (origin.pendingControls.get(key) !== operation) return;
       origin.pendingControls.delete(key);
       if (origin.controls.permissions.has(requestId)) {
+        // The review allowed the call before this answer arrived: it ran once and nothing says it
+        // was undone. The server's own resolution follows.
+        const started = error instanceof HttpError && error.status === 409 && error.reason === "permission_already_started";
         this.emitForState(origin, { type: "permissionState", requestId,
-          resolution: error instanceof HttpError && error.status === 409 ? "stale" : "error",
+          resolution: started ? "already_started" : error instanceof HttpError && error.status === 409 ? "stale" : "error",
           message: this.errorText(error) });
       }
       if (!(error instanceof HttpError && error.status === 409)) throw error;
@@ -1927,17 +1938,19 @@ export class CognitionBackend implements ChatBackend {
     }
     if (!response.ok) {
       let detail = `HTTP ${response.status}`;
+      let reason: string | undefined;
       if (response.status !== 204) {
         try {
           const body = await response.json();
           if (body?.error) detail = String(body.error);
+          if (typeof body?.reason === "string") reason = body.reason;
         } catch {
           /* keep the status-line detail */
         }
       }
       const message = `cognition server: ${detail}`;
       if (scope !== "operation") this.emit({ type: "status", state: "error", message });
-      throw new HttpError(response.status, message);
+      throw new HttpError(response.status, message, reason);
     }
     // DELETE answers 204 and other routes may answer empty: undefined, not a
     // JSON parse crash.
@@ -1982,7 +1995,7 @@ export class CognitionBackend implements ChatBackend {
 }
 
 class HttpError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
+  constructor(readonly status: number, message: string, readonly reason?: string) { super(message); }
 }
 
 /** A fetch aborted on purpose (open/new/delete switching streams). */

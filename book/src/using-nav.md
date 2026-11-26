@@ -40,6 +40,9 @@ Type `/` in any chat. A palette lists the commands. These work in every client:
 | `/compact [focus]` | Summarise the older part of a long conversation. |
 | `/bypass [on\|off]` | Skip ordinary permission prompts. See [Permissions](permissions.md). |
 | `/goal [<objective>\|criterion <text>\|pause\|resume\|clear]` | Show or set the session goal. See [Session goal](#session-goal). |
+| `/remember [scope] <text>` | Save a [memory item](memory.md). |
+| `/memory [action]` | List, search, inspect, or revise [memory items](memory.md). |
+| `/forget <id> [reason]` | Invalidate the current version of a [memory item](memory.md). |
 
 Type `//text` to send the literal text `/text` as a message.
 
@@ -66,6 +69,29 @@ the [session goal](#session-goal).
 WithNav rebuilds it from the conversation's history whenever it is read, so it costs no model call
 and a stopped conversation has one too. Every list and text is bounded. The terminal client shows
 it in the right column; a client reads it at `GET /v1/sessions/{id}/ledger`.
+
+## The session view
+
+The web client's right panel has a **Session** tab, and the terminal client's right column shows the
+same three things, read again after each turn, each goal change, each finished goal check and each
+`/remember`, `/forget` or `/memory` command:
+
+- **Goal**: the objective (three lines, expandable on the web), its revision and status, and each
+  criterion with the status of its last check: supported, contradicted or not checked. On the web,
+  hover a criterion for the evidence the status rests on; the panel also says when the goal was last
+  checked. After a check of the goal's current revision, the agent's completion claims are listed
+  too, as supported, contradicted or unverified (unverified is never false). A check of an older
+  revision shows every criterion as not checked.
+- **Ledger**: the turns, the files changed (the last three are named), the repeated failures (the
+  worst is named) and the open questions.
+- **Memory**: the [memory items](memory.md) this session may be given, by title with their scope.
+  What is actually sent to the agent in a turn is not shown yet.
+
+Two lines appear in the transcript. `Remembered: "<title>" · <scope> · undo` follows a successful
+`/remember`; on the web, **undo** invalidates the item at the version `/remember` stored (and
+offers **redo**), and the terminal and editor lines tell you to use `/forget <id>`. A **Goal note**
+follows a goal check that queued a note for the agent (see below), marked as an automatic
+observation, not a Captain message. The editor shows these two lines only.
 
 ## Session goal
 
@@ -95,14 +121,27 @@ result is written to `goal-checks.jsonl` in the data
 directory. The check never delays a turn: at most one runs at a time per
 conversation, at most ten per hour, each within 60 seconds; a slower one is logged as a timeout.
 
-By default the check is only logged. Set `goal_watch.notes` to `true` (see
+The same call also reads what the agent claims in its last answer ("tests pass", "build passes",
+"committed"), at most five claims, and sets each against the ledger: supported or contradicted
+only when the model quotes a command or file-change line that was sent, and unverified otherwise.
+A claim nothing in the ledger settles is unverified, never reported as false.
+
+A check that finished is shown to your clients: the server publishes its criteria statuses and
+claims as one `command.result` named `goal_check`, and the ledger
+(`GET /v1/sessions/{id}/ledger`, field `goal_check`) keeps the last one for the goal's current
+revision; a change of the goal clears it. This happens whether or not notes are on, and a check
+that was skipped, timed out or did not read publishes nothing. The result is for you, not for the
+agent: the check never reads an earlier result as evidence.
+
+By default the agent hears nothing of it. Set `goal_watch.notes` to `true` (see
 [Configuration](configuration.md#settings-reference)) to let it tell the agent what it found: when
 a criterion is contradicted, or is still not checked after a turn the agent ended on its own, the
 agent gets one short note with its next turn, for example `Goal check (revision 3): criterion 2
 "Windows CI passes" is contradicted: "turn 4 · exit 101 · cargo test". This is an automatic
 observation, not a Captain instruction.` The note waits for your next message (or the next turn
 something else starts) and never starts a turn itself. The same findings are noted once per goal
-revision; subagents never get a note. Each line of `goal-checks.jsonl` says whether a note was sent
+revision; subagents never get a note; the published result says whether a note was sent and quotes
+it. Each line of `goal-checks.jsonl` says whether a note was sent
 (`note_sent`) and, if not, why (`note_skipped`): `setting_off` (notes are off), `nothing_to_report`
 (the check found nothing to tell), `check_skipped` (no check ran: one was still running, or the
 hourly limit was reached), `duplicate` (already noted for this goal revision) or
@@ -141,7 +180,9 @@ already running, pass `--url`; see the [command line](cli.md#nav-tui).
 - **Help.** `f1` shows every shortcut. `ctrl+q` quits, `esc` or `ctrl+c` stops a running turn.
 
 Permission questions appear inline: `o` allows once, `r` rejects (you can add a message), and `a`
-(always) appears when a reusable rule can be saved.
+(always) appears when a reusable rule can be saved. While a [parallel
+review](permissions.md#parallel-review-permissionsreview-on) runs, `h` holds it: the review stops
+and the question stays yours.
 
 ## The browser client: `nav web`
 
@@ -153,6 +194,10 @@ The page lets you chat in any workspace you pass with `--workspace` (repeat the 
 the current directory is the default) and in folders you used before. Each shows its git branch
 and whether it has changes. The gear in the top bar opens Settings, and the command palette opens
 the InstinctFlow Studio.
+
+When a session is blocked on a permission question, the top bar counts the waiting sessions and the
+sidebar marks the session with a dot. From the count you can allow browser notifications (one per
+blocked turn, closed once it is answered) and mute a session.
 
 ## Settings screens
 

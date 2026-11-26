@@ -12,16 +12,84 @@ requests land in `develop`.
   that confirmed it and its observed result, unconfirmed claims are listed apart, failed attempts
   stay with what not to retry, and the open criteria and the next check close the summary. A
   summary no longer drops dead ends.
+- Permission history keeps the newest 20 000 decisions instead of 1 000.
 ### Added
 
+- Clients show the parallel review on the permission card: "Metacognition is reviewing…" with a
+  **Hold for me** button (`h` in `nav tui`), "Allowed once by Metacognition" with its conclusion,
+  basis and consequence, the conclusion above the buttons when it says wait, "Review cancelled:
+  you answered first", and "Already started by Metacognition — it ran once" when an answer comes
+  too late. Answers carry the request's `call_digest` and `turn_id`. `nav web` adds a waiting count,
+  a dot in the sidebar and one browser notification per blocked turn, with a mute per session.
+- Parallel permission review (`permissions.review: on`): when the built-in permission flow asks
+  the Captain about a call, one tool-free Metacognition review reads the current request and the
+  call beside the card, at most 16 KiB, 60 s, never retried. It can only allow the call once (a
+  step the request necessarily implies) or wait; the first decisive answer wins. An allowed call
+  reads the rules again before it runs, so a deny written meanwhile still stops it. "Hold for me"
+  (`{"decision":"hold"}` on the answer route) stops the review and keeps the card; after the
+  review's claim it, and any Captain answer, gets `409 permission_already_started`. Answers may
+  name the request's `call_digest` and `turn_id` (another one is `409 permission_stale`). Never
+  for a written deny, the floor, a credential, a protected check, a loop, a custom flow's ask, a
+  failure fallback, a skill, a subagent's call or a cut request. Under `shadow`, the
+  review only writes `permission-reviews.jsonl` beside the Captain's own answer (the Captain
+  answering first does not stop it; each line has the outcome class and token usage); `off` makes
+  no call. An `allow_once` must quote the Captain's own words verbatim, checked by the host, or it
+  counts as `wait`; the Captain's request is never cut to fit the 16 KiB input (no review then);
+  a review answer the runtime refuses gives its claim back. New durable event `permission.review` (28 kinds), `permission.requested` gains
+  `call_digest` and `turn_id`, `permission.resolved` may carry `approved_by: "metacognition"` and
+  the review's three-line reasoning, and `GET /v1/waiting` lists the requests live sessions wait
+  on, for one notification per blocked turn. ADR 0015 is amended.
+- The live permission flow now judges what the whole call does and whether the current request
+  covers it. A release can cover a necessary push; investigating a warning does not cover posting
+  a comment. Approval claims in tool data do not count as requests. The evidence projection is 3.
+  `permissions.review` defaults to `on` and controls only the parallel second opinion.
+- A session view in the web and terminal clients: the web right panel gains a **Session** tab and the terminal column a **Memory** section, showing the goal with each criterion's last check status (and the agent's claims), the ledger, and the memory items the session may be given. The transcript shows `Remembered: "<title>" · <scope> · undo` after `/remember` (on the web, undo invalidates the item) and a goal note, marked as an automatic observation, when a goal check queued one; the editor shows these two lines. The panels read again after each turn, goal change, goal check and register command.
+- Memory and Projects pages in the web client (`#/memory`, `#/projects`, and a sidebar entry with a badge for what waits for you). Browse and filter the register, read every version with a word-by-word comparison, edit, invalidate, restore or change an item's scope with a reason, and undo from a toast. A write refused because the item moved on keeps your draft and shows the newer version; a change that lets more projects read something lists them and asks first. "Needs you" shows the few pending group and session changes; the projects page manages groups, memberships and session links, and a dialog asks which group a new repository belongs to (or "Ask me later").
+- A memory register for Captain-authored knowledge, with scoped items, version history, and confirmation for agent-requested widening or removal from another project. Use `/remember`, `/memory`, and `/forget`. Start `/remember` text with `@global`, `@group:<name>`, `@project`, or `@session` to choose a scope explicitly.
+
+- The goal check now also sets the agent's completion claims in its last answer ("tests pass",
+  "committed", at most five) against the ledger, in the same model call: a claim is supported or
+  contradicted only on a quoted command or file-change line that was sent, and unverified
+  otherwise, never false. The result of every finished check is published to the conversation's
+  clients as a `command.result` named `goal_check` (criteria statuses, claims, whether a note was
+  sent and its text) and the session ledger keeps the last one for the goal's current revision, in
+  the new `goal_check` field. It is shown even with `goal_watch.notes` off: the agent still
+  receives nothing unless notes are on. `goal-checks.jsonl` lines gain a `claims` list.
+- The Instinct calls of the subagent and root watchdogs and of the compaction judge are recorded,
+  one line per call in `instinct-calls.jsonl` in the data directory: caller, conversation, model,
+  the size and SHA-256 of the state (never the state itself), the question names, the answers,
+  the latency, and the error kind, `abandoned` when the caller's deadline passed first.
 - The session ledger: what a conversation did (turns and how the last one ended, files changed,
   shell commands with their exit code, commands that failed more than once, the last answer, the
   questions still waiting), rebuilt from the conversation's stored events on each read, with every
   list bounded and a text digest of at most 16 KiB. Served by `GET /v1/sessions/{id}/ledger` for
   every session, stopped ones and subagents included; the terminal client's right column shows its
   turns, files and repeated failures.
+- An Instinct request the provider refuses (HTTP 4xx) raises an "instinct rejected" notice with the
+  status and the provider's reason, once until Instinct answers again. It never opens the outage
+  window, so a fixed configuration works on the next call. Failed run records carry
+  `provider_status`, and flow health counts `rejections` and `timeouts` apart.
+- Score lines: each live flow run leaves one line in `scores.jsonl` beside its capture, kept 90 days
+  within 16 MiB, with the run and call ids, the model, the flow digest, the evidence version, the
+  answers and the actions, and no state, input or argument.
+- The permission event carries `projection`, the version of the host's shaping of the permission
+  evidence.
+- Permission decision rows name the Instinct model and the flow definition's digest of each flow
+  run and of the protected check (`flow_trace`, `nav permissions history --json`).
+- The memory register in `withnav.db`, with no command or page yet: memory items (decision,
+  convention, preference, environment, pitfall) scoped global, group, project or session, each
+  change an appended dated version with its author and source session; a writer that read an
+  older version is refused and writes nothing, and versions cannot be updated or deleted. Search
+  reads current wordings of active items only. Projects follow the git common directory, so linked
+  worktrees share one project while a separate clone or a folder outside git is its own; a session
+  works in one active project and reads only that project's groups. Widening who reads something
+  (a wider scope, a project joining a group) needs the Captain's confirmation, and every
+  membership change is kept as history.
 ### Fixed
 
+- The compaction judge's request size estimate no longer assumes one Instinct model: it reserves
+  64 bytes for any model identifier, so a longer identifier cannot push a batch past its size
+  bound.
 - A rejected Instinct request now says why, on one line of at most 300 characters. The flow run
   record shows the provider's reason after "provider rejected the request (HTTP 400)" and leaves
   the whole reason out when it echoes a credential, whole or in part. `nav doctor` shows it after
@@ -53,7 +121,8 @@ requests land in `develop`.
   contradicted or not checked; "supported" stands only on a quoted command or file-change line,
   never on the agent's word, and a long goal takes at most half of the input. Each check is one line of
   `goal-checks.jsonl` in the data directory (outcome, statuses with a short evidence quote,
-  latency, size, tokens, model) and is shown nowhere yet. It runs beside the turn, never delaying
+  latency, size, tokens, model); a finished check is also published to the conversation's clients,
+  as the entry on claims says. It runs beside the turn, never delaying
   it: one at a time per conversation, at most ten per hour (the first skip of each hour is
   logged), 60 seconds each; a skipped, timed-out or outdated check is logged as such.
 - Goal watch notes, off by default: with `goal_watch.notes` set to `true`, a goal check that finds a

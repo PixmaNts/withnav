@@ -73,7 +73,7 @@ quotes above are TOML's way of keeping those double quotes intact. There is no
 | Right: inspector | Select the trigger or a node to edit its fields, declared inputs, instructions, parameters and ports. Inspect rendered state and run detail. |
 | Centre: TOML | Edit the same definition as text. Errors show locations; invalid text leaves the last valid canvas visible and locked. |
 | Bottom: run bar | Edit sample JSON, Run sample, choose a record, View run, Replay, Clear run. Inspect path, proposed actions, failure, fallback and application status. |
-| Health | Header/list counters for the last 24 hours of live runs: runs, failures, fallbacks applied, cost. Samples and replay do not count. |
+| Health | Header/list counters for the last 24 hours of live runs: runs, failures, fallbacks applied, cost. Samples and replay do not count. The flows `health` endpoint also counts, per flow, `rejections` (requests the provider refused, HTTP 4xx) and `timeouts` apart from other failures. |
 | Gesture | Result |
 | --- | --- |
 | Click a card | Select its node and open its inspector. |
@@ -330,6 +330,39 @@ request on its own. Both the permission flow and the protected check read it. Ed
 removed through their final outer closing delimiter; malformed framing drops
 the whole message and marks evidence cut, including after transcript resume.
 
+`conversation.current_request` is what the Captain asked for in the request being worked, in the same
+`{author, text}` shape: it starts where the turn being run began, or after the last assistant message
+that ended a turn (one with no tool call) if that is later. The session records where each turn
+begins because a turn does not always end with such a message: an interruption, a provider error
+or the step limit leave nothing in the transcript, and what the Captain asked in that turn was
+dropped, not carried out, so it does not join the next request. A correction the Captain sends
+while the agent works, and the answer to an `ask`, belong to the request; an earlier request never
+does, however few messages separate them. A session resumed from disk has no recorded start until
+its next turn and falls back on the last finished turn, and so does a session whose transcript no
+longer holds the message that stood before the start when the turn began (the start is an index,
+and a transcript rewritten under the turn would leave it on another message): the request and the
+trail are then flagged `cut`. It holds the agent's message that ended
+the previous turn (the proposal a short answer accepts, labelled `agent`, only when it carries no
+tool call), then the Captain's messages and answers
+to `ask` since, each `ask` question labelled `agent`. The agent's prose while it works, tool
+outputs, fetched text and the compaction summary are never in it. Whole messages within 8 KiB with a
+cut flag. `conversation.tool_trail` lists the tools called in that request and how each ended
+(`ok`, `error`, `denied` or `interrupted`), the newest 8, oldest first, with `cut` set
+when older calls were dropped: names and outcomes only, never arguments or output. Only the lines
+the loop writes for a call that never ran or was cut short read as `interrupted`; a tool's own
+output that starts with the same word is `ok`, and so is a tool's own output that is JSON: only a
+payload that parses as the tool-result envelope reads as `error` or `denied`. Projection 3
+uses the current request to judge live coverage; scores from older projections are not comparable.
+Custom flows can read `event.review_mode` (`off`, `shadow`, or `on`), the session's effective
+`permissions.review` setting. It may be absent on a tool hook without session evidence.
+
+The embedded `permission-default` flow judges consequences directly. `requested` uses a separate
+state template: it compares the whole call with the current request, not the command's name.
+An explicitly requested release can cover a necessary push. Prior requests and claims embedded
+in tool data never authorize a call. `inert` requires evidence that no reachable part changes
+state, including a part that runs before a failure. The review setting affects only the parallel
+metacognition second opinion, not these questions.
+
 Protected calls always carry `protected = true`. `protected_checked = true` means
 the host already answered its compiled check; the built-in skips that node, while
 custom flows may still ask or deny. The strictest verdict wins.
@@ -424,6 +457,7 @@ and nothing is applied.
 | Built-in | Shipped in WithNav: `navigator-default-save`, `navigator-default-idle`, `navigator-default-conversation`; read-only. |
 | Validations | `<data_dir>/withnav.db`, Captain approvals bound to flow location and content hash. |
 | Run records | `<data_dir>/flows/runs/<sha256-canonical-workspace>/runs.jsonl`, private captures. |
+| Score lines | `scores.jsonl` in the same directory: one line per live run, kept 90 days. |
 
 Unvalidated global and workspace flows stay listed and editable but do not run
 or shadow validated globals. Explicit samples and replays are diagnostic only;
@@ -617,11 +651,19 @@ audit = { x = 1180, y = 470 }
   means evaluation succeeded, not that an action ran. Batch usage/cost may be
   unknown; shared batch cost must not be counted once per node.
 - **Health** covers 24 hours of production runs only. Repeated applied fallbacks
-  indicate a budget, provider, input or definition problem worth fixing.
+  indicate a budget, provider, input or definition problem worth fixing;
+  `rejections` point at the configuration, `timeouts` at the endpoint or budget.
+- A failed run refused by the provider records `provider_status` (the HTTP
+  status) next to its `provider_error` failure.
+- **Score lines** keep, for each live run, the run and call (or turn) ids, the
+  model, the definition digest, the evidence version (`projection` on
+  `tool.pre_call`), each decision's answer and the action names: no payload,
+  input, rendered state, question or action text. They join an answer to the
+  Captain's answer in the permission history after the capture expired.
 
 Captures contain payloads, code, rendered state and notes: treat them as private.
 Directories are 0700, records 0600; retention is at most 7 days, 1000 records and
-32 MiB per workspace. Redacted/missing evidence makes replay noncomparable.
+32 MiB per workspace. Score lines (0600) are kept at most 90 days and 16 MiB. Redacted/missing evidence makes replay noncomparable.
 
 ### Command line
 
@@ -656,7 +698,7 @@ machine-readable report; `--flows` cannot combine with `--pipeline` or `--reask`
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | Validation error "a decision needs at least one input" | The decision sends no evidence; instructions alone are not state. | Select meaningful inputs on that decision (State section), inspect the rendered state, Save and Reload. |
-| `provider rejected the request (HTTP 4xx)` | The instinct endpoint refused the request (model id, malformed state). Not an outage: no "instinct unavailable" notice. | Check the instinct layer's model in Settings, then the rendered state of the failing decision. |
+| `provider rejected the request (HTTP 4xx)` | The instinct endpoint refused the request (model id, malformed state). Not an outage: no outage window, no "instinct unavailable" notice; the Captain gets one "instinct rejected" notice with the status and the provider's reason. | Check the instinct layer's model in Settings, then the rendered state of the failing decision. The next call tries Instinct again. |
 | `provider unreachable` / `provider error (HTTP 5xx)` | Instinct endpoint down or failing. The Captain is told once per outage. | Check the gateway; blocking flows apply their fallback meanwhile. |
 | `skipped: when is false` | Payload does not satisfy exact comparison. | Inspect text, case and whitespace; edit sample JSON or correct the condition. |
 | Unknown name in `when` | Alias not declared in `[flow.inputs]`, or dotted reference used as expression name. | Select the input chip first; bind `text = "event.text"`, then use `text`. Node inputs do not declare flow inputs. |
@@ -669,6 +711,7 @@ machine-readable report; `--flows` cannot combine with `--pipeline` or `--reask`
 | large file: limit failure | Context and diff reach the 64 KiB total input budget, rendered state overflows, or action text exceeds 16 KiB. | Inspect the recorded `limit` message and cut inputs; reduce selected evidence/action text. Built-in save is asynchronous with no fallback: nothing is applied. |
 | Wake suppressed: `wake cooldown` (120 s) | Wakes share the session cooldown; repeated wake is held back. | Wait 120 seconds; inspect application detail. Do not assume a proposed wake was delivered. |
 | `instinct unavailable` notice | First provider error/timeout since startup or a successful call. Further outage notices are suppressed. | Check instinct assignment, System One endpoint/key and deadline; one successful call resets the notice. |
+| `instinct rejected` notice | First refused request (HTTP 4xx) since startup or a successful call; carries `status` and `reason` (null when the provider gave none or echoed a credential). Further refusals are not reported. | Fix the instinct model or key; one successful call resets the notice. |
 | Missing upstream input / expression failure | Node was not visited on this path, or host context unavailable. | Use `is_set(alias)` with lazy `&&` or `if`; read only strict upstream outputs. |
 | Cards dimmed or inspector shows old values | A recorded/sample run overlay is still displayed. | Choose Clear run; it does not delete records or edits. |
 | Cannot delete wire/card | Canvas not focused, built-in read-only, or invalid TOML locks editing. | Select it on an editable canvas and press Delete; fix TOML or create a same-name override for a built-in. |

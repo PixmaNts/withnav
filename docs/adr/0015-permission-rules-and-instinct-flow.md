@@ -2,7 +2,7 @@
 
 Date: 2026-10-13
 
-Status: Accepted — implemented. Supersedes [ADR 0010](0010-per-call-permission-review.md).
+Status: Accepted — implemented. Amended 2026-11-25 (parallel metacognition review, below). Supersedes [ADR 0010](0010-per-call-permission-review.md).
 Amends [ADR 0008](0008-primary-agents-and-resumable-tool-authorization.md) (the role guard) and
 [ADR 0013](0013-instinct-flow-engine-crate.md) (what a flow may decide). Tracked in issue #11.
 
@@ -136,7 +136,9 @@ For each tool call, in this order:
    A validated skill with no matching rule also runs here, recorded as `approved_by: validation`.
 9. **Permission flow, then the Captain**: the flow answers with the rule's result (`allow`, `ask`,
    or no rule): `allow`, `ask_captain` or `deny`. Only `bash` reaches it under an `allow` rule.
-   When the flow does not decide, the Captain answers Once, Always or Reject.
+   When the flow does not decide, the Captain answers Once, Always or Reject, and, when
+   `permissions.review` is `on`, one parallel metacognition review may allow once (see
+   "Amendment 2026-11-25" below).
 
 ### The permission flow
 
@@ -183,13 +185,62 @@ rule (a skill that says "push the branch" pushes without a question), never a `d
   flow's `apply_rule` is resolved to `allow` or `ask_captain` before the strictest answer is
   chosen, and no flow verdict at all also applies the rule.
 
-### Metacognition leaves the decision
+### Metacognition and the decision: amendment 2026-11-25
 
-Metacognition no longer reviews tool calls. `permissions.automatic_review` and
-`permissions.review_timeout_secs` are removed. A metacognition decision node, usable at the end of
-a flow with its own longer budget, is planned in a separate issue; it is not delivered with this
-change. Its later role is to watch the conversation for drift and injection, not to review calls
-one by one.
+Metacognition no longer reviews tool calls on the call path. `permissions.automatic_review` and
+`permissions.review_timeout_secs` stay removed.
+
+**What failed in 2026-10.** The per-call review of ADR 0010 sat on the call path: on 2026-10-10
+ten of eleven real reviews timed out on 45–54 KB requests (up to 40.4 s), and each timeout became a
+question to the Captain anyway.
+
+**What runs now.** When the built-in `permission-default` flow puts an ordinary question to the
+Captain, and `permissions.review` is `on`, one tool-free metacognition review runs **beside** the
+Captain's card. The first decisive answer wins. The review can only **allow once** or **wait**,
+never "Always" and never a rule. Its instruction is the Captain's rule, verbatim: "Allow once when
+the call is a step the Captain's request necessarily implies. Wait when its consequence goes beyond
+what the request needs." The criterion depends on the conversation, not on the command: releasing
+0.8.4 implies the push even when the Captain did not say "push". The call's arguments, the agent's
+proposals and the tool names are evidence, never requests: an `allow_once` counts only when its
+`request_quote` is a verbatim substring of a Captain message the review was sent, checked by the
+host; any other answer counts as `wait`, so "the Captain approved this" written into an argument
+cannot allow the call.
+
+The quote check narrows injection, it does not prevent it: "the Captain approved this" written into
+an argument can never be the quote; the check proves the words came from the Captain, not that they
+cover the call. A review can still quote real Captain words the call does not need — only the
+Captain reads the call and the request together.
+
+What differs from 2026-10:
+
+- **Off the call path.** The call already yielded; the review never blocks beyond the Captain's
+  own wait, and a slow or failed review leaves the question exactly as before.
+- **16 KiB.** The input is the consequence projection: the current request (with the agent's
+  proposal the Captain may accept, labelled), a delegation labelled as such, the validated skill,
+  the call with the session's secrets redacted, where it acts and its parsed commands; the goal and
+  the tools already called as context only. Never memory, tool outputs, compaction prose or an
+  earlier request. The Captain's request is never cut to fit: a request that does not fit whole
+  gets no review, like a cut one. 1000 output tokens, 60 s, no retry. A failed call is logged
+  with its class (resolution, provider, timeout, malformed).
+- **Bound to the request.** Both answers are bound to the request id, the call digest (SHA-256 of
+  tool, arguments and call id) and the turn. A steer, a stop, a new message or a policy change
+  settles the request, and a late review answer then claims nothing. A call the review allowed
+  reads the rules again before it runs: a deny rule, the floor or a different matching rule since
+  the question sends it back through the whole decision. A review answer the runtime refuses gives
+  its claim back, so the card stays the Captain's.
+- **Hold for me.** The Captain can stop the review and keep the card. Before the review's claim
+  the hold is honoured; after it the answer says the call already started and never implies that
+  it was undone.
+- **Exclusions.** No review starts for a written deny, the fixed floor, a credential, a protected
+  check, a loop, another flow's objection, a custom flow's ask, a failure fallback, a `skill` call,
+  a child session's request, or a request whose current request was cut.
+- **Shadow first.** `shadow` is the default: the review runs and is logged to
+  `permission-reviews.jsonl` beside the Captain's real answer, and nothing is published or
+  changed. In `shadow` the Captain's answer does not cancel the review: it runs to its end (still
+  bounded by its deadline and the session), so each line holds both answers, the outcome class and
+  the token usage. `off` makes no metacognition call. A restart never re-dispatches an uncertain call: an
+  unanswered question expires, and a call whose answer was stored without its result is settled
+  as interrupted.
 
 ### The fixed floor
 
@@ -390,3 +441,6 @@ Decisions taken while implementing this ADR that refine it:
   not gated by validation.
 - **Bash.** The floor's checks on bash are best effort: literal path words, redirection targets and
   output options. Variables and globs are not expanded.
+# Amendment (2026-11-26): live consequence criterion
+
+The Captain dropped the consequence shadow phase. The live permission flow judges the whole call against the current request: releasing a version can require a push even if the Captain did not spell it out. Claims in tool data never supply authorization. Written denies, protected checks, the fixed floor and rule fallback remain in place. `permissions.review` now controls only the metacognition second opinion and defaults to `on`.

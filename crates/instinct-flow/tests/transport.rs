@@ -181,12 +181,12 @@ async fn failure(status: u16, body: &str) -> DecisionError {
 async fn a_4xx_is_a_rejection_and_not_an_outage() {
     let refused = failure(
         400,
-        r#"{"error":{"message":"model jev-router has no systemone API"}}"#,
+        r#"{"error":{"message":"model decision-router has no systemone API"}}"#,
     )
     .await;
     assert_eq!(
         refused.rejection(),
-        Some((400, Some("model jev-router has no systemone API")))
+        Some((400, Some("model decision-router has no systemone API")))
     );
     assert!(!refused.is_outage());
 

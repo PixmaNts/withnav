@@ -281,7 +281,7 @@ test('target configured default agent, editor creation body, agent switching and
   const calls=[];t.mock.method(globalThis,'fetch',async(url,init)=>{
     calls.push({url,...init});
     if(url.includes('/agents?'))return new Response(JSON.stringify({default_agent:'plan',agents:assignments}));
-    if(url.includes('/layers?'))return new Response(JSON.stringify({layers:[{layer:'reflex',status:'disabled',model:'direct/editor',reason:'wrong API'},{layer:'instinct',status:'usable',model:'omniroute/typesafe/jev',variant:null},{layer:'metacognition',status:'usable',model:'omniroute/combo/fast',variant:'low'}]}));
+    if(url.includes('/layers?'))return new Response(JSON.stringify({layers:[{layer:'reflex',status:'disabled',model:'direct/editor',reason:'wrong API'},{layer:'instinct',status:'usable',model:'omniroute/example/decision-model',variant:null},{layer:'metacognition',status:'usable',model:'omniroute/combo/fast',variant:'low'}]}));
     return new Response(JSON.stringify(url.endsWith('/messages')?{accepted:true}:{session_id:'S'}));
   });
   await b.refreshAssignments();assert.equal(b.state.agent,'plan');assert.equal(dom.window.document.querySelector('.agent-btn .agent-name').textContent,'plan');dom.window.document.querySelector('.agent-btn').click();assert.equal(dom.window.document.querySelectorAll('.agent-row').length,2);dom.window.document.querySelector('.agent-btn').click();

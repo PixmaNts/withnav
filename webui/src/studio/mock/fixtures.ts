@@ -336,7 +336,7 @@ export function sampleRunRecord(digest: string): RunRecord {
     duration_ms: 614,
     budget_ms: 800,
     event: { trigger: "tool.pre_call", payload: { tool: "write", args: { path: "src/config.rs", content: "pub fn load(p: &Path, strict: bool) -> Config { … }" }, call_id: "call_7f3" } },
-    identity: { model: "typesafe/jev-1.13", variant: null },
+    identity: { model: "example/decision-model", variant: null },
     inputs: {
       "session.agent": { value: "build", cut: false },
       "conversation.last_captain": { value: "Swap the toml parser, keep Config::load(p).", cut: false },

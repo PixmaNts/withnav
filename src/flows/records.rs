@@ -940,7 +940,7 @@ mod tests {
                 "projection": 1,
                 "rule": "RULE-MARKER"
             }},
-            "identity": {"model": "typesafe/jev-1.13", "variant": null},
+            "identity": {"model": "example/decision-model", "variant": null},
             "inputs": {"conversation.captain_messages": {"value": ["INPUT-MARKER"], "cut": false}},
             "nodes": [
                 {"id": "requested", "status": "completed", "port": "yes", "duration_ms": 400,
@@ -1004,7 +1004,7 @@ mod tests {
                 "run_id": "01RUN",
                 "flow_name": "permission-default",
                 "definition_digest": "sha256:abc",
-                "identity": {"model": "typesafe/jev-1.13", "variant": null},
+                "identity": {"model": "example/decision-model", "variant": null},
                 "started_at": run.started_at,
                 "duration_ms": 412,
                 "status": "success",

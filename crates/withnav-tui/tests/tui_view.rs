@@ -516,7 +516,7 @@ fn settings_view_state() -> (State, UiState) {
     }];
     let fields = [
         ("layers.reflex", json!("inception/mercury-edit-2")),
-        ("layers.instinct", json!("omniroute/typesafe/jev-1.13")),
+        ("layers.instinct", json!("omniroute/example/decision-model")),
         (
             "layers.metacognition",
             json!({"model":"omniroute/combo/deepseek-v4-flash","variant":"low"}),

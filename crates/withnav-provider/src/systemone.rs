@@ -253,12 +253,12 @@ mod tests {
             },
         );
         let body = SystemOneRequest {
-            model: "typesafe/jev-1.13",
+            model: "example/decision-model",
             state: "Diff:\n+ x",
             questions: &questions,
         };
         let v = serde_json::to_value(&body).unwrap();
-        assert_eq!(v["model"], "typesafe/jev-1.13");
+        assert_eq!(v["model"], "example/decision-model");
         assert_eq!(v["state"], "Diff:\n+ x");
         assert_eq!(v["questions"]["go"]["type"], "noul");
         assert_eq!(v["questions"]["go"]["instructions"], "Worth a remark?");

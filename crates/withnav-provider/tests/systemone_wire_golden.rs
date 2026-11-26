@@ -10,7 +10,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use withnav_provider::config::{ApiKind, ModelConfig, ProviderConfig};
 use withnav_provider::error::ProviderError;
 use withnav_provider::openai::ClientCache;
-use withnav_provider::systemone::{Answer, DecisionRequest, Question, SystemOneClient};
+use withnav_provider::systemone::{
+    Answer, DecisionRequest, Question, SYSTEMONE_DEADLINE, SystemOneClient,
+};
 
 const FIXTURE_RESPONSE: &str =
     include_str!("../../../tests/fixtures/navigator/systemone_multi.json");
@@ -30,7 +32,7 @@ fn provider_at(base: String) -> ProviderConfig {
 fn model_config() -> ModelConfig {
     ModelConfig {
         provider: "omniroute".to_string(),
-        model: "typesafe/jev-1.13".to_string(),
+        model: "example/decision-model".to_string(),
         api: ApiKind::SystemOne,
         context_window: Some(64_000),
         max_input_tokens: None,
@@ -87,7 +89,7 @@ async fn posts_model_state_questions_and_parses_answers() {
         .and(path("/v1/systemone"))
         .and(header("authorization", "Bearer test-key"))
         .and(body_partial_json(serde_json::json!({
-            "model": "typesafe/jev-1.13",
+            "model": "example/decision-model",
             "state": "Intent: add retry",
             "questions": {
                 "worth_attention": { "type": "noul" },
@@ -204,8 +206,8 @@ async fn slow_body_hits_the_two_second_deadline() {
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_string(captured_response_body())
-                // Slower than the ~2 s instinct deadline.
-                .set_delay(std::time::Duration::from_secs(5)),
+                // Slower than the System One deadline.
+                .set_delay(SYSTEMONE_DEADLINE + std::time::Duration::from_secs(3)),
         )
         .expect(1)
         .mount(&server)
@@ -228,9 +230,9 @@ async fn slow_body_hits_the_two_second_deadline() {
             status: 0,
             message,
             partial: None,
-        } => message == "deadline exceeded (2000 ms)",
+        } => *message == format!("deadline exceeded ({} ms)", SYSTEMONE_DEADLINE.as_millis()),
         // The HTTP client's clamped timeout and the outer layer deadline both
-        // expire at two seconds; whichever wins must still be a timeout.
+        // expire at the System One deadline; whichever wins must still be a timeout.
         ProviderError::Http(error) => error.is_timeout(),
         _ => false,
     };

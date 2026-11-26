@@ -392,7 +392,7 @@ mod tests {
         let log = NavLog::new(tmp.path().join("nav.jsonl"));
         log.append(&LogRecord::Call {
             layer: "instinct",
-            model: "typesafe/jev-1.13",
+            model: "example/decision-model",
             latency_ms: 340,
             input_tokens: Some(454),
             output_tokens: Some(96),

@@ -19,7 +19,7 @@ A layer takes a model name, or an object with a variant:
 {
   "layers": {
     "reflex": "inception/mercury-edit-2",
-    "instinct": "omniroute/typesafe/jev-1.13",
+    "instinct": "omniroute/example/decision-model",
     "metacognition": {
       "model": "omniroute/combo/deepseek-v4-flash",
       "variant": "low"

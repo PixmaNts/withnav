@@ -67,7 +67,7 @@ async fn a_judgement_is_recorded_with_its_model_answers_and_latency() {
     let model = recorded(
         Arc::new(ScriptedDecisionModel::new([Ok(answers())])),
         &log,
-        Some("typesafe/jev-1.13"),
+        Some("example/decision-model"),
     );
 
     let result = model
@@ -81,7 +81,7 @@ async fn a_judgement_is_recorded_with_its_model_answers_and_latency() {
     assert!(line["ts"].as_str().is_some_and(|ts| ts.contains('T')));
     assert_eq!(line["caller"], "prune");
     assert_eq!(line["session_id"], "01SESSION");
-    assert_eq!(line["model"], "typesafe/jev-1.13");
+    assert_eq!(line["model"], "example/decision-model");
     assert_eq!(line["state_bytes"], STATE.len());
     assert_eq!(
         line["state_sha256"],

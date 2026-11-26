@@ -36,7 +36,7 @@ validated; a flow that is not validated does not load.
 ### Read the output
 
 ```text
-✓ ok assignment.layer.instinct: gateway/typesafe/jev variant=off
+✓ ok assignment.layer.instinct: gateway/example/decision-model variant=off
 ✓ ok live.instinct.editor: valid answer (145 ms)
 ⚠ warning flows.workspace.guard: current flow version not validated; not loaded
 ✕ failed live.metacognition.chat: HTTP 401 rejected: invalid api key; Check provider authentication, model id and API support.

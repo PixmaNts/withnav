@@ -39,7 +39,7 @@ flowchart LR
     D[[written deny]] --> F[[floor + protected check]] --> L[[doom loop]] --> FR[[free read / temp write]] --> B[[bypass]] --> SLOT
     subgraph SLOT["review slot (configurable)"]
       direction LR
-      fl[permission flows / Jev] --> rv[plugin reviewers<br/>escalate only]
+      fl[permission flows / Instinct] --> rv[plugin reviewers<br/>escalate only]
     end
     SLOT --> CAP[[apply rule / ask Captain]]
   end

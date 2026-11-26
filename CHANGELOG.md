@@ -22,6 +22,23 @@ requests land in `develop`.
   never recorded: it shows as contradicted with that reason, only when the check saw every command
   of the session. A claim the record cannot settle stays unverified, and so does any claim about
   something the record never holds (a read, a fetched page, a subagent's result).
+- The compaction judge's questions no longer embed a candidate tool output's text: the tool
+  name, the head of its arguments and head/middle/tail windows of its output travel in the
+  call's state under the candidate's key, and the questions are static text that refers to the
+  candidate by key, so untrusted output can never ride inside an instruction. The batch the
+  judge sees is recomputed around the state-bound split, so a request never exceeds its size
+  bound. An output longer than the windows the judge read is never elided entirely any more:
+  it keeps a head-and-tail excerpt of the windows the judge saw, and only an output the judge
+  read whole is replaced by the elision marker. The two questions now ask whether the assistant
+  will still need a value, path, name or error in the output, and whether removing the middle
+  would lose exact evidence, each with its no-cases written out. The drop and middle-removal
+  cuts moved off the decision model's no-information value of 0.5: a useful result is shortened
+  to head and tail when its `full` score is below 0.45, and a result is elided when its `useful`
+  score is below 0.4, so a score at the cut keeps the output. The excerpt kept of an unneeded
+  output is sized to what the summary writer can take: widest first, it narrows until the range
+  fits the source budget and every call-and-result exchange fits one chunk, so an excerpt never
+  makes compaction fail and judged-needed outputs reach the summary whenever they fit the writer's
+  budget; when the needed outputs alone exceed it, the size-based fallback elides as before.
 - Compaction summaries keep the evidence Nav continues from: each verified change names the check
   that confirmed it and its observed result, unconfirmed claims are listed apart, failed attempts
   stay with what not to retry, and the open criteria and the next check close the summary. A

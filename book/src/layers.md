@@ -63,6 +63,14 @@ the compaction judge, write one line per call to `instinct-calls.jsonl` in the d
 The state and the question text are left out because they quote tool output. The line has no
 token counts: these callers receive answers only.
 
+The compaction judge asks two questions per candidate tool output (`useful_*`, `full_*`). The
+questions are static text that names the candidate by its key (`t0`, `t1`, …): the tool name,
+the head of the arguments and head/middle/tail windows of the output travel in the call's
+`state`, under that key, so untrusted text never sits inside an instruction. An output longer
+than those windows is never elided entirely: when the judge says it is not needed, it keeps a
+head-and-tail excerpt of the windows the judge read, and only an output the judge saw whole is
+replaced by the elision marker.
+
 ## Where you see the choices
 
 The terminal's right panel and the VS Code chat header tooltip show the model of each lower layer

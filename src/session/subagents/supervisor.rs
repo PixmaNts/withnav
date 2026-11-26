@@ -4,6 +4,7 @@ use crate::provider::systemone::DecisionModel;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::facts::Facts;
 use super::watchdog::{Clock, Evidence, RealClock, Watchdog};
 
 #[cfg(any(test, feature = "test-support"))]
@@ -74,6 +75,7 @@ impl Service {
         tokio::spawn(async move {
             let interval = Duration::from_secs(interval);
             let mut watchdog = Watchdog::new(clock.clone(), interval);
+            let mut watched = Facts::new(clock.now());
             loop {
                 tokio::select! {
                     biased;
@@ -93,6 +95,17 @@ impl Service {
                 {
                     continue;
                 }
+                // The counts come from the child's stored events, read before the evidence so
+                // the evidence is the fresher of the two. Unreadable: the model is told
+                // "unjudged", never given zeros.
+                let snapshot = watched
+                    .read(
+                        service.history(),
+                        child,
+                        clock.now(),
+                        &handle.session_cancel,
+                    )
+                    .await;
                 let evidence = {
                     // Snapshot the turn identity before awaiting the judge.
                     let activity = handle
@@ -121,10 +134,22 @@ impl Service {
                     continue;
                 };
                 if let Some(checked) = watchdog
-                    .check(judge.as_deref(), &evidence, &handle.session_cancel)
+                    .check(
+                        judge.as_deref(),
+                        &evidence,
+                        snapshot.as_ref(),
+                        &handle.session_cancel,
+                    )
                     .await
                     && let Err(error) = service
-                        .apply_watchdog(link.parent_id, child, generation, checked, evidence)
+                        .apply_watchdog(
+                            link.parent_id,
+                            child,
+                            generation,
+                            checked,
+                            evidence,
+                            snapshot.map(|s| s.counts),
+                        )
                         .await
                 {
                     tracing::error!(%child, %error, "child watchdog outcome failed");

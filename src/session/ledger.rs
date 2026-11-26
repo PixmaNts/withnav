@@ -352,7 +352,7 @@ fn lexical_path(path: &str) -> String {
 }
 
 /// The first `max` characters of `text`, the last one an ellipsis when it is cut.
-fn head(text: &str, max: usize) -> String {
+pub(crate) fn head(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_owned();
     }
@@ -363,7 +363,7 @@ fn head(text: &str, max: usize) -> String {
 
 /// The last `max` characters of `text`, the first one an ellipsis when it is cut: the end of a
 /// failure's output is where its cause usually is, and the end of a path names its file.
-fn tail(text: &str, max: usize) -> String {
+pub(crate) fn tail(text: &str, max: usize) -> String {
     let count = text.chars().count();
     if count <= max {
         return text.to_owned();

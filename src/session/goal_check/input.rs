@@ -8,7 +8,9 @@
 use serde_json::Value;
 
 use super::{ClaimCheck, ClaimStatus, CriterionCheck, CriterionStatus, MAX_EVIDENCE_CHARS};
-use crate::session::ledger::{MAX_CLAIM_CHARS, MAX_CLAIMS, one_line};
+use crate::session::ledger::{
+    INVENTED_REASON, MAX_CLAIM_CHARS, MAX_CLAIMS, MAX_COMMANDS, MAX_FILES_TOUCHED, one_line,
+};
 
 /// The digest as sent, with what the answer is checked against.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +20,9 @@ pub(super) struct Input {
     pub sent_criteria: usize,
     /// The command and file-change items sent: the only lines a `supported` may quote.
     evidence: Vec<Evidence>,
+    /// Every command and file change the ledger has is in `text`: no item was cut by a bound.
+    /// Only then does the absence of a line prove a claim invented.
+    complete: bool,
 }
 
 impl Input {
@@ -168,9 +173,15 @@ fn read_back(text: String) -> Input {
     let mut sent_criteria = 0;
     let mut evidence = Vec::new();
     let mut current = Kind::Other;
+    let (mut commands_total, mut files_total) = (0, 0);
     for line in text.lines() {
         if line.starts_with('[') {
             current = kind(line);
+            match current {
+                Kind::Commands => commands_total = header_total(line),
+                Kind::Files => files_total = header_total(line),
+                _ => {}
+            }
             continue;
         }
         let Some(item) = line.strip_prefix("- ") else {
@@ -178,16 +189,44 @@ fn read_back(text: String) -> Input {
         };
         match current {
             Kind::Goal if item.starts_with("criterion ") => sent_criteria += 1,
-            Kind::Commands => evidence.push(Evidence::new(item, item.splitn(3, " · ").nth(2))),
-            Kind::Files => evidence.push(Evidence::new(item, item.split(" · ").next())),
+            Kind::Commands => evidence.push(Evidence::new(
+                Kind::Commands,
+                item,
+                item.splitn(3, " · ").nth(2),
+            )),
+            Kind::Files => {
+                evidence.push(Evidence::new(Kind::Files, item, item.split(" · ").next()))
+            }
             _ => {}
         }
     }
+    let sent = |kind: Kind| {
+        evidence
+            .iter()
+            .filter(|e: &&Evidence| e.kind == kind)
+            .count()
+    };
+    // The ledger itself keeps only its newest commands and files: at its cap, older ones may
+    // already be gone, so a full section there cannot be taken for the whole history.
+    let complete = sent(Kind::Commands) == commands_total
+        && commands_total < MAX_COMMANDS
+        && sent(Kind::Files) == files_total
+        && files_total < MAX_FILES_TOUCHED;
     Input {
         text,
         sent_criteria,
         evidence,
+        complete,
     }
+}
+
+/// The item count a `[commands: N, ...]` or `[files touched: N, ...]` header names; 0 when it
+/// names none.
+fn header_total(header: &str) -> usize {
+    header
+        .split(|c: char| !c.is_ascii_digit())
+        .find_map(|part| part.parse().ok())
+        .unwrap_or(0)
 }
 
 /// The answer object of a JSON-only reply, tolerant of a code fence or prose around it: the last
@@ -225,14 +264,16 @@ const SUBJECT_CHARS: usize = 40;
 /// of a command line, the path of a file line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Evidence {
+    kind: Kind,
     line: String,
     subject: String,
 }
 
 impl Evidence {
-    fn new(line: &str, subject: Option<&str>) -> Self {
+    fn new(kind: Kind, line: &str, subject: Option<&str>) -> Self {
         let subject = subject.unwrap_or(line).trim();
         Self {
+            kind,
             line: line.to_owned(),
             subject: if subject.is_empty() { line } else { subject }.to_owned(),
         }
@@ -281,6 +322,15 @@ pub(super) fn parse(text: &str, input: &Input) -> Option<Vec<CriterionCheck>> {
     Some(statuses)
 }
 
+/// Whether the ledger would hold a line for a claim of this `kind`: it records shell commands and
+/// file changes only. A claim about a read, a search, a fetched page or a subagent's work (kind
+/// `other`, an unknown kind, or none) cannot be shown invented by the ledger's silence, so the
+/// flag is not read for it. The kind comes from the same model answer: it narrows what the flag
+/// may do, never widens it.
+fn records_it(kind: &Value) -> bool {
+    matches!(kind.as_str(), Some("command" | "file"))
+}
+
 /// The completion claims of an answer (see [`answer`]): at most [`MAX_CLAIMS`], each claim and
 /// quote at most [`MAX_CLAIM_CHARS`] characters on one line. Nothing when the answer has no
 /// readable `claims` list.
@@ -288,7 +338,11 @@ pub(super) fn parse(text: &str, input: &Input) -> Option<Vec<CriterionCheck>> {
 /// A claim is `supported` or `contradicted` only on a quote of a command or file-change line that
 /// was sent, the rule the criteria follow. Without that quote, or with a status the model did not
 /// give or this list does not know, it is `unverified`: a claim the ledger cannot settle is
-/// never reported false. An entry without a claim text, or repeating one already given, is
+/// never reported false. The one exception is a claim the model flags `invented` (a JSON `true`)
+/// that is about a command or a file change (`kind` of `command` or `file`, see [`records_it`])
+/// while the digest holds every command and file change of the ledger: it is `contradicted`
+/// with [`INVENTED_REASON`] as its evidence. A cut digest (an item dropped for the byte bound, or
+/// a ledger at its cap) leaves the flag unread, because the missing line may be the one dropped. An entry without a claim text, or repeating one already given, is
 /// dropped.
 pub(super) fn parse_claims(text: &str, input: &Input) -> Vec<ClaimCheck> {
     let Some(value) = answer(text) else {
@@ -312,10 +366,16 @@ pub(super) fn parse_claims(text: &str, input: &Input) -> Vec<ClaimCheck> {
         if claim.is_empty() || claims.iter().any(|c| c.claim == claim) {
             continue;
         }
-        let evidence = cut(&entry["evidence"]);
+        let mut evidence = cut(&entry["evidence"]);
+        // Only a JSON `true` counts: a string, a number or a missing flag is no judgment.
+        let invented = entry["invented"].as_bool() == Some(true) && records_it(&entry["kind"]);
         let status = match entry["status"].as_str() {
             Some("supported") if shown(&evidence, input) => ClaimStatus::Supported,
             Some("contradicted") if shown(&evidence, input) => ClaimStatus::Contradicted,
+            _ if invented && input.complete => {
+                evidence = INVENTED_REASON.to_owned();
+                ClaimStatus::Contradicted
+            }
             _ => ClaimStatus::Unverified,
         };
         claims.push(ClaimCheck {
@@ -517,6 +577,81 @@ turns: 1 · last turn: done · compactions: 0
             claims(r#"[{"claim":"tests pass","evidence":"exit 0 · cargo test"}]"#)[0].1,
             Unverified
         );
+    }
+
+    fn flagged(input: &Input, kind: &str, flag: &str) -> (ClaimStatus, String) {
+        let answer = format!(
+            r#"{{"criteria":[],"claims":[{{"claim":"tests pass","status":"unverified","evidence":"","kind":{kind},"invented":{flag}}}]}}"#
+        );
+        let claim = parse_claims(&answer, input).pop().unwrap();
+        (claim.status, claim.evidence)
+    }
+
+    fn invented_status(input: &Input, flag: &str) -> (ClaimStatus, String) {
+        flagged(input, r#""command""#, flag)
+    }
+
+    #[test]
+    fn only_a_claim_about_a_command_or_a_file_can_be_invented() {
+        use ClaimStatus::{Contradicted, Unverified};
+        let whole = input();
+        // The ledger records shell commands and file changes and nothing else: a read, a
+        // fetched page or a subagent's result is absent from it whether or not it happened.
+        assert_eq!(flagged(&whole, r#""command""#, "true").0, Contradicted);
+        assert_eq!(flagged(&whole, r#""file""#, "true").0, Contradicted);
+        for kind in [
+            r#""other""#,
+            r#""read""#,
+            r#""""#,
+            "null",
+            "7",
+            r#""Command""#,
+        ] {
+            assert_eq!(flagged(&whole, kind, "true").0, Unverified, "{kind}");
+        }
+        // No kind at all is no judgment either.
+        let answer = r#"{"criteria":[],"claims":[{"claim":"the subagent ran the tests and they pass","status":"unverified","evidence":"","invented":true}]}"#;
+        assert_eq!(parse_claims(answer, &whole)[0].status, Unverified);
+    }
+
+    #[test]
+    fn an_invented_claim_is_contradicted_only_when_the_digest_is_whole() {
+        use ClaimStatus::{Contradicted, Unverified};
+        let whole = input();
+        assert!(whole.complete);
+        assert_eq!(
+            invented_status(&whole, "true"),
+            (Contradicted, INVENTED_REASON.to_owned())
+        );
+        assert_eq!(invented_status(&whole, "false").0, Unverified);
+        assert_eq!(invented_status(&whole, r#""true""#).0, Unverified);
+        assert_eq!(invented_status(&whole, "1").0, Unverified);
+        // A command the byte bound dropped may be the one that ran the tests.
+        let cut_digest = DIGEST.replace(
+            "[commands: 1, newest first]\n- turn 1 · exit 0 · cargo test\n",
+            "[commands: 3, newest first]\n- turn 1 · exit 0 · cargo test\n",
+        );
+        let cut = build(&cut_digest, 4096, 2);
+        assert!(!cut.complete);
+        assert_eq!(invented_status(&cut, "true").0, Unverified);
+        // A ledger at its cap may already have lost older commands.
+        let full = DIGEST.replace(
+            "[commands: 1, newest first]",
+            &format!("[commands: {MAX_COMMANDS}, newest first]"),
+        );
+        assert!(!build(&full, 4096, 2).complete);
+        // A session that ran nothing is whole: its absence of commands is real.
+        let none = build("pre\n[last turn]\n- tests pass\n", 4096, 0);
+        assert!(none.complete);
+        assert_eq!(invented_status(&none, "true").0, Contradicted);
+    }
+
+    #[test]
+    fn a_quoted_line_outranks_the_invented_flag() {
+        let answer = r#"{"criteria":[],"claims":[{"claim":"tests pass","status":"supported","evidence":"exit 0 · cargo test","kind":"command","invented":true}]}"#;
+        let claim = parse_claims(answer, &input()).pop().unwrap();
+        assert_eq!(claim.status, ClaimStatus::Supported);
+        assert_eq!(claim.evidence, "exit 0 · cargo test");
     }
 
     #[test]

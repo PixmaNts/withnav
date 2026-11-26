@@ -1,3 +1,4 @@
+use super::facts::Counts;
 use super::watchdog::{Checked, Evidence, Verdict};
 use crate::bus::event::now_rfc3339;
 use crate::error::ServerError;
@@ -12,6 +13,7 @@ impl Service {
         generation: u64,
         checked: Checked,
         evidence: Evidence,
+        counts: Option<Counts>,
     ) -> Result<(), ServerError> {
         let Some(handle) = self.handle(child) else {
             return Ok(());
@@ -38,6 +40,7 @@ impl Service {
             "agent": link.agent, "verdict": checked.verdict,
             "reason": checked.reason.map(|reason| reason.reason()), "checked_at": now_rfc3339(),
             "delivery": "next_turn", "evidence": evidence,
+            "computed_counts": counts.map_or_else(|| serde_json::json!(super::facts::UNJUDGED), |c| serde_json::json!(c)),
         });
         let notice = if checked.verdict == Verdict::Doubt {
             format!(

@@ -200,8 +200,12 @@ _Avoid_: stop (stop tears down the session)
 
 **Watchdog**:
 Root conversations have no default step cap. Their watchdog uses the same bounded observable
-evidence every 300 seconds (`agent.watchdog_interval_secs`; 0 disables), bound to the judged turn.
-`active` continues; `stuck` stops before the next provider request once every tool result is in.
+evidence and the same computed counts every 300 seconds (`agent.watchdog_interval_secs`; 0 disables),
+bound to the judged turn. Counts that cannot be read reach the reviewer as `unjudged`, never as calm.
+`active` continues; `stuck` stops before the next provider request once every tool result is in,
+but only when the counts show a loop (a repeated result, a failure unanswered, no progress since the
+previous check); without that, or without counts, it is read as `doubt`. A call still running is
+counted as in flight, not as a failure.
 `doubt`, including two consecutive judge failures, gets one tool-free metacognition review. Its
 60-second deadline covers reading the session ledger (at most 10 seconds; past that, or on a read
 error, the review goes on without it) and the model call together. The review reads the Captain's active session goal and its numbered criteria
@@ -233,8 +237,12 @@ and park on it too, waking their parent with a notice (counts and evidence) rath
 
 The instinct's separate progress check for a running background child, every 300 seconds by
 default (`subagents.watchdog_interval_secs`; 0 disables). It reads a bounded goal, time since
-message/tool activity, last tool call and result, and step count, never reasoning. `active` does
-nothing; `stuck` terminalizes the child with reason `watchdog` and delivers its partial output
+message/tool activity, last tool call and result, and step count, never reasoning, plus counts
+WithNav computes from the child's own events (the same call repeated with the same result, failures
+nothing has answered, reads in a row, minutes since progress, the last calls' exit status) and the
+last eight calls. Two more questions, whether the failed attempts repeat one strategy and whether
+the later ones progress, must both point to a loop before a stop: repetition without progress is
+stuck, either alone is doubt. `active` does nothing; `stuck` terminalizes the child with reason `watchdog` and delivers its partial output
 marked "stopped by watchdog". `doubt` holds the child before its next provider request, after the
 whole tool batch, and wakes its parent with "continue or stop?" plus that evidence. Two consecutive
 unavailable, timed-out or invalid answers also yield doubt; one is silent. Permission-, budget-

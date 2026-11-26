@@ -448,3 +448,19 @@ export interface SessionLedger {
   goal?: SessionGoal | null;
   goal_check?: GoalCheck | null;
 }
+
+/** One blocked turn of `GET /v1/waiting`: a live request waiting for the Captain. */
+export interface WaitingEntry {
+  /** The root session the Captain answers in. */
+  session_id: string;
+  workspace: string;
+  title?: string | null;
+  turn_id: string;
+  request_id: string;
+  child_session_id?: string;
+  tool: string;
+  /** The tool and the first words of what it does; never the review's reasoning. */
+  summary: string;
+  since: string;
+  review_state?: "reviewing" | "wait" | "unavailable" | "held" | null;
+}

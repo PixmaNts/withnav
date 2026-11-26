@@ -2403,6 +2403,11 @@ fn prompt(tool: &str, arguments: serde_json::Value, scope: (&str, &str)) -> Bloc
             message: None,
             always_saved: true,
             stale: false,
+            call_digest: None,
+            turn_id: None,
+            review: None,
+            approved_by: None,
+            review_cancelled: false,
         }),
     }
 }
@@ -4070,4 +4075,205 @@ fn the_remembered_line_and_the_goal_note_read_as_quiet_notices() {
         screen.contains("automatic observation, not a Captain message"),
         "{screen}"
     );
+}
+
+// ---------------------------------------------------------------- parallel review states
+
+use withnav_tui::state::{PermissionReview, ReviewState};
+
+/// An open `bash` request whose review stands at `review`.
+fn reviewed(review: Option<(ReviewState, [Option<&str>; 3])>) -> State {
+    let mut block = prompt(
+        "bash",
+        json!({"command": "git push origin v0.9.0"}),
+        ("folder", "/ws"),
+    );
+    if let BlockKind::Permission(p) = &mut block.kind {
+        p.call_digest = Some("digest".into());
+        p.turn_id = Some("turn".into());
+        p.review = review.map(
+            |(state, [conclusion, basis, consequence])| PermissionReview {
+                state,
+                conclusion: conclusion.map(Into::into),
+                basis: basis.map(Into::into),
+                consequence: consequence.map(Into::into),
+            },
+        );
+    }
+    asking(block)
+}
+
+fn review_ui() -> UiState {
+    UiState {
+        follow_bottom: true,
+        prompt_shown: Some("R1".into()),
+        ..UiState::default()
+    }
+}
+
+fn row_of(shown: &str, needle: &str) -> usize {
+    shown
+        .lines()
+        .position(|row| row.contains(needle))
+        .unwrap_or_else(|| panic!("{needle:?} not on screen:\n{shown}"))
+}
+
+#[test]
+fn a_running_review_shows_its_line_and_offers_hold_beside_the_usual_keys() {
+    let s = reviewed(Some((ReviewState::Reviewing, [None, None, None])));
+    let shown = screen_text(&s, &review_ui(), (120, 30));
+    assert!(shown.contains("Metacognition is reviewing…"), "{shown}");
+    assert!(shown.contains("o once · r reject · h hold"), "{shown}");
+    let bar = bottom_row(&s, &review_ui(), &Editor::new(), (200, 30));
+    assert!(
+        bar.contains("o once · r reject · h hold · esc stop"),
+        "{bar}"
+    );
+}
+
+#[test]
+fn h_holds_the_request_only_while_a_review_runs() {
+    let s = reviewed(Some((ReviewState::Reviewing, [None, None, None])));
+    let mut ui = review_ui();
+    assert_eq!(
+        keys("h", &s, &mut ui, &mut Editor::new()),
+        [Action::AnswerPermission {
+            request_id: "R1".into(),
+            answer: withnav_tui::protocol::PermissionAnswer {
+                decision: "hold".into(),
+                message: None,
+            },
+        }]
+    );
+    // Typed text is the Captain's: `h` types.
+    let mut editor = Editor::new();
+    editor.set_text("hello");
+    assert!(keys("h", &s, &mut ui, &mut editor).is_empty());
+    // With no review, or a finished one, `h` is no key of the prompt.
+    for review in [
+        None,
+        Some((ReviewState::Wait, [Some("c"), None, None])),
+        Some((ReviewState::Held, [None, None, None])),
+        Some((ReviewState::Unavailable, [None, None, None])),
+    ] {
+        let s = reviewed(review);
+        assert!(
+            keys("h", &s, &mut review_ui(), &mut Editor::new())
+                .iter()
+                .all(|a| !matches!(a, Action::AnswerPermission { .. })),
+        );
+        let shown = screen_text(&s, &review_ui(), (120, 30));
+        assert!(!shown.contains("h hold"), "{shown}");
+    }
+}
+
+#[test]
+fn h_scrolls_to_a_request_that_was_not_on_screen_instead_of_holding_it() {
+    let s = reviewed(Some((ReviewState::Reviewing, [None, None, None])));
+    let mut ui = UiState::default();
+    assert!(keys("h", &s, &mut ui, &mut Editor::new()).is_empty());
+    assert_eq!(ui.selected_block.as_deref(), Some("permission:R1"));
+}
+
+#[test]
+fn a_review_that_says_wait_shows_its_conclusion_above_the_keys() {
+    let s = reviewed(Some((
+        ReviewState::Wait,
+        [
+            Some("Pushes a tag the request did not ask for"),
+            Some("fix the warnings"),
+            Some("publishes v0.9.0 on origin"),
+        ],
+    )));
+    let shown = screen_text(&s, &review_ui(), (120, 30));
+    let keys_row = row_of(&shown, "o once · r reject");
+    assert!(
+        row_of(
+            &shown,
+            "waiting for you: Metacognition did not allow this call"
+        ) < keys_row,
+        "{shown}"
+    );
+    assert!(row_of(&shown, "Pushes a tag the request did not ask for") < keys_row);
+    assert!(row_of(&shown, "relied on: fix the warnings") < keys_row);
+    assert!(row_of(&shown, "consequence: publishes v0.9.0 on origin") < keys_row);
+    assert!(!shown.contains("h hold"), "{shown}");
+}
+
+#[test]
+fn a_held_review_and_an_unavailable_one_leave_the_card_as_it_is() {
+    let held = screen_text(
+        &reviewed(Some((ReviewState::Held, [None, None, None]))),
+        &review_ui(),
+        (120, 30),
+    );
+    assert!(held.contains("held for you: the review stopped"), "{held}");
+    assert!(held.contains("o once · r reject"), "{held}");
+    let unavailable = screen_text(
+        &reviewed(Some((ReviewState::Unavailable, [None, None, None]))),
+        &review_ui(),
+        (120, 30),
+    );
+    assert!(
+        unavailable.contains("no review; your call"),
+        "{unavailable}"
+    );
+    assert!(unavailable.contains("o once · r reject"), "{unavailable}");
+    assert!(
+        !unavailable.to_lowercase().contains("failed"),
+        "{unavailable}"
+    );
+}
+
+#[test]
+fn a_call_allowed_by_metacognition_shows_its_review_and_never_says_always() {
+    let mut s = reviewed(Some((
+        ReviewState::Allowed,
+        [
+            Some("Releasing implies the push"),
+            Some("release 0.8.4"),
+            Some("pushes the tag to origin"),
+        ],
+    )));
+    s.conversation.open_permissions.clear();
+    if let BlockKind::Permission(p) = &mut s.conversation.blocks.last_mut().unwrap().kind {
+        p.resolution = Some("allow_once".into());
+        p.approved_by = Some("metacognition".into());
+        p.always_label = Some("Always (project): bash git push *".into());
+    }
+    let shown = screen_text(&s, &review_ui(), (120, 30));
+    assert!(shown.contains("allowed once by Metacognition"), "{shown}");
+    assert!(shown.contains("Releasing implies the push"), "{shown}");
+    assert!(shown.contains("relied on: release 0.8.4"), "{shown}");
+    assert!(
+        shown.contains("consequence: pushes the tag to origin"),
+        "{shown}"
+    );
+    assert!(!shown.to_lowercase().contains("always"), "{shown}");
+}
+
+#[test]
+fn a_review_cancelled_by_the_captain_says_so_after_the_outcome() {
+    let mut s = reviewed(Some((ReviewState::Reviewing, [None, None, None])));
+    s.conversation.open_permissions.clear();
+    if let BlockKind::Permission(p) = &mut s.conversation.blocks.last_mut().unwrap().kind {
+        p.resolution = Some("allow_once".into());
+        p.approved_by = Some("captain".into());
+        p.review_cancelled = true;
+        p.always_label = Some("Always (project): bash git push *".into());
+    }
+    let shown = screen_text(&s, &review_ui(), (120, 30));
+    assert!(
+        row_of(&shown, "allowed once") < row_of(&shown, "review cancelled: you answered first")
+    );
+    // The proposed rules still sit above the outcome, as for any answered request.
+    assert!(row_of(&shown, "Always (project): bash git push *") < row_of(&shown, "allowed once"));
+}
+
+#[test]
+fn a_request_without_a_review_looks_as_it_always_did() {
+    let shown = screen_text(&reviewed(None), &review_ui(), (120, 30));
+    assert!(shown.contains("o once · r reject"), "{shown}");
+    assert!(!shown.contains("Metacognition"), "{shown}");
+    assert!(!shown.contains("hold"), "{shown}");
 }

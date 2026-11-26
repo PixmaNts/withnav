@@ -529,13 +529,19 @@ impl Executor {
                 session_id,
                 request_id,
                 answer,
+                binding,
             } => {
                 let client = self.client.clone();
                 self.spawn_event(async move {
                     ClientEvent::PermissionAnswered {
                         generation,
                         result: client
-                            .answer_permission(&session_id, &request_id, answer)
+                            .answer_permission_bound(
+                                &session_id,
+                                &request_id,
+                                answer,
+                                binding.as_ref(),
+                            )
                             .await,
                         request_id,
                     }

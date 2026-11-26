@@ -700,8 +700,10 @@ fn variant_step(state: &State, ui: &mut UiState, pick: VariantPick) {
 }
 
 /// Keys for the open permission request of the tab on screen. `o`, `a` and `r` answer it while the
-/// message is empty (with text in it they type); after `r` every key types the reject message until
-/// enter sends it or esc rejects without one. `Some(action)` when the key was the prompt's.
+/// message is empty (with text in it they type); `h` holds it for the Captain while the parallel
+/// review runs (the card stays open and the review stops); after `r` every key types the reject
+/// message until enter sends it or esc rejects without one. `Some(action)` when the key was the
+/// prompt's.
 fn permission_key(
     key: KeyEvent,
     state: &State,
@@ -770,11 +772,14 @@ fn permission_key(
     if state.answered_permission.as_deref() == Some(request_id.as_str()) {
         return matches!(key.code, KeyCode::Char('o' | 'a' | 'r')).then_some(None);
     }
+    // `h` is the prompt's key only while a review runs; otherwise it types.
+    let holds = open.can_hold();
+    let prompt_key = |c: char| matches!(c, 'o' | 'a' | 'r') || (c == 'h' && holds);
     // Not on screen at the last frame: a key only scrolls to the prompt. Only a
     // frame that actually draws the prompt's keys marks it shown (the render
     // sets `prompt_shown`), so keys queued before that frame, or a terminal too
     // small to show the prompt, never answer an unseen request.
-    if matches!(key.code, KeyCode::Char('o' | 'a' | 'r'))
+    if matches!(key.code, KeyCode::Char(c) if prompt_key(c))
         && ui.prompt_shown.as_deref() != Some(request_id.as_str())
     {
         ui.selected_block = Some(format!("permission:{request_id}"));
@@ -783,6 +788,7 @@ fn permission_key(
     }
     match key.code {
         KeyCode::Char('o') => Some(Some(answer("allow_once", None))),
+        KeyCode::Char('h') if holds => Some(Some(answer("hold", None))),
         KeyCode::Char('a') if open.always_label.is_some() => {
             Some(Some(answer("allow_always", None)))
         }

@@ -1,4 +1,4 @@
-import type { HostToWebview, PermissionCard, PermissionEvidence, PauseToken, SecretInfo, SecretNote, SecretRequest, SecretScope, SecretTtl } from "./chatProtocol";
+import type { HostToWebview, PermissionCard, PermissionEvidence, PauseToken, ReviewState, ReviewTexts, SecretInfo, SecretNote, SecretRequest, SecretScope, SecretTtl } from "./chatProtocol";
 
 const TTLS: readonly SecretTtl[] = ["1h", "24h", "session"];
 const SCOPES: readonly SecretScope[] = ["session", "workspace"];
@@ -158,13 +158,21 @@ export function eventView(envelope: WireEnvelope, currentTurn?: string, calls?: 
         alwaysLabel: typeof p.always_label === "string" ? p.always_label : undefined,
           skillName: typeof p.skill_script?.skill === "string" ? p.skill_script.skill : undefined,
         evidence: permissionEvidence(p.permission_gate),
+        ...(typeof p.call_digest === "string" ? { callDigest: p.call_digest } : {}),
+        ...(typeof p.turn_id === "string" ? { turnId: p.turn_id } : {}),
       } };
+    }
+    case "permission.review": {
+      if (typeof p.request_id !== "string" || !["reviewing", "wait", "unavailable", "held"].includes(p.state)) return undefined;
+      return { type: "permissionReview", requestId: p.request_id, state: p.state, ...reviewTexts(p) };
     }
     case "permission.resolved":
       return typeof p.request_id === "string" ? { type: "permissionState", requestId: p.request_id,
         resolution: String(p.resolution ?? "expired"),
         message: typeof p.message === "string" ? p.message : typeof p.always_error === "string" ? p.always_error : undefined,
-        ...(p.always_saved === false ? { alwaysSaved: false as const } : {}) } : undefined;
+        ...(p.always_saved === false ? { alwaysSaved: false as const } : {}),
+        ...(typeof p.approved_by === "string" ? { approvedBy: p.approved_by } : {}),
+        ...(p.approved_by === "metacognition" ? { review: reviewTexts(p.review) } : {}) } : undefined;
     case "agent.yield": {
       const id = `pause:${envelope.seq}`;
       const token = pauseToken(p.details?.pause_token);
@@ -201,6 +209,10 @@ export class ConversationControls {
   }
   apply(message: HostToWebview): void {
     if (message.type === "permission") this.permissions.set(message.card.requestId, message.card);
+    if (message.type === "permissionReview") {
+      const card = this.permissions.get(message.requestId);
+      if (card) this.permissions.set(message.requestId, { ...card, reviewState: message.state });
+    }
     if (message.type === "permissionState" && !["pending", "error"].includes(message.resolution)) this.permissions.delete(message.requestId);
     if (message.type === "pause") this.pauses.set(message.id, message);
     if (message.type === "pauseState" && message.state === "resolved") this.pauses.delete(message.id);
@@ -208,8 +220,47 @@ export class ConversationControls {
   reset(): void { this.permissions.clear(); this.pauses.clear(); this.calls = new PermissionCallReplay(); }
 }
 
-export function permissionOutcome(resolution: string, message?: string, alwaysSaved?: false): string {
+/** The short texts of a review; absent or empty ones stay absent. */
+export function reviewTexts(source: unknown): ReviewTexts {
+  const out: ReviewTexts = {};
+  const read = (source ?? {}) as Record<string, unknown>;
+  for (const key of ["conclusion", "basis", "consequence"] as const) {
+    const value = read[key];
+    if (typeof value === "string" && value) out[key] = value;
+  }
+  return out;
+}
+
+/** The lines a review adds to its card, in reading order. */
+export function reviewLines(texts: ReviewTexts): string[] {
+  return [texts.conclusion, texts.basis && `Relied on: ${texts.basis}`, texts.consequence && `Consequence: ${texts.consequence}`]
+    .filter((line): line is string => !!line);
+}
+
+/** The line that says where a waiting request's review stands; none once it ended or when there is no review. */
+export function reviewStatus(state: ReviewState | undefined): string | undefined {
+  switch (state) {
+    case "reviewing": return "Metacognition is reviewing…";
+    case "wait": return "Waiting for you: Metacognition did not allow this call.";
+    case "held": return "Held for you: the review stopped.";
+    case "unavailable": return "No review; your call.";
+    default: return undefined;
+  }
+}
+
+/**
+ * The review line of a request that just ended. The review is cancelled only when the Captain
+ * answered while it was still running; a stopped turn or a restart is no answer.
+ */
+export function reviewAfterResolution(state: ReviewState | undefined, approvedBy: string | undefined): string | undefined {
+  return approvedBy === "captain" && state === "reviewing" ? "Review cancelled: you answered first." : undefined;
+}
+
+export function permissionOutcome(resolution: string, message?: string, alwaysSaved?: false, approvedBy?: string): string {
+  // The review only ever allows a call once, whatever the resolution word says.
+  if (approvedBy === "metacognition" && resolution.startsWith("allow")) return "Allowed once by Metacognition";
   switch (resolution) {
+    case "already_started": return "Already started by Metacognition — it ran once.";
     case "allow_always": return alwaysSaved === false ? `Always not saved: ${message ?? "unknown error"}; ran once` : "Allowed always";
     case "allow_once": return "Allowed once";
     case "allow_folder": return "Allowed for this scope";

@@ -23,6 +23,7 @@ export const keys = {
   memoryItem: (id: string) => ["memory", "item", id] as const,
   needsYou: ["needs-you"] as const,
   projects: ["projects"] as const,
+  waiting: ["waiting"] as const,
 };
 
 /** Everything a workspace removal or reopening changes: the list and every session list. */
@@ -123,3 +124,7 @@ export const registerChanged = (qc: QueryClient) =>
     qc.invalidateQueries({ queryKey: keys.needsYou }),
     qc.invalidateQueries({ queryKey: keys.projects }),
   ]);
+
+/** Every permission request the live sessions wait on, read every 5 s; a failed read keeps the last list. */
+export const useWaiting = () =>
+  useQuery({ queryKey: keys.waiting, queryFn: api.waiting, refetchInterval: 5_000, retry: false });

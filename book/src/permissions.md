@@ -106,6 +106,24 @@ wrote, a skill validation, a subagent's call or a request too long to read whole
 never cut to fit). A timeout (60
 seconds) or an unusable answer leaves the card exactly as without a review.
 
+What the card shows while the review is on:
+
+- **Metacognition is reviewing…**: your buttons stay active, and **Hold for me** (`h` in the
+  terminal client) stops the review and keeps the card yours.
+- **Allowed once by Metacognition**: the call ran once, with the short conclusion, the words it
+  relied on and the consequence. The card never says "always" for a review's decision.
+- **The review said wait**: the conclusion is above your buttons.
+- **Review cancelled: you answered first**: you answered while it was still running.
+- **Held**: you stopped the review; the card stays open for you.
+- **Already started by Metacognition — it ran once**: your answer arrived after the review had
+  allowed the call. The call is not undone.
+- If the review could not run, the card shows a small neutral note and works as without a review.
+
+The browser client also shows a count of the sessions waiting on you, a dot beside each one in the
+sidebar, and, if you allow it from that count, one browser notification per blocked turn. The
+notification closes when the request is answered, and each session can be muted. The terminal
+client and the editor extension keep the unread mark and send no notification.
+
 Under `shadow` the review still runs, but only writes one line per question to
 `permission-reviews.jsonl` in the data directory, beside your own answer: nothing is shown and
 nothing changes. Answering first does not stop it there, so the line compares both answers; it

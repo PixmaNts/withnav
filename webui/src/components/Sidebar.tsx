@@ -12,6 +12,7 @@ import type { useWorkspaceExpansion } from "../lib/workspaceExpansion";
 import { MemoryNav } from "../memory/MemoryNav";
 import { WorkspaceMenu, type RemoveRequest } from "./WorkspaceActions";
 import { rootSessions, subagentsOf, type DeleteSessionRequest } from "./SessionActions";
+import { WaitingDot } from "./WaitingBadge";
 
 interface Props {
   route: Route;
@@ -181,6 +182,7 @@ function SessionRow({ s, kids, ws, route, navigate, onDelete }: { s: SessionList
           title={title}
         >
           <span className="title">{title}</span>
+          <WaitingDot sessionId={s.id} />
           {s.yolo && <span className="bypass-badge">⚠ YOLO</span>}
           {!s.yolo && s.permissions_unavailable && <span className="bypass-badge" title={s.permissions_unavailable}>⚠ Permission rules unavailable</span>}
           {s.bypass && <span className="bypass-badge">⚠ bypass</span>}

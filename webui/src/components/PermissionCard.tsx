@@ -1,8 +1,15 @@
 import { FilePlus, PencilSimple, ShieldCheck, Terminal } from "@phosphor-icons/react";
-import { useState } from "react";
-import type { Permission } from "../session/reducer";
+import { createContext, useContext, useState } from "react";
+import type { Permission, PermissionReview } from "../session/reducer";
 
 type Decision = "allow_once" | "allow_always" | "reject";
+
+/**
+ * "Hold for me": stops the parallel review of a request and keeps the card for the Captain. It is
+ * a context, not a prop of the answer callback, so the conversation view that renders the card
+ * does not have to know the review exists.
+ */
+export const PermissionHoldContext = createContext<{ hold: (requestId: string) => Promise<void> } | null>(null);
 
 /** What the call would do, as the Captain reviews it: path and content, or the command. */
 function preview(perm: Permission): { title: string; path?: string; lines: { kind: "add" | "del" | "ctx"; text: string }[]; extra?: string } {
@@ -54,7 +61,8 @@ export function PermissionCard({
   onAnswer: (decision: Decision, message?: string) => Promise<void>;
   readOnly?: boolean;
 }) {
-  const [sending, setSending] = useState<Decision | null>(null);
+  const holder = useContext(PermissionHoldContext);
+  const [sending, setSending] = useState<Decision | "hold" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const view = preview(perm);
@@ -72,7 +80,19 @@ export function PermissionCard({
       setSending(null);
     }
   };
+  const hold = async () => {
+    if (!holder) return;
+    setSending("hold");
+    setError(null);
+    try {
+      await holder.hold(perm.requestId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+    setSending(null);
+  };
   const waiting = !perm.resolution;
+  const canHold = waiting && !readOnly && !!holder && perm.review?.state === "reviewing";
   return (
     <div className={`perm${waiting ? " waiting" : ""}`} role="group" aria-label={`Permission: ${perm.agent} wants to use ${perm.tool}`}>
       <div className="perm-head">
@@ -90,6 +110,7 @@ export function PermissionCard({
         ))}
       </div>
       {view.extra && <div className="perm-reason">{view.extra}</div>}
+      {waiting && perm.review && <ReviewLine review={perm.review} />}
       {waiting && !readOnly && (
         <div className="actions">
           <button type="button" className="btn" disabled={!!sending} onClick={() => answer("allow_once")} autoFocus>
@@ -111,17 +132,60 @@ export function PermissionCard({
             setError(null);
             setMessage(event.target.value);
           }} /><span className="muted" role="status">{new TextEncoder().encode(message).length} / 2048 UTF-8 bytes</span></div>
+          {canHold && (
+            <button type="button" className="btn ghost" disabled={!!sending} onClick={() => void hold()}>
+              Hold for me
+            </button>
+          )}
           {sending && <span className="muted">Sending…</span>}
         </div>
       )}
       {waiting && readOnly && <div className="outcome">Waiting for an answer in the parent conversation.</div>}
       {error && <div className="composer-error">{error}</div>}
       {!waiting && <Outcome perm={perm} site={site} />}
+      {!waiting && perm.approvedBy === "metacognition" && perm.review && <ReviewText review={perm.review} />}
+      {!waiting && perm.reviewCancelled && <div className="review muted" role="status">Review cancelled: you answered first.</div>}
     </div>
   );
 }
 
+/** The review's short conclusion, the part of the request it relied on and the consequence. */
+function ReviewText({ review }: { review: PermissionReview }) {
+  return (
+    <div className="review-text">
+      {review.conclusion && <div>{review.conclusion}</div>}
+      {review.basis && <div className="muted">Relied on: {review.basis}</div>}
+      {review.consequence && <div className="muted">Consequence: {review.consequence}</div>}
+    </div>
+  );
+}
+
+/** Where the review of a waiting request stands; the Captain's buttons stay active in every state. */
+function ReviewLine({ review }: { review: PermissionReview }) {
+  switch (review.state) {
+    case "reviewing":
+      return <div className="review muted" role="status"><span className="spin" aria-hidden>⠋</span> Metacognition is reviewing…</div>;
+    case "wait":
+      return (
+        <div className="review wait" role="status">
+          <span className="bypass-badge">Waiting for you</span>
+          <ReviewText review={review} />
+        </div>
+      );
+    case "held":
+      return <div className="review muted" role="status">Held for you: the review stopped.</div>;
+    case "unavailable":
+      return <div className="review muted" role="status">No review; your call.</div>;
+    default:
+      return null;
+  }
+}
+
 function Outcome({ perm, site }: { perm: Permission; site: boolean }) {
+  // Metacognition only ever allows a call once, whatever the resolution word says.
+  if (perm.approvedBy === "metacognition" && perm.resolution?.startsWith("allow")) {
+    return <div className="outcome"><span className="ok">✓</span> Allowed once by Metacognition.</div>;
+  }
   switch (perm.resolution) {
     case "allow_once":
       return <div className="outcome"><span className="ok">✓</span> Allowed once.</div>;

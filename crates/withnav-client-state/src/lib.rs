@@ -15,8 +15,8 @@ pub mod text;
 pub use children::{ChildAgent, ChildStatus};
 pub use command::{goal_note_line, outcome_text, remembered_line, tokens};
 pub use conversation::{
-    Activity, Block, BlockKind, Conversation, MemoryEntry, PermissionPrompt, QuestionPrompt,
-    SecretPrompt, SecretState, SkillScript, block,
+    Activity, Block, BlockKind, Conversation, MemoryEntry, PermissionPrompt, PermissionReview,
+    QuestionPrompt, ReviewState, SecretPrompt, SecretState, SkillScript, block,
 };
 pub use envelope::{EnvelopeContext, apply_envelope};
 pub use projection::{

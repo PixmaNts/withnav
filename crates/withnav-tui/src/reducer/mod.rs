@@ -663,6 +663,13 @@ fn apply(s: &mut State, e: ClientEvent, background: bool) -> Result<Vec<Effect>,
                         ),
                     );
                 }
+                // The review allowed the call before this answer reached the server: it started
+                // and ran once. Nothing here says it was undone; the server's own resolution
+                // follows and says how it ended.
+                Err(AnswerError::AlreadyStarted) => push_local(
+                    s,
+                    BlockKind::Notice("Already started by Metacognition — it ran once".into()),
+                ),
                 Err(AnswerError::Other(error)) => {
                     // Not taken: the keys answer it again.
                     clear_answered(s, &request_id);

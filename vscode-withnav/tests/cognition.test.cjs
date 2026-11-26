@@ -795,3 +795,32 @@ test("live response without a gap replaces with identical text and empty text ke
   assert.equal(backend.history().filter(m => m.type === "delta").map(m => m.text).join(""), "HelloCalling");
   backend.dispose();
 });
+
+test("an answer carries the call digest and turn of its card", async t => {
+  const { backend, calls, permission } = setup(t);
+  permission({ call_digest: "D", turn_id: "T" });
+  await backend.answerPermission("parent", "R", "allow_once");
+  assert.deepEqual(JSON.parse(calls[0].body), { decision: "allow_once", call_digest: "D", turn_id: "T" });
+});
+
+test("hold posts the bound hold, keeps the card open and is not shown as sent", async t => {
+  const { backend, calls, apply, permission } = setup(t, { accepted: true, held: true });
+  permission({ call_digest: "D", turn_id: "T" });
+  apply("permission.review", { request_id: "R", state: "reviewing" });
+  await backend.answerPermission("parent", "R", "hold");
+  assert.deepEqual(JSON.parse(calls[0].body), { decision: "hold", call_digest: "D", turn_id: "T" });
+  assert.equal(backend.hasOpenPermissions(), true);
+  assert.equal(backend.history().some(m => m.type === "permissionState"), false);
+  apply("permission.review", { request_id: "R", state: "held" });
+  await assert.rejects(backend.answerPermission("parent", "R", "hold"));
+  assert.equal(calls.length, 1, "a hold is only valid while the review runs");
+});
+
+test("an answer refused because the review already started says it ran once", async t => {
+  const { backend, permission } = setup(t, { error: "started", reason: "permission_already_started", approved_by: "metacognition" }, 409);
+  permission();
+  await backend.answerPermission("parent", "R", "allow_once");
+  const state = backend.history().at(-1);
+  assert.equal(state.resolution, "already_started");
+  assert.equal(backend.hasOpenPermissions(), false);
+});

@@ -47,7 +47,18 @@ pub enum SendError {
 pub enum AnswerError {
     /// The request is no longer waiting (answered, cancelled, expired).
     Stale,
+    /// The parallel review had already allowed the call: it started and ran once. The answer
+    /// changed nothing, and nothing was undone.
+    AlreadyStarted,
     Other(String),
+}
+
+/// What an answer to a permission request is bound to: the digest of the call and the turn the
+/// request was raised in. The server refuses an answer for another call as stale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionBinding {
+    pub call_digest: String,
+    pub turn_id: String,
 }
 
 /// Why opening the event stream failed.
@@ -323,12 +334,27 @@ impl Client {
         .await
     }
 
-    /// Answers a permission request. A 409 `permission_stale` is [`AnswerError::Stale`].
+    /// Answers a permission request without binding it to a call. A 409 `permission_stale` is
+    /// [`AnswerError::Stale`].
     pub async fn answer_permission(
         &self,
         id: &str,
         request_id: &str,
         answer: PermissionAnswer,
+    ) -> Result<(), AnswerError> {
+        self.answer_permission_bound(id, request_id, answer, None)
+            .await
+    }
+
+    /// Answers a permission request; `decision` may be `hold` ("Hold for me"). A 409
+    /// `permission_stale` is [`AnswerError::Stale`], and a 409 `permission_already_started` (the
+    /// review allowed the call first) is [`AnswerError::AlreadyStarted`].
+    pub async fn answer_permission_bound(
+        &self,
+        id: &str,
+        request_id: &str,
+        answer: PermissionAnswer,
+        binding: Option<&PermissionBinding>,
     ) -> Result<(), AnswerError> {
         let path = format!(
             "/v1/sessions/{}/permissions/{}",
@@ -337,7 +363,7 @@ impl Client {
         );
         let response = self
             .post(&path)
-            .json(&answer)
+            .json(&answer_body(&answer, binding))
             .send()
             .await
             .map_err(|e| AnswerError::Other(describe(&e)))?;
@@ -346,14 +372,7 @@ impl Client {
             return Ok(());
         }
         let body = response.text().await.unwrap_or_default();
-        let stale = status == reqwest::StatusCode::CONFLICT
-            && serde_json::from_str::<serde_json::Value>(&body)
-                .is_ok_and(|v| v["reason"] == "permission_stale");
-        if stale {
-            Err(AnswerError::Stale)
-        } else {
-            Err(AnswerError::Other(status_message(status, &body)))
-        }
+        Err(answer_error(status, &body))
     }
 
     /// Answers the secret request `request_id`, or gives a secret after it was settled
@@ -618,10 +637,141 @@ pub fn is_loopback(url: &str) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
+/// The answer as the server reads it: the decision and message, plus the call digest and turn the
+/// Captain saw when there are any.
+fn answer_body(
+    answer: &PermissionAnswer,
+    binding: Option<&PermissionBinding>,
+) -> serde_json::Value {
+    let mut body = serde_json::to_value(answer).unwrap_or_default();
+    if let (Some(binding), Some(fields)) = (binding, body.as_object_mut()) {
+        fields.insert("call_digest".into(), binding.call_digest.clone().into());
+        fields.insert("turn_id".into(), binding.turn_id.clone().into());
+    }
+    body
+}
+
+/// Why the server refused an answer: only a 409 carries a meaning of its own.
+fn answer_error(status: reqwest::StatusCode, body: &str) -> AnswerError {
+    let reason = (status == reqwest::StatusCode::CONFLICT)
+        .then(|| serde_json::from_str::<serde_json::Value>(body).ok())
+        .flatten()
+        .and_then(|v| v["reason"].as_str().map(str::to_owned));
+    match reason.as_deref() {
+        Some("permission_stale") => AnswerError::Stale,
+        Some("permission_already_started") => AnswerError::AlreadyStarted,
+        _ => AnswerError::Other(status_message(status, body)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use reqwest::StatusCode;
+
+    fn answer(decision: &str) -> PermissionAnswer {
+        PermissionAnswer {
+            decision: decision.into(),
+            message: None,
+        }
+    }
+
+    #[test]
+    fn an_answer_carries_the_digest_and_turn_it_was_given_for() {
+        let binding = PermissionBinding {
+            call_digest: "d1".into(),
+            turn_id: "t1".into(),
+        };
+        assert_eq!(
+            answer_body(&answer("hold"), Some(&binding)),
+            serde_json::json!({"decision": "hold", "call_digest": "d1", "turn_id": "t1"})
+        );
+    }
+
+    #[test]
+    fn an_answer_without_a_binding_is_the_body_it_always_was() {
+        let with_message = PermissionAnswer {
+            decision: "reject".into(),
+            message: Some("no".into()),
+        };
+        assert_eq!(
+            answer_body(&with_message, None),
+            serde_json::json!({"decision": "reject", "message": "no"})
+        );
+        assert_eq!(
+            answer_body(&answer("allow_once"), None),
+            serde_json::json!({"decision": "allow_once"})
+        );
+    }
+
+    #[test]
+    fn a_refused_answer_is_stale_already_started_or_a_plain_error() {
+        let conflict = |reason: &str| {
+            answer_error(
+                StatusCode::CONFLICT,
+                &serde_json::json!({"error": "x", "reason": reason}).to_string(),
+            )
+        };
+        assert_eq!(conflict("permission_stale"), AnswerError::Stale);
+        assert_eq!(
+            conflict("permission_already_started"),
+            AnswerError::AlreadyStarted
+        );
+        assert!(matches!(conflict("something_else"), AnswerError::Other(_)));
+        // The reason means something only on a 409.
+        assert!(matches!(
+            answer_error(
+                StatusCode::BAD_REQUEST,
+                r#"{"reason":"permission_already_started"}"#
+            ),
+            AnswerError::Other(_)
+        ));
+        assert!(matches!(
+            answer_error(StatusCode::CONFLICT, "not json"),
+            AnswerError::Other(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn answering_posts_the_decision_with_its_binding() {
+        use axum::{Json, response::IntoResponse};
+        let (url, mut requests) =
+            recording_server(|_| Json(serde_json::json!({"accepted": true})).into_response()).await;
+        let client = local_client(url);
+        let binding = PermissionBinding {
+            call_digest: "d1".into(),
+            turn_id: "t1".into(),
+        };
+        client
+            .answer_permission_bound("s/1", "r1", answer("hold"), Some(&binding))
+            .await
+            .unwrap();
+        let seen = requests.try_recv().expect("the request reached the server");
+        assert_eq!(seen.method, "POST");
+        assert_eq!(seen.uri, "/v1/sessions/s%2F1/permissions/r1");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&seen.body).unwrap(),
+            serde_json::json!({"decision": "hold", "call_digest": "d1", "turn_id": "t1"})
+        );
+    }
+
+    #[tokio::test]
+    async fn an_answer_after_the_review_allowed_the_call_is_already_started() {
+        use axum::{Json, http::StatusCode, response::IntoResponse};
+        let (url, _requests) = recording_server(|_| {
+            (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "the call already started: the review allowed it once",
+                    "reason": "permission_already_started", "approved_by": "metacognition"})),
+            )
+                .into_response()
+        })
+        .await;
+        let result = local_client(url)
+            .answer_permission("s", "r", answer("reject"))
+            .await;
+        assert_eq!(result, Err(AnswerError::AlreadyStarted));
+    }
 
     #[test]
     fn only_this_machine_counts_as_loopback() {

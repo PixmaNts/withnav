@@ -9,7 +9,7 @@ pub use withnav_client_api::protocol::{
 };
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct Generation(pub u64);
-pub use withnav_client::client::AnswerError;
+pub use withnav_client::client::{AnswerError, PermissionBinding};
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
     BypassSet {
@@ -274,7 +274,8 @@ pub enum Action {
     /// A row of the variant list: a variant name, or `off` for none. What it applies to is the
     /// list's `UiState::variant_pick`.
     PickVariant(String),
-    /// Answers the open permission request of the active tab.
+    /// Answers the open permission request of the active tab. The decision `hold` is "Hold for
+    /// me": it stops the parallel review and keeps the request open.
     AnswerPermission {
         request_id: String,
         answer: PermissionAnswer,
@@ -383,11 +384,13 @@ pub enum Effect {
     /// Reads the server's command list.
     FetchCommands,
     /// Sends a decision on a permission request; the outcome comes back as
-    /// `ClientEvent::PermissionAnswered`.
+    /// `ClientEvent::PermissionAnswered`. `binding` is the digest and turn of the request the
+    /// Captain saw: an answer for another call is refused as stale.
     AnswerPermission {
         session_id: String,
         request_id: String,
         answer: PermissionAnswer,
+        binding: Option<PermissionBinding>,
     },
     /// Runs a command in a session; the outcome comes back as `ClientEvent::CommandRan`, with
     /// the same `token` (the tab's own number for the request, so an answer finds its request).

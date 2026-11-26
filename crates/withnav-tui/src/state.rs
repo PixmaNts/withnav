@@ -4,8 +4,8 @@ use super::protocol::{Generation, ModelEntry, SessionListEntry};
 use std::collections::HashMap;
 pub use withnav_client_state::{
     Activity, Block, BlockKind, ChildAgent, ChildStatus, Conversation, DEFAULT_AGENT, MemoryEntry,
-    ModelSwitch, PermissionPrompt, QuestionPrompt, SecretPrompt, SecretState, SessionState,
-    SkillScript,
+    ModelSwitch, PermissionPrompt, PermissionReview, QuestionPrompt, ReviewState, SecretPrompt,
+    SecretState, SessionState, SkillScript,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

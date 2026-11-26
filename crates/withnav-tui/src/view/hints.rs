@@ -64,6 +64,30 @@ pub const PERMISSION_ONCE: &[Hints] = &[
     Hints::new(&["o once", "r reject", "esc stop"], 2),
     Hints::new(&["o", "r"], 2),
 ];
+/// While the parallel review runs, `h` holds the request for the Captain.
+pub const PERMISSION_ONCE_HOLD: &[Hints] = &[
+    Hints::new(
+        &["o once", "r reject", "h hold", "esc stop", "ctrl+p palette"],
+        3,
+    ),
+    Hints::new(&["o once", "r reject", "h hold", "esc stop"], 3),
+    Hints::new(&["o", "r", "h"], 3),
+];
+pub const PERMISSION_HOLD: &[Hints] = &[
+    Hints::new(
+        &[
+            "o once",
+            "a always",
+            "r reject",
+            "h hold",
+            "esc stop",
+            "ctrl+p palette",
+        ],
+        4,
+    ),
+    Hints::new(&["o once", "a always", "r reject", "h hold", "esc stop"], 4),
+    Hints::new(&["o", "a", "r", "h"], 4),
+];
 pub const PERMISSION: &[Hints] = &[
     Hints::new(
         &[

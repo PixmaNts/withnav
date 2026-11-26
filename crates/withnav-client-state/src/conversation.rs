@@ -131,12 +131,52 @@ pub struct PermissionPrompt {
     /// The server said the request was no longer waiting (409) before its `permission.resolved`
     /// arrived: it takes no answer, and how it ended is not known yet.
     pub stale: bool,
+    /// The digest of the call and the turn the request was raised in: an answer carries both, and
+    /// the server refuses it as stale when another call took the request's place.
+    pub call_digest: Option<String>,
+    pub turn_id: Option<String>,
+    /// The parallel metacognition review, when the server ran one for this request.
+    pub review: Option<PermissionReview>,
+    /// Who ended the request: `captain`, `bypass` or `metacognition`. `None` while open, and when
+    /// it was cancelled or expired.
+    pub approved_by: Option<String>,
+    /// The Captain answered while the review was still running: it was stopped, not finished.
+    pub review_cancelled: bool,
+}
+
+/// Where the parallel review of a permission request stands, with its short texts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionReview {
+    pub state: ReviewState,
+    pub conclusion: Option<String>,
+    pub basis: Option<String>,
+    pub consequence: Option<String>,
+}
+
+/// `Allowed` is the review's own decision, read from `permission.resolved`; the others come from
+/// `permission.review`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewState {
+    Reviewing,
+    Wait,
+    Unavailable,
+    Held,
+    Allowed,
 }
 
 impl PermissionPrompt {
     /// Whether the request still waits for an answer: every "open" check goes through here.
     pub fn is_open(&self) -> bool {
         self.resolution.is_none() && !self.stale
+    }
+
+    /// Whether "Hold for me" applies: the review is running and may still allow the call.
+    pub fn can_hold(&self) -> bool {
+        self.is_open()
+            && self
+                .review
+                .as_ref()
+                .is_some_and(|r| r.state == ReviewState::Reviewing)
     }
 }
 

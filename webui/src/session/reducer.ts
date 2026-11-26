@@ -100,6 +100,35 @@ export interface Permission {
   message?: string;
   /** False when an Always answer could not save its rules: the call ran once. */
   alwaysSaved?: false;
+  /** The answer is bound to this call and turn: another call under the same id is stale. */
+  callDigest?: string;
+  turnId?: string;
+  /** The parallel metacognition review, when the server runs one for this request. */
+  review?: PermissionReview;
+  /** Who answered: `captain`, `bypass` or `metacognition`. Absent when the request was cancelled or expired. */
+  approvedBy?: string;
+  /** The Captain answered while the review was still running: it was stopped, not finished. */
+  reviewCancelled?: true;
+}
+
+/** `allowed` is the review's own decision, read from `permission.resolved`; the rest come from `permission.review`. */
+export interface PermissionReview {
+  state: "reviewing" | "wait" | "unavailable" | "held" | "allowed";
+  conclusion?: string;
+  basis?: string;
+  consequence?: string;
+}
+
+const REVIEW_STATES = new Set(["reviewing", "wait", "unavailable", "held"]);
+
+/** The short texts a review carries; absent ones stay absent. */
+function reviewTexts(source: { conclusion?: unknown; basis?: unknown; consequence?: unknown } | undefined) {
+  const out: { conclusion?: string; basis?: string; consequence?: string } = {};
+  for (const key of ["conclusion", "basis", "consequence"] as const) {
+    const value = source?.[key];
+    if (typeof value === "string" && value) out[key] = value;
+  }
+  return out;
 }
 
 export type Item =
@@ -361,6 +390,8 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
           alwaysLabel: typeof p.always_label === "string" ? p.always_label : undefined,
           skillName: typeof p.skill_script?.skill === "string" ? p.skill_script.skill : undefined,
           childSessionId: typeof p.child_session_id === "string" ? p.child_session_id : undefined,
+          callDigest: typeof p.call_digest === "string" ? p.call_digest : undefined,
+          turnId: typeof p.turn_id === "string" ? p.turn_id : undefined,
         },
       };
       // Shown where it happened: inside the running turn, else on its own.
@@ -371,19 +402,29 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       next.items = [...next.items, { kind: "permission", key: `perm:${requestId}`, requestId }];
       return next;
     }
+    case "permission.review": {
+      const requestId = str(p.request_id);
+      const perm = next.permissions[requestId];
+      // A late review of a request that already ended changes nothing.
+      if (!perm || perm.resolution || !REVIEW_STATES.has(p.state)) return next;
+      next.permissions = { ...next.permissions, [requestId]: { ...perm, review: { state: p.state, ...reviewTexts(p) } } };
+      return next;
+    }
     case "permission.resolved": {
       const requestId = str(p.request_id);
       const perm = next.permissions[requestId];
       if (!perm) return next;
-      next.permissions = {
-        ...next.permissions,
-        [requestId]: {
-          ...perm,
-          resolution: str(p.resolution, "expired"),
-          message: typeof p.message === "string" ? p.message : typeof p.always_error === "string" ? p.always_error : undefined,
-          alwaysSaved: p.always_saved === false ? false : undefined,
-        },
+      const approvedBy = typeof p.approved_by === "string" ? p.approved_by : undefined;
+      const resolved: Permission = {
+        ...perm,
+        resolution: str(p.resolution, "expired"),
+        message: typeof p.message === "string" ? p.message : typeof p.always_error === "string" ? p.always_error : undefined,
+        alwaysSaved: p.always_saved === false ? false : undefined,
+        approvedBy,
       };
+      if (approvedBy === "metacognition") resolved.review = { state: "allowed", ...reviewTexts(p.review) };
+      else if (approvedBy === "captain" && perm.review?.state === "reviewing") resolved.reviewCancelled = true;
+      next.permissions = { ...next.permissions, [requestId]: resolved };
       return next;
     }
     case "model.changed": {

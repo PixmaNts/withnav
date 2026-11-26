@@ -3,7 +3,7 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfm } from "micromark-extension-gfm";
 import { gfmFromMarkdown } from "mdast-util-gfm";
 import type { HostToWebview, WebviewToHost, PermissionEvidence, PermissionDecision, ImageRef, ImageProblem, ImageRefusal, PickedImage } from "../chatProtocol";
-import { evidenceLabel, permissionOutcome } from "../eventView";
+import { evidenceLabel, permissionOutcome, reviewAfterResolution, reviewLines, reviewStatus } from "../eventView";
 import { contextMeter } from "../contextMeter";
 import { displayTitle } from "../sessionTitle";
 import { ConversationIdentity } from "./conversationIdentity";
@@ -11,7 +11,7 @@ import { diffKind, parseWake } from "./wake";
 import { ranked, narrowHint, PICKER_LIMIT } from "./pickerSearch";
 import { ImageCache } from "./imageCache";
 import { createSecretCard, expiresIn, KEY_ICON, scopeText, type SecretCard } from "./secretCard";
-import type { SecretInfo } from "../chatProtocol";
+import type { SecretInfo, ReviewState, ReviewTexts } from "../chatProtocol";
 import type { CommandInfo } from "../chatProtocol";
 import type { ChildInfo } from "../chatProtocol";
 import { actionsSummary, childGroup, crewOf, orderAgents, childStateLabels, countChildren, durationLabel, filterChildren, footerText, oneLine, stripChildren, type ChildFilter } from "./agentStrip";
@@ -694,7 +694,20 @@ let pendingSendText: string | undefined;
 let compacting = false;
 let compactionRow: HTMLElement | undefined;
 let lastConsumedDraft: string | undefined;
-const permissionCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; controls: HTMLElement; call: HTMLElement }>();
+const permissionCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; controls: HTMLElement; call: HTMLElement; review: HTMLElement; hold: HTMLButtonElement; reviewState?: ReviewState }>();
+
+/** Shows where the review of a waiting request stands, above the Captain's buttons; "Hold for me" only while it runs. */
+function showReview(card: { review: HTMLElement; hold: HTMLButtonElement; reviewState?: ReviewState }, state: ReviewState | undefined, texts: ReviewTexts = {}): void {
+  card.reviewState = state;
+  const status = reviewStatus(state);
+  card.review.hidden = !status;
+  card.review.replaceChildren();
+  if (status) {
+    card.review.append(el("div", "review-status", status));
+    if (state === "wait") for (const line of reviewLines(texts)) card.review.append(el("div", "review-line", line));
+  }
+  card.hold.hidden = state !== "reviewing";
+}
 const questionCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; answered: boolean }>();
 const pauseCards = new Map<string, { root: HTMLElement; outcome: HTMLElement; controls: HTMLElement }>();
 const secretCards = new Map<string, SecretCard>();
@@ -1522,11 +1535,22 @@ function renderPermission(event: Extract<HostToWebview, { type: "permission" }>)
   buttons.append(actionButton("Allow", () => answer("allow_once"), true));
   if (card.alwaysLabel !== undefined) buttons.append(actionButton(card.alwaysLabel, () => answer("allow_always")));
   buttons.append(actionButton("Reject", () => answer("reject")));
+  // "Hold for me" stops the review and keeps the card; it is not an answer, so nothing is disabled.
+  const hold = actionButton("Hold for me", () => {
+    if (sessionId) post({ type: "answerPermission", sessionId, requestId: card.requestId, decision: "hold" });
+  });
+  hold.hidden = true;
+  buttons.append(hold);
+  const review = el("div", "permission-review");
+  review.setAttribute("role", "status");
+  review.hidden = true;
   controls.append(denyMessage, messageFeedback, buttons);
   const outcome = el("div", "control-outcome", "Waiting for your answer");
   outcome.setAttribute("role", "status");
-  root.append(controls, outcome);
-  permissionCards.set(card.requestId, { root, controls, outcome, call });
+  root.append(review, controls, outcome);
+  const entry = { root, controls, outcome, call, review, hold, reviewState: undefined as ReviewState | undefined };
+  permissionCards.set(card.requestId, entry);
+  showReview(entry, card.reviewState);
   add(root);
 }
 
@@ -1773,10 +1797,29 @@ function receive(event: HostToWebview): void {
       follow();
       break;
     }
+    case "permissionReview": {
+      const card = permissionCards.get(event.requestId);
+      // A late review of a request that already ended changes nothing.
+      if (!card || card.controls.hidden) break;
+      showReview(card, event.state, event);
+      follow();
+      break;
+    }
     case "permissionState": {
       const card = permissionCards.get(event.requestId);
       if (!card) break;
-      card.outcome.textContent = permissionOutcome(event.resolution, event.message, event.alwaysSaved);
+      card.outcome.textContent = permissionOutcome(event.resolution, event.message, event.alwaysSaved, event.approvedBy);
+      // How the review ended: its own short reasons when it allowed the call, "cancelled" when the
+      // Captain answered while it ran. Never implies that a started call was undone.
+      if (!["pending", "error"].includes(event.resolution)) {
+        const cancelled = reviewAfterResolution(card.reviewState, event.approvedBy);
+        card.review.replaceChildren();
+        if (event.approvedBy === "metacognition" && event.review) for (const line of reviewLines(event.review)) card.review.append(el("div", "review-line", line));
+        else if (cancelled) card.review.append(el("div", "review-status", cancelled));
+        card.review.hidden = card.review.childElementCount === 0;
+        card.hold.hidden = true;
+        card.reviewState = undefined;
+      }
       card.root.dataset.resolution = event.resolution;
       const review = card.root.querySelector(".approval-evidence summary");
     if (review?.textContent === "Captain review required" && ["allow_once", "allow_always", "allow_folder"].includes(event.resolution)) review.textContent = "approved · Captain";

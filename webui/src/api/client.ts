@@ -1,4 +1,4 @@
-import { blob, del, get, post, put, q, request } from "./http";
+import { blob, del, get, HttpError, post, put, q, request } from "./http";
 import type { AskAnswer, SecretScope, SecretTtl } from "../session/reducer";
 import type {
   AgentsBody,
@@ -26,8 +26,26 @@ import type {
   SecretView,
   SettingsBody,
   SkillsBody,
+  WaitingEntry,
   WorkspaceEntry,
 } from "./types";
+
+export type PermissionDecision = "allow_once" | "allow_always" | "reject" | "hold";
+export interface PermissionBinding {
+  callDigest?: string;
+  turnId?: string;
+}
+
+/**
+ * What an answer's refusal tells the Captain. A request answered elsewhere is stale; a call the
+ * review already allowed is never described as undone.
+ */
+export function permissionAnswerError(error: unknown): Error {
+  if (!(error instanceof HttpError) || error.status !== 409) return error instanceof Error ? error : new Error(String(error));
+  if (error.reason === "permission_stale") return new Error("This request is no longer waiting: it was answered, cancelled or expired.");
+  if (error.reason === "permission_already_started") return new Error("Already started by Metacognition — it ran once.");
+  return error;
+}
 
 export const api = {
   workspaces: () => get<{ workspaces: WorkspaceEntry[] }>("/v1/workspaces").then((b) => b.workspaces ?? []),
@@ -99,8 +117,20 @@ export const api = {
     post<{ accepted: boolean }>(`/v1/sessions/${q(id)}/secrets/${q(requestId)}`, { decline: true }),
   secrets: (id: string) => get<{ secrets: SecretView[] }>(`/v1/sessions/${q(id)}/secrets`).then((b) => b.secrets ?? []),
   revokeSecret: (id: string, name: string) => del<void>(`/v1/sessions/${q(id)}/secrets/${q(name)}`),
-  answerPermission: (id: string, requestId: string, decision: "allow_once" | "allow_always" | "reject", message?: string) =>
-    post<{ accepted: boolean }>(`/v1/sessions/${q(id)}/permissions/${q(requestId)}`, message ? { decision, message } : { decision }),
+  /**
+   * `binding` ties the answer to the `permission.requested` it was given for: another call under
+   * the same request, or another turn, is refused as `permission_stale`. `hold` is "Hold for
+   * me": it stops the parallel review and keeps the card.
+   */
+  answerPermission: (id: string, requestId: string, decision: PermissionDecision, message?: string, binding?: PermissionBinding) =>
+    post<{ accepted: boolean; held?: boolean }>(`/v1/sessions/${q(id)}/permissions/${q(requestId)}`, {
+      decision,
+      ...(message ? { message } : {}),
+      ...(binding?.callDigest ? { call_digest: binding.callDigest } : {}),
+      ...(binding?.turnId ? { turn_id: binding.turnId } : {}),
+    }),
+  /** The permission requests every live session waits on, oldest first. */
+  waiting: () => get<{ waiting: WaitingEntry[] }>("/v1/waiting").then((b) => b.waiting ?? []),
 
   // ---- memory register ----
   memoryItems: (filter: MemoryFilter = {}) => {

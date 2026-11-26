@@ -2,10 +2,10 @@ import { BrandMark, Crew, crewLabel } from "./components/Crew";
 import { Compass, FlowArrow, GearSix, List, SidebarSimple, WifiSlash } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "./api/client";
+import { api, permissionAnswerError, type PermissionDecision } from "./api/client";
 import { onUnauthorized } from "./api/http";
-import { keys, useCommands, useSessions, useSettings, useWorkspaces } from "./api/queries";
-import type { McpAppDescriptor } from "./api/types";
+import { keys, useCommands, useSessions, useSettings, useWaiting, useWorkspaces } from "./api/queries";
+import type { McpAppDescriptor, WaitingEntry } from "./api/types";
 import { useWorkspaceExpansion } from "./lib/workspaceExpansion";
 import { Drawer, DrawerButton, MOBILE, TABLET, useDrawer } from "./lib/drawer";
 import { CommandPalette, type PaletteCommand, type PalettePage } from "./components/CommandPalette";
@@ -19,6 +19,8 @@ import { DeleteSessionDialog, type DeleteSessionRequest } from "./components/Ses
 import { SubagentView } from "./components/SubagentView";
 import { EmptySession, Transcript } from "./components/Transcript";
 import { SecretsMenu } from "./components/SecretCard";
+import { PermissionHoldContext } from "./components/PermissionCard";
+import { WaitingBadge, WaitingContext, useWaitingNotifications } from "./components/WaitingBadge";
 import { waitingSecret } from "./session/reducer";
 import { sessionTitle, type ClientCommand } from "./lib/compose";
 import { baseName, modKey, shortPath } from "./lib/format";
@@ -41,9 +43,14 @@ export function App() {
   useEffect(() => onUnauthorized(() => setExpired(true)), []);
   const [route, navigate] = useRoute();
   const [theme, setTheme] = useAppTheme(route.workspace);
+  // The blocked turns of every live session: one read here serves the badge, the sidebar dots and
+  // the browser notifications, whatever page is open.
+  const waiting = useWaiting().data ?? NO_WAITING;
+  const openWaiting = useCallback((entry: WaitingEntry) => navigate({ page: "chat", workspace: entry.workspace, session: entry.session_id, subagent: null }), [navigate]);
+  useWaitingNotifications(waiting, route, openWaiting);
   if (expired) return <Expired />;
   return (
-    <>
+    <WaitingContext.Provider value={waiting}>
       {route.page === "settings" ? (
         <SettingsPage route={route} navigate={navigate} theme={theme} setTheme={setTheme} />
       ) : route.page === "studio" ? (
@@ -59,9 +66,11 @@ export function App() {
       )}
       {/* The first-time group question of a new repository, on any page. */}
       <GroupQuestion />
-    </>
+    </WaitingContext.Provider>
   );
 }
+
+const NO_WAITING: WaitingEntry[] = [];
 
 /**
  * The theme: config.json's `tui.theme` (shared with the terminal client) wins; the choice saved in
@@ -123,6 +132,21 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const chat = useChat(workspace, route.session, onCreated);
   const sessions = useSessions(workspace);
   const commands = useCommands();
+  // An answer is bound to the call and turn the card shows; "hold" stops the parallel review.
+  const permissions = chat.view.permissions;
+  const answerCard = useCallback(
+    async (requestId: string, decision: PermissionDecision, message?: string) => {
+      if (!route.session) return;
+      const perm = permissions[requestId];
+      try {
+        await api.answerPermission(route.session, requestId, decision, message, { callDigest: perm?.callDigest, turnId: perm?.turnId });
+      } catch (e) {
+        throw permissionAnswerError(e);
+      }
+    },
+    [route.session, permissions],
+  );
+  const holdCard = useMemo(() => ({ hold: (requestId: string) => answerCard(requestId, "hold") }), [answerCard]);
   const sessionRow = sessions.data?.find((s) => s.id === route.session);
   const sidebarList = useMemo(() => sidebarWorkspaces(workspaces.data ?? [], workspace), [workspaces.data, workspace]);
   // The open workspace as the server lists it; one opened by path but not listed yet has nothing to remove.
@@ -395,6 +419,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         {yolo && <span className="bypass-badge" title="YOLO: no permission control at all; set yolo to false in config.json to turn it off">⚠ YOLO</span>}
         {!yolo && permissionsUnavailable && <span className="bypass-badge" title={permissionsUnavailable}>⚠ Permission rules unavailable</span>}
         {bypass && <span className="bypass-badge" title="Bypass ordinary permission prompts; protected requests still ask">⚠ bypass</span>}
+        <WaitingBadge open={(entry) => navigate({ workspace: entry.workspace, session: entry.session_id, subagent: null })} />
         <div className="topbar-right">
           <span className="muted agent-label" style={{ fontSize: 12 }}>
             Agent
@@ -447,10 +472,11 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
         </main>
       ) : (
         <main className="main">
+          <PermissionHoldContext.Provider value={holdCard}>
           <Transcript
             view={chat.view}
             agent={chat.summary?.agent}
-            onAnswer={chat.answerPermission}
+            onAnswer={answerCard}
             onAnswerQuestion={chat.answerQuestion}
             onOpenChild={openChild}
             onOpenApp={openMcpApp}
@@ -458,6 +484,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
             secrets={chat.secrets}
             empty={<EmptyState workspace={workspace} sessionId={route.session} loading={chat.stream.status === "connecting"} agent={chat.agentId} />}
           />
+          </PermissionHoldContext.Provider>
           <Composer
             ref={composer}
             agent={chat.agentId}

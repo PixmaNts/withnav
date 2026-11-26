@@ -180,7 +180,9 @@ already running, pass `--url`; see the [command line](cli.md#nav-tui).
 - **Help.** `f1` shows every shortcut. `ctrl+q` quits, `esc` or `ctrl+c` stops a running turn.
 
 Permission questions appear inline: `o` allows once, `r` rejects (you can add a message), and `a`
-(always) appears when a reusable rule can be saved.
+(always) appears when a reusable rule can be saved. While a [parallel
+review](permissions.md#parallel-review-permissionsreview-on) runs, `h` holds it: the review stops
+and the question stays yours.
 
 ## The browser client: `nav web`
 
@@ -192,6 +194,10 @@ The page lets you chat in any workspace you pass with `--workspace` (repeat the 
 the current directory is the default) and in folders you used before. Each shows its git branch
 and whether it has changes. The gear in the top bar opens Settings, and the command palette opens
 the InstinctFlow Studio.
+
+When a session is blocked on a permission question, the top bar counts the waiting sessions and the
+sidebar marks the session with a dot. From the count you can allow browser notifications (one per
+blocked turn, closed once it is answered) and mute a session.
 
 ## Settings screens
 

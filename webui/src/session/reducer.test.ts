@@ -175,6 +175,63 @@ describe("transcript projection", () => {
     expect(view.permissions.R!.alwaysSaved).toBeUndefined();
   });
 
+  describe("parallel review of a permission request", () => {
+    const requested = (extra: object = {}) =>
+      env("permission.requested", { request_id: "R", tool_call_id: "c1", tool: "bash", arguments: "{}", scope: { kind: "folder", value: "/w" }, agent: "build", reason: "r", call_digest: "d1", turn_id: "T1", ...extra });
+    const review = (state: string, extra: object = {}) => env("permission.review", { request_id: "R", tool_call_id: "c1", state, ...extra });
+    const open = () => {
+      seq = 0;
+      return reduceAll(emptyView(), [env("turn.start", { turn_id: "T1", task_id: "K", actor_id: "agent:main" }), requested()]);
+    };
+
+    it("keeps the call digest and turn the answer is bound to", () => {
+      expect(open().permissions.R).toMatchObject({ callDigest: "d1", turnId: "T1" });
+    });
+
+    it("follows the review state while the request waits, keeping the last text", () => {
+      let view = reduce(open(), review("reviewing"));
+      expect(view.permissions.R!.review).toEqual({ state: "reviewing" });
+      view = reduce(view, review("wait", { conclusion: "Deletes files", basis: "fix warnings", consequence: "3 files lost" }));
+      expect(view.permissions.R!.review).toEqual({ state: "wait", conclusion: "Deletes files", basis: "fix warnings", consequence: "3 files lost" });
+      view = reduce(view, review("held"));
+      expect(view.permissions.R!.review?.state).toBe("held");
+      expect(openPermissions(view).map((p) => p.requestId)).toEqual(["R"]);
+    });
+
+    it("ignores a review of a request it does not know", () => {
+      const view = reduce(open(), env("permission.review", { request_id: "other", tool_call_id: "x", state: "reviewing" }));
+      expect(Object.keys(view.permissions)).toEqual(["R"]);
+    });
+
+    it("records a call allowed by metacognition with its review", () => {
+      let view = reduce(open(), review("reviewing"));
+      view = reduce(view, env("permission.resolved", { request_id: "R", tool_call_id: "c1", resolution: "allow_once", approved_by: "metacognition", review: { conclusion: "Release implies the push", basis: "release 0.8.4", consequence: "pushes the tag" } }));
+      expect(view.permissions.R).toMatchObject({ resolution: "allow_once", approvedBy: "metacognition", review: { state: "allowed", conclusion: "Release implies the push", basis: "release 0.8.4", consequence: "pushes the tag" } });
+      expect(view.permissions.R!.reviewCancelled).toBeUndefined();
+    });
+
+    it("derives a cancelled review when the Captain answers while it is reviewing", () => {
+      let view = reduce(open(), review("reviewing"));
+      view = reduce(view, env("permission.resolved", { request_id: "R", tool_call_id: "c1", resolution: "allow_once", approved_by: "captain" }));
+      expect(view.permissions.R).toMatchObject({ resolution: "allow_once", approvedBy: "captain", reviewCancelled: true });
+    });
+
+    it("does not call a review cancelled when it had already finished, or when the turn stopped", () => {
+      let view = reduce(open(), review("wait", { conclusion: "c" }));
+      view = reduce(view, env("permission.resolved", { request_id: "R", tool_call_id: "c1", resolution: "deny", approved_by: "captain", message: "no" }));
+      expect(view.permissions.R!.reviewCancelled).toBeUndefined();
+      let stopped = reduce(open(), review("reviewing"));
+      stopped = reduce(stopped, env("permission.resolved", { request_id: "R", tool_call_id: "c1", resolution: "cancelled" }));
+      expect(stopped.permissions.R!.reviewCancelled).toBeUndefined();
+    });
+
+    it("never turns a late review into a state of a resolved request", () => {
+      let view = reduce(open(), env("permission.resolved", { request_id: "R", tool_call_id: "c1", resolution: "allow_once", approved_by: "captain" }));
+      view = reduce(view, review("reviewing"));
+      expect(view.permissions.R!.review).toBeUndefined();
+    });
+  });
+
   it("labels messages by author: Captain, Nav wake, subagent result", () => {
     seq = 0;
     const view = reduceAll(emptyView(), [

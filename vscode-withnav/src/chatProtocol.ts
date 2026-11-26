@@ -8,7 +8,11 @@ export const CHAT_VIEW_ID = "withnav.chat";
 /** Who wrote a message shown in the chat. */
 export type Author = "captain" | "nav" | "driver" | "cognition" | "navigator" | "subagent";
 
-export type PermissionDecision = "allow_once" | "allow_skill_machine" | "deny" | "allow_always" | "reject";
+export type PermissionDecision = "allow_once" | "allow_skill_machine" | "deny" | "allow_always" | "reject" | "hold";
+/** Where the parallel review of a permission request stands; `allowed` is read from `permission.resolved`. */
+export type ReviewState = "reviewing" | "wait" | "unavailable" | "held" | "allowed";
+/** The review's short conclusion, the part of the request it relied on and the consequence. */
+export interface ReviewTexts { conclusion?: string; basis?: string; consequence?: string }
 export interface PermissionCard {
   alwaysLabel?: string;
   requestId: string;
@@ -22,6 +26,11 @@ export interface PermissionCard {
   arguments: string;
   skillName?: string;
   evidence?: PermissionEvidence;
+  /** The digest of the call and the turn the request was raised in: an answer carries both. */
+  callDigest?: string;
+  turnId?: string;
+  /** Set by `permission.review` while the request waits. */
+  reviewState?: ReviewState;
 }
 export interface PermissionEvidence {
   policy_version: number;
@@ -129,7 +138,8 @@ export type HostToWebview = { generation?: number; tab?: string } & (
   | { type: "imageRefusals"; items: ImageRefusal[] }
   | { type: "permission"; card: PermissionCard }
   | { type: "permissionCall"; requestId: string; call: string }
-  | { type: "permissionState"; requestId: string; resolution: string; message?: string; alwaysSaved?: false }
+  | ({ type: "permissionReview"; requestId: string; state: Exclude<ReviewState, "allowed"> } & ReviewTexts)
+  | { type: "permissionState"; requestId: string; resolution: string; message?: string; alwaysSaved?: false; approvedBy?: string; review?: ReviewTexts }
   | { type: "pause"; id: string; kind: "budget" | "watchdog"; text: string; token?: PauseToken }
   | { type: "pauseState"; id: string; state: "pending" | "resolved" | "error"; message?: string }
   | { type: "notice"; text: string; operationId?: string; ok?: boolean; name?: string; details?: string }

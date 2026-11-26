@@ -15,6 +15,12 @@ requests land in `develop`.
 - Permission history keeps the newest 20 000 decisions instead of 1 000.
 ### Added
 
+- Clients show the parallel review on the permission card: "Metacognition is reviewing…" with a
+  **Hold for me** button (`h` in `nav tui`), "Allowed once by Metacognition" with its conclusion,
+  basis and consequence, the conclusion above the buttons when it says wait, "Review cancelled:
+  you answered first", and "Already started by Metacognition — it ran once" when an answer comes
+  too late. Answers carry the request's `call_digest` and `turn_id`. `nav web` adds a waiting count,
+  a dot in the sidebar and one browser notification per blocked turn, with a mute per session.
 - Parallel permission review (`permissions.review: on`): when the built-in permission flow asks
   the Captain about a call, one tool-free Metacognition review reads the current request and the
   call beside the card, at most 16 KiB, 60 s, never retried. It can only allow the call once (a

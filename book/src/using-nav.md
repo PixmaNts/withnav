@@ -40,6 +40,9 @@ Type `/` in any chat. A palette lists the commands. These work in every client:
 | `/compact [focus]` | Summarise the older part of a long conversation. |
 | `/bypass [on\|off]` | Skip ordinary permission prompts. See [Permissions](permissions.md). |
 | `/goal [<objective>\|criterion <text>\|pause\|resume\|clear]` | Show or set the session goal. See [Session goal](#session-goal). |
+| `/remember [scope] <text>` | Save a [memory item](memory.md). |
+| `/memory [action]` | List, search, inspect, or revise [memory items](memory.md). |
+| `/forget <id> [reason]` | Invalidate the current version of a [memory item](memory.md). |
 
 Type `//text` to send the literal text `/text` as a message.
 

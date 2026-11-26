@@ -59,6 +59,7 @@ text_enum!(Actor, "actor", {
 
 /// An independent connection to the shared database, behind a lock: each call is one short
 /// local query or one immediate transaction.
+#[derive(Debug)]
 pub struct MemoryStore {
     connection: std::sync::Mutex<Connection>,
 }

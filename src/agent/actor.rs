@@ -205,6 +205,10 @@ impl AgentActor {
                                 | "steer_subagent"
                                 | "decide_subagent"
                                 | "intent"
+                                | "project_group_add"
+                                | "project_group_remove"
+                                | "session_attach"
+                                | "session_detach"
                         ))
             })
     }

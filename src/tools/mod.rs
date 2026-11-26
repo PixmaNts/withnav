@@ -18,6 +18,7 @@ pub mod decide_subagent;
 pub mod fetch;
 pub mod glob;
 mod grep;
+pub(crate) mod memory_scope;
 pub mod native;
 #[cfg(windows)]
 pub(crate) mod process_job;
@@ -289,6 +290,9 @@ impl ToolContext {
 }
 
 pub trait Tool: Send + Sync {
+    fn is_memory_scope_control(&self) -> bool {
+        false
+    }
     fn name(&self) -> &str;
     fn schema(&self) -> Value;
     fn call<'a>(

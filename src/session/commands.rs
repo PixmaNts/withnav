@@ -18,7 +18,7 @@ pub struct CommandSpec {
 
 /// Every registered command, in listing order. A command that is listed but
 /// not built answers [`NOT_AVAILABLE`].
-pub const COMMANDS: [CommandSpec; 10] = [
+pub const COMMANDS: [CommandSpec; 13] = [
     CommandSpec {
         name: "help",
         description: "List the available commands",
@@ -68,6 +68,21 @@ pub const COMMANDS: [CommandSpec; 10] = [
         name: "goal",
         description: "Show or set the session goal; add a success criterion, pause, resume or clear it",
         args_hint: "[objective|criterion <text>|pause|resume|clear]",
+    },
+    CommandSpec {
+        name: "remember",
+        description: "Save a memory item for this project (or this session without a project)",
+        args_hint: "[global|group:<name>|project|session] <text>",
+    },
+    CommandSpec {
+        name: "memory",
+        description: "List, search, inspect or change memory items",
+        args_hint: "[search <text>|show <id>|history <id>|revise <id> v<n> <text>|invalidate <id> v<n> [reason]|restore <id> v<n>]",
+    },
+    CommandSpec {
+        name: "forget",
+        description: "Invalidate whatever version of a memory item is current",
+        args_hint: "<id> [reason]",
     },
 ];
 
@@ -321,7 +336,7 @@ mod tests {
             names,
             [
                 "help", "model", "new", "stop", "context", "variant", "compact", "agent", "bypass",
-                "goal"
+                "goal", "remember", "memory", "forget"
             ]
         );
         assert!(NOT_AVAILABLE.iter().all(|n| find(n).is_some()));

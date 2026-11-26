@@ -332,6 +332,7 @@ pub type SessionSummary = SessionMetadata;
 /// clone (all fields are `Arc`).
 #[derive(Clone, Debug)]
 pub struct Service {
+    pub(crate) memory: Arc<tokio::sync::OnceCell<Arc<crate::memory::MemoryStore>>>,
     pub(crate) mcp: Arc<crate::mcp::McpManager>,
     /// The Captain's secrets: every conversation's, and the saved workspace ones.
     pub(crate) secrets: Arc<crate::secrets::SecretStore>,
@@ -638,6 +639,7 @@ impl Service {
         let mcp_bridge = Arc::new(super::mcp::McpBridge::start(&mcp, &sessions));
         let secrets = Arc::new(crate::secrets::SecretStore::open(&config.data_dir));
         Ok(Self {
+            memory: Arc::default(),
             mcp,
             secrets,
             mcp_bridge,
@@ -1626,8 +1628,11 @@ impl Service {
         variant: VariantChoice,
         agent: Option<&str>,
     ) -> Result<SessionId, ServerError> {
-        self.spawn_session(workspace, model, editor, agent, None, workspace, &variant)
-            .await
+        let id = self
+            .spawn_session(workspace, model, editor, agent, None, workspace, &variant)
+            .await?;
+        self.initialize_memory_project(id, workspace).await;
+        Ok(id)
     }
 
     /// [`create_session`] with an optional `resume` id (the POST
@@ -2608,6 +2613,16 @@ impl Service {
             None => session_id,
         };
         actor.tool_context.secrets = Some(self.secret_access(secret_owner, &workspace));
+        if root_tools_enabled && role.access != crate::agent::definitions::AgentAccess::ReadOnly {
+            use crate::tools::memory_scope::{Action, MemoryScope};
+            for action in [Action::Add, Action::Remove, Action::Attach, Action::Detach] {
+                actor.registry.register(Box::new(MemoryScope {
+                    service: self.clone(),
+                    session: session_id,
+                    action,
+                }));
+            }
+        }
         if root_tools_enabled && role.mode.is_primary() {
             actor.registry.register(Box::new(
                 crate::tools::decide_subagent::DecideSubagent::new(self.clone(), session_id),

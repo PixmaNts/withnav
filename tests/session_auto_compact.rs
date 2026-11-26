@@ -197,8 +197,27 @@ async fn a_tool_heavy_turn_that_crosses_the_budget_is_compacted_and_goes_on() {
             .len()
             .div_ceil(4) as u64
     };
+    // The four memory-scope controls (2026-11) add their schemas to every root request; read
+    // their real size from what the provider was sent instead of a fixed allowance.
+    let memory_tool_tokens: u64 = body(&provider, 3)["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|tool| {
+            matches!(
+                tool["function"]["name"].as_str(),
+                Some(
+                    "project_group_add"
+                        | "project_group_remove"
+                        | "session_attach"
+                        | "session_detach"
+                )
+            )
+        })
+        .map(|tool| tool.to_string().len().div_ceil(4) as u64)
+        .sum();
     assert!(
-        after <= 11_000 / 10 * 7 + 1 + role_tokens + 250 + secret_tool_tokens,
+        after <= 11_000 / 10 * 7 + 1 + role_tokens + 250 + secret_tool_tokens + memory_tool_tokens,
         "{after}"
     );
 

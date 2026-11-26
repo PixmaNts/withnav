@@ -136,6 +136,40 @@ pub fn outcome_text(name: &str, ok: bool, data: Option<&Value>, error: Option<&s
         }
         "new" => format!("new conversation {}", text("session_id")),
         "goal" => goal_text(data),
+        "remember" | "forget" | "memory" => {
+            let item = &data["item"];
+            if let Some(title) = item["current"]["title"].as_str() {
+                let label = match name {
+                    "remember" => "Remembered",
+                    "forget" => "Forgot",
+                    _ => "Memory",
+                };
+                format!(
+                    "{label}: {title} · {} v{}",
+                    item["id"].as_str().unwrap_or_default(),
+                    item["current_version"]
+                )
+            } else if let Some(items) = data["items"].as_array() {
+                if items.is_empty() {
+                    "No memory items.".into()
+                } else {
+                    items
+                        .iter()
+                        .map(|item| {
+                            format!(
+                                "{} · {} v{}",
+                                item["current"]["title"].as_str().unwrap_or_default(),
+                                item["id"].as_str().unwrap_or_default(),
+                                item["current_version"]
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+            } else {
+                data.to_string()
+            }
+        }
         _ => data.to_string(),
     }
 }

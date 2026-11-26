@@ -264,6 +264,10 @@ impl Service {
             // published: the stream ends with the session.
             "stop" => Ok(Done::data(json!({ "stopped": true }))),
             "goal" => self.goal_command(handle, arguments).await,
+            "remember" | "memory" | "forget" => {
+                self.memory_command(session_id, handle, spec, arguments)
+                    .await
+            }
             other => Err(CommandFailure::Refused(commands::not_available_error(
                 other,
             ))),

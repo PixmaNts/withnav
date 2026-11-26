@@ -15,6 +15,16 @@ requests land in `develop`.
 - Permission history keeps the newest 20 000 decisions instead of 1 000.
 ### Added
 
+- The setting `permissions.review` (`off`, `shadow` or `on`, default `shadow`) and a non-blocking
+  built-in flow, `permission-consequence-shadow`, that scores beside each call's permission decision
+  what the whole call changes and whether the Captain's current request covers it, so a release that
+  implies a push is covered without the word "push". It only logs: no mode changes a verdict, a
+  `bash` call under an `allow git push *` rule is scored like any other, and `off` sends Instinct
+  nothing. The review reads a new projection of the conversation, `conversation.current_request`
+  (since the agent last finished a turn, corrections included, no earlier request, no tool output),
+  and `conversation.tool_trail` (tool names and outcomes only). `nav doctor` flags a mode it cannot
+  read, and a session with such a value runs no review. The permission evidence version is 2, so
+  scores recorded before are not comparable with scores after.
 - The session ledger: what a conversation did (turns and how the last one ended, files changed,
   shell commands with their exit code, commands that failed more than once, the last answer, the
   questions still waiting), rebuilt from the conversation's stored events on each read, with every

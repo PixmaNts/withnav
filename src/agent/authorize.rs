@@ -16,8 +16,9 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::actor::{AgentActor, ParentCaptain};
 use crate::agent::flow_hook::{
     FlowVerdict, PermissionCallContext, PermissionCommand, ProtectedCheck, RuleResult as FlowRule,
-    RunScores, ToolCallContext, ToolCallFlows, ValidatedSkill, captain_messages_with_cut,
-    delegation_with_cut, recent_with_cut,
+    RunScores, TOOL_TRAIL_CALLS, ToolCallContext, ToolCallFlows, ValidatedSkill,
+    captain_messages_with_cut, current_request_with_cut, delegation_with_cut, recent_with_cut,
+    tool_trail,
 };
 use crate::agent::permissions::{PermissionRequest, Scope};
 use crate::permission::{
@@ -31,6 +32,7 @@ use crate::permission::{
     shell,
 };
 use crate::provider::{ToolCall, openai::ChatMessage};
+use crate::settings::ReviewMode;
 
 /// The permission flows answer within their own budget; past this the rule
 /// applies. The 500 ms past the blocking budget lets a flow that used all of it
@@ -73,6 +75,7 @@ struct SessionFlows<'s> {
     parent_captain: &'s ParentCaptain,
     /// The skill the Captain selected in the composer, when this call loads it.
     captain_skill: Option<String>,
+    review: ReviewMode,
     evidence: OnceLock<Evidence>,
     cancel: CancellationToken,
 }
@@ -92,6 +95,9 @@ struct Evidence {
     delegation_cut: bool,
     recent: Vec<crate::agent::flow_hook::RecentMessage>,
     recent_cut: bool,
+    current_request: Vec<crate::agent::flow_hook::RecentMessage>,
+    current_request_cut: bool,
+    tool_trail: Vec<crate::agent::flow_hook::ToolTrailEntry>,
 }
 
 impl Evidence {
@@ -99,6 +105,7 @@ impl Evidence {
         transcript: &[ChatMessage],
         parent_captain: &ParentCaptain,
         captain_skill: Option<&str>,
+        review: ReviewMode,
     ) -> Self {
         #[cfg(test)]
         EVIDENCE_READS.with(|reads| reads.set(reads.get() + 1));
@@ -118,6 +125,14 @@ impl Evidence {
         }
         let (delegation, delegation_cut) = delegation_with_cut(transcript);
         let (recent, recent_cut) = recent_with_cut(transcript);
+        // Only the consequence review reads these: with the review off the transcript is not
+        // walked for them.
+        let (current_request, current_request_cut, tool_trail) = if review == ReviewMode::Off {
+            (Vec::new(), false, Vec::new())
+        } else {
+            let (request, cut) = current_request_with_cut(transcript);
+            (request, cut, tool_trail(transcript, TOOL_TRAIL_CALLS))
+        };
         Self {
             captain_messages,
             captain_messages_cut,
@@ -125,6 +140,9 @@ impl Evidence {
             delegation_cut,
             recent,
             recent_cut,
+            current_request,
+            current_request_cut,
+            tool_trail,
         }
     }
 }
@@ -136,6 +154,7 @@ impl SessionFlows<'_> {
                 self.transcript,
                 self.parent_captain,
                 self.captain_skill.as_deref(),
+                self.review,
             )
         })
     }
@@ -164,6 +183,10 @@ impl SessionFlows<'_> {
             delegation_cut: evidence.delegation_cut,
             recent: evidence.recent,
             recent_cut: evidence.recent_cut,
+            current_request: evidence.current_request,
+            current_request_cut: evidence.current_request_cut,
+            tool_trail: evidence.tool_trail,
+            review: self.review,
             protected_check: query.protected_check,
         }
     }
@@ -396,6 +419,7 @@ pub(super) async fn authorize(
         // model arguments (`run_calls` refuses it there).
         captain_skill: (call.name == "skill" && call.args["captain_selected"] == true)
             .then(|| call.args["name"].as_str().unwrap_or_default().to_owned()),
+        review: actor.review,
         evidence: OnceLock::new(),
         cancel: actor.cancel.clone(),
     };

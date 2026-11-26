@@ -344,6 +344,18 @@ pub async fn inspect(
                 Some("Set \"yolo\" to true or false in config.json."),
             ),
         }
+        // A session with a mode it cannot read runs no review at all; say so.
+        if let Err(error) = settings.permissions_review() {
+            report.add(
+                "config.permissions_review",
+                Status::Failed,
+                error,
+                Some(
+                    "Set \"permissions.review\" to \"off\", \"shadow\" or \"on\" in config.json; \
+                     until then no session runs the consequence review.",
+                ),
+            );
+        }
     }
     let settings_document = settings
         .as_ref()
@@ -371,7 +383,7 @@ pub async fn inspect(
                 ],
             ),
             ("layers", &["reflex", "instinct", "metacognition"]),
-            ("permissions", &["scratch_dirs"]),
+            ("permissions", &["scratch_dirs", "review"]),
             ("subagents", &["max_concurrent", "watchdog_interval_secs"]),
             ("agent", &["watchdog_interval_secs"]),
             ("compaction", &["writer", "chunk_tokens"]),

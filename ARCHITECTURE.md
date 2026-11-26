@@ -325,7 +325,14 @@ steering text never counts as Captain evidence. It is supplied separately as
 whole messages within 16 KiB, with a cut flag). The ordinary flow may accept the parent's request;
 the protected check never reads delegation. Both the flow and the protected check also get
 `conversation.recent` (`recent_with_cut`): the last 4 Captain and agent messages up to the Captain's last one, labelled
-with their author, so a short Captain answer is read with the proposal it answers. A skill is decided after its validation, with action `skill` and its
+with their author, so a short Captain answer is read with the proposal it answers. The non-blocking built-in
+`permission-consequence-shadow` flow runs beside that decision on the same `tool.pre_call` event and only logs: it reads
+`conversation.current_request` (`current_request_with_cut`: from the last assistant message that ended a turn, the
+Captain's messages and answers to `ask` since, so a correction joins the request and an earlier request never does) and
+`conversation.tool_trail` (`tool_trail`: tool names and outcomes, no argument or output), and starts only when the event's
+`review_mode` (from `permissions.review`, read once per session into `AgentActor::review`) is `shadow` or `on`. The
+evidence is built only when the mode is not `off`. It never reaches `resolve_permissions`: the verdict is the same in
+every mode. `PERMISSION_PROJECTION` is 2 since it exists. A skill is decided after its validation, with action `skill` and its
 name as resource: a `deny` rule refuses it on both entry points, no rule loads it
 (`approved_by: validation`), and a Captain selection counts as the Captain's request. A session
 whose permission database cannot be opened starts with `permissions_unavailable` in its status,

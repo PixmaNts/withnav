@@ -67,6 +67,24 @@ own; the strictest answer wins. A line WithNav cannot parse matches only a `deny
 other tool: with no matching rule, the default is ask. The permission flow may still allow the
 call, for example when the Captain asked for it. Without a flow that answers, WithNav asks.
 
+### Consequence review (shadow)
+
+Beside that decision, WithNav can ask Instinct a second question about each call: what does the
+whole call change, and does your current request cover it? "Current" means since the agent last
+finished a turn, so an earlier request already carried out does not count, and a correction you
+send while it works does. The answer depends on the conversation, never on the command: a push you
+never wrote is covered when you asked to release a version, and the same push is not when you
+asked for something else.
+
+For now the review only **logs**: it never changes what is allowed, asked or denied, in any mode.
+It does not wait for the decision and does not delay the call, and it is not applied to a `bash`
+call any differently because an `allow git push *` rule matches it. Set `permissions.review` to
+`off` to run no review (no Instinct request is spent on it), `shadow` (the default) to score and
+log, or `on`, which behaves like `shadow` today. The scores are in the run record of the flow
+`permission-consequence-shadow` ([Instinct flows](instinctflow.md)). A session reads
+the setting once, when it starts; a word that is not one of the three turns the review off, and
+`nav doctor` says so.
+
 ## Rules
 
 A rule says what happens to a tool call: an **action** (the tool name, such as `bash`, `write`,

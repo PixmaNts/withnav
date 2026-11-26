@@ -295,6 +295,12 @@ mod tests {
             delegation_cut: false,
             recent: vec![],
             recent_cut: false,
+            current_request: vec![],
+            current_request_cut: false,
+            tool_trail: vec![],
+            // Off unless a test asks for the review: the review dials Instinct beside the
+            // decision and would change what the other tests count.
+            review: crate::settings::ReviewMode::Off,
             protected_check: None,
         }
     }
@@ -2091,7 +2097,7 @@ mod tests {
             event.payload["projection"],
             json!(crate::agent::flow_hook::PERMISSION_PROJECTION)
         );
-        assert_eq!(event.payload["projection"], json!(1));
+        assert_eq!(event.payload["projection"], json!(2));
 
         let dir = tempfile::tempdir().unwrap();
         let records = Arc::new(crate::flows::records::Records::new(dir.path(), dir.path()));
@@ -2120,7 +2126,7 @@ mod tests {
             "the event is valid with its projection: {:?}",
             captured[0].failure
         );
-        assert_eq!(captured[0].event.payload["projection"], json!(1));
+        assert_eq!(captured[0].event.payload["projection"], json!(2));
         // The score line kept for 90 days joins the answer to its versions:
         // the call, the model, the flow text and the evidence shaping.
         let scores = records.scores().unwrap();
@@ -2130,7 +2136,7 @@ mod tests {
         assert_eq!(line.run_id, verdict.flows[0].run_id);
         assert_eq!(line.flow_name, "decision");
         assert_eq!(line.call_id.as_deref(), Some("call"));
-        assert_eq!(line.projection, Some(1));
+        assert_eq!(line.projection, Some(2));
         assert_eq!(line.identity.model, "fake/scripted");
         assert!(!line.definition_digest.is_empty());
         assert_eq!(line.definition_digest, captured[0].definition_digest);
@@ -2309,8 +2315,12 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(verdict, FlowVerdict::Deny { .. }));
-        assert_eq!(handles.len(), 1);
-        handles[0].abort();
+        // The flow of the test and the built-in consequence review, which starts nothing here:
+        // this event names no review mode.
+        assert_eq!(handles.len(), 2);
+        for handle in &handles {
+            handle.abort();
+        }
     }
     struct Notices(std::sync::atomic::AtomicUsize);
     impl FlowEffects for Notices {
@@ -2479,6 +2489,343 @@ mod tests {
             ));
         }
         assert_eq!(effects.0.load(Ordering::SeqCst), 1);
+    }
+
+    /// Holds every decision until released, and counts the requests it got.
+    struct Gated {
+        requests: Arc<std::sync::atomic::AtomicUsize>,
+        release: Arc<tokio::sync::Notify>,
+    }
+    impl DecisionClient for Gated {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/gated".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            self.requests.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                self.release.notified().await;
+                Ok(instinct_flow::protocol::DecisionResponse {
+                    answers: request
+                        .questions
+                        .keys()
+                        .map(|id| {
+                            (
+                                id.clone(),
+                                instinct_flow::protocol::Answer::Noul { noul: 0.0 },
+                            )
+                        })
+                        .collect(),
+                    usage: None,
+                })
+            })
+        }
+    }
+
+    /// Records each request it gets (question ids and state) and answers 0.0 to the questions
+    /// named in `low` and 1.0 to every other.
+    struct ByQuestion {
+        low: &'static [&'static str],
+        seen: std::sync::Mutex<Vec<(Vec<String>, String)>>,
+    }
+    impl ByQuestion {
+        fn new(low: &'static [&'static str]) -> Arc<Self> {
+            Arc::new(Self {
+                low,
+                seen: Default::default(),
+            })
+        }
+        /// The requests that carried the consequence review's questions.
+        fn review_requests(&self) -> Vec<(Vec<String>, String)> {
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(ids, _)| ids.iter().any(|id| id == "covered"))
+                .cloned()
+                .collect()
+        }
+    }
+    impl DecisionClient for ByQuestion {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/by-question".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            self.seen.lock().unwrap().push((
+                request.questions.keys().cloned().collect(),
+                request.state.to_owned(),
+            ));
+            Box::pin(async move {
+                Ok(instinct_flow::protocol::DecisionResponse {
+                    answers: request
+                        .questions
+                        .keys()
+                        .map(|id| {
+                            let noul = if self.low.contains(&id.as_str()) {
+                                0.0
+                            } else {
+                                1.0
+                            };
+                            (id.clone(), instinct_flow::protocol::Answer::Noul { noul })
+                        })
+                        .collect(),
+                    usage: None,
+                })
+            })
+        }
+    }
+
+    /// Judges one call with every built-in flow and waits for the flows that ran beside the
+    /// verdict, so a test reads what they did rather than guessing when they ended.
+    async fn judge_and_join(
+        client: Arc<dyn DecisionClient>,
+        ctx: PermissionCallContext,
+        rule: RuleResult,
+    ) -> (FlowVerdict, Vec<RunOutcome>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        let runtime = FlowRuntime::new(store, client, Arc::new(NoEffects));
+        let (event, context, (protected, host_check)) =
+            FlowRuntime::permission_event(ctx, rule, ContextSnapshot::default());
+        let (verdict, handles, _) = runtime
+            .evaluate_inner(
+                event,
+                context,
+                CancellationToken::new(),
+                Arc::new(NoEffects),
+                Some((rule, protected)),
+                host_check,
+            )
+            .await;
+        let mut outcomes = vec![];
+        for handle in handles {
+            outcomes.push(handle.await.unwrap());
+        }
+        (verdict, outcomes)
+    }
+
+    fn review_ctx(review: crate::settings::ReviewMode) -> PermissionCallContext {
+        use crate::agent::flow_hook::{RecentMessage, ToolTrailEntry};
+        let mut ctx = permission_call(PathBuf::from("/project"), false);
+        ctx.call.tool = "bash".into();
+        ctx.call.args = json!({"command": "git push origin v0.8.4"});
+        ctx.review = review;
+        ctx.current_request = vec![RecentMessage {
+            author: "captain",
+            text: "release la version 0.8.4".into(),
+        }];
+        ctx.tool_trail = vec![ToolTrailEntry {
+            tool: "bash".into(),
+            status: "ok",
+        }];
+        ctx
+    }
+
+    /// The `log` line the review ended with.
+    fn review_line(outcome: &RunOutcome) -> String {
+        match &outcome.result {
+            RunResult::Success { actions } => actions
+                .iter()
+                .filter(|a| a.action == "log")
+                .map(|a| a.params["text"].as_str().unwrap_or_default().to_owned())
+                .collect(),
+            other => panic!("the review did not succeed: {other:?}"),
+        }
+    }
+
+    fn review_outcome(outcomes: &[RunOutcome]) -> &RunOutcome {
+        outcomes
+            .iter()
+            .find(|o| o.trace.flow_name == "permission-consequence-shadow")
+            .expect("the built-in review ran")
+    }
+
+    // The captain's rule is about the conversation, so the review is asked once, with all three
+    // questions, and what it answers never reaches the verdict: even a review that would have
+    // asked leaves a call the rule allows allowed.
+    #[tokio::test]
+    async fn the_consequence_review_scores_beside_the_verdict_and_changes_nothing() {
+        use crate::settings::ReviewMode;
+        // The default flow finds nothing dangerous; the review finds nothing covering.
+        let client = ByQuestion::new(&["danger", "recoverable", "inert", "covered"]);
+        let (verdict, outcomes) = judge_and_join(
+            client.clone(),
+            review_ctx(ReviewMode::Shadow),
+            RuleResult::Allow,
+        )
+        .await;
+        assert_eq!(verdict, FlowVerdict::Allow);
+        let requests = client.review_requests();
+        assert_eq!(requests.len(), 1, "one request carries the three questions");
+        let mut ids = requests[0].0.clone();
+        ids.sort();
+        assert_eq!(ids, ["covered", "inert", "recoverable"]);
+        assert!(requests[0].1.contains("release la version 0.8.4"));
+        assert!(requests[0].1.contains("git push origin v0.8.4"));
+        assert_eq!(
+            review_line(review_outcome(&outcomes)),
+            "consequence review: the call may destroy something the request did not cover"
+        );
+        // The same answers, with the review in `on`, change nothing either.
+        let (verdict, _) = judge_and_join(
+            ByQuestion::new(&["danger", "recoverable", "inert", "covered"]),
+            review_ctx(ReviewMode::On),
+            RuleResult::Allow,
+        )
+        .await;
+        assert_eq!(verdict, FlowVerdict::Allow);
+        // A call the conversation covers would have gone through.
+        let (_, outcomes) = judge_and_join(
+            ByQuestion::new(&["recoverable", "inert"]),
+            review_ctx(ReviewMode::Shadow),
+            RuleResult::Allow,
+        )
+        .await;
+        assert_eq!(
+            review_line(review_outcome(&outcomes)),
+            "consequence review: the call is harmless, without consequence or covered by the request"
+        );
+    }
+
+    // Off is no review at all: nothing is asked of Instinct for it and the verdict is the one
+    // the decision flow gives alone. An event that names no mode (the hook that carries no
+    // conversation) starts none either.
+    #[tokio::test]
+    async fn the_consequence_review_asks_nothing_when_off_or_when_the_mode_is_unnamed() {
+        use crate::settings::ReviewMode;
+        let client = ByQuestion::new(&["danger"]);
+        let (verdict, outcomes) = judge_and_join(
+            client.clone(),
+            review_ctx(ReviewMode::Off),
+            RuleResult::Allow,
+        )
+        .await;
+        assert_eq!(verdict, FlowVerdict::Allow);
+        assert!(client.review_requests().is_empty());
+        assert!(matches!(
+            review_outcome(&outcomes).result,
+            RunResult::Skipped | RunResult::Success { .. }
+        ));
+        assert_eq!(review_outcome(&outcomes).trace.batches.len(), 0);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        let runtime = FlowRuntime::new(store, client.clone(), Arc::new(NoEffects));
+        let (_, handles) = runtime
+            .evaluate(
+                Event {
+                    trigger: "tool.pre_call".into(),
+                    payload: json!({"tool":"read","args":{},"call_id":"x"}),
+                },
+                ContextSnapshot::default(),
+                CancellationToken::new(),
+            )
+            .await;
+        for handle in handles {
+            handle.await.unwrap();
+        }
+        assert!(client.review_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_permission_event_names_the_review_mode() {
+        use crate::settings::ReviewMode;
+        for mode in [ReviewMode::Off, ReviewMode::Shadow, ReviewMode::On] {
+            let (event, context, _) = FlowRuntime::permission_event(
+                review_ctx(mode),
+                RuleResult::None,
+                ContextSnapshot::default(),
+            );
+            assert_eq!(event.payload["review_mode"], json!(mode.as_str()));
+            assert_eq!(
+                context.values["conversation.current_request"].value,
+                Some(json!([{"author": "captain", "text": "release la version 0.8.4"}]))
+            );
+            assert_eq!(
+                context.values["conversation.tool_trail"].value,
+                Some(json!([{"tool": "bash", "status": "ok"}]))
+            );
+        }
+        // The decision's own evidence is where it was.
+        let (_, context, _) = FlowRuntime::permission_event(
+            review_ctx(ReviewMode::Shadow),
+            RuleResult::None,
+            ContextSnapshot::default(),
+        );
+        assert_eq!(
+            context.values["conversation.captain_messages"].value,
+            Some(json!(["Change the configuration"]))
+        );
+        assert_eq!(context.values["conversation.recent"].value, Some(json!([])));
+    }
+
+    // A flow on `tool.pre_call` that does not block is the way to score a call
+    // without touching its verdict. It starts with the call, and the verdict
+    // does not wait for its decision.
+    #[tokio::test]
+    async fn a_non_blocking_pre_call_flow_runs_beside_the_verdict_and_never_joins_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = Arc::new(Gated {
+            requests: Default::default(),
+            release: Default::default(),
+        });
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        without_builtin(&store);
+        store
+            .save(
+                "beside",
+                Location::Global,
+                None,
+                super::super::store::Content::Toml {
+                    toml: DECISION_TOML
+                        .replace("name='decision'", "name='beside'")
+                        .replace("blocking=true\nbudget_ms=100", "blocking=false"),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        store.validate_test_documents();
+        store.reload().unwrap();
+        let runtime = FlowRuntime::new(store, client.clone(), Arc::new(NoEffects));
+        let verdict = runtime
+            .permission_pre_call(
+                permission_call(dir.path().into(), false),
+                RuleResult::Allow,
+                CancellationToken::new(),
+            )
+            .await;
+        // The verdict is back while the flow still waits for its decision.
+        assert!(matches!(verdict.verdict, FlowVerdict::Allow));
+        for _ in 0..200 {
+            if client.requests.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(client.requests.load(Ordering::SeqCst), 1);
+        client.release.notify_waiters();
     }
 }
 pub trait FlowEffects: Send + Sync {
@@ -3235,7 +3582,23 @@ impl FlowRuntime {
                 redacted: false,
             },
         );
-        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":ctx.protected,"protected_checked":ctx.protected_check.is_some(),"projection":crate::agent::flow_hook::PERMISSION_PROJECTION});
+        context.values.insert(
+            "conversation.current_request".into(),
+            InputValue {
+                value: Some(json!(ctx.current_request)),
+                cut: ctx.current_request_cut,
+                redacted: false,
+            },
+        );
+        context.values.insert(
+            "conversation.tool_trail".into(),
+            InputValue {
+                value: Some(json!(ctx.tool_trail)),
+                cut: false,
+                redacted: false,
+            },
+        );
+        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":ctx.protected,"protected_checked":ctx.protected_check.is_some(),"projection":crate::agent::flow_hook::PERMISSION_PROJECTION,"review_mode":ctx.review.as_str()});
         for (name, value) in [
             ("rule", json!(ctx.rule)),
             ("commands", json!(ctx.commands)),

@@ -2240,3 +2240,54 @@ async fn the_flows_and_the_protected_check_read_the_whole_conversation() {
         assert_eq!(conversation(ctx), expected);
     }
 }
+
+// The consequence review reads the current request and the tool trail from the transcript; with
+// the review off nobody reads them, so the transcript is not walked for them and the flows see
+// the mode the session was started with.
+#[tokio::test]
+async fn the_review_evidence_is_built_only_when_the_review_is_on() {
+    use crate::provider::openai::{ChatMessage, UserProvenance};
+    use crate::settings::ReviewMode;
+    for review in [ReviewMode::Off, ReviewMode::Shadow, ReviewMode::On] {
+        let flows = Arc::new(RecordingFlows::default());
+        let mut actor = actor_with(None);
+        actor.tool_flows = Some(flows.clone());
+        actor.review = review;
+        actor.transcript = vec![ChatMessage::User {
+            provenance: UserProvenance::Captain,
+            content: "release la version 0.8.4".into(),
+            images: Vec::new(),
+        }];
+        let call = crate::provider::ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            args: json!({"path": actor.tool_context.workspace.join("notes.txt"), "content": "x"}),
+            args_valid: true,
+        };
+        let before = evidence_reads();
+        let authorized = crate::agent::authorize::authorize(&actor, &call, 1, None, false).await;
+        assert!(matches!(
+            authorized,
+            crate::agent::authorize::Authorized::Run(_)
+        ));
+        assert_eq!(evidence_reads(), before + 1, "still read once per call");
+        let asked = flows.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].review, review);
+        // The decision's own evidence does not depend on the mode.
+        assert_eq!(
+            asked[0].captain_messages,
+            ["release la version 0.8.4".to_string()]
+        );
+        let request: Vec<_> = asked[0]
+            .current_request
+            .iter()
+            .map(|m| (m.author, m.text.as_str()))
+            .collect();
+        if review == ReviewMode::Off {
+            assert!(request.is_empty());
+        } else {
+            assert_eq!(request, [("captain", "release la version 0.8.4")]);
+        }
+    }
+}

@@ -330,6 +330,32 @@ request on its own. Both the permission flow and the protected check read it. Ed
 removed through their final outer closing delimiter; malformed framing drops
 the whole message and marks evidence cut, including after transcript resume.
 
+`conversation.current_request` is what the Captain asked for in the request being worked, in the same
+`{author, text}` shape: it starts after the last assistant message that ended a turn (one with no
+tool call), so a correction the Captain sends while the agent works belongs to it and an earlier,
+already carried out request never does, however few messages separate them. It holds that message
+(the proposal a short answer accepts, labelled `agent`), then the Captain's messages and answers
+to `ask` since, each `ask` question labelled `agent`. The agent's prose while it works, tool
+outputs, fetched text and the compaction summary are never in it. Whole messages within 8 KiB with a
+cut flag. `conversation.tool_trail` lists the tools called in that request and how each ended
+(`ok`, `error`, `denied` or `interrupted`), the newest 8, oldest first: names and outcomes only,
+never arguments or output. The event also carries `review_mode` (`off`, `shadow` or `on`, from
+`permissions.review`). The projection version is 2 since these inputs exist; a score from
+version 1 was made from other evidence and is not comparable.
+
+The embedded `permission-consequence-shadow` flow is the only reader of these inputs. It does not
+block and only logs: beside the decision it asks one Instinct request with three questions
+(`recoverable`: does the whole call only read or change things that can be put back; `inert`:
+would it change nothing in practice; `covered`: does the current request cover everything it does,
+including the steps it necessarily implies) and logs whether a review that answered would have
+let the call through or asked the Captain. The criterion is the conversation, not the command: a
+push is covered by "release 0.8.4" though the Captain never wrote "push". It starts only when the
+event names `shadow` or `on`; `off`, or an event with no mode, asks nothing. No mode changes the
+verdict. The scores and the log line are in the run record, and its state shows the review the
+same evidence as the decision minus the rule and the Captain's earlier requests. A run record
+leaves out a state that holds something shaped like a credential; the live request carries the
+call's arguments exactly as the decision flow's does.
+
 Protected calls always carry `protected = true`. `protected_checked = true` means
 the host already answered its compiled check; the built-in skips that node, while
 custom flows may still ask or deny. The strictest verdict wins.

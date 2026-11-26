@@ -108,6 +108,9 @@ pub struct AgentActor {
     pub scratch_roots: Vec<std::path::PathBuf>,
     /// Captain setting `yolo`: no permission control at all for this session.
     pub yolo: bool,
+    /// Captain setting `permissions.review`: whether the consequence review runs beside each
+    /// call's decision. Fixed for the session, like `yolo`.
+    pub review: crate::settings::ReviewMode,
     /// The Instinct judge compaction asks which old tool outputs still matter.
     pub compaction_decision: Option<Arc<dyn crate::provider::systemone::DecisionModel>>,
     pub safe_boundary: Option<super::boundary::SafeBoundary>,
@@ -269,6 +272,7 @@ impl AgentActor {
             parent_captain: Arc::default(),
             scratch_roots: Vec::new(),
             yolo: false,
+            review: crate::settings::ReviewMode::default(),
             bypass: Arc::default(),
             goal: Arc::default(),
             compaction_decision: None,

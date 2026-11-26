@@ -631,12 +631,18 @@ session (child or root) into the counts the model is told WithNav computed: `rep
 call with the same result), `failures_unanswered`, `read_only_streak`, `minutes_since_progress`
 (progress is a successful `write`/`edit`, a passing command or a failing call whose error changed,
 read on the watchdog's clock through `ProgressClock`) and the exit status of the last 8 calls, plus
-those 8 calls as `untrusted_attempts`. `judge_progress_with` sends them and asks two more
-yes-probability questions beside the verdict, `same_strategy` and `progress`: a `stuck` verdict
-stands only when repetition is at least `REPEAT_MIN` and progress at most `PROGRESS_MAX`, otherwise
-it is `doubt`; unanswered extra questions keep the verdict. An unreadable store or a root without a
-session id sends `"computed_counts":"unjudged"` and no attempts, never zeros. The root review reads
-the same counts through `ReviewRequest::with_counts`.
+those 8 calls as `untrusted_attempts`. A `tool.pre_call` with no `tool.post_call` yet is
+`in_flight` (counted, and listed with `elapsed_secs` from the check that first saw it), not a
+failure. Each watched session keeps one `Facts`, which fetches only the events after the last
+`seq` it folded (`replay(after)`, cancelled with the session) instead of replaying the whole
+session every tick. `judge_progress_with` sends the counts and asks two more yes-probability
+questions beside the verdict, `same_strategy` and `progress`. A `stuck` verdict stands only when
+there are counts to read, the counts show a loop (`repeat_streak` at least 2, `failures_unanswered`
+above 0, no progress since the previous check: facts can prevent a stop, never cause one),
+repetition is at least `REPEAT_MIN` and progress at most `PROGRESS_MAX`; otherwise it is `doubt`.
+A stuck verdict missing either extra answer is invalid. An unreadable store or a root without a
+session id sends `"computed_counts":"unjudged"` and no attempts, never zeros, and its stuck verdict
+is `doubt`. The root review reads the same counts through `ReviewRequest::with_counts`.
 
 `outcomes.rs` puts every verdict except the first failed check in the existing durable outbox.
 The parent's sequencer emits `subagent.watchdog`; only doubt notices need transcript consumption
@@ -860,9 +866,11 @@ the later 0.6 scope, not this contract.
   dropped, and `supported` stands only on a quote of a command or file-change line sent. Each
   claim also carries an `invented` judgment ("Does the claim report having run a command, or having
   obtained a result, that the evidence here does not record?"); a JSON `true` makes it
-  `contradicted` with `INVENTED_REASON` as its evidence, but only when `Input::complete` says the
-  digest held every command and file change of the ledger (nothing cut by the byte bound, no list at
-  its cap): otherwise the claim stays `unverified`. A quoted line outranks the flag. The outcomes
+  `contradicted` with `INVENTED_REASON` as its evidence, but only when the claim's `kind` is
+  `command` or `file` (the only things the ledger records; `other`, an unknown kind or none never
+  reads the flag) and `Input::complete` says the digest held every command and file change of the
+  ledger (nothing cut by the byte bound, no list at its cap): otherwise the claim stays
+  `unverified`. A quoted line outranks the flag. The outcomes
   `timeout`, `malformed` and `skipped_rate` are separate values of `Outcome` in the log line.
   `GoalChecks` (one field of `Service`, by session id so a resume keeps the rate) holds one check
   in flight per session and `MAX_CHECKS_PER_WINDOW` (10) starts per `RATE_WINDOW` (one hour). Every

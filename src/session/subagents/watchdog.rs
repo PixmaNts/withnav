@@ -121,9 +121,14 @@ pub async fn judge_progress(
 ///
 /// The model answers the verdict, and, when there are recent calls to read, two more questions:
 /// do the failed attempts repeat one strategy, and do the later ones progress on the earlier
-/// failure. A `stuck` verdict stands only when repetition is confirmed and progress is not:
-/// either alone is not a stop, it is a `doubt`. A model that leaves the two questions unanswered
-/// keeps its verdict; an answer that is not a probability is invalid.
+/// failure. A `stuck` verdict stands only when all of these hold, and is a `doubt` otherwise:
+/// - there are counts to read (without any, a stop would rest on the model's reading of a goal
+///   and a clock alone);
+/// - the counts show a loop (see [`loop_shown`]): the model's answer may confirm a loop, never
+///   create one;
+/// - the model confirms repetition and denies progress: either alone is not a stop.
+///
+/// A stuck verdict whose two extra answers are missing or are not a probability is invalid.
 pub async fn judge_progress_with(
     model: &dyn DecisionModel,
     evidence: &Evidence,
@@ -157,28 +162,45 @@ pub async fn judge_progress_with(
         },
         _ => return Err(JudgeError::Invalid),
     };
-    if verdict != Verdict::Stuck || !attempts {
+    if verdict != Verdict::Stuck {
         return Ok(verdict);
     }
-    let repeats = probability(&answers, SAME_STRATEGY)?.map(|p| p >= REPEAT_MIN);
-    let no_progress = probability(&answers, PROGRESS)?.map(|p| p <= PROGRESS_MAX);
-    Ok(if repeats == Some(false) || no_progress == Some(false) {
-        Verdict::Doubt
-    } else {
+    let Some(snapshot) = snapshot.filter(|_| attempts) else {
+        return Ok(Verdict::Doubt);
+    };
+    if !loop_shown(snapshot) {
+        return Ok(Verdict::Doubt);
+    }
+    let repeats = probability(&answers, SAME_STRATEGY)? >= REPEAT_MIN;
+    let no_progress = probability(&answers, PROGRESS)? <= PROGRESS_MAX;
+    Ok(if repeats && no_progress {
         Verdict::Stuck
+    } else {
+        Verdict::Doubt
     })
 }
 
-/// The yes-probability answered to `key`: `None` when it was not answered, invalid when it is not
-/// a probability.
+/// The same call returned the same result at least this many times in a row for the counts to
+/// show a loop. Two is the smallest run that is a repetition at all.
+const LOOP_MIN_REPEATS: u64 = 2;
+
+/// Whether the computed counts show a loop: the last call repeated its result, failures are
+/// waiting for an answer, and nothing progressed since the previous check. The model's verdict is
+/// capped at `doubt` without it, so facts can only prevent a stop, never cause one.
+fn loop_shown(snapshot: &Snapshot) -> bool {
+    snapshot.counts.repeat_streak >= LOOP_MIN_REPEATS
+        && snapshot.counts.failures_unanswered > 0
+        && !snapshot.progressed
+}
+
+/// The yes-probability answered to `key`; invalid when it is missing or is not a probability.
 fn probability(
     answers: &crate::provider::systemone::Answers,
     key: &str,
-) -> Result<Option<f64>, JudgeError> {
+) -> Result<f64, JudgeError> {
     match answers.get(key) {
-        None => Ok(None),
-        Some(Answer::Noul { noul }) if (0.0..=1.0).contains(noul) => Ok(Some(*noul)),
-        Some(_) => Err(JudgeError::Invalid),
+        Some(Answer::Noul { noul }) if (0.0..=1.0).contains(noul) => Ok(*noul),
+        _ => Err(JudgeError::Invalid),
     }
 }
 
@@ -209,7 +231,9 @@ fn questions(attempts: bool) -> Questions {
             failures_unanswered, minutes_since_progress): the same failing call repeated with \
             no new error is stuck; a changed error or a partial success is progress. When \
             computed_counts is \"unjudged\" the counts could not be read, which is no sign that \
-            the agent is calm or that it is stuck."
+            the agent is calm or that it is stuck. A call with exit \"in flight\" (counted in \
+            in_flight, with elapsed_secs) has started and not answered yet: a call that is \
+            still running is not a failure and not a sign of a loop."
                 .into(),
             criteria,
         },
@@ -477,17 +501,20 @@ mod tests {
                 failures_unanswered: 3,
                 read_only_streak: 0,
                 minutes_since_progress: 12,
+                in_flight: 0,
                 recent_exits: vec!["exit 1".into(); 3],
             },
             attempts: vec![
                 Attempt {
                     call: "cargo test".into(),
                     exit: "exit 1".into(),
-                    error: "boom".into()
+                    error: "boom".into(),
+                    elapsed_secs: None,
                 };
                 3
             ],
             progress_marker: None,
+            progressed: false,
         }
     }
     fn answers(
@@ -525,6 +552,50 @@ mod tests {
             &CancellationToken::new(),
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn an_unjudged_stuck_verdict_is_not_a_stop() {
+        // Nothing was counted: no readable snapshot, or one with no call in it. A stop on that
+        // rests on the model's reading of a goal and a clock alone.
+        for snapshot in [None, Some(Snapshot::default())] {
+            let model = ScriptedDecisionModel::new([answers("stuck", noul(0.9), noul(0.1))]);
+            let verdict = judge_progress_with(
+                &model,
+                &evidence(),
+                snapshot.as_ref(),
+                &CancellationToken::new(),
+            )
+            .await;
+            assert_eq!(verdict, Ok(Verdict::Doubt), "{snapshot:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn counts_that_show_no_loop_cap_a_stuck_verdict_at_doubt() {
+        // The model is as sure as can be, and the counts disagree: a child that progressed since
+        // the last check, one that is not repeating, one with no failure waiting.
+        for (what, change) in [
+            (
+                "progressed",
+                (|s: &mut Snapshot| s.progressed = true) as fn(&mut Snapshot),
+            ),
+            ("no repeat", |s| s.counts.repeat_streak = 1),
+            ("no failure", |s| s.counts.failures_unanswered = 0),
+        ] {
+            let mut calm = snapshot();
+            change(&mut calm);
+            let model = ScriptedDecisionModel::new([answers("stuck", noul(0.99), noul(0.01))]);
+            let verdict =
+                judge_progress_with(&model, &evidence(), Some(&calm), &CancellationToken::new())
+                    .await;
+            assert_eq!(verdict, Ok(Verdict::Doubt), "{what}");
+        }
+        // Facts never raise a verdict: the same loop with an `active` answer stays active.
+        assert_eq!(
+            verdict_for("active", noul(0.99), noul(0.01)).await,
+            Ok(Verdict::Active)
+        );
     }
 
     #[tokio::test]
@@ -573,17 +644,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unanswered_extra_questions_keep_the_verdict_and_bad_answers_are_invalid() {
-        assert_eq!(verdict_for("stuck", None, None).await, Ok(Verdict::Stuck));
+    async fn a_stuck_verdict_without_both_extra_answers_is_invalid_and_bad_answers_too() {
+        // The extra answers are the stop's confirmation: a missing one confirms nothing, and a
+        // verdict standing on nothing is not a verdict.
+        assert_eq!(
+            verdict_for("stuck", None, None).await,
+            Err(JudgeError::Invalid)
+        );
         assert_eq!(
             verdict_for("stuck", None, noul(0.1)).await,
-            Ok(Verdict::Stuck)
+            Err(JudgeError::Invalid)
         );
-        // One answer is enough to withhold a stop.
         assert_eq!(
-            verdict_for("stuck", noul(0.1), None).await,
-            Ok(Verdict::Doubt)
+            verdict_for("stuck", noul(0.9), None).await,
+            Err(JudgeError::Invalid)
         );
+        // The other two verdicts do not read them.
+        assert_eq!(verdict_for("active", None, None).await, Ok(Verdict::Active));
+        assert_eq!(verdict_for("doubt", None, None).await, Ok(Verdict::Doubt));
         assert_eq!(
             verdict_for("stuck", noul(1.5), noul(0.1)).await,
             Err(JudgeError::Invalid)

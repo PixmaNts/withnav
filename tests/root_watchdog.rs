@@ -12,6 +12,38 @@ use common::deadline::Deadline;
 use common::server::{TestServerConfig, collect_until, send_text};
 use common::sse::{spawn_streaming_provider, text_chunk, tool_call_chunk};
 use common::watchdog::{ConstantJudge, FakeClock};
+use futures::future::BoxFuture;
+use tokio_util::sync::CancellationToken;
+use withnav::provider::systemone::{Answer, Answers, DecisionError, DecisionModel, Questions};
+
+/// A judge sure of a loop: stuck, the same strategy again, no progress.
+struct LoopJudge;
+
+impl DecisionModel for LoopJudge {
+    fn decide<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a Questions,
+        _: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Answers, DecisionError>> {
+        Box::pin(async {
+            Ok([
+                (
+                    "subagent_progress".to_owned(),
+                    Answer::Choice {
+                        choice: "stuck".into(),
+                        probabilities: Default::default(),
+                        confidence: 1.0,
+                    },
+                ),
+                ("same_strategy".to_owned(), Answer::Noul { noul: 0.9 }),
+                ("progress".to_owned(), Answer::Noul { noul: 0.1 }),
+            ]
+            .into_iter()
+            .collect())
+        })
+    }
+}
 
 #[tokio::test]
 async fn root_doubt_parks_after_results_and_owner_continue_releases_the_same_turn() {
@@ -497,25 +529,58 @@ async fn stuck_root_settles_tool_results_without_requesting_another_step() {
     let mut provider = spawn_streaming_provider().await;
     let service = TestServerConfig::mock(tmp.path(), &provider.url)
         .chat_tools(128000)
+        .allow_everything()
         .state();
     let (tx, mut sleeps) = mpsc::unbounded_channel();
     let clock = Arc::new(FakeClock {
         now: Mutex::new(Instant::now()),
         sleeps: tx,
     });
-    service.install_root_watchdog_test(
-        clock.clone(),
-        Arc::new(ConstantJudge(Verdict::Stuck)),
-        None,
-    );
+    service.install_root_watchdog_test(clock.clone(), Arc::new(LoopJudge), None);
     let id = service.create_session(&ws, None, false).await.unwrap();
     send_text(&service, id, "find files").await;
-    let (_, stream) = provider
+    // The same command fails twice with the same error, so the counts show a loop; the third
+    // request is the turn the watchdog stops.
+    let (_, mut stream) = provider
         .requests
         .recv()
         .bounded(file!(), line!())
         .await
         .unwrap();
+    for call in ["c0", "c1"] {
+        stream
+            .send(tool_call_chunk(
+                call,
+                "bash",
+                &serde_json::json!({"command": "echo boom >&2; exit 3"}),
+            ))
+            .unwrap();
+        drop(stream);
+        (_, stream) = provider
+            .requests
+            .recv()
+            .bounded(file!(), line!())
+            .await
+            .unwrap();
+    }
+    async {
+        loop {
+            let settled = service
+                .history()
+                .replay(id, None, u64::MAX)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|e| e.kind == "tool.post_call")
+                .count();
+            if settled == 2 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+    .bounded(file!(), line!())
+    .await;
     let tick = sleeps.recv().bounded(file!(), line!()).await.unwrap();
     *clock.now.lock().unwrap() += Duration::from_secs(300);
     tick.send(()).unwrap();

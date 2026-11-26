@@ -14,7 +14,80 @@ use common::server::TestServerConfig;
 use common::sse::{spawn_streaming_provider, text_chunk, tool_call_chunk};
 use common::watchdog::{FakeClock, ScriptedJudge};
 
-use withnav::provider::systemone::{Answers, DecisionError, DecisionModel, Questions};
+use withnav::provider::systemone::{Answer, Answers, DecisionError, DecisionModel, Questions};
+
+/// The scripted verdicts, with the answers a model that confirms a loop gives to the two extra
+/// questions whenever it says stuck and they were asked. A stuck verdict stands only when the
+/// session's own counts show a loop and both extra answers confirm it, so a test of what follows a
+/// stop needs this judge and a child that has repeated a failing call (see `repeat_a_failure`).
+struct ConfirmingJudge(ScriptedJudge);
+impl DecisionModel for ConfirmingJudge {
+    fn decide<'a>(
+        &'a self,
+        state: &'a str,
+        questions: &'a Questions,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Answers, DecisionError>> {
+        Box::pin(async move {
+            let mut answers = self.0.decide(state, questions, cancel).await?;
+            let stuck = matches!(
+                answers.get("subagent_progress"),
+                Some(Answer::Choice { choice, .. }) if choice == "stuck"
+            );
+            if stuck && questions.contains_key("same_strategy") {
+                answers.insert("same_strategy".into(), Answer::Noul { noul: 0.9 });
+                answers.insert("progress".into(), Answer::Noul { noul: 0.1 });
+            }
+            Ok(answers)
+        })
+    }
+}
+
+/// The child reads a file that does not exist `times` times in a row, so its counts show the same
+/// call returning the same error with no progress. Returns the stream of the request that follows.
+async fn repeat_a_failure(
+    service: &withnav::server::AppState,
+    child: SessionId,
+    provider: &mut common::sse::StreamingProvider,
+    mut stream: mpsc::UnboundedSender<String>,
+    times: usize,
+) -> mpsc::UnboundedSender<String> {
+    for n in 0..times {
+        stream
+            .send(tool_call_chunk(
+                &format!("loop{n}"),
+                "read",
+                &json!({"path": "missing.txt"}),
+            ))
+            .unwrap();
+        drop(stream);
+        (_, stream) = provider
+            .requests
+            .recv()
+            .bounded(file!(), line!())
+            .await
+            .unwrap();
+    }
+    async {
+        loop {
+            let settled = service
+                .history()
+                .replay(child, None, u64::MAX)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|e| e.kind == "tool.post_call")
+                .count();
+            if settled >= times {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+    .bounded(file!(), line!())
+    .await;
+    stream
+}
 
 struct HeldJudge {
     entered: tokio::sync::Notify,
@@ -948,10 +1021,10 @@ async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
     let (checked, _rx) = mpsc::unbounded_channel();
     service.install_watchdog_test(
         clock.clone(),
-        Arc::new(ScriptedJudge {
+        Arc::new(ConfirmingJudge(ScriptedJudge {
             answers: Mutex::new(vec![Ok(Verdict::Stuck)].into()),
             checked,
-        }),
+        })),
     );
     let parent = service
         .create_session(&ws, None, false)
@@ -969,6 +1042,8 @@ async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
         .bounded(file!(), line!())
         .await
         .unwrap();
+    // The counts must show a loop for a stop to stand: the same failing read twice, then the held call.
+    let stream = repeat_a_failure(&service, child, &mut provider, stream, 2).await;
     stream
         .send(tool_call_chunk("held", "glob", &json!({"pattern":"*"})))
         .unwrap();
@@ -1047,10 +1122,10 @@ impl Fixture {
         let (tx, checked) = mpsc::unbounded_channel();
         service.install_watchdog_test(
             clock.clone(),
-            Arc::new(ScriptedJudge {
-                answers: Mutex::new(answers.into()),
+            Arc::new(ConfirmingJudge(ScriptedJudge {
+                answers: Mutex::new(answers.clone().into()),
                 checked: tx,
-            }),
+            })),
         );
         let parent = service
             .create_session(&ws, None, false)
@@ -1062,12 +1137,16 @@ impl Fixture {
             .bounded(file!(), line!())
             .await
             .unwrap();
-        let (initial_request, stream) = provider
+        let (initial_request, mut stream) = provider
             .requests
             .recv()
             .bounded(file!(), line!())
             .await
             .unwrap();
+        // A stop needs a loop in the counts: the child fails the same call twice first.
+        if answers.iter().any(|a| matches!(a, Ok(Verdict::Stuck))) {
+            stream = repeat_a_failure(&service, child, &mut provider, stream, 2).await;
+        }
         Self {
             _tmp: tmp,
             service,

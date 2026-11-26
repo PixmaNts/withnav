@@ -303,11 +303,12 @@ async fn a_long_running_single_tool_is_not_stuck_on_time_alone() {
     f.service.close_all().bounded(file!(), line!()).await;
 }
 
-// Given a model that answers only the verdict, as before the extra questions existed
-// When it calls the child stuck
-// Then the verdict stands: a model that does not answer a question is not read as disagreeing
+// Given a child that has made no call yet and a model that answers only a stuck verdict
+// When the watchdog checks it
+// Then nothing was counted, so the verdict is doubt and the child keeps running: a stop needs
+//      something to count
 #[tokio::test]
-async fn a_verdict_without_the_extra_answers_keeps_its_verdict() {
+async fn a_stuck_verdict_with_nothing_counted_does_not_stop_the_child() {
     use common::watchdog::ConstantJudge;
     use withnav::session::subagents::watchdog::Verdict;
     let mut provider = spawn_streaming_provider().bounded(file!(), line!()).await;
@@ -338,10 +339,82 @@ async fn a_verdict_without_the_extra_answers_keeps_its_verdict() {
     let waiter = sleeps.recv().bounded(file!(), line!()).await.unwrap();
     *clock.now.lock().unwrap() += Duration::from_secs(300);
     waiter.send(()).unwrap();
+    let verdict = async {
+        loop {
+            let events = service
+                .history()
+                .replay(parent, None, u64::MAX)
+                .await
+                .unwrap();
+            if let Some(event) = events.iter().find(|e| e.kind == "subagent.watchdog") {
+                return event.payload.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+    .bounded(file!(), line!())
+    .await;
+    assert_eq!(verdict["verdict"], "doubt");
+    assert_eq!(verdict["computed_counts"]["recent_exits"], json!([]));
+    let link = service.child_metadata(child).await.unwrap().unwrap();
+    assert_eq!(link.status, "running");
+    service.close_all().bounded(file!(), line!()).await;
+}
+
+// Given a child whose error changed since the last check and then repeated, and a model that
+//      answers stuck with full confidence
+// When the watchdog checks it
+// Then the counts show progress within the check, so the verdict is capped at doubt and the child
+//      keeps running: the model cannot stop a child the counts say is moving
+#[tokio::test]
+async fn a_child_with_recent_progress_is_not_stopped_even_if_the_model_says_stuck() {
+    let mut f = Fixture::new(|_| ("stuck", 0.9, 0.1)).await;
+    // The third error reads like the second: one, two, two.
+    let command = "echo x >> n; echo error `wc -l < n | tr 3 2` >&2; exit 3";
+    for n in 0..3 {
+        f.run(&format!("c{n}"), command).await;
+    }
+    f.tick(300).await;
+    let verdict = f.verdict().await;
+    assert_eq!(verdict["verdict"], "doubt");
+    let states = f.model.states.lock().unwrap().clone();
+    // The same error twice in a row after a change: a repetition, with a failure unanswered.
+    assert_eq!(counts(&states[0])["repeat_streak"], 2);
+    assert_eq!(counts(&states[0])["failures_unanswered"], 2);
+    assert_eq!(f.child_status().await, "running");
+    f.service.close_all().bounded(file!(), line!()).await;
+}
+
+// Given a child in the middle of a command that has not answered when the watchdog checks it
+// When the model reads the state
+// Then the counts say one call is in flight, the attempts list it as in flight with the time it
+//      has been seen running, and the child is neither failed nor stopped
+#[tokio::test]
+async fn a_call_in_flight_is_visible_to_the_counts() {
+    let mut f = Fixture::new(|_| ("active", 0.1, 0.9)).await;
+    f.run("c0", "false").await;
+    let command = "sleep 30";
+    let (unused, _) = mpsc::unbounded_channel();
+    let stream = std::mem::replace(&mut f.stream, unused);
+    stream
+        .send(tool_call_chunk(
+            "slow",
+            "bash",
+            &json!({ "command": command }),
+        ))
+        .unwrap();
+    drop(stream);
     async {
         loop {
-            let link = service.child_metadata(child).await.unwrap().unwrap();
-            if link.status == "stopped" {
+            let started = f
+                .service
+                .history()
+                .replay(f.child, None, u64::MAX)
+                .await
+                .unwrap()
+                .iter()
+                .any(|e| e.kind == "tool.pre_call" && e.payload["tool_call_id"] == "slow");
+            if started {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -349,5 +422,18 @@ async fn a_verdict_without_the_extra_answers_keeps_its_verdict() {
     }
     .bounded(file!(), line!())
     .await;
-    service.close_all().bounded(file!(), line!()).await;
+    f.tick(300).await;
+    f.verdict().await;
+    let states = f.model.states.lock().unwrap().clone();
+    let seen = counts(&states[0]);
+    assert_eq!(seen["in_flight"], 1);
+    assert_eq!(seen["failures_unanswered"], 1);
+    assert_eq!(seen["recent_exits"], json!(["exit 1", "in flight"]));
+    let attempts = states[0]["untrusted_attempts"].as_array().unwrap();
+    assert_eq!(attempts[1]["exit"], "in flight");
+    assert_eq!(attempts[1]["call"], command);
+    assert_eq!(attempts[1]["elapsed_secs"], 0);
+    assert!(attempts[1].get("error").is_none());
+    assert_eq!(f.child_status().await, "running");
+    f.service.close_all().bounded(file!(), line!()).await;
 }

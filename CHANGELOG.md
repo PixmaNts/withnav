@@ -12,11 +12,16 @@ requests land in `develop`.
   repeated with the same result, failures nothing has answered, reads in a row, minutes since a file
   changed, a command passed or an error changed, and the exit status of the last calls. Two more
   questions, whether the failed attempts repeat one strategy and whether the later ones progress,
-  must both point to a loop before a child is stopped; either alone asks the parent. Counts that
-  cannot be read are reported to the judge as unjudged, never as calm.
-- The goal check flags a claim that reports a command run or a result obtained that the session
+  must both point to a loop before a child is stopped; either alone asks the parent. A stop also
+  needs the counts to show a loop (the same result at least twice, a failure unanswered, no
+  progress since the previous check) and counts to exist: a model that says stuck without them is
+  read as doubt. A call still running is shown as in flight, with how long it has run, and is not
+  a failure. Counts that cannot be read are reported to the judge as unjudged, never as calm. Each
+  check reads only the events stored since the previous one.
+- The goal check flags a claim that reports a command run or a file written that the session
   never recorded: it shows as contradicted with that reason, only when the check saw every command
-  of the session. A claim the record cannot settle stays unverified.
+  of the session. A claim the record cannot settle stays unverified, and so does any claim about
+  something the record never holds (a read, a fetched page, a subagent's result).
 - Compaction summaries keep the evidence Nav continues from: each verified change names the check
   that confirmed it and its observed result, unconfirmed claims are listed apart, failed attempts
   stay with what not to retry, and the open criteria and the next check close the summary. A

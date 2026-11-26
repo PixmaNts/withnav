@@ -1116,9 +1116,9 @@ async fn an_invented_claim_is_contradicted_and_missing_evidence_stays_unverified
     let answer = json!({
         "criteria": [{"index": 1, "status": "not_checked", "evidence": ""}],
         "claims": [
-            {"claim": "the tests pass", "status": "unverified", "evidence": "", "invented": true},
-            {"claim": "docs updated", "status": "unverified", "evidence": "", "invented": false},
-            {"claim": "it builds", "status": "supported", "evidence": "exit 0 · echo built", "invented": false},
+            {"claim": "the tests pass", "status": "unverified", "evidence": "", "kind": "command", "invented": true},
+            {"claim": "docs updated", "status": "unverified", "evidence": "", "kind": "file", "invented": false},
+            {"claim": "it builds", "status": "supported", "evidence": "exit 0 · echo built", "kind": "command", "invented": false},
         ],
     })
     .to_string();
@@ -1156,6 +1156,56 @@ async fn an_invented_claim_is_contradicted_and_missing_evidence_stays_unverified
         "{instructions}"
     );
     assert!(instructions.contains("\"invented\""), "{instructions}");
+    assert!(instructions.contains("\"kind\""), "{instructions}");
+}
+
+// Given a turn that ran only `echo built` and then claimed that a subagent ran the tests, that a
+//      page was fetched and that the tests pass
+// When the model flags all three as invented, the first two as kind other (the ledger records
+//      neither a subagent's work nor a fetch) and the third with no kind
+// Then none is contradicted: what the ledger does not record stays unverified, whatever the
+//      model says; the same flag on a claim of kind command is contradicted
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_the_ledger_cannot_record_is_never_invented() {
+    let answer = json!({
+        "criteria": [{"index": 1, "status": "not_checked", "evidence": ""}],
+        "claims": [
+            {"claim": "the subagent ran the tests and they pass", "status": "unverified", "evidence": "", "kind": "other", "invented": true},
+            {"claim": "the docs page was fetched", "status": "unverified", "evidence": "", "kind": "other", "invented": true},
+            {"claim": "the tests pass", "status": "unverified", "evidence": "", "invented": true},
+            {"claim": "lint is clean", "status": "unverified", "evidence": "", "kind": "command", "invented": true},
+        ],
+    })
+    .to_string();
+    let env = scripted_env(
+        meta_answer(&answer),
+        true,
+        vec![
+            bash_calls(&["echo built".to_string()]),
+            sse_response(&[&text_chunk("the subagent ran the tests and they pass")]),
+        ],
+    )
+    .await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    one_criterion(&env.state, id).await;
+    turn(&env.state, id, "go").await;
+    let logged = wait_lines(&env.log, 1).await;
+    let statuses: Vec<&str> = logged[0]["claims"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        statuses,
+        ["unverified", "unverified", "unverified", "contradicted"]
+    );
+    let results = wait_published(&env.state, id, 1).await;
+    assert_eq!(results[0]["data"]["claims"], logged[0]["claims"]);
 }
 
 // Given a turn that ran twenty long commands, more than the digest holds, then claimed the tests
@@ -1170,7 +1220,7 @@ async fn an_invented_claim_needs_every_command_of_the_session_in_the_digest() {
         .collect();
     let answer = json!({
         "criteria": [{"index": 1, "status": "not_checked", "evidence": ""}],
-        "claims": [{"claim": "the tests pass", "status": "unverified", "evidence": "", "invented": true}],
+        "claims": [{"claim": "the tests pass", "status": "unverified", "evidence": "", "kind": "command", "invented": true}],
     })
     .to_string();
     let env = scripted_env(

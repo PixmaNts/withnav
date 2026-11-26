@@ -202,7 +202,10 @@ _Avoid_: stop (stop tears down the session)
 Root conversations have no default step cap. Their watchdog uses the same bounded observable
 evidence and the same computed counts every 300 seconds (`agent.watchdog_interval_secs`; 0 disables),
 bound to the judged turn. Counts that cannot be read reach the reviewer as `unjudged`, never as calm.
-`active` continues; `stuck` stops before the next provider request once every tool result is in.
+`active` continues; `stuck` stops before the next provider request once every tool result is in,
+but only when the counts show a loop (a repeated result, a failure unanswered, no progress since the
+previous check); without that, or without counts, it is read as `doubt`. A call still running is
+counted as in flight, not as a failure.
 `doubt`, including two consecutive judge failures, gets one tool-free metacognition review. Its
 60-second deadline covers reading the session ledger (at most 10 seconds; past that, or on a read
 error, the review goes on without it) and the model call together. The review reads the Captain's active session goal and its numbered criteria

@@ -7,9 +7,15 @@
 //! and never guessed by the model: how many times the same call returned the same result, how
 //! many failures nothing has answered, how long since anything moved.
 //!
-//! The fold is pure: it reads the same durable `tool.pre_call` / `tool.post_call` events the
-//! ledger reads, pairs them by call id, and keeps counters plus the last [`RECENT_CALLS`] calls.
-//! It never sees reasoning, only what the tools did.
+//! The fold reads the same durable `tool.pre_call` / `tool.post_call` events the ledger reads,
+//! pairs them by call id, and keeps counters plus the last [`RECENT_CALLS`] calls. It never sees
+//! reasoning, only what the tools did. A watchdog keeps one [`Facts`] per watched session and
+//! feeds it only the events after the last `seq` it saw: replaying a long session in full at every
+//! tick reads more rows each time the session grows, and an hour-long session is read most.
+//!
+//! A call with a `tool.pre_call` and no `tool.post_call` yet is running, not failed. It is
+//! counted in [`Counts::in_flight`] and listed among the attempts with how long it has run, so a
+//! watchdog does not mistake a long build for a call that never answered.
 //!
 //! Progress is one of three observable things: a file changed (a successful `write` or `edit`),
 //! a command passed (a `bash` call that exited 0), or a call failed with a different error than
@@ -21,6 +27,7 @@ use std::collections::{HashMap, VecDeque};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use crate::bus::event::{EventEnvelope, EventKind};
 use crate::session::ledger::{head, one_line, tail};
@@ -37,6 +44,13 @@ const CALL_CHARS: usize = 160;
 /// Longest error text kept per failed attempt, and compared between calls, in characters. The end
 /// of an output is where its cause usually is.
 const ERROR_CHARS: usize = 200;
+/// Most distinct failing calls remembered to tell a changed error from a repeated one. A session
+/// that lives for hours keeps this state between checks; without a bound a long run of different
+/// failing commands would grow it for as long as the session lives. Past the bound the memory
+/// restarts, which at worst reads one repeated error as new once.
+const MAX_FAILURES_KEPT: usize = 256;
+/// The `exit` text of a call that has started and not answered.
+pub const IN_FLIGHT: &str = "in flight";
 /// What the model reads in place of counts that could not be computed. It is never zero: a
 /// missing snapshot must not look like a calm one.
 pub const UNJUDGED: &str = "unjudged";
@@ -59,6 +73,8 @@ pub struct Counts {
     /// Whole minutes since progress was last seen, on the watchdog's clock (see
     /// [`ProgressClock`]).
     pub minutes_since_progress: u64,
+    /// Calls started and not answered yet. A running call is not a failure.
+    pub in_flight: u64,
     /// The outcome of the last [`RECENT_CALLS`] calls, oldest first: `ok`, `exit 3`, `error` or
     /// `denied`.
     pub recent_exits: Vec<String>,
@@ -72,6 +88,10 @@ pub struct Attempt {
     /// The end of a failed call's output; empty when it succeeded.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub error: String,
+    /// Whole seconds a call in flight has been seen running; `None` for a settled call. Counted
+    /// from the check that first saw the call start, so it can only understate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_secs: Option<u64>,
 }
 
 /// What a fold of a session's events says about its recent calls.
@@ -82,12 +102,17 @@ pub struct Snapshot {
     pub attempts: Vec<Attempt>,
     /// The `seq` of the event that last made progress; `None` when nothing has yet.
     pub progress_marker: Option<u64>,
+    /// Progress happened since the previous check (see [`ProgressClock`]). Only a stamped
+    /// snapshot can say so.
+    pub progressed: bool,
 }
 
 impl Snapshot {
-    /// This snapshot with `minutes_since_progress` read from `clock` at `now`.
+    /// This snapshot with `minutes_since_progress` and `progressed` read from `clock` at `now`.
     pub fn stamped(mut self, clock: &mut ProgressClock, now: Instant) -> Self {
-        self.counts.minutes_since_progress = clock.minutes(self.progress_marker, now);
+        let (minutes, moved) = clock.stamp(self.progress_marker, now);
+        self.counts.minutes_since_progress = minutes;
+        self.progressed = moved;
         self
     }
 }
@@ -114,39 +139,95 @@ impl ProgressClock {
         }
     }
 
-    fn minutes(&mut self, marker: Option<u64>, now: Instant) -> u64 {
+    /// Whole minutes since the marker was first seen, and whether it moved to a new progress
+    /// since the previous call.
+    fn stamp(&mut self, marker: Option<u64>, now: Instant) -> (u64, bool) {
+        let moved = marker.is_some() && marker != self.marker;
         if marker != self.marker {
             self.marker = marker;
             self.since = now;
         }
-        now.saturating_duration_since(self.since).as_secs() / 60
+        (
+            now.saturating_duration_since(self.since).as_secs() / 60,
+            moved,
+        )
     }
 }
 
-/// Reads `session`'s events and folds them; `None` when the store cannot be read in time. An
-/// unreadable snapshot is "unjudged", never zeros.
-pub async fn read(history: &HistoryStore, session: SessionId) -> Option<Snapshot> {
-    let replay = history.replay(session, None, u64::MAX);
-    let events = tokio::time::timeout(super::root_watchdog::LEDGER_READ_DEADLINE, replay)
-        .await
-        .ok()?
-        .ok()?;
-    Some(fold(&events))
+/// The facts of one watched session, kept between checks.
+///
+/// Each [`Facts::read`] fetches only the events after the last `seq` it folded and adds them to
+/// the folded state, so the work per check is the events since the previous one.
+pub struct Facts {
+    folder: Folder,
+    clock: ProgressClock,
+    /// The `seq` of the last event folded; `None` before the first read.
+    through: Option<u64>,
 }
 
-/// Folds one session's events, in `seq` order.
+impl Facts {
+    pub fn new(now: Instant) -> Self {
+        Self {
+            folder: Folder::default(),
+            clock: ProgressClock::new(now),
+            through: None,
+        }
+    }
+
+    /// The `seq` of the last event folded.
+    pub fn through(&self) -> Option<u64> {
+        self.through
+    }
+
+    /// Reads the events of `session` after the last one seen and folds them in; `None` when the
+    /// store cannot be read in time or `cancel` fires first, and nothing is folded then. An
+    /// unreadable snapshot is "unjudged", never zeros.
+    pub async fn read(
+        &mut self,
+        history: &HistoryStore,
+        session: SessionId,
+        now: Instant,
+        cancel: &CancellationToken,
+    ) -> Option<Snapshot> {
+        let replay = history.replay(session, self.through, u64::MAX);
+        let events = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return None,
+            read = tokio::time::timeout(super::root_watchdog::LEDGER_READ_DEADLINE, replay) => read.ok()?.ok()?,
+        };
+        Some(self.absorb(&events, now))
+    }
+
+    /// Folds `events` in `seq` order, skipping any at or before the last one seen, and returns
+    /// the snapshot at `now`.
+    pub fn absorb(&mut self, events: &[EventEnvelope], now: Instant) -> Snapshot {
+        for event in events {
+            if self.through.is_some_and(|seen| event.seq <= seen) {
+                continue;
+            }
+            self.folder.apply(event, Some(now));
+            self.through = Some(event.seq);
+        }
+        self.folder
+            .snapshot(Some(now))
+            .stamped(&mut self.clock, now)
+    }
+}
+
+/// Folds one session's events, in `seq` order, in one go. Elapsed times of calls in flight are
+/// unknown here.
 pub fn fold(events: &[EventEnvelope]) -> Snapshot {
     let mut folder = Folder::default();
     for event in events {
-        folder.apply(event);
+        folder.apply(event, None);
     }
-    folder.finish()
+    folder.snapshot(None)
 }
 
 #[derive(Default)]
 struct Folder {
-    /// Calls announced by `tool.pre_call` and not settled yet: name and arguments.
-    pending: HashMap<String, (String, Value)>,
+    /// Calls announced by `tool.pre_call` and not settled yet.
+    pending: HashMap<String, Pending>,
     /// The signature and result key of the last settled call.
     last: Option<(String, String)>,
     streak: u64,
@@ -158,24 +239,40 @@ struct Folder {
     marker: Option<u64>,
 }
 
+/// A call started and not answered yet.
+struct Pending {
+    seq: u64,
+    name: String,
+    args: Value,
+    /// When a check first saw it running; `None` when folded without a clock.
+    seen: Option<Instant>,
+}
+
 impl Folder {
-    fn apply(&mut self, event: &EventEnvelope) {
+    fn apply(&mut self, event: &EventEnvelope, now: Option<Instant>) {
         let payload = &event.payload;
         match EventKind::from_wire(&event.kind) {
             Some(EventKind::ToolPreCall) => {
                 if let (Some(id), Some(name)) =
                     (payload["tool_call_id"].as_str(), payload["name"].as_str())
                 {
-                    self.pending
-                        .insert(id.to_owned(), (name.to_owned(), payload["args"].clone()));
+                    self.pending.insert(
+                        id.to_owned(),
+                        Pending {
+                            seq: event.seq,
+                            name: name.to_owned(),
+                            args: payload["args"].clone(),
+                            seen: now,
+                        },
+                    );
                 }
             }
             Some(EventKind::ToolPostCall) => {
-                if let Some((name, args)) = payload["tool_call_id"]
+                if let Some(call) = payload["tool_call_id"]
                     .as_str()
                     .and_then(|id| self.pending.remove(id))
                 {
-                    self.settle(event.seq, &name, &args, payload);
+                    self.settle(event.seq, &call.name, &call.args, payload);
                 }
             }
             _ => {}
@@ -218,6 +315,9 @@ impl Folder {
             self.read_only_streak = 0;
         }
         if failed {
+            if self.failures.len() >= MAX_FAILURES_KEPT && !self.failures.contains_key(&signature) {
+                self.failures.clear();
+            }
             match self.failures.insert(signature, result.clone()) {
                 // The same call failed before and the error changed: new information.
                 Some(before) if before != result => {
@@ -242,21 +342,47 @@ impl Folder {
                 String::new()
             },
             exit,
+            elapsed_secs: None,
         });
     }
 
-    fn finish(self) -> Snapshot {
-        let attempts: Vec<Attempt> = self.attempts.into();
+    /// The counts and attempts so far. Calls in flight come after the settled ones, oldest start
+    /// first, within the same [`RECENT_CALLS`] bound.
+    fn snapshot(&self, now: Option<Instant>) -> Snapshot {
+        let mut running: Vec<&Pending> = self.pending.values().collect();
+        running.sort_by_key(|call| call.seq);
+        let mut attempts: Vec<Attempt> = self.attempts.iter().cloned().collect();
+        attempts.extend(running.iter().map(|call| {
+            let text = if call.name == "bash" {
+                call.args["command"].as_str().map(one_line)
+            } else {
+                None
+            }
+            .unwrap_or_else(|| one_line(&format!("{} {}", call.name, call.args)));
+            Attempt {
+                call: head(&text, CALL_CHARS),
+                exit: IN_FLIGHT.to_owned(),
+                error: String::new(),
+                elapsed_secs: call
+                    .seen
+                    .zip(now)
+                    .map(|(seen, now)| now.saturating_duration_since(seen).as_secs()),
+            }
+        }));
+        let excess = attempts.len().saturating_sub(RECENT_CALLS);
+        attempts.drain(..excess);
         Snapshot {
             counts: Counts {
                 repeat_streak: self.streak,
                 failures_unanswered: self.unanswered,
                 read_only_streak: self.read_only_streak,
                 minutes_since_progress: 0,
+                in_flight: self.pending.len() as u64,
                 recent_exits: attempts.iter().map(|a| a.exit.clone()).collect(),
             },
             attempts,
             progress_marker: self.marker,
+            progressed: false,
         }
     }
 }
@@ -443,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_and_unsettled_calls_count_for_nothing() {
+    fn an_interrupted_call_counts_for_nothing_and_an_unsettled_one_is_only_in_flight() {
         let mut events = Vec::new();
         bash(&mut events, "cargo test", "boom", 1);
         call(
@@ -462,7 +588,11 @@ mod tests {
         ));
         let snapshot = fold(&events);
         assert_eq!(snapshot.counts.repeat_streak, 1);
-        assert_eq!(snapshot.attempts.len(), 1);
+        assert_eq!(snapshot.counts.failures_unanswered, 1);
+        assert_eq!(snapshot.counts.in_flight, 1);
+        // The failed call, then the one still running; the interrupted one is nowhere.
+        let exits: Vec<&str> = snapshot.attempts.iter().map(|a| a.exit.as_str()).collect();
+        assert_eq!(exits, ["exit 1", IN_FLIGHT]);
         assert_eq!(fold(&[]), Snapshot::default());
     }
 
@@ -520,5 +650,160 @@ mod tests {
         assert_eq!(moved.counts.minutes_since_progress, 0);
         let later = snapshot(Some(7)).stamped(&mut clock, at(1500));
         assert_eq!(later.counts.minutes_since_progress, 5);
+    }
+
+    fn pre(events: &mut Vec<EventEnvelope>, id: &str, command: &str) {
+        let seq = events.len() as u64 + 1;
+        events.push(EventEnvelope::new(
+            ulid::Ulid::generate(),
+            seq,
+            EventKind::ToolPreCall,
+            json!({"tool_call_id": id, "name": "bash", "args": {"command": command}}),
+        ));
+    }
+
+    fn post(events: &mut Vec<EventEnvelope>, id: &str) {
+        let seq = events.len() as u64 + 1;
+        events.push(EventEnvelope::new(
+            ulid::Ulid::generate(),
+            seq,
+            EventKind::ToolPostCall,
+            json!({"tool_call_id": id, "name": "bash", "status": "ok", "output": "done",
+                "metadata": {"exit_code": 0}}),
+        ));
+    }
+
+    #[test]
+    fn a_call_in_flight_is_counted_and_listed_with_its_elapsed_time_and_is_no_failure() {
+        let mut events = Vec::new();
+        bash(&mut events, "cargo test", "error: 2 tests failed", 101);
+        pre(&mut events, "slow", "cargo build --release");
+        let folded = fold(&events);
+        assert_eq!(folded.counts.in_flight, 1);
+        // No clock: the call is listed, its time is not known.
+        let last = folded.attempts.last().unwrap();
+        assert_eq!(
+            (last.call.as_str(), last.exit.as_str()),
+            ("cargo build --release", IN_FLIGHT)
+        );
+        assert_eq!(last.elapsed_secs, None);
+        // The running call is not a failure and does not break the failure count.
+        assert_eq!(folded.counts.failures_unanswered, 1);
+        assert_eq!(folded.counts.recent_exits, ["exit 101", IN_FLIGHT]);
+
+        // Seen at one check and again 90 seconds later, then answered.
+        let start = Instant::now();
+        let mut facts = Facts::new(start);
+        let first = facts.absorb(&events, start);
+        assert_eq!(first.attempts.last().unwrap().elapsed_secs, Some(0));
+        let later = facts.absorb(&events, start + std::time::Duration::from_secs(90));
+        assert_eq!(later.counts.in_flight, 1);
+        assert_eq!(later.attempts.last().unwrap().elapsed_secs, Some(90));
+        post(&mut events, "slow");
+        let done = facts.absorb(&events, start + std::time::Duration::from_secs(95));
+        assert_eq!(done.counts.in_flight, 0);
+        assert_eq!(done.attempts.last().unwrap().exit, "ok");
+        assert_eq!(done.attempts.last().unwrap().elapsed_secs, None);
+    }
+
+    #[test]
+    fn events_already_folded_are_never_folded_again() {
+        let mut events = Vec::new();
+        for _ in 0..3 {
+            bash(&mut events, "cargo test", "error: 2 tests failed", 101);
+        }
+        let start = Instant::now();
+        let mut facts = Facts::new(start);
+        facts.absorb(&events[..4], start);
+        assert_eq!(facts.through(), Some(4));
+        // Handed the whole list again, only the new events count.
+        let seen = facts.absorb(&events, start);
+        assert_eq!(facts.through(), Some(6));
+        assert_eq!(seen.counts, fold(&events).counts);
+        assert_eq!(seen.counts.repeat_streak, 3);
+        assert_eq!(facts.absorb(&events, start).counts.repeat_streak, 3);
+    }
+
+    #[test]
+    fn failing_calls_are_remembered_up_to_a_bound() {
+        let mut events = Vec::new();
+        for n in 0..MAX_FAILURES_KEPT + 20 {
+            bash(&mut events, &format!("cmd {n}"), "error: boom", 1);
+        }
+        let mut folder = Folder::default();
+        for event in &events {
+            folder.apply(event, None);
+        }
+        assert!(folder.failures.len() <= MAX_FAILURES_KEPT);
+        assert_eq!(
+            folder.snapshot(None).counts.failures_unanswered,
+            events.len() as u64 / 2
+        );
+    }
+
+    async fn stored(dir: &tempfile::TempDir) -> (HistoryStore, SessionId) {
+        let store = HistoryStore::open(dir.path().join("sessions.db")).unwrap();
+        let id = ulid::Ulid::generate();
+        store.record_session(id, "/w", "m", false).await.unwrap();
+        store
+            .append_event_acked(
+                id,
+                EventEnvelope::new(id, 0, EventKind::SessionStart, json!({})),
+            )
+            .await
+            .unwrap();
+        (store, id)
+    }
+
+    async fn failing_call(store: &HistoryStore, id: SessionId, seq: u64) {
+        for (offset, kind, payload) in [
+            (
+                0,
+                EventKind::ToolPreCall,
+                json!({"tool_call_id": format!("c{seq}"), "name": "bash",
+                    "args": {"command": "cargo test"}}),
+            ),
+            (
+                1,
+                EventKind::ToolPostCall,
+                json!({"tool_call_id": format!("c{seq}"), "name": "bash", "status": "error",
+                    "output": "error: 2 tests failed", "metadata": {"exit_code": 101}}),
+            ),
+        ] {
+            store
+                .append_event_acked(id, EventEnvelope::new(id, seq + offset, kind, payload))
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_read_folds_only_what_was_stored_since_the_last_one_and_stops_on_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, id) = stored(&dir).await;
+        let now = Instant::now();
+        let cancel = CancellationToken::new();
+        let mut facts = Facts::new(now);
+        failing_call(&store, id, 1).await;
+        failing_call(&store, id, 3).await;
+        let first = facts.read(&store, id, now, &cancel).await.unwrap();
+        assert_eq!(first.counts.repeat_streak, 2);
+        assert_eq!(facts.through(), Some(4));
+        // Nothing new: the same counts, with nothing folded twice.
+        let again = facts.read(&store, id, now, &cancel).await.unwrap();
+        assert_eq!(again.counts.repeat_streak, 2);
+        failing_call(&store, id, 5).await;
+        let third = facts.read(&store, id, now, &cancel).await.unwrap();
+        assert_eq!(third.counts.repeat_streak, 3);
+        assert_eq!(facts.through(), Some(6));
+
+        // A cancelled session is not read, and what was folded stays as it was.
+        failing_call(&store, id, 7).await;
+        cancel.cancel();
+        assert!(facts.read(&store, id, now, &cancel).await.is_none());
+        assert_eq!(facts.through(), Some(6));
+        let fresh = CancellationToken::new();
+        let resumed = facts.read(&store, id, now, &fresh).await.unwrap();
+        assert_eq!(resumed.counts.repeat_streak, 4);
     }
 }

@@ -235,6 +235,10 @@ pub(crate) struct TestPoints {
     /// Arming slot for the review-after-claim park.
     #[cfg(any(test, feature = "test-support"))]
     review_after_claim_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    /// The next parallel review's answer is sent for a request the runtime does not hold, so
+    /// the runtime refuses it, one shot.
+    #[cfg(any(test, feature = "test-support"))]
+    refuse_review_answer: Arc<std::sync::atomic::AtomicBool>,
     /// Injected child start/publication failure: `Some(true)` fails the
     /// publication pass, `Some(false)` fails the start pass; each is
     /// consumed once.
@@ -542,6 +546,18 @@ impl TestPoints {
         }
     }
 
+    /// Arms the refusal of the next review answer.
+    pub(super) fn refuse_review_answer(&self) {
+        self.refuse_review_answer
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Consumes an armed review-answer refusal.
+    pub(super) fn take_review_answer_refusal(&self) -> bool {
+        self.refuse_review_answer
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+
     /// Consumes an armed child-start failure.
     pub(super) fn take_child_start_failure(&self) -> Option<bool> {
         self.child_start_failure
@@ -615,6 +631,11 @@ impl TestPoints {
     /// No-op: the feature is off, no failure is armed.
     pub(super) fn take_child_start_failure(&self) -> Option<bool> {
         None
+    }
+
+    /// No-op: the feature is off, no refusal is armed.
+    pub(super) fn take_review_answer_refusal(&self) -> bool {
+        false
     }
 }
 

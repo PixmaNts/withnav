@@ -394,7 +394,9 @@ chat call to the metacognition model (`session/metacognition_client.rs`, shared 
 check), 1000 tokens, 60 s, no retry. Every claim goes through the one lock of the permission slot:
 `claim_permission_as` (Captain, bypass), `claim_permission_for_review` (also requires no hold and the
 same digest and turn) and `hold_permission`; a slot that changes (answer, stop, new message) cancels
-the review. With `on`, an `allow_once` claims and sends `PermissionAnswer{AllowOnce, origin:
+the review under `on` (under `shadow` it runs to its end, for the log). An `allow_once` counts only
+with a `request_quote` found verbatim in the Captain messages sent (`verify_quote`), else it is
+`wait`; a refused answer gives the claim back. With `on`, an `allow_once` claims and sends `PermissionAnswer{AllowOnce, origin:
 Metacognition}`; `run_loop` reads the rules again (`decide::Lookup::unchanged_since_question`) and
 runs the call (`approved_by: metacognition`) or, if anything changed, decides it again. `wait` and
 `unavailable` publish `permission.review`; `hold` on the answer route stops the review (or answers

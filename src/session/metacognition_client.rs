@@ -22,6 +22,21 @@ pub(crate) struct MetacognitionClient {
     catalog: crate::provider::catalog::ModelCatalog,
 }
 
+/// Why one call gave no answer, as the shadow logs class it. Each cause is also logged with
+/// `tracing::warn`, so a layer that keeps failing is visible without reading the logs' lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskError {
+    /// The layer's model could not be resolved against the provider's catalogue or variants.
+    Resolution,
+    /// The provider call failed (transport, status, key).
+    Provider,
+    /// The caller's deadline passed first.
+    Timeout,
+    /// The provider answered, but not with usable text.
+    Malformed,
+}
+
 /// The answer of one call: its text and, when the provider reported them, its token counts.
 pub(crate) struct Answer {
     pub(crate) text: String,
@@ -43,7 +58,8 @@ impl MetacognitionClient {
         input: String,
         max_tokens: u64,
         cancel: &CancellationToken,
-    ) -> Option<Answer> {
+    ) -> Result<Answer, AskError> {
+        let model = self.model();
         let chat = crate::provider::catalog::resolve_chat(
             &self.catalog,
             &self.assigned.resolved,
@@ -51,8 +67,15 @@ impl MetacognitionClient {
             &self.cache,
         )
         .await
-        .ok()?;
-        let variant = crate::provider::layers::chat_variant(&self.assigned, &chat).ok()?;
+        .map_err(|error| {
+            tracing::warn!(%model, ?error, "metacognition model could not be resolved");
+            AskError::Resolution
+        })?;
+        let variant =
+            crate::provider::layers::chat_variant(&self.assigned, &chat).map_err(|error| {
+                tracing::warn!(%model, %error, "metacognition variant could not be resolved");
+                AskError::Resolution
+            })?;
         let request = ChatRequest {
             model: self.assigned.resolved.model.model.clone(),
             messages: vec![
@@ -79,8 +102,20 @@ impl MetacognitionClient {
             .client
             .chat(request, variant.as_ref(), cancel, &mut |_| {})
             .await
-            .ok()?;
-        Some(Answer {
+            .map_err(|error| {
+                tracing::warn!(%model, %error, "metacognition call failed");
+                match error {
+                    crate::provider::error::ProviderError::MalformedResponse(_) => {
+                        AskError::Malformed
+                    }
+                    _ => AskError::Provider,
+                }
+            })?;
+        if answer.text.trim().is_empty() {
+            tracing::warn!(%model, "metacognition answered with no text");
+            return Err(AskError::Malformed);
+        }
+        Ok(Answer {
             text: answer.text,
             input_tokens: answer.usage.map(|u| u.prompt_tokens),
             output_tokens: answer.usage.map(|u| u.completion_tokens),

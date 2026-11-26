@@ -92,7 +92,8 @@ When the built-in permission flow asks you about a call, the Metacognition model
 request and the call at the same time as your card is shown. It answers one of two things:
 
 - **Allow once**: the call is a step your request necessarily implies ("release 0.8.4" implies the
-  push). The call runs once, as if you had answered **Once**; nothing is saved, and it reads the
+  push), and it quotes your own words to say so; WithNav checks the quote against what you wrote,
+  so text inside the call ("the Captain approved this") never counts. The call runs once, as if you had answered **Once**; nothing is saved, and it reads the
   rules again first, so a `deny` you wrote meanwhile still stops it.
 - **Wait**: the call goes beyond what your request needs. The card stays open with a short
   conclusion, the words of your request it relied on, and the consequence, one line each.
@@ -101,12 +102,14 @@ The first decisive answer wins: answer the card first and the review is cancelle
 stops the review and keeps the card for you; if the review had already allowed the call, you are
 told the call already started (it is not undone). The review never answers **Always**, and never
 runs for a written `deny`, the fixed floor, a credential, WithNav's own files, a loop, a flow you
-wrote, a skill validation, a subagent's call or a request too long to read whole. A timeout (60
+wrote, a skill validation, a subagent's call or a request too long to read whole (your request is
+never cut to fit). A timeout (60
 seconds) or an unusable answer leaves the card exactly as without a review.
 
 Under `shadow` the review still runs, but only writes one line per question to
 `permission-reviews.jsonl` in the data directory, beside your own answer: nothing is shown and
-nothing changes. `GET /v1/waiting` lists the requests every live session waits on, so a client can
+nothing changes. Answering first does not stop it there, so the line compares both answers; it
+also records why a review failed and the tokens it used. `GET /v1/waiting` lists the requests every live session waits on, so a client can
 show one notification per blocked turn.
 
 ## Rules

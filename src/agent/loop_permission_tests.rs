@@ -2823,3 +2823,33 @@ async fn a_deny_rule_written_during_the_review_still_denies_the_call() {
     assert_eq!(rows[0].approved_by.as_deref(), Some("metacognition"));
     assert_eq!(rows[0].outcome, Outcome::Allowed);
 }
+
+// Given a question the review allowed once
+// When a rule that now matches the call was written since the question
+// Then the call is not run on the review's word: it is decided again and asks anew
+#[tokio::test]
+async fn a_rule_written_during_the_review_sends_the_call_back_to_the_decision() {
+    let mut actor = reviewed_actor();
+    actor.transcript.clear();
+    let marker = actor.tool_context.workspace.join("pushed");
+    let command = format!("touch {}", marker.display());
+    script(&mut actor, vec![owned(&[bash("b1", &command)]), done("ok")]).await;
+    let RunOutcome::PermissionRequired(request) = run(&mut actor).await else {
+        panic!("the call asks");
+    };
+    add_rule(&actor, "bash", "touch *", Effect::Ask);
+    let outcome = resolve_permission_with_origin(
+        &mut actor,
+        request.id,
+        PermissionDecision::AllowOnce,
+        PermissionOrigin::Metacognition,
+        &mut |_| {},
+    )
+    .await
+    .unwrap();
+    let RunOutcome::PermissionRequired(again) = outcome else {
+        panic!("the call is decided again and asks");
+    };
+    assert_ne!(again.id, request.id);
+    assert!(!marker.exists(), "the call never ran on the review's word");
+}

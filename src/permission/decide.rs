@@ -2331,4 +2331,77 @@ mod tests {
         assert!(!pattern_matches("a\\*b", "axb"));
         assert!(!pattern_matches("bash", "bashx"));
     }
+
+    impl Fixture {
+        fn unchanged(&self, call: &ToolCall, repeats: usize, rule_id: Option<i64>) -> bool {
+            let commands = match call.name.as_str() {
+                "bash" => split(call.args["command"].as_str().unwrap()),
+                _ => Vec::new(),
+            };
+            lookup(&Input {
+                control: Control::Normal,
+                call,
+                commands: &commands,
+                cx: &self.cx,
+                store: Some(&self.store),
+                agent: "build",
+                repeats,
+                validated: false,
+            })
+            .unwrap()
+            .unchanged_since_question(rule_id)
+        }
+    }
+
+    // A call the parallel review allowed runs on its word only when what the question read is
+    // still there: the same matching rule, no floor, no loop deny. Each change below sends it
+    // back through the whole decision.
+    #[test]
+    fn a_different_matching_rule_since_the_question_is_a_change() {
+        let f = fixture();
+        let push = bash("git push origin main");
+        assert!(f.unchanged(&push, 1, None));
+        let rule = f.add("bash", "git push *", Effect::Ask);
+        assert!(!f.unchanged(&push, 1, None), "a rule now matches");
+        assert!(
+            f.unchanged(&push, 1, Some(rule.id)),
+            "the rule of the question"
+        );
+        let narrower = f.add("bash", "git push origin *", Effect::Ask);
+        assert!(
+            !f.unchanged(&push, 1, Some(rule.id)),
+            "another rule matches now"
+        );
+        assert!(f.unchanged(&push, 1, Some(narrower.id)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_floor_that_appears_since_the_question_is_a_change() {
+        let f = fixture();
+        let link = f.root().join("project/key");
+        let read = file("read", &link.display().to_string());
+        assert!(
+            f.unchanged(&read, 1, None),
+            "a missing project file has no floor"
+        );
+        std::os::unix::fs::symlink(f.root().join("home/.ssh/id_ed25519"), &link).unwrap();
+        assert!(
+            !f.unchanged(&read, 1, None),
+            "the path now names a credential"
+        );
+    }
+
+    #[test]
+    fn a_loop_deny_since_the_question_is_a_change() {
+        let f = fixture();
+        let push = bash("git push origin main");
+        assert!(f.unchanged(&push, DOOM_LOOP_THRESHOLD, None));
+        f.add("doom_loop", "bash", Effect::Deny);
+        assert!(!f.unchanged(&push, DOOM_LOOP_THRESHOLD, None));
+        assert!(
+            f.unchanged(&push, 1, None),
+            "below the threshold the loop is not read"
+        );
+    }
 }

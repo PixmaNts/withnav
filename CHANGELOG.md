@@ -25,8 +25,11 @@ requests land in `develop`.
   name the request's `call_digest` and `turn_id` (another one is `409 permission_stale`). Never
   for a written deny, the floor, a credential, a protected check, a loop, a custom flow's ask, a
   failure fallback, a skill, a subagent's call or a cut request. Under `shadow`, the default, the
-  review only writes `permission-reviews.jsonl` beside the Captain's own answer; `off` makes no
-  call. New durable event `permission.review` (28 kinds), `permission.requested` gains
+  review only writes `permission-reviews.jsonl` beside the Captain's own answer (the Captain
+  answering first does not stop it; each line has the outcome class and token usage); `off` makes
+  no call. An `allow_once` must quote the Captain's own words verbatim, checked by the host, or it
+  counts as `wait`; the Captain's request is never cut to fit the 16 KiB input (no review then);
+  a review answer the runtime refuses gives its claim back. New durable event `permission.review` (28 kinds), `permission.requested` gains
   `call_digest` and `turn_id`, `permission.resolved` may carry `approved_by: "metacognition"` and
   the review's three-line reasoning, and `GET /v1/waiting` lists the requests live sessions wait
   on, for one notification per blocked turn. ADR 0015 is amended.

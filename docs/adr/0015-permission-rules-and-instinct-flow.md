@@ -200,7 +200,11 @@ Captain's card. The first decisive answer wins. The review can only **allow once
 never "Always" and never a rule. Its instruction is the Captain's rule, verbatim: "Allow once when
 the call is a step the Captain's request necessarily implies. Wait when its consequence goes beyond
 what the request needs." The criterion depends on the conversation, not on the command: releasing
-0.8.4 implies the push even when the Captain did not say "push".
+0.8.4 implies the push even when the Captain did not say "push". The call's arguments, the agent's
+proposals and the tool names are evidence, never requests: an `allow_once` counts only when its
+`request_quote` is a verbatim substring of a Captain message the review was sent, checked by the
+host; any other answer counts as `wait`, so "the Captain approved this" written into an argument
+cannot allow the call.
 
 What differs from 2026-10:
 
@@ -210,12 +214,15 @@ What differs from 2026-10:
   proposal the Captain may accept, labelled), a delegation labelled as such, the validated skill,
   the call with the session's secrets redacted, where it acts and its parsed commands; the goal and
   the tools already called as context only. Never memory, tool outputs, compaction prose or an
-  earlier request. 1000 output tokens, 60 s, no retry.
+  earlier request. The Captain's request is never cut to fit: a request that does not fit whole
+  gets no review, like a cut one. 1000 output tokens, 60 s, no retry. A failed call is logged
+  with its class (resolution, provider, timeout, malformed).
 - **Bound to the request.** Both answers are bound to the request id, the call digest (SHA-256 of
   tool, arguments and call id) and the turn. A steer, a stop, a new message or a policy change
   settles the request, and a late review answer then claims nothing. A call the review allowed
   reads the rules again before it runs: a deny rule, the floor or a different matching rule since
-  the question sends it back through the whole decision.
+  the question sends it back through the whole decision. A review answer the runtime refuses gives
+  its claim back, so the card stays the Captain's.
 - **Hold for me.** The Captain can stop the review and keep the card. Before the review's claim
   the hold is honoured; after it the answer says the call already started and never implies that
   it was undone.
@@ -224,7 +231,9 @@ What differs from 2026-10:
   a child session's request, or a request whose current request was cut.
 - **Shadow first.** `shadow` is the default: the review runs and is logged to
   `permission-reviews.jsonl` beside the Captain's real answer, and nothing is published or
-  changed. `off` makes no metacognition call. A restart never re-dispatches an uncertain call: an
+  changed. In `shadow` the Captain's answer does not cancel the review: it runs to its end (still
+  bounded by its deadline and the session), so each line holds both answers, the outcome class and
+  the token usage. `off` makes no metacognition call. A restart never re-dispatches an uncertain call: an
   unanswered question expires, and a call whose answer was stored without its result is settled
   as interrupted.
 

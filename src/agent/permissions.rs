@@ -47,6 +47,9 @@ pub struct ReviewTicket {
     /// The rule that matched when the question was raised; a different one at dispatch sends
     /// the call back through the normal decision.
     pub rule_id: Option<i64>,
+    /// The Captain's messages of `input`'s current request, as sent (redacted): an `allow_once`
+    /// counts only when it quotes one of them verbatim.
+    pub captain_words: Vec<String>,
 }
 
 /// Hex SHA-256 of the tool, its arguments and the call id: what an answer to a request is bound

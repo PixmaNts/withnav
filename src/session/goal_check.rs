@@ -453,12 +453,17 @@ impl Service {
             }
         };
         done.input_bytes = PROMPT.len() + input.text.len();
-        let Some(answer) = checker
+        let answer = match checker
             .client
             .ask(PROMPT, input.text.clone(), MAX_OUTPUT_TOKENS, cancel)
             .await
-        else {
-            return done;
+        {
+            Ok(answer) => answer,
+            Err(super::metacognition_client::AskError::Malformed) => {
+                done.outcome = Outcome::Malformed;
+                return done;
+            }
+            Err(_) => return done,
         };
         done.input_tokens = answer.input_tokens;
         done.output_tokens = answer.output_tokens;

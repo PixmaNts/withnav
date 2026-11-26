@@ -575,9 +575,11 @@ pub(super) async fn authorize(
             request.always = always;
             if reviewable(actor, call, &decision, request.requires_captain)
                 && !flows.evidence().current_request_cut
+                && let Some(input) = review_input(actor, call, &flows)
             {
                 request.review = Some(Box::new(crate::agent::permissions::ReviewTicket {
-                    input: review_input(actor, call, &flows),
+                    captain_words: captain_words(&input),
+                    input,
                     rule_id: decision.trace.rule_id,
                 }));
             }
@@ -684,8 +686,8 @@ pub const REVIEW_INPUT_BYTES: usize = 15 * 1024;
 /// labelled), a delegation labelled as such, the validated skill, the call with the session's
 /// secrets redacted, where it acts and its parsed commands; the goal and the tools already called
 /// as context only. Never memory, tool outputs, compaction prose or an earlier request: the
-/// projection carries none of them.
-fn review_input(actor: &AgentActor, call: &ToolCall, flows: &SessionFlows<'_>) -> String {
+/// projection carries none of them. `None` when the request cannot be sent whole.
+fn review_input(actor: &AgentActor, call: &ToolCall, flows: &SessionFlows<'_>) -> Option<String> {
     let evidence = flows.evidence();
     let goal = actor
         .goal
@@ -715,33 +717,35 @@ fn review_input(actor: &AgentActor, call: &ToolCall, flows: &SessionFlows<'_>) -
     if let Some(secrets) = &actor.tool_context.secrets {
         secrets.redact_json(&mut input);
     }
-    bound_review_input(input)
+    bound_review_input(input, REVIEW_INPUT_BYTES)
 }
 
-/// Fits the input in [`REVIEW_INPUT_BYTES`]: the context goes first, then the call's arguments
-/// are cut, then the oldest messages of the request; a last cut bounds whatever remains.
-fn bound_review_input(mut input: Value) -> String {
-    let fits = |input: &Value| input.to_string().len() <= REVIEW_INPUT_BYTES;
+/// The Captain's messages of a review input, as it was sent.
+fn captain_words(input: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(input)
+        .ok()
+        .and_then(|input| input["current_request"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter(|message| message["author"] == "captain")
+        .filter_map(|message| message["text"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// Fits the input in `budget` bytes of JSON: the context goes first, then the call's arguments
+/// are cut to a 4 KiB rendering. The Captain's request is never cut: an input it does not fit in
+/// whole is no input, and the question then gets no review, as a cut request does. The result is
+/// always the JSON of the input, never text cut mid-value.
+fn bound_review_input(mut input: Value, budget: usize) -> Option<String> {
+    let fits = |input: &Value| input.to_string().len() <= budget;
     if !fits(&input) {
-        input
-            .as_object_mut()
-            .expect("the input is an object")
-            .remove("context_only");
+        input.as_object_mut()?.remove("context_only");
     }
     if !fits(&input) {
         let args = input["call"]["arguments"].to_string();
         input["call"]["arguments"] = json!(crate::tools::bound_output(&args, 4096).0);
     }
-    while !fits(&input)
-        && input["current_request"]
-            .as_array()
-            .is_some_and(|messages| messages.len() > 1)
-    {
-        if let Some(messages) = input["current_request"].as_array_mut() {
-            messages.remove(0);
-        }
-    }
-    crate::tools::bound_output(&input.to_string(), REVIEW_INPUT_BYTES).0
+    fits(&input).then(|| input.to_string())
 }
 
 fn scope(call: &ToolCall, cx: &FloorContext) -> Scope {
@@ -1039,4 +1043,67 @@ pub(super) fn update(
             tracing::warn!(%error, "permission decision outcome not recorded");
         }
     });
+}
+
+#[cfg(test)]
+mod review_input_tests {
+    use super::*;
+
+    fn input(request: &str, args: &str, context: &str) -> Value {
+        json!({
+            "current_request": [{"author": "captain", "text": request}],
+            "call": {"tool": "write", "arguments": {"content": args}},
+            "context_only": {"goal": context, "tools_already_called": []},
+        })
+    }
+
+    fn parsed(text: &str) -> Value {
+        serde_json::from_str(text).expect("the input is valid JSON")
+    }
+
+    #[test]
+    fn an_input_that_fits_is_sent_whole() {
+        let sent = bound_review_input(input("write the notes", "x", "ship"), 4096).unwrap();
+        assert_eq!(parsed(&sent), input("write the notes", "x", "ship"));
+    }
+
+    #[test]
+    fn the_context_goes_first() {
+        let sent =
+            bound_review_input(input("write the notes", "x", &"g".repeat(3000)), 1024).unwrap();
+        let sent = parsed(&sent);
+        assert!(sent.get("context_only").is_none());
+        assert_eq!(sent["current_request"][0]["text"], "write the notes");
+        assert_eq!(sent["call"]["arguments"], json!({"content": "x"}));
+    }
+
+    #[test]
+    fn the_arguments_are_cut_next_and_the_request_stays_whole() {
+        let request = "r".repeat(2000);
+        let sent = bound_review_input(input(&request, &"a".repeat(20_000), "ship"), 8192).unwrap();
+        assert!(sent.len() <= 8192);
+        let sent = parsed(&sent);
+        assert!(sent.get("context_only").is_none());
+        assert!(sent["call"]["arguments"].is_string(), "{sent}");
+        assert!(sent["call"]["arguments"].as_str().unwrap().len() <= 4096 + 64);
+        assert_eq!(sent["current_request"][0]["text"], request.as_str());
+    }
+
+    #[test]
+    fn a_request_that_does_not_fit_whole_is_no_input() {
+        assert_eq!(
+            bound_review_input(input(&"r".repeat(20_000), "x", "ship"), REVIEW_INPUT_BYTES),
+            None
+        );
+    }
+
+    #[test]
+    fn only_the_captains_messages_are_quotable() {
+        let sent = json!({"current_request": [
+            {"author": "agent", "text": "Shall I push?"},
+            {"author": "captain", "text": "yes, release 0.8.4"},
+        ]})
+        .to_string();
+        assert_eq!(captain_words(&sent), ["yes, release 0.8.4"]);
+    }
 }

@@ -867,6 +867,14 @@ impl RuntimeStatus {
         }
     }
 
+    /// Forgets the reasoning of a review whose answer the runtime refused.
+    pub fn set_review_answer_cleared(&self, id: Ulid) {
+        let mut slot = self.permission_slot();
+        if slot.id == Some(id) {
+            slot.review_answer = None;
+        }
+    }
+
     fn take_review_answer(&self, id: Ulid) -> Option<serde_json::Value> {
         let mut slot = self.permission_slot();
         (slot.id == Some(id))
@@ -1839,6 +1847,7 @@ async fn runtime_loop(
                     .cloned();
                 let Some(request) = held else {
                     status.release_pin(&actor);
+                    status.release_permission(answer.request_id);
                     let _ = answer
                         .reply
                         .send(Err(crate::agent::permissions::PermissionError::Stale));

@@ -17,7 +17,7 @@ pub(super) struct Input {
     /// Criteria sent, numbered 1 to this: a status for a later one is dropped.
     pub sent_criteria: usize,
     /// The command and file-change items sent: the only lines a `supported` may quote.
-    evidence: Vec<String>,
+    evidence: Vec<Evidence>,
 }
 
 impl Input {
@@ -178,7 +178,8 @@ fn read_back(text: String) -> Input {
         };
         match current {
             Kind::Goal if item.starts_with("criterion ") => sent_criteria += 1,
-            Kind::Commands | Kind::Files => evidence.push(item.to_owned()),
+            Kind::Commands => evidence.push(Evidence::new(item, item.splitn(3, " · ").nth(2))),
+            Kind::Files => evidence.push(Evidence::new(item, item.split(" · ").next())),
             _ => {}
         }
     }
@@ -204,10 +205,38 @@ fn answer(text: &str) -> Option<Value> {
         .then_some(value)
 }
 
-/// Whether `quote` is a non-empty part of a command or file-change line that was sent: the only
-/// proof a status may stand on. The agent's own words and the goal never match.
+/// Whether `quote` is part of a command or file-change line that was sent and names that line's
+/// command or file (its first [`SUBJECT_CHARS`] characters, since a long command is cut at the
+/// evidence bound): the only proof a status may stand on. The agent's own words and the goal never
+/// match, and neither does a fragment such as `exit 0` that every command line holds (a review on
+/// 2026-11-25 showed such a quote would let any status stand).
 fn shown(quote: &str, input: &Input) -> bool {
-    !quote.is_empty() && input.evidence.iter().any(|e| e.contains(quote))
+    !quote.is_empty()
+        && input.evidence.iter().any(|e| {
+            let named: String = e.subject.chars().take(SUBJECT_CHARS).collect();
+            e.line.contains(quote) && quote.contains(named.as_str())
+        })
+}
+
+/// How much of a command or path a quote must hold to name it.
+const SUBJECT_CHARS: usize = 40;
+
+/// A command or file-change line of the digest, with the part a quote must name: the command
+/// of a command line, the path of a file line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Evidence {
+    line: String,
+    subject: String,
+}
+
+impl Evidence {
+    fn new(line: &str, subject: Option<&str>) -> Self {
+        let subject = subject.unwrap_or(line).trim();
+        Self {
+            line: line.to_owned(),
+            subject: if subject.is_empty() { line } else { subject }.to_owned(),
+        }
+    }
 }
 
 /// The statuses of an answer (see [`answer`]).
@@ -354,6 +383,15 @@ turns: 1 · last turn: done · compactions: 0
         assert_eq!(statuses(&answer("tests pass")), [(1, NotChecked)], "goal");
         assert_eq!(statuses(&answer("exit 0 · cargo test")), [(1, Supported)]);
         assert_eq!(statuses(&answer("src/a.rs · 1 change")), [(1, Supported)]);
+        // A fragment every command or file line holds names no command and proves nothing.
+        assert_eq!(statuses(&answer("exit 0")), [(1, NotChecked)], "exit");
+        assert_eq!(statuses(&answer("turn 1")), [(1, NotChecked)], "turn");
+        assert_eq!(statuses(&answer("1 change")), [(1, NotChecked)], "change");
+        assert_eq!(
+            statuses(&answer("cargo")),
+            [(1, NotChecked)],
+            "part of a command"
+        );
     }
 
     #[test]

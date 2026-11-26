@@ -311,6 +311,13 @@ async fn with_the_setting_off_the_captain_sees_the_result_and_the_agent_nothing(
     let requests = cognition_requests(&env.server).await;
     assert!(requests.iter().all(|r| flow_notes(r).is_empty()));
     assert!(stored_notes(&env.state, id).await.is_empty());
+    // The published result itself never reaches the agent: no request body names the check or
+    // carries its verdict.
+    for request in &requests {
+        let body = request.to_string();
+        assert!(!body.contains("goal_check"), "{body}");
+        assert!(!body.contains("contradicted"), "{body}");
+    }
 }
 
 // Given the setting on and a goal of revision 3 with two criteria

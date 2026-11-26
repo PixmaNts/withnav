@@ -597,3 +597,74 @@ fn a_captain_image_is_summarized_as_a_note_without_bytes_and_keeps_its_role() {
     let plain = render_part(None, &[user("hi")], 0, 1, &HashSet::new());
     assert!(!plain.contains("images"));
 }
+
+#[tokio::test]
+async fn probe_compaction_preserves_judged_necessary_evidence() {
+    use crate::provider::systemone::{Answer, Answers, ScriptedDecisionModel};
+    let mut t = vec![user("original task")];
+    for (n, text) in [
+        (0, "x".repeat(8000)),
+        (1, format!("NEEDED-FILE-A{}", "a".repeat(9000))),
+        (2, format!("NEEDED-FILE-B{}", "b".repeat(9000))),
+    ] {
+        let id = format!("r{n}");
+        t.push(call(&id, "read", "{}"));
+        let mut m = result(&id, 0);
+        if let ChatMessage::Tool { content, .. } = &mut m {
+            *content = text;
+        }
+        t.push(m);
+    }
+    t.push(answer("old work"));
+    for n in 0..4 {
+        t.push(user(&format!("request {n}")));
+        t.push(answer("follow up"));
+    }
+    let judge = ScriptedDecisionModel::new([Ok((0..3)
+        .flat_map(|n| {
+            [format!("useful_t{n}"), format!("full_t{n}")].map(|k| {
+                (
+                    k,
+                    Answer::Noul {
+                        noul: if n == 0 { 0. } else { 1. },
+                    },
+                )
+            })
+        })
+        .collect::<Answers>())]);
+    let (url, seen) = serve(vec![text_answer("summary"); 12]).await;
+    let p = provider(url);
+    let mut i = input(&p, &t, None);
+    i.aim = Aim::Shrink;
+    i.source_budget = 5400;
+    i.decision = Some(&judge);
+    prepare(i, &CancellationToken::new()).await.unwrap();
+    let wire = seen.lock().await.join("\n");
+    assert!(
+        wire.contains("NEEDED-FILE-A") && wire.contains("NEEDED-FILE-B"),
+        "needed evidence missing from summary requests; marker: {}",
+        wire.contains("output elided")
+    );
+}
+
+#[tokio::test]
+async fn probe_compaction_excerpt_fits_rolling_chunk() {
+    use crate::provider::systemone::{Answer, Answers, ScriptedDecisionModel};
+    let t = {
+        let mut t = five_turns(100);
+        t[2] = result("c0", 30_000);
+        t
+    };
+    let judge = ScriptedDecisionModel::new([Ok((0..5)
+        .flat_map(|n| [format!("useful_t{n}"), format!("full_t{n}")])
+        .map(|k| (k, Answer::Noul { noul: 0.0 }))
+        .collect::<Answers>())]);
+    let (url, _) = serve(vec![text_answer("summary"); 8]).await;
+    let p = provider(url);
+    let mut i = input(&p, &t, None);
+    i.aim = Aim::Shrink;
+    i.decision = Some(&judge);
+    i.chunk_tokens = 1024;
+    let result = prepare(i, &CancellationToken::new()).await;
+    assert!(result.is_ok(), "{result:?}");
+}

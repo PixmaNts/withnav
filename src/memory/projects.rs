@@ -580,7 +580,42 @@ fn links(connection: &Connection, filter: &str, id: &str) -> Result<Vec<SessionL
     Ok(links)
 }
 
+fn apply_group_removal(connection: &Connection, project: &str, group: &str) -> Result<(), Error> {
+    if connection.execute(
+        "DELETE FROM project_groups WHERE project_id = ?1 AND group_id = ?2",
+        [project, group],
+    )? == 0
+    {
+        return Err(Error::invalid("the project is not in the group"));
+    }
+    Ok(())
+}
+
 impl MemoryStore {
+    /// Removes a membership directly only when the session is attached to that project.
+    pub fn request_project_group_removal(
+        &self,
+        session: &str,
+        project: &str,
+        group: &str,
+    ) -> Result<MembershipChange, Error> {
+        let by = ChangedBy::new(Actor::Agent, Some(session.into()));
+        let relation = Relation::ProjectGroup {
+            project_id: project.into(),
+            group_id: group.into(),
+        };
+        self.write(|tx| {
+            if active_project_id(tx, session)?.as_deref() == Some(project) {
+                apply_group_removal(tx, project, group)?;
+                return record(tx, &relation, ChangeKind::Remove, ChangeStatus::Applied, &by, &now());
+            }
+            let member: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM project_groups WHERE project_id = ?1 AND group_id = ?2)", [project, group], |row| row.get(0))?;
+            if !member { return Err(Error::invalid("the project is not in the group")); }
+            let waiting = changes(tx, "WHERE relation = 'project_group' AND subject = ?1 AND object = ?2 AND change = 'remove' AND status = 'proposed' LIMIT 1", [project, group])?;
+            if let Some(row) = waiting.into_iter().next() { return Ok(row); }
+            record(tx, &relation, ChangeKind::Remove, ChangeStatus::Proposed, &by, &now())
+        })
+    }
     /// The project an identity belongs to, created with its group question open when the
     /// alias was never seen.
     ///
@@ -830,13 +865,7 @@ impl MemoryStore {
         by: &ChangedBy,
     ) -> Result<MembershipChange, Error> {
         self.write(|transaction| {
-            let removed = transaction.execute(
-                "DELETE FROM project_groups WHERE project_id = ?1 AND group_id = ?2",
-                [project_id, group_id],
-            )?;
-            if removed == 0 {
-                return Err(Error::invalid("the project is not in the group"));
-            }
+            apply_group_removal(transaction, project_id, group_id)?;
             record(
                 transaction,
                 &Relation::ProjectGroup {
@@ -1015,12 +1044,22 @@ impl MemoryStore {
             }
             let at = now();
             if status == ChangeStatus::Applied {
-                // Only additions wait for an answer; a removal narrows and applies at once.
-                if change.change != ChangeKind::Add {
-                    return Err(Error::invalid("a proposed removal cannot be applied"));
+                match (&change.change, &change.relation) {
+                    (ChangeKind::Add, relation) => {
+                        check_add(transaction, relation)?;
+                        apply_add(transaction, relation, &at)?;
+                    }
+                    (
+                        ChangeKind::Remove,
+                        Relation::ProjectGroup {
+                            project_id,
+                            group_id,
+                        },
+                    ) => {
+                        apply_group_removal(transaction, project_id, group_id)?;
+                    }
+                    _ => return Err(Error::invalid("this proposed removal cannot be applied")),
                 }
-                check_add(transaction, &change.relation)?;
-                apply_add(transaction, &change.relation, &at)?;
             }
             transaction.execute(
                 "UPDATE membership_changes SET status = ?2, decided_at = ?3 WHERE id = ?1",

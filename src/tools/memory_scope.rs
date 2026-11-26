@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ToolError;
-use crate::memory::{Actor, ChangedBy};
+use crate::memory::{Actor, ChangeStatus, ChangedBy};
 use crate::session::{Service, SessionId};
 use crate::tools::{Tool, ToolContext, ToolResult};
 
@@ -15,13 +15,6 @@ pub(crate) enum Action {
     Attach,
     Detach,
 }
-
-pub(crate) const NAMES: [&str; 4] = [
-    "project_group_add",
-    "project_group_remove",
-    "session_attach",
-    "session_detach",
-];
 
 pub(crate) struct MemoryScope {
     pub service: Service,
@@ -34,7 +27,12 @@ impl Tool for MemoryScope {
         true
     }
     fn name(&self) -> &str {
-        NAMES[self.action as usize]
+        match self.action {
+            Action::Add => "project_group_add",
+            Action::Remove => "project_group_remove",
+            Action::Attach => "session_attach",
+            Action::Detach => "session_detach",
+        }
     }
 
     fn schema(&self) -> Value {
@@ -44,7 +42,7 @@ impl Tool for MemoryScope {
                 vec!["project_id", "group_id"],
             ),
             Action::Remove => (
-                "Remove a project from a memory group immediately.",
+                "Remove this session's active project from a memory group, or propose removing another project.",
                 vec!["project_id", "group_id"],
             ),
             Action::Attach => (
@@ -93,10 +91,10 @@ impl Tool for MemoryScope {
                         Action::Add => {
                             store.propose_project_group(id("project_id")?, id("group_id")?, &source)
                         }
-                        Action::Remove => store.remove_project_from_group(
+                        Action::Remove => store.request_project_group_removal(
+                            &session,
                             id("project_id")?,
                             id("group_id")?,
-                            &source,
                         ),
                         Action::Attach => {
                             store.propose_session_attach(&session, id("project_id")?, &source)
@@ -106,9 +104,10 @@ impl Tool for MemoryScope {
                 })
                 .await
                 .map_err(|error| denied(error.to_string()))?;
-            let message = match action {
-                Action::Add | Action::Attach => "Waiting for the Captain's confirmation.",
-                Action::Remove | Action::Detach => "Memory scope narrowed.",
+            let message = if row.status == ChangeStatus::Proposed {
+                "Waiting for the Captain's confirmation."
+            } else {
+                "Memory scope narrowed."
             };
             Ok(ToolResult::ok(
                 json!({"change_id":row.id,"status":row.status.to_string(),"message":message})

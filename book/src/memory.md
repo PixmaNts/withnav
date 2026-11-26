@@ -1,6 +1,6 @@
 # Memory register
 
-Use `/remember <text>` to save a memory item immediately. It belongs to the active project, or to this session if it has no project. Linked Git worktrees share a project; separate clones do not. To choose a scope explicitly, prepend `global`, `group:<name>`, `project`, or `session` to the text.
+Use `/remember <text>` to save a memory item immediately. It belongs to the active project, or to this session if it has no project. Linked Git worktrees share a project; separate clones do not. To choose a scope explicitly, start the text with `@global`, `@group:<name>`, `@project`, or `@session`. Without `@`, a word such as `global` stays part of the text.
 
 - `/memory` lists eligible active items; `/memory search <text>` searches them.
 - `/memory show <id>` shows the current version; `/memory history <id>` lists all versions.
@@ -21,7 +21,7 @@ Memory routes use the server's configured bearer authentication.
 - `POST /v1/memory` takes `{text, scope, scope_ref?, title?, why?, kind?, source_session_id?}` and returns the item with status 201.
 - `GET /v1/memory/{id}` returns the item with `versions`.
 - `POST /v1/memory/{id}/revise`, `/invalidate`, `/restore`, and `/rescope` take `expected_version` and an optional `reason`. Revise accepts `text`, `title`, or `why`. Restore accepts `from_version`. Rescope takes `scope`, optional `scope_ref`, and `confirm: true` for widening.
-- `GET /v1/projects` returns `{projects, groups, history}`. Projects include aliases, worktree references, and session links. `group_answered: false` means the group question is open; creation does not publish an event.
+- `GET /v1/projects` returns `{projects, groups, history}`. Projects include aliases and session links. `group_answered: false` means the group question is open; creation does not publish an event.
 - `POST /v1/groups` and `PATCH /v1/groups/{id}` take `{name}` and return the created or renamed group.
 - `PUT /v1/projects/{id}/groups/{group}` takes `{confirm: true}` to apply the addition. `DELETE` at the same path removes the membership. Both return the membership change.
 - `PUT /v1/sessions/{id}/project` takes `{project_id}` (a project ID or `null`) and returns the attachment or detachment change.
@@ -32,4 +32,4 @@ A stale write returns HTTP 409 with `{reason: "version_conflict", current_versio
 
 Include a `source_session_id` to apply that session's secret redaction. There is no global secret matcher: without a source session, the authenticated Captain's text is stored as given. Do not put secrets in that text.
 
-Root sessions with write access can use `project_group_add(project_id, group_id)` and `session_attach(project_id)` to request changes. These tools only propose widening; the Captain decides in Needs you. `project_group_remove(project_id, group_id)` and `session_detach()` narrow scope immediately and leave history. None of the four controls authorizes other tools.
+Root sessions with write access can use `project_group_add(project_id, group_id)` and `session_attach(project_id)` to request changes. These tools only propose widening; the Captain decides in Needs you. `project_group_remove(project_id, group_id)` acts immediately only on the session's active project; otherwise it proposes removal. `session_detach()` applies immediately. Both leave history. None of the four controls authorizes other tools.

@@ -4,7 +4,10 @@ use serde_json::json;
 mod common;
 use common::server::{TestServerConfig, request_json, temp_workspace};
 
-async fn group_tool_fixture(add: bool) -> (tempfile::TempDir, axum::Router, String, String) {
+async fn group_tool_fixture(
+    add: bool,
+    foreign: bool,
+) -> (tempfile::TempDir, axum::Router, String, String) {
     use common::server::{collect_until, send_text};
     use common::sse::{
         http_sse, spawn_responding_provider, sse_body, text_chunk, tool_calls_chunk,
@@ -35,7 +38,22 @@ async fn group_tool_fixture(add: bool) -> (tempfile::TempDir, axum::Router, Stri
     let session = state.create_session(&workspace, None, false).await.unwrap();
     let app = withnav::server::routes::app(state.clone());
     let (_, before) = request_json(&app, "GET", "/v1/projects", None).await;
-    let project = before["projects"][0]["id"].as_str().unwrap().to_owned();
+    let own = before["projects"][0]["id"].as_str().unwrap().to_owned();
+    let project = if foreign {
+        let other = tmp.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        state.create_session(&other, None, false).await.unwrap();
+        let (_, rows) = request_json(&app, "GET", "/v1/projects", None).await;
+        rows["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|p| p["id"].as_str().filter(|id| *id != own))
+            .unwrap()
+            .to_owned()
+    } else {
+        own
+    };
     let (status, group) =
         request_json(&app, "POST", "/v1/groups", Some(&json!({"name":"Shared"}))).await;
     assert_eq!(status, StatusCode::CREATED);
@@ -64,10 +82,10 @@ async fn group_tool_fixture(add: bool) -> (tempfile::TempDir, axum::Router, Stri
 
 #[tokio::test]
 async fn the_group_tool_proposes_and_the_captain_confirms() {
-    let (_tmp, app, project, group) = group_tool_fixture(true).await;
+    let (_tmp, app, project, group) = group_tool_fixture(true, false).await;
     let (_, before) = request_json(&app, "GET", "/v1/projects", None).await;
     assert_eq!(before["projects"][0]["groups"], json!([]));
-    assert_eq!(before["history"][0]["status"], "proposed");
+    assert_eq!(history_row(&before, "agent", "add")["status"], "proposed");
     let (_, pending) = request_json(&app, "GET", "/v1/memory/needs-you", None).await;
     let row = &pending["changes"][0];
     assert_eq!(row["actor"], "agent");
@@ -85,17 +103,18 @@ async fn the_group_tool_proposes_and_the_captain_confirms() {
     assert_eq!(applied["status"], "applied");
     let (_, after) = request_json(&app, "GET", "/v1/projects", None).await;
     assert_eq!(after["projects"][0]["groups"], json!([group]));
-    assert_eq!(after["history"][0]["id"], id);
-    assert_eq!(after["history"][0]["status"], "applied");
-    assert!(after["history"][0]["decided_at"].is_string());
+    let row = history_row(&after, "agent", "add");
+    assert_eq!(row["id"], id);
+    assert_eq!(row["status"], "applied");
+    assert!(row["decided_at"].is_string());
 }
 
 #[tokio::test]
 async fn a_group_removal_by_the_agent_applies_and_is_in_the_history() {
-    let (_tmp, app, project, group) = group_tool_fixture(false).await;
+    let (_tmp, app, project, group) = group_tool_fixture(false, false).await;
     let (_, after) = request_json(&app, "GET", "/v1/projects", None).await;
     assert_eq!(after["projects"][0]["groups"], json!([]));
-    let removed = &after["history"][0];
+    let removed = history_row(&after, "agent", "remove");
     for (field, value) in [
         ("actor", "agent"),
         ("status", "applied"),
@@ -107,6 +126,44 @@ async fn a_group_removal_by_the_agent_applies_and_is_in_the_history() {
     }
     let (_, pending) = request_json(&app, "GET", "/v1/memory/needs-you", None).await;
     assert_eq!(pending["changes"], json!([]));
+}
+
+fn history_row<'a>(
+    body: &'a serde_json::Value,
+    actor: &str,
+    change: &str,
+) -> &'a serde_json::Value {
+    body["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["actor"] == actor && row["change"] == change)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn removing_another_projects_group_requires_confirmation() {
+    let (_tmp, app, project, group) = group_tool_fixture(false, true).await;
+    let (_, before) = request_json(&app, "GET", "/v1/projects", None).await;
+    let row = history_row(&before, "agent", "remove");
+    assert_eq!(row["project_id"], project);
+    assert_eq!(row["group_id"], group);
+    assert_eq!(row["status"], "proposed");
+    assert_eq!(before["groups"][0]["members"], json!([project]));
+    let (_, pending) = request_json(&app, "GET", "/v1/memory/needs-you", None).await;
+    assert_eq!(pending["changes"], json!([row]));
+    let id = row["id"].as_i64().unwrap();
+    let (status, _) = request_json(
+        &app,
+        "POST",
+        &format!("/v1/memory/needs-you/{id}/accept"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, after) = request_json(&app, "GET", "/v1/projects", None).await;
+    assert_eq!(after["groups"][0]["members"], json!([]));
+    assert_eq!(history_row(&after, "agent", "remove")["status"], "applied");
 }
 
 #[tokio::test]

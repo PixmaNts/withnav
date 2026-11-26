@@ -103,10 +103,7 @@ impl Service {
         spec: &'static CommandSpec,
         args: &str,
     ) -> Result<Done, CommandFailure> {
-        let store = self
-            .memory_store()
-            .await
-            .map_err(|_| CommandFailure::Refused("memory register unavailable".into()))?;
+        let store = self.memory_store().await.map_err(unavailable)?;
         let owner = self.secret_owner(session).map_err(CommandFailure::Server)?;
         let access = self.secret_access(owner, &handle.workspace);
         let mut args = args.to_owned();
@@ -120,25 +117,35 @@ impl Service {
             let value = match spec.name {
                 "remember" => {
                     let project = || store.session_project(&session);
-                    let (scope, text) = match first {
-                        "global" => (Scope::Global, rest),
-                        "session" => (Scope::Session(session.clone()), rest),
-                        "project" => (Scope::Project(project()?.ok_or_else(|| memory::Error::Invalid("this session has no project".into()))?.id), rest),
-                        name if name.starts_with("group:") => {
-                            let group = &name[6..];
+                    let mut notice = None;
+                    let (scope, text) = match first.strip_prefix('@') {
+                        Some("global") => (Scope::Global, rest),
+                        Some("session") => (Scope::Session(session.clone()), rest),
+                        Some("project") => (Scope::Project(project()?.ok_or_else(|| memory::Error::Invalid("this session has no project".into()))?.id), rest),
+                        Some(name) if name.strip_prefix("group:").is_some() => {
+                            let group = name.strip_prefix("group:").unwrap_or_default();
                             let group = store.group_by_name(group)?.ok_or_else(|| memory::Error::NotFound { what: "group", id: group.into() })?;
                             (Scope::Group(group.id), rest)
                         }
-                        _ => (project()?.map_or_else(|| Scope::Session(session.clone()), |project| Scope::Project(project.id)), args.as_str()),
+                        _ => {
+                            let scope = match project()? {
+                                Some(project) => Scope::Project(project.id),
+                                None => {
+                                    notice = Some("stored for this session only: project unknown");
+                                    Scope::Session(session.clone())
+                                }
+                            };
+                            (scope, args.as_str())
+                        }
                     };
                     if text.is_empty() { return Err(usage()); }
                     let row = store.remember(NewItem { kind: Kind::Decision, scope, title: None, body: text.into(), why: None, quote: None, by })?;
-                    json!({"item": item(row)})
+                    json!({"scope_label": scope_label(store, &row.scope)?, "item": item(row), "notice": notice})
                 }
                 "forget" if !first.is_empty() => {
                     let id = store.resolve_id(first)?;
                     let row = store.invalidate_current(&id, (!rest.is_empty()).then_some(rest), &by)?;
-                    json!({"item": item(row)})
+                    json!({"scope_label": scope_label(store, &row.scope)?, "item": item(row)})
                 }
                 "memory" => match first {
                     "" => json!({"items": store.eligible(&session)?.into_iter().map(item).collect::<Vec<_>>() }),
@@ -159,7 +166,7 @@ impl Service {
                                     "restore" if text.is_empty() => store.restore(&id, expected, None, None, &by)?,
                                     _ => return Err(usage()),
                                 };
-                                json!({"item": item(row)})
+                                json!({"scope_label": scope_label(store, &row.scope)?, "item": item(row)})
                             }
                         }
                     }
@@ -168,6 +175,33 @@ impl Service {
                 _ => return Err(usage()),
             };
             Ok(value)
-        }).await.map(Done::data).map_err(|error| CommandFailure::Refused(error.to_string()))
+        }).await.map(Done::data).map_err(|error| match error {
+            memory::Error::Database(_) | memory::Error::Io(_) => unavailable(error),
+            _ => CommandFailure::Refused(error.to_string()),
+        })
     }
+}
+
+fn unavailable(error: memory::Error) -> CommandFailure {
+    tracing::warn!(%error, "memory register unavailable");
+    CommandFailure::Refused("memory register unavailable".into())
+}
+
+fn scope_label(store: &memory::MemoryStore, scope: &Scope) -> Result<String, memory::Error> {
+    Ok(match scope {
+        Scope::Global => "global".into(),
+        Scope::Session(_) => "session".into(),
+        Scope::Project(id) => format!(
+            "project {}",
+            store
+                .project(id)?
+                .map_or_else(|| id.clone(), |project| project.name)
+        ),
+        Scope::Group(id) => format!(
+            "group {}",
+            store
+                .group(id)?
+                .map_or_else(|| id.clone(), |group| group.name)
+        ),
+    })
 }

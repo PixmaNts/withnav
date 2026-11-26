@@ -4,6 +4,69 @@ mod common;
 use common::server::{TestServerConfig, temp_workspace};
 
 #[tokio::test]
+async fn memory_commands_keep_versions_and_require_unambiguous_ids() {
+    let (tmp, workspace) = temp_workspace();
+    let state = TestServerConfig::unreachable(tmp.path()).state();
+    let session = state.create_session(&workspace, None, false).await.unwrap();
+    macro_rules! run {
+        ($name:expr, $args:expr) => {
+            state.run_command(session, $name, $args).await.unwrap()
+        };
+    }
+    let data = run!("remember", "Blue checklist").data.unwrap();
+    let id = data["item"]["id"].as_str().unwrap();
+    assert!(!run!("memory", &format!("show {}", &id[..5])).ok);
+    assert_eq!(
+        run!("memory", &format!("show {}", &id[..6])).data.unwrap()["item"],
+        data["item"]
+    );
+    assert_eq!(
+        run!("memory", "search blue").data.unwrap()["items"],
+        serde_json::json!([data["item"]])
+    );
+    assert!(run!("memory", &format!("revise {id} v1 Green checklist")).ok);
+    let stale = run!("memory", &format!("invalidate {id} v1"));
+    assert_eq!(stale.error.as_deref(), Some("the item is at version 2"));
+    assert!(run!("memory", &format!("invalidate {id} v2")).ok);
+    assert_eq!(
+        run!("memory", "search green").data.unwrap()["items"],
+        serde_json::json!([])
+    );
+    assert!(run!("memory", &format!("restore {id} v3")).ok);
+    assert!(run!("forget", &format!("{id} Retired")).ok);
+    let history = run!("memory", &format!("history {id}")).data.unwrap();
+    let versions = history["versions"].as_array().unwrap();
+    assert_eq!(versions.len(), 5);
+    assert_eq!(
+        versions
+            .iter()
+            .map(|v| v["change"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "created",
+            "updated",
+            "invalidated",
+            "restored",
+            "invalidated"
+        ]
+    );
+    assert_eq!(versions[4]["reason"], "Retired");
+}
+
+#[tokio::test]
+async fn a_bare_scope_word_is_part_of_the_remembered_text() {
+    let (tmp, workspace) = temp_workspace();
+    let state = TestServerConfig::unreachable(tmp.path()).state();
+    let id = state.create_session(&workspace, None, false).await.unwrap();
+    let text = "global state must be avoided";
+    let result = state.run_command(id, "remember", text).await.unwrap();
+    assert!(result.ok);
+    let item = &result.data.unwrap()["item"];
+    assert_eq!(item["current"]["body"], text);
+    assert_eq!(item["scope"], "project");
+}
+
+#[tokio::test]
 async fn the_scope_tools_are_not_offered_to_a_child_or_read_only_session() {
     use common::server::{collect_until, send_text};
     use common::sse::{http_sse, spawn_capturing_provider, sse_body, text_chunk};
@@ -161,7 +224,7 @@ async fn remember_is_active_at_once_with_its_source_session() {
     let state = TestServerConfig::unreachable(tmp.path()).state();
     let session = state.create_session(&workspace, None, false).await.unwrap();
     let result = state
-        .run_command(session, "remember", "session Keep the blue notebook")
+        .run_command(session, "remember", "@session Keep the blue notebook")
         .await
         .unwrap();
     assert!(result.ok, "{:?}", result.error);

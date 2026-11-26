@@ -51,7 +51,6 @@ pub struct Project {
     pub group_answered: bool,
     pub groups: Vec<String>,
     pub aliases: Vec<String>,
-    pub worktrees: Vec<String>,
     pub sessions: Vec<SessionLink>,
 }
 

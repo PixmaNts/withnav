@@ -72,7 +72,7 @@ pub const COMMANDS: [CommandSpec; 13] = [
     CommandSpec {
         name: "remember",
         description: "Save a memory item for this project (or this session without a project)",
-        args_hint: "[global|group:<name>|project|session] <text>",
+        args_hint: "[@global|@group:<name>|@project|@session] <text>",
     },
     CommandSpec {
         name: "memory",

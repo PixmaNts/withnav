@@ -14,6 +14,9 @@ use crate::memory::{
 };
 use crate::session::memory::{item, version};
 
+const PENDING_CHANGE_LIMIT: u32 = 5;
+const MEMBERSHIP_HISTORY_LIMIT: u32 = 100;
+
 pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/memory", get(list).post(remember))
@@ -210,7 +213,7 @@ async fn group_answer(
 }
 
 async fn needs_you(State(state): State<AppState>) -> Response {
-    run(state, StatusCode::OK, |store| Ok(json!({"changes":store.pending_membership_changes(5)?.into_iter().map(change).collect::<Vec<_>>()}))).await
+    run(state, StatusCode::OK, |store| Ok(json!({"changes":store.pending_membership_changes(PENDING_CHANGE_LIMIT)?.into_iter().map(change).collect::<Vec<_>>()}))).await
 }
 
 async fn decide(
@@ -238,7 +241,6 @@ fn project(row: Project) -> withnav_client_api::memory::Project {
         name: row.name,
         group_answered: row.group_answered,
         groups: row.groups,
-        worktrees: aliases.clone(),
         aliases,
         sessions: Vec::new(),
     }
@@ -259,10 +261,13 @@ fn failure(error: Error) -> Response {
             json!({"reason":"invalid_memory_request","message":error.to_string()}),
         ),
         Error::NotFound { .. } => (StatusCode::NOT_FOUND, json!({"reason":"memory_not_found"})),
-        Error::Database(_) | Error::Io(_) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            json!({"reason":"memory_unavailable"}),
-        ),
+        Error::Database(_) | Error::Io(_) => {
+            tracing::warn!(%error, "memory register unavailable");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"reason":"memory_unavailable"}),
+            )
+        }
     };
     (status, Json(body)).into_response()
 }
@@ -277,11 +282,7 @@ async fn run(
             Ok(value) => (status, Json(value)).into_response(),
             Err(error) => failure(error),
         },
-        Err(_) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"reason":"memory_unavailable"})),
-        )
-            .into_response(),
+        Err(error) => failure(error),
     }
 }
 
@@ -504,7 +505,7 @@ async fn projects(State(state): State<AppState>) -> Response {
             .map(|row| group(store, row))
             .collect::<Result<Vec<_>, _>>()?;
         let history = store
-            .membership_history(None, 100)?
+            .membership_history(None, MEMBERSHIP_HISTORY_LIMIT)?
             .into_iter()
             .map(change)
             .collect::<Vec<_>>();

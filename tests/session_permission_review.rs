@@ -307,6 +307,18 @@ fn parked() -> ChildPreparationBarrier {
     ChildPreparationBarrier::default()
 }
 
+/// Waits until the reviewer was called `n` times, then lets the review's verdict land.
+async fn reviewed(reviewer: &Scripted, n: usize) {
+    for _ in 0..400 {
+        if reviewer.calls() >= n {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(reviewer.calls(), n);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+}
+
 // Given `permissions.review: on` and a review that finds the write implied by the request
 // When the Captain does not answer
 // Then the review allows the call once: it runs, its events and its decision row name the
@@ -481,6 +493,20 @@ async fn a_hold_before_the_claim_keeps_the_card_open_and_stops_the_review() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["review_state"], "held");
     barrier.release.notify_one();
+    // The released review gets the field to itself: a review that ignored the hold would
+    // claim the request, resolve it and run the call within this window (the same 500 ms
+    // `reviewed` gives a landed verdict elsewhere in this file). Nothing may happen while
+    // the card is held open and the Captain has not answered.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        events(&s.state, s.id, "permission.resolved")
+            .await
+            .is_empty(),
+        "the held card resolved without the Captain"
+    );
+    assert!(events(&s.state, s.id, "tool.post_call").await.is_empty());
+    assert!(!s.target.exists(), "the held review's allow ran the call");
+    assert_eq!(waiting(&s).await.len(), 1);
     // The Captain's answer is taken (not 409): the released review could not claim the held card.
     let (status, _) = answer(&s, &id, json!({"decision":"allow_once"})).await;
     assert_eq!(status, StatusCode::OK);
@@ -1065,6 +1091,13 @@ async fn a_refused_review_answer_leaves_the_card_answerable_by_the_captain() {
     let resolved = events(&s.state, s.id, "permission.resolved").await;
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].payload["approved_by"], "captain");
+    // The Captain's later resolution carries no `review` field: only a review that allowed
+    // the call puts its reasoning there, and this one's answer was refused.
+    assert!(
+        resolved[0].payload.get("review").is_none(),
+        "{}",
+        resolved[0].payload
+    );
     s.state.service().close_all().await;
 }
 
@@ -1240,6 +1273,258 @@ async fn a_session_secret_never_reaches_the_review_or_its_events() {
             .as_str()
             .unwrap()
             .contains("[secret API_KEY]")
+    );
+    s.state.service().close_all().await;
+}
+
+// Given `permissions.review: shadow` and a review that allows the call
+// When the Captain has not answered
+// Then nothing is published or run: the card stays open until the Captain decides
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_shadow_an_allow_never_runs_the_call() {
+    let env = Env::new();
+    let reviewer = Scripted::new(&[Script::Answer(ALLOW)]);
+    let s = session(&env, "shadow", reviewer.clone(), Duration::from_secs(20)).await;
+    let request = requested(&s).await;
+    reviewed(&reviewer, 1).await;
+    assert!(
+        events(&s.state, s.id, "permission.resolved")
+            .await
+            .is_empty()
+    );
+    assert!(events(&s.state, s.id, "permission.review").await.is_empty());
+    assert!(!s.target.exists());
+    assert_eq!(waiting(&s).await.len(), 1);
+    let (status, _) = answer(&s, &request_id(&request), json!({"decision":"reject"})).await;
+    assert_eq!(status, StatusCode::OK);
+    wait_events(&s.state, s.id, "task.done", 1).await;
+    assert!(!s.target.exists());
+    s.state.service().close_all().await;
+}
+
+// Given a review that quotes the agent's own proposal, or a string of the call's arguments, but
+//       nothing the Captain wrote
+// When the quote is checked
+// Then the answer counts as `wait`: the card stays open and nothing runs
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_quote_of_the_proposal_or_the_arguments_waits() {
+    for which in ["proposal", "arguments"] {
+        let env = Env::new();
+        let target = env.ws.join("notes.txt");
+        let quote = match which {
+            "proposal" => "Shall I write the notes into notes.txt".to_owned(),
+            _ => target.display().to_string(),
+        };
+        let reply = Box::leak(
+            json!({"decision":"allow_once","conclusion":"c","basis":"b","consequence":"x",
+                   "request_quote": quote})
+            .to_string()
+            .into_boxed_str(),
+        );
+        let reviewer = Scripted::new(&[Script::Answer(reply)]);
+        let s = session_with(
+            &env,
+            "on",
+            reviewer.clone(),
+            Duration::from_secs(20),
+            vec![
+                done("Shall I write the notes into notes.txt now?"),
+                write_call("w1", &target),
+                done("written"),
+            ],
+        )
+        .await;
+        say(&s.state, s.id, "hello there").await;
+        wait_events(&s.state, s.id, "turn.end", 1).await;
+        say(&s.state, s.id, "ok go ahead").await;
+        wait_events(&s.state, s.id, "permission.requested", 1).await;
+        let review = wait_events(&s.state, s.id, "permission.review", 2).await;
+        assert_eq!(review[1].payload["state"], "wait", "{which}");
+        assert!(
+            reviewer.inputs()[0].contains(&quote),
+            "{which}: the quote is in the input"
+        );
+        assert!(
+            events(&s.state, s.id, "permission.resolved")
+                .await
+                .is_empty(),
+            "{which}"
+        );
+        assert!(!target.exists(), "{which}");
+        s.state.service().close_all().await;
+    }
+}
+
+// Given a write to a credential path under the Captain's home
+// When the flow raises the question
+// Then the floor answers it before the review: no review starts
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_credential_write_is_never_reviewed() {
+    let env = Env::new();
+    let target = env.home.join(".ssh/authorized_keys");
+    let reviewer = Scripted::new(&[Script::Answer(ALLOW)]);
+    let s = session_with(
+        &env,
+        "on",
+        reviewer.clone(),
+        Duration::from_secs(20),
+        vec![write_call("w1", &target), done("written")],
+    )
+    .await;
+    say(&s.state, s.id, "write the notes").await;
+    let first = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if !events(&s.state, s.id, "permission.requested")
+                .await
+                .is_empty()
+                || !events(&s.state, s.id, "tool.post_call").await.is_empty()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(first.is_ok(), "the call was asked or refused");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(reviewer.calls(), 0);
+    assert!(!target.exists());
+    assert!(events(&s.state, s.id, "permission.review").await.is_empty());
+    s.state.service().close_all().await;
+}
+
+// Given the Captain's reject and the review's allow racing the same request with no barrier
+// When both answer at once
+// Then whatever wins, exactly one resolution stands and the call ran at most once; the HTTP
+//      answer agrees with the outcome (200 = the reject applied, 409 = the review's allow ran)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn captain_and_review_race_without_a_barrier() {
+    let (mut captain, mut review) = (0, 0);
+    for _ in 0..12 {
+        let env = Env::new();
+        let s = session(
+            &env,
+            "on",
+            Scripted::new(&[Script::Answer(ALLOW)]),
+            Duration::from_secs(20),
+        )
+        .await;
+        say(&s.state, s.id, "write the notes").await;
+        let request = wait_events(&s.state, s.id, "permission.requested", 1)
+            .await
+            .remove(0);
+        let (status, body) = answer(
+            &s,
+            &request_id(&request),
+            json!({"decision":"reject","message":"no"}),
+        )
+        .await;
+        wait_events(&s.state, s.id, "task.done", 1).await;
+        let resolved = events(&s.state, s.id, "permission.resolved").await;
+        assert_eq!(resolved.len(), 1, "{resolved:?}");
+        let post = events(&s.state, s.id, "tool.post_call").await;
+        match status {
+            StatusCode::OK => {
+                captain += 1;
+                assert_eq!(resolved[0].payload["resolution"], "reject");
+                assert!(!s.target.exists());
+            }
+            StatusCode::CONFLICT if body["reason"] == "permission_already_started" => {
+                review += 1;
+                assert_eq!(resolved[0].payload["approved_by"], "metacognition");
+                assert_eq!(post.len(), 1);
+                assert_eq!(std::fs::read_to_string(&s.target).unwrap(), "from w1");
+            }
+            StatusCode::CONFLICT => {
+                // Stale: the review's answer already settled the request.
+                review += 1;
+                assert_eq!(
+                    resolved[0].payload["approved_by"], "metacognition",
+                    "{body}"
+                );
+                assert_eq!(post.len(), 1);
+            }
+            other => panic!("unexpected {other}: {body}"),
+        }
+        s.state.service().close_all().await;
+    }
+    eprintln!("captain won {captain}, review won {review}");
+}
+
+// Given a hold racing the review's claim with no barrier
+// When both reach the request at once
+// Then `held` means nothing ran and the card stays open; `already_started` means the review ran
+//      the call once
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hold_and_review_race_without_a_barrier() {
+    for _ in 0..12 {
+        let env = Env::new();
+        let s = session(
+            &env,
+            "on",
+            Scripted::new(&[Script::Answer(ALLOW)]),
+            Duration::from_secs(20),
+        )
+        .await;
+        say(&s.state, s.id, "write the notes").await;
+        let request = wait_events(&s.state, s.id, "permission.requested", 1)
+            .await
+            .remove(0);
+        let (status, body) = answer(&s, &request_id(&request), json!({"decision":"hold"})).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let resolved = events(&s.state, s.id, "permission.resolved").await;
+        if status == StatusCode::OK {
+            assert_eq!(body["held"], true, "{body}");
+            assert!(resolved.is_empty(), "held, yet resolved: {resolved:?}");
+            assert!(!s.target.exists());
+            assert_eq!(waiting(&s).await.len(), 1);
+        } else {
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert!(
+                body["reason"] == "permission_already_started"
+                    || body["reason"] == "permission_stale",
+                "{body}"
+            );
+            wait_events(&s.state, s.id, "task.done", 1).await;
+            assert_eq!(events(&s.state, s.id, "tool.post_call").await.len(), 1);
+        }
+        s.state.service().close_all().await;
+    }
+}
+
+// Given a review that allowed the call and is parked before its claim
+// When a matching `ask` rule is written while it ran
+// Then the released claim re-reads the rules before the call: the call is not run on the
+//      review's word
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ask_rule_written_during_the_review_is_not_skipped() {
+    let env = Env::new();
+    let s = session(
+        &env,
+        "on",
+        Scripted::new(&[Script::Answer(ALLOW), Script::Hang]),
+        Duration::from_secs(20),
+    )
+    .await;
+    let barrier = parked();
+    s.state.service().pause_review_before_claim(barrier.clone());
+    requested(&s).await;
+    barrier.reached.notified().await;
+    withnav::permission::store::PermissionStore::open(env.root.join("data"))
+        .unwrap()
+        .add(
+            "write",
+            "*",
+            withnav::permission::rules::Effect::Ask,
+            withnav::permission::rules::RuleScope::Global,
+            withnav::permission::rules::RuleOrigin::Manual,
+        )
+        .unwrap();
+    barrier.release.notify_one();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        !s.target.exists(),
+        "the review's word ran a call whose rule changed"
     );
     s.state.service().close_all().await;
 }

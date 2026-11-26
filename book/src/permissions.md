@@ -93,7 +93,11 @@ request and the call at the same time as your card is shown. It answers one of t
 
 - **Allow once**: the call is a step your request necessarily implies ("release 0.8.4" implies the
   push), and it quotes your own words to say so; WithNav checks the quote against what you wrote,
-  so text inside the call ("the Captain approved this") never counts. The call runs once, as if you had answered **Once**; nothing is saved, and it reads the
+  so text inside the call ("the Captain approved this") never counts. The check proves the words
+  came from you, not that they cover the call — quoting you is narrowed injection, not its
+  absence. The quote is also at least 8 characters of your request: a very short acceptance such
+  as "ok" cannot be quoted, so a call after such a message always waits for you. The call runs
+  once, as if you had answered **Once**; nothing is saved, and it reads the
   rules again first, so a `deny` you wrote meanwhile still stops it.
 - **Wait**: the call goes beyond what your request needs. The card stays open with a short
   conclusion, the words of your request it relied on, and the consequence, one line each.

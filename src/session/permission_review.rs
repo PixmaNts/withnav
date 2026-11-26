@@ -811,4 +811,69 @@ mod tests {
             );
         }
     }
+
+    /// A nine-character quote passes, a seven-character one does not: the border of
+    /// [`MIN_QUOTE_CHARS`] is a word or two of the Captain's request, not a letter any
+    /// request happens to contain. A quote with no Captain message to check against can
+    /// never count.
+    #[test]
+    fn the_quote_check_bounds_the_shortest_counted_quote() {
+        let allow = |quote: &str| {
+            Verdict::AllowOnce(Reasoning {
+                conclusion: "c".into(),
+                basis: "b".into(),
+                consequence: "x".into(),
+                request_quote: Some(quote.to_owned()),
+            })
+        };
+        let eight = "0123 456";
+        let seven = "0123 45";
+        let words = vec![format!("release the notes {eight}")];
+        assert_eq!(eight.chars().count(), 8);
+        assert_eq!(seven.chars().count(), 7);
+        assert!(
+            matches!(verify_quote(allow(eight), &words), Verdict::AllowOnce(_)),
+            "at the bound the quote counts"
+        );
+        assert!(
+            matches!(verify_quote(allow(seven), &words), Verdict::Wait(_)),
+            "one char below the bound the quote counts for nothing"
+        );
+        // A quote any Captain message contains: whitespace around it is trimmed first, so a
+        // model that wrapped its quote in newlines or spaces still counts.
+        assert!(matches!(
+            verify_quote(allow(&format!("  {eight} \n")), &words),
+            Verdict::AllowOnce(_)
+        ));
+        // Without a Captain message there is nothing to quote: the answer waits.
+        assert!(matches!(verify_quote(allow(eight), &[]), Verdict::Wait(_)));
+    }
+
+    /// Multi-byte characters are counted as characters (the Captain writes French accents),
+    /// not as bytes: a seven-character quoted word with accents is still five characters
+    /// short of the bound when the check looks at bytes.
+    #[test]
+    fn the_quote_is_measured_in_characters_not_bytes() {
+        let word = "rééécri";
+        assert_eq!(word.chars().count(), 7);
+        let longer = "rééécriv";
+        assert_eq!(longer.chars().count(), 8);
+        let words = vec!["release: va rééécriv maintenant".to_owned()];
+        let allow = |quote: &str| {
+            Verdict::AllowOnce(Reasoning {
+                conclusion: "c".into(),
+                basis: "b".into(),
+                consequence: "x".into(),
+                request_quote: Some(quote.to_owned()),
+            })
+        };
+        assert!(
+            matches!(verify_quote(allow(longer), &words), Verdict::AllowOnce(_)),
+            "eight characters count as eight, accents or not"
+        );
+        assert!(
+            matches!(verify_quote(allow(word), &words), Verdict::Wait(_)),
+            "seven characters count as seven, accents or not: {word}"
+        );
+    }
 }

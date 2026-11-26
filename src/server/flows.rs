@@ -316,7 +316,11 @@ async fn handle(
                 RunOptions {
                     deadline: Instant::now()
                         + Duration::from_millis(
-                            compiled.definition().flow.budget_ms.unwrap_or(5000),
+                            compiled
+                                .definition()
+                                .flow
+                                .budget_ms
+                                .unwrap_or(instinct_flow::ASYNC_DEADLINE_MS),
                         ),
                     run_id: ulid::Ulid::generate().to_string(),
                 },

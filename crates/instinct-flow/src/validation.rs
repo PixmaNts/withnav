@@ -335,10 +335,9 @@ pub(crate) fn validate(
                 "flow.blocking",
             ));
         }
-        if !f
-            .budget_ms
-            .is_some_and(|ms| ms > 0 && ms <= 2000 && ms <= catalogue.limits.blocking_budget_ms)
-        {
+        if !f.budget_ms.is_some_and(|ms| {
+            ms > 0 && ms <= crate::BLOCKING_BUDGET_MS && ms <= catalogue.limits.blocking_budget_ms
+        }) {
             errors.push(Diagnostic::new(
                 "limit",
                 "blocking budget must be within host ceiling",

@@ -119,9 +119,17 @@ impl<'a> Evaluation<'a> {
         options: RunOptions,
     ) -> Self {
         let budget = if compiled.definition.flow.blocking {
-            compiled.definition.flow.budget_ms.unwrap_or(2000)
+            compiled
+                .definition
+                .flow
+                .budget_ms
+                .unwrap_or(BLOCKING_BUDGET_MS)
         } else {
-            compiled.catalogue.limits.async_deadline_ms.min(5000)
+            compiled
+                .catalogue
+                .limits
+                .async_deadline_ms
+                .min(ASYNC_DEADLINE_MS)
         };
         let deadline = options
             .deadline
@@ -1104,7 +1112,12 @@ async fn execute(
             });
             let semaphore = &semaphore;
             let deadline = e.deadline;
-            let call_ms = e.compiled.catalogue.limits.call_deadline_ms.min(2000);
+            let call_ms = e
+                .compiled
+                .catalogue
+                .limits
+                .call_deadline_ms
+                .min(CALL_DEADLINE_MS);
             calls.push(Box::pin(async move {
                 let start=Instant::now();
                 let work=async {

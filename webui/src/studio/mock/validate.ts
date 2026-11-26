@@ -16,8 +16,8 @@ export function validateDefinition(def: Definition, catalogue: Catalogue): Diagn
   if (!FLOW_NAME_PATTERN.test(f.name)) out.push(d("schema", "A flow name is lowercase letters, digits and dashes, starting with a letter.", "flow.name"));
   if (!trigger) out.push(d("unknown_trigger", `Unknown trigger "${f.on}".`, "flow.on"));
   if (f.blocking && trigger && !trigger.can_block) out.push(d("schema", `${f.on} cannot block: make the flow asynchronous.`, "flow.blocking"));
-  if (f.blocking && (f.budget_ms === null || f.budget_ms < 1 || f.budget_ms > (limits.blocking_budget_ms ?? 2000)))
-    out.push(d("limit", `A blocking flow needs budget_ms between 1 and ${limits.blocking_budget_ms ?? 2000}.`, "flow.budget_ms"));
+  if (f.blocking && (f.budget_ms === null || f.budget_ms < 1 || f.budget_ms > (limits.blocking_budget_ms ?? 8000)))
+    out.push(d("limit", `A blocking flow needs budget_ms between 1 and ${limits.blocking_budget_ms ?? 8000}.`, "flow.budget_ms"));
   if (!f.blocking && f.budget_ms !== null) out.push(d("schema", "budget_ms is only for blocking flows.", "flow.budget_ms"));
   if (def.node.length > (limits.nodes ?? 64)) out.push(d("limit", `A flow has at most ${limits.nodes ?? 64} nodes.`, "node"));
 

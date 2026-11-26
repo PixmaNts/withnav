@@ -126,14 +126,26 @@ pub const MAX_STATE_BYTES: usize = 64 * 1024;
 /// Hard ceiling for template source and placeholder admission.
 pub const MAX_TEMPLATE_BYTES: usize = 64 * 1024;
 
+/// Ceiling for one System One call, send and body included. The instinct
+/// answers at p50 ≈ 265 ms and p95 ≈ 434 ms (measured 2026-11), but a 2 s
+/// ceiling cut a permission run at 2001 ms; the wide margin is deliberate and
+/// can be tightened if slow answers start to hurt.
+pub const CALL_DEADLINE_MS: u64 = 4_000;
+/// Ceiling for a blocking flow's `budget_ms`: two full calls, so a flow that
+/// asks twice, or whose single call times out, still leaves room for its
+/// fallback. A blocking flow holds the event it judges for up to this long.
+pub const BLOCKING_BUDGET_MS: u64 = 2 * CALL_DEADLINE_MS;
+/// Run deadline of an asynchronous flow, which never holds an event.
+pub const ASYNC_DEADLINE_MS: u64 = 10_000;
+
 impl Default for Limits {
     fn default() -> Self {
         Self {
             nodes: 64,
             decisions_per_run: 16,
-            blocking_budget_ms: 2000,
-            async_deadline_ms: 5000,
-            call_deadline_ms: 2000,
+            blocking_budget_ms: BLOCKING_BUDGET_MS,
+            async_deadline_ms: ASYNC_DEADLINE_MS,
+            call_deadline_ms: CALL_DEADLINE_MS,
             flow_bytes: MAX_FLOW_BYTES,
             input_bytes: MAX_INPUT_BYTES,
             run_input_bytes: MAX_RUN_INPUT_BYTES,

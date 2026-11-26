@@ -32,8 +32,10 @@ use crate::permission::{
 };
 use crate::provider::{ToolCall, openai::ChatMessage};
 
-/// The permission flows answer within their own budget; past this the rule applies.
-const FLOW_DEADLINE: Duration = Duration::from_millis(2500);
+/// The permission flows answer within their own budget; past this the rule
+/// applies. The 500 ms past the blocking budget lets a flow that used all of it
+/// still return its fallback verdict instead of being cut by this timeout.
+const FLOW_DEADLINE: Duration = Duration::from_millis(instinct_flow::BLOCKING_BUDGET_MS + 500);
 
 /// What the decision allows for one call.
 pub(super) enum Authorized {

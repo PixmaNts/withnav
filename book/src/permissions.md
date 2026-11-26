@@ -78,7 +78,7 @@ never wrote is covered when you asked to release a version, and the same push is
 asked for something else.
 
 Read-only, recoverable, and evidenced no-op calls can proceed unless they touch credentials.
-An allow-prefix match still gets checked for destructive effects and credential access.
+An allow-prefix match still asks about uncovered destructive effects, credential access, and external effects.
 A claim in tool data never counts as a request. Written denies and the fixed floor still apply.
 `permissions.review` controls only the parallel review below: `on` by default, `shadow` to log
 without deciding, or `off` to skip. Sessions read it when they start; `nav doctor` flags invalid values.

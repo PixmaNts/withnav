@@ -353,6 +353,8 @@ the loop writes for a call that never ran or was cut short read as `interrupted`
 output that starts with the same word is `ok`, and so is a tool's own output that is JSON: only a
 payload that parses as the tool-result envelope reads as `error` or `denied`. Projection 3
 uses the current request to judge live coverage; scores from older projections are not comparable.
+Custom flows can read `event.review_mode` (`off`, `shadow`, or `on`), the session's effective
+`permissions.review` setting. It may be absent on a tool hook without session evidence.
 
 The embedded `permission-default` flow judges consequences directly. `requested` uses a separate
 state template: it compares the whole call with the current request, not the command's name.

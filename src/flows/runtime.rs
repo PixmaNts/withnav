@@ -2578,6 +2578,50 @@ mod tests {
         (verdict, outcomes)
     }
 
+    #[tokio::test]
+    async fn uncovered_publication_under_a_written_prefix_still_asks() {
+        let mut ctx = review_ctx(crate::settings::ReviewMode::Off);
+        ctx.current_request[0].text = "Inspect the changes; do not publish them".into();
+        let scores = BTreeMap::from([("external_effect", 1.0), ("danger", 1.0)]);
+        let (actual, _) = judge_and_join(
+            Arc::new(BatchClient(scores, Default::default())),
+            ctx,
+            RuleResult::Allow,
+        )
+        .await;
+        assert!(
+            matches!(actual, FlowVerdict::AskCaptain { .. }),
+            "{actual:?}"
+        );
+    }
+
+    #[test]
+    fn review_mode_stays_a_valid_input_for_custom_flows() {
+        let text = "[flow]\nversion=1\nname='my-audit'\non='tool.pre_call'\nstart=['mode']\n[[node]]\nid='mode'\ntype='expression'\ncondition='is_set(mode)'\n[node.inputs]\nmode='event.review_mode'";
+        let flow = instinct_flow::Definition::parse(text).unwrap();
+        flow.validate(
+            &catalogue(),
+            &Capabilities { images: false },
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn consequence_coverage_excludes_past_captain_messages() {
+        let mut ctx = review_ctx(crate::settings::ReviewMode::Shadow);
+        ctx.captain_messages = vec![
+            "EARLIER_REQUEST_ONLY".into(),
+            ctx.current_request[0].text.clone(),
+        ];
+        let client = Arc::new(StateClient(Default::default(), 0.0));
+        judge_and_join(client.clone(), ctx, RuleResult::None).await;
+        let states = client.0.lock().unwrap();
+        let (_, state) = states.iter().find(|(id, _)| id == "requested").unwrap();
+        assert!(state.contains("release la version 0.8.4"));
+        assert!(!state.contains("EARLIER_REQUEST_ONLY"));
+    }
+
     fn review_ctx(review: crate::settings::ReviewMode) -> PermissionCallContext {
         use crate::agent::flow_hook::{RecentMessage, ToolTrailEntry};
         let mut ctx = permission_call(PathBuf::from("/project"), false);
@@ -3560,7 +3604,7 @@ impl FlowRuntime {
                 redacted: false,
             },
         );
-        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":ctx.protected,"protected_checked":ctx.protected_check.is_some(),"projection":crate::agent::flow_hook::PERMISSION_PROJECTION});
+        let mut payload = json!({"tool":ctx.call.tool,"args":ctx.call.args,"call_id":ctx.call.call_id,"rule_effect":rule_result,"protected":ctx.protected,"protected_checked":ctx.protected_check.is_some(),"projection":crate::agent::flow_hook::PERMISSION_PROJECTION,"review_mode":ctx.review.as_str()});
         for (name, value) in [
             ("rule", json!(ctx.rule)),
             ("commands", json!(ctx.commands)),

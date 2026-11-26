@@ -126,6 +126,7 @@ pub fn catalogue() -> Catalogue {
                 // (`agent::flow_hook::PERMISSION_PROJECTION`); absent on a
                 // call that carries no conversation evidence.
                 ("projection", Integer, false),
+                ("review_mode", Text, false),
             ],
             json!({"tool":"write","args":{"path":"src/lib.rs","content":""},"call_id":"sample"}),
         ),

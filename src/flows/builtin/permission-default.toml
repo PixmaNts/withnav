@@ -66,7 +66,6 @@ instructions = "Does the current request cover everything this whole call does? 
 threshold = "constant.REQUESTED_MIN"
 state_template = "requested-state.md"
 [node.inputs]
-captain_messages = "conversation.captain_messages"
 current_request = "conversation.current_request"
 delegation = "conversation.delegation"
 skill = "event.skill"
@@ -202,13 +201,14 @@ yes = ["verdict"]
 no = ["verdict"]
 
 # On 2026-11-26 the Captain confirmed that an implied release push is covered:
-# an external effect is recorded, not treated as a reason to ask by itself.
+# an uncovered external effect still asks even when a written prefix matches.
 [[node]]
 id = "verdict"
 type = "expression"
 condition = """
 (is_set(effect) && effect == "allow"
   && !(is_set(destroys) && destroys >= risk_min)
+  && external_effect < risk_min
   && touches_credentials < risk_min)
 || (is_set(requested) && requested >= requested_min
   && (self_advocating < risk_min || requested >= inert_min))
@@ -225,6 +225,7 @@ self_advocating = "answer.self_advocating"
 read_only = "answer.read_only"
 recoverable = "answer.recoverable"
 destroys = "answer.destroys"
+external_effect = "answer.external_effect"
 touches_credentials = "answer.touches_credentials"
 inert = "answer.inert"
 requested_min = "constant.REQUESTED_MIN"
@@ -278,4 +279,4 @@ id = "danger_ask"
 type = "action"
 action = "ask_captain"
 [node.params]
-note = "This call may discard unique data or touch credentials and was not covered by the request."
+note = "This call may discard unique data, touch credentials, or have external effects not covered by the request."

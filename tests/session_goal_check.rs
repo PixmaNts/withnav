@@ -21,7 +21,8 @@ use withnav::session::goal_check::{
 use withnav::session::subagents::watchdog::Clock;
 use withnav_client_api::goal::{MAX_CRITERIA, MAX_CRITERION_CHARS, MAX_OBJECTIVE_CHARS};
 use withnav_client_api::ledger::{
-    ClaimStatus, CriterionStatus, GoalCheck, MAX_CLAIM_CHARS, MAX_CLAIMS, MAX_TEXT_CHARS,
+    ClaimStatus, CriterionStatus, GoalCheck, INVENTED_REASON, MAX_CLAIM_CHARS, MAX_CLAIMS,
+    MAX_TEXT_CHARS,
 };
 
 mod common;
@@ -1092,4 +1093,151 @@ async fn an_answer_without_claims_is_read_as_before() {
     );
     let results = wait_published(&env.state, id, 1).await;
     assert_eq!(results[0]["data"]["claims"], json!([]));
+}
+
+/// The metacognition model's instructions, the first message of its request.
+async fn sent_instructions(server: &MockServer) -> String {
+    meta_requests(server).await[0]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+// Given a turn that ran only `echo built` and then claimed that the tests pass and the docs are
+//      updated
+// When the model marks "the tests pass" as invented (it reports a test run no command line holds),
+//      "docs updated" as not invented with no line either way, and "it builds" as supported by the
+//      quoted `echo built` line
+// Then the invented claim is contradicted with the invented reason, the claim nothing settles
+//      stays unverified (never false) and the quoted one stays supported; the metacognition model
+//      is asked the invented question over every command of the digest
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_invented_claim_is_contradicted_and_missing_evidence_stays_unverified() {
+    let answer = json!({
+        "criteria": [{"index": 1, "status": "not_checked", "evidence": ""}],
+        "claims": [
+            {"claim": "the tests pass", "status": "unverified", "evidence": "", "invented": true},
+            {"claim": "docs updated", "status": "unverified", "evidence": "", "invented": false},
+            {"claim": "it builds", "status": "supported", "evidence": "exit 0 · echo built", "invented": false},
+        ],
+    })
+    .to_string();
+    let env = scripted_env(
+        meta_answer(&answer),
+        true,
+        vec![
+            bash_calls(&["echo built".to_string()]),
+            sse_response(&[&text_chunk("the tests pass, docs updated, it builds")]),
+        ],
+    )
+    .await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    one_criterion(&env.state, id).await;
+    turn(&env.state, id, "go").await;
+    let logged = wait_lines(&env.log, 1).await;
+    let expected = json!([
+        {"claim": "the tests pass", "status": "contradicted", "evidence": INVENTED_REASON},
+        {"claim": "docs updated", "status": "unverified", "evidence": ""},
+        {"claim": "it builds", "status": "supported", "evidence": "exit 0 · echo built"},
+    ]);
+    assert_eq!(logged[0]["claims"], expected);
+    let results = wait_published(&env.state, id, 1).await;
+    assert_eq!(results[0]["data"]["claims"], expected);
+    let instructions = sent_instructions(&env.server).await;
+    assert!(
+        instructions.contains(
+            "Does the claim report having run a command, or having obtained a result, that the \
+             evidence here does not record?"
+        ),
+        "{instructions}"
+    );
+    assert!(instructions.contains("\"invented\""), "{instructions}");
+}
+
+// Given a turn that ran twenty long commands, more than the digest holds, then claimed the tests
+//      pass
+// When the model marks the claim as invented
+// Then the claim stays unverified: a command the digest cut may be the one that ran the tests, so
+//      absence from the digest proves nothing
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_invented_claim_needs_every_command_of_the_session_in_the_digest() {
+    let commands: Vec<String> = (0..20)
+        .map(|n| format!("echo cmd{n:02}-{}", "e".repeat(MAX_TEXT_CHARS - 20)))
+        .collect();
+    let answer = json!({
+        "criteria": [{"index": 1, "status": "not_checked", "evidence": ""}],
+        "claims": [{"claim": "the tests pass", "status": "unverified", "evidence": "", "invented": true}],
+    })
+    .to_string();
+    let env = scripted_env(
+        meta_answer(&answer),
+        true,
+        vec![
+            bash_calls(&commands),
+            sse_response(&[&text_chunk("the tests pass")]),
+        ],
+    )
+    .await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    one_criterion(&env.state, id).await;
+    turn(&env.state, id, "go").await;
+    let logged = wait_lines(&env.log, 1).await;
+    let digest = sent_digest(&env.server).await;
+    assert!(digest.contains("[commands: 20, newest first]"), "{digest}");
+    assert!(
+        digest.matches("- turn 1 · exit 0 · echo cmd").count() < 20,
+        "the digest must have cut commands for this case"
+    );
+    assert_eq!(
+        logged[0]["claims"],
+        json!([{"claim": "the tests pass", "status": "unverified", "evidence": ""}])
+    );
+}
+
+// Given a turn that ran `echo built` and a model that gives the invented flag a value that is not
+//      a boolean, or none
+// When the claims are read
+// Then the claims stay as they were before the flag existed: nothing is contradicted
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flag_that_is_not_a_boolean_never_contradicts() {
+    let answer = json!({
+        "criteria": [{"index": 1, "status": "not_checked", "evidence": ""}],
+        "claims": [
+            {"claim": "the tests pass", "status": "unverified", "evidence": "", "invented": "true"},
+            {"claim": "lint is clean", "status": "unverified", "evidence": ""},
+        ],
+    })
+    .to_string();
+    let env = scripted_env(
+        meta_answer(&answer),
+        true,
+        vec![
+            bash_calls(&["echo built".to_string()]),
+            sse_response(&[&text_chunk("the tests pass, lint is clean")]),
+        ],
+    )
+    .await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    one_criterion(&env.state, id).await;
+    turn(&env.state, id, "go").await;
+    let logged = wait_lines(&env.log, 1).await;
+    assert_eq!(
+        logged[0]["claims"],
+        json!([
+            {"claim": "the tests pass", "status": "unverified", "evidence": ""},
+            {"claim": "lint is clean", "status": "unverified", "evidence": ""},
+        ])
+    );
 }

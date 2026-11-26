@@ -8,6 +8,15 @@ requests land in `develop`.
 
 ### Changed
 
+- Watchdogs judge a stuck agent on counts WithNav computes from its own events: the same call
+  repeated with the same result, failures nothing has answered, reads in a row, minutes since a file
+  changed, a command passed or an error changed, and the exit status of the last calls. Two more
+  questions, whether the failed attempts repeat one strategy and whether the later ones progress,
+  must both point to a loop before a child is stopped; either alone asks the parent. Counts that
+  cannot be read are reported to the judge as unjudged, never as calm.
+- The goal check flags a claim that reports a command run or a result obtained that the session
+  never recorded: it shows as contradicted with that reason, only when the check saw every command
+  of the session. A claim the record cannot settle stays unverified.
 - Compaction summaries keep the evidence Nav continues from: each verified change names the check
   that confirmed it and its observed result, unconfirmed claims are listed apart, failed attempts
   stay with what not to retry, and the open criteria and the next check close the summary. A

@@ -124,7 +124,11 @@ conversation, at most ten per hour, each within 60 seconds; a slower one is logg
 The same call also reads what the agent claims in its last answer ("tests pass", "build passes",
 "committed"), at most five claims, and sets each against the ledger: supported or contradicted
 only when the model quotes a command or file-change line that was sent, and unverified otherwise.
-A claim nothing in the ledger settles is unverified, never reported as false.
+A claim nothing in the ledger settles is unverified, never reported as false. One case is
+reported as contradicted without a quote: the model finds that the claim reports a command run or a
+result obtained that the ledger does not record at all ("invented"), and the check was sent every
+command and file change of the session. When some were cut to fit, the claim stays unverified,
+because the missing line may be one that was cut.
 
 A check that finished is shown to your clients: the server publishes its criteria statuses and
 claims as one `command.result` named `goal_check`, and the ledger

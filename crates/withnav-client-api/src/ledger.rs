@@ -75,6 +75,10 @@ pub struct SessionLedger {
 pub const MAX_CLAIM_CHARS: usize = 200;
 /// Claims kept in one [`GoalCheck`].
 pub const MAX_CLAIMS: usize = 5;
+/// The evidence text of a claim found invented: it reports a command run or a result obtained
+/// that no ledger line records. The claim shows as `contradicted` with this reason instead of a
+/// quoted line, because what it lacks is a line to quote.
+pub const INVENTED_REASON: &str = "invented: the claim reports a command run or a result obtained that the ledger does not record";
 
 /// What a goal check found, as the server publishes it (`command.result` named `goal_check`) and
 /// the ledger keeps it.
@@ -120,7 +124,8 @@ pub struct CriterionCheck {
 pub enum ClaimStatus {
     /// A quoted command or file-change line shows it.
     Supported,
-    /// A quoted command or file-change line shows the opposite.
+    /// A quoted command or file-change line shows the opposite, or the claim reports a command or
+    /// result that no line records at all (its evidence is then [`INVENTED_REASON`]).
     Contradicted,
     /// No ledger line settles it. Never read as false.
     Unverified,

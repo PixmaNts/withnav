@@ -26,6 +26,9 @@ import { useRoute, type Route } from "./router";
 import { useChat } from "./session/useChat";
 import { serverTheme } from "./lib/settings";
 import { SettingsPage } from "./settings/SettingsPage";
+import { MemoryPage } from "./memory/MemoryPage";
+import { GroupQuestion } from "./projects/GroupQuestion";
+import { ProjectsPage } from "./projects/ProjectsPage";
 import { applyTheme, storedTheme, THEMES, type ThemeId } from "./theme/themes";
 
 // The Studio brings React Flow; it loads only when opened.
@@ -39,14 +42,25 @@ export function App() {
   const [route, navigate] = useRoute();
   const [theme, setTheme] = useAppTheme(route.workspace);
   if (expired) return <Expired />;
-  if (route.page === "settings") return <SettingsPage route={route} navigate={navigate} theme={theme} setTheme={setTheme} />;
-  if (route.page === "studio")
-    return (
-      <Suspense fallback={<div className="fullpage muted">Loading the Studio…</div>}>
-        <StudioPage route={route} navigate={navigate} />
-      </Suspense>
-    );
-  return <ChatPage route={route} navigate={navigate} theme={theme} setTheme={setTheme} />;
+  return (
+    <>
+      {route.page === "settings" ? (
+        <SettingsPage route={route} navigate={navigate} theme={theme} setTheme={setTheme} />
+      ) : route.page === "studio" ? (
+        <Suspense fallback={<div className="fullpage muted">Loading the Studio…</div>}>
+          <StudioPage route={route} navigate={navigate} />
+        </Suspense>
+      ) : route.page === "memory" ? (
+        <MemoryPage route={route} navigate={navigate} />
+      ) : route.page === "projects" ? (
+        <ProjectsPage route={route} navigate={navigate} />
+      ) : (
+        <ChatPage route={route} navigate={navigate} theme={theme} setTheme={setTheme} />
+      )}
+      {/* The first-time group question of a new repository, on any page. */}
+      <GroupQuestion />
+    </>
+  );
 }
 
 /**
@@ -174,6 +188,8 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
   const newSession = useCallback(() => navigate({ session: null, subagent: null }), [navigate]);
   const openSettings = useCallback(() => navigate({ page: "settings", section: null }), [navigate]);
   const openStudio = useCallback(() => navigate({ page: "studio", flow: null, loc: null }), [navigate]);
+  const openMemory = useCallback(() => navigate({ page: "memory", item: null, view: null }), [navigate]);
+  const openProjects = useCallback(() => navigate({ page: "projects", item: null }), [navigate]);
 
   const themePage = useCallback(
     (): PalettePage => ({
@@ -257,6 +273,8 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
       { id: "collapse-workspaces", group: "View", label: "Collapse all workspaces", hint: "", run: expansion.collapseAll },
       { id: "expand-workspaces", group: "View", label: "Expand all workspaces", hint: "", run: expandAllWorkspaces },
       { id: "settings", group: "View", label: "Open settings", hint: "", run: openSettings, disabled: workspace ? undefined : "Choose a workspace first" },
+      { id: "memory", group: "View", label: "Open memory", description: "Decisions, conventions and pitfalls Nav keeps", hint: "", run: openMemory },
+      { id: "projects", group: "View", label: "Open projects and groups", hint: "", run: openProjects },
       { id: "studio", group: "View", label: "Open the InstinctFlow Studio", description: "Draw, test and reload flows", hint: "", run: openStudio, disabled: workspace ? undefined : "Choose a workspace first" },
     ];
     // The server's commands, minus the ones above already cover.
@@ -276,7 +294,7 @@ function ChatPage({ route, navigate, theme, setTheme }: PageProps) {
     items.sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
     return { title: "Commands", placeholder: "Type a command or search…", items };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bypass, bypassReason, chat.setBypass, route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings, openStudio, expansion.collapseAll, expandAllWorkspaces, currentWs, sessionRow?.title]);
+  }, [bypass, bypassReason, chat.setBypass, route.session, chat.view.children, chat.running, otherAgent, workspace, sessions.data, commands.data, themePage, skillsPage, openSettings, openStudio, openMemory, openProjects, expansion.collapseAll, expandAllWorkspaces, currentWs, sessionRow?.title]);
 
   const runServer = async (name: string, args: string) => {
     if (name === "bypass" && ["on", "off"].includes(args.trim())) {

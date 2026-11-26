@@ -33,3 +33,16 @@ A stale write returns HTTP 409 with `{reason: "version_conflict", current_versio
 Include a `source_session_id` to apply that session's secret redaction. There is no global secret matcher: without a source session, the authenticated Captain's text is stored as given. Do not put secrets in that text.
 
 Root sessions with write access can use `project_group_add(project_id, group_id)` and `session_attach(project_id)` to request changes. These tools only propose widening; the Captain decides in Needs you. `project_group_remove(project_id, group_id)` acts immediately only on the session's active project; otherwise it proposes removal. `session_detach()` applies immediately. Both leave history. None of the four controls authorizes other tools.
+
+## Web pages
+
+`nav web` shows the register on two pages, reached from the top of the sidebar or the command palette.
+
+- `#/memory` lists items. Filter by scope, kind and status (active by default); the search box matches title, wording, quote and the stated reason as you type. Select an item to read its wording, its exact quote and every version, tick two versions to see the word-by-word difference, and edit, invalidate, restore, or change scope. Each write takes an optional reason and appears in the item's history. A toast offers **Undo**, which writes a new version that restores the previous state; nothing is overwritten.
+- If the item changed while you were editing (HTTP 409 `version_conflict`), the page shows the newer version, keeps your draft, and offers to apply it on top of that version.
+- A move that lets more projects read an item (HTTP 409 `widening_requires_confirmation`) asks you to confirm, listing the projects that would start to read it.
+- **Needs you** (`#/memory?view=needs`, with a badge in the sidebar) lists up to five proposed project-group and session-project changes that wait for your answer. Accept or reject each one.
+- `#/projects` shows groups with their member and item counts, each project with its paths and sessions, and a history of membership changes. Add or remove a project from a group (adding asks first when it widens who reads what), attach or detach a session (the link stays in the history), and create or rename a group.
+- The first time a session starts in a repository the register does not know, a dialog asks which group it belongs to. **Ask me later** leaves the question open; it is asked again at the next start.
+
+Not shown yet: relations between items, which sessions an item was sent to, pinning, and filtering by authority. Proposed items cannot be accepted from the page because the server has no route for it.

@@ -7,11 +7,13 @@
 //   #/chat?ws=<path>&s=<id>&sub=<id>    subagent view of a child of that session
 //   #/settings?ws=<path>&section=<id>   settings (gateways, layers, permissions, subagents, appearance)
 //   #/studio?ws=<path>&flow=<name>&loc=<location>   InstinctFlow Studio; `&mock=1` uses the in-memory API
+//   #/memory?ws=<path>&item=<id>&view=needs   the memory register; `item` opens one item, `view=needs` the waiting changes
+//   #/projects?ws=<path>&item=<project id>    projects, groups and their sessions
 
 import { useCallback, useEffect, useState } from "react";
 
 export interface Route {
-  page: "chat" | "settings" | "studio";
+  page: "chat" | "settings" | "studio" | "memory" | "projects";
   workspace: string | null;
   session: string | null;
   subagent: string | null;
@@ -22,6 +24,10 @@ export interface Route {
   loc?: string | null;
   /** Studio: use the in-memory flows API instead of the server's. */
   mock?: boolean;
+  /** Memory: the open item id. Projects: the open project id. */
+  item?: string | null;
+  /** Memory: `needs` shows the changes that wait for the Captain instead of the list. */
+  view?: string | null;
 }
 
 export function parseRoute(hash: string): Route {
@@ -29,9 +35,11 @@ export function parseRoute(hash: string): Route {
   const params = new URLSearchParams(query);
   const settings = path === "/settings";
   const studio = path === "/studio";
-  const chat = !settings && !studio;
+  const memory = path === "/memory";
+  const projects = path === "/projects";
+  const chat = !settings && !studio && !memory && !projects;
   return {
-    page: settings ? "settings" : studio ? "studio" : "chat",
+    page: settings ? "settings" : studio ? "studio" : memory ? "memory" : projects ? "projects" : "chat",
     workspace: params.get("ws"),
     session: chat ? params.get("s") : null,
     subagent: chat ? params.get("sub") : null,
@@ -39,6 +47,8 @@ export function parseRoute(hash: string): Route {
     flow: studio ? params.get("flow") : null,
     loc: studio ? params.get("loc") : null,
     mock: studio && params.get("mock") === "1",
+    item: memory || projects ? params.get("item") : null,
+    view: memory ? params.get("view") : null,
   };
 }
 
@@ -52,6 +62,8 @@ export function formatRoute(route: Route): string {
   if (route.page === "studio" && route.flow) params.set("flow", route.flow);
   if (route.page === "studio" && route.flow && route.loc) params.set("loc", route.loc);
   if (route.page === "studio" && route.mock) params.set("mock", "1");
+  if ((route.page === "memory" || route.page === "projects") && route.item) params.set("item", route.item);
+  if (route.page === "memory" && route.view) params.set("view", route.view);
   const query = params.toString();
   return `#/${route.page}${query ? `?${query}` : ""}`;
 }

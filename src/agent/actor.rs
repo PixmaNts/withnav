@@ -14,6 +14,11 @@ use crate::provider::config::{ProviderConfig, ReasoningHistory};
 use crate::provider::openai::{ChatMessage, Producer};
 use crate::tools::{Registry, ToolContext};
 
+/// What the model reads for a call that was waiting or running when the process ended: whether
+/// it ran is unknown.
+pub(crate) const UNFINISHED: &str =
+    "interrupted: the session ended before this call finished; it may not have run";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
     Idle,
@@ -109,8 +114,17 @@ pub struct AgentActor {
     /// Captain setting `yolo`: no permission control at all for this session.
     pub yolo: bool,
     /// Captain setting `permissions.review`: whether the consequence review runs beside each
-    /// call's decision. Fixed for the session, like `yolo`.
+    /// call's decision. Fixed for the session, like `yolo`. An actor nobody configured does not
+    /// ask: the session sets the mode from the setting, and a child session reads the setting
+    /// itself when it starts.
     pub review: crate::settings::ReviewMode,
+    /// Index in `transcript` of the message that began the turn running now, set when a batch
+    /// of commands starts a turn and left alone when it only answers a pending `ask`. The
+    /// consequence review's current request begins here, because a turn that ended without a
+    /// final assistant message (interrupted, provider error, step limit) leaves nothing in the
+    /// transcript that says the Captain began again. `None` until a turn begins, as in a
+    /// session resumed from disk.
+    pub request_start: Option<usize>,
     /// The Instinct judge compaction asks which old tool outputs still matter.
     pub compaction_decision: Option<Arc<dyn crate::provider::systemone::DecisionModel>>,
     pub safe_boundary: Option<super::boundary::SafeBoundary>,
@@ -272,7 +286,8 @@ impl AgentActor {
             parent_captain: Arc::default(),
             scratch_roots: Vec::new(),
             yolo: false,
-            review: crate::settings::ReviewMode::default(),
+            review: crate::settings::ReviewMode::Off,
+            request_start: None,
             bypass: Arc::default(),
             goal: Arc::default(),
             compaction_decision: None,
@@ -368,6 +383,9 @@ impl AgentActor {
         self.skill_turn_generation = self.skill_turn_generation.wrapping_add(1);
         self.skill_turn_start = self.transcript.len();
         self.skill_turn_open = true;
+        if !matches!(self.pending, Some(PendingInteraction::Ask { .. })) {
+            self.request_start = Some(self.transcript.len());
+        }
     }
 
     pub fn end_skill_turn(&mut self) {
@@ -560,9 +578,6 @@ impl AgentActor {
     /// the process ended; it is never run again. Returns how many were
     /// settled.
     pub fn settle_unanswered_calls(&mut self) -> usize {
-        /// The process ended while the call waited or ran: whether it ran is unknown.
-        const UNFINISHED: &str =
-            "interrupted: the session ended before this call finished; it may not have run";
         let Some(last) = self
             .transcript
             .iter()

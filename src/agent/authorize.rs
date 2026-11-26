@@ -18,7 +18,7 @@ use crate::agent::flow_hook::{
     FlowVerdict, PermissionCallContext, PermissionCommand, ProtectedCheck, RuleResult as FlowRule,
     RunScores, TOOL_TRAIL_CALLS, ToolCallContext, ToolCallFlows, ValidatedSkill,
     captain_messages_with_cut, current_request_with_cut, delegation_with_cut, recent_with_cut,
-    tool_trail,
+    tool_trail_with_cut,
 };
 use crate::agent::permissions::{PermissionRequest, Scope};
 use crate::permission::{
@@ -76,6 +76,8 @@ struct SessionFlows<'s> {
     /// The skill the Captain selected in the composer, when this call loads it.
     captain_skill: Option<String>,
     review: ReviewMode,
+    /// Where the turn running began in `transcript`: the current request starts there.
+    turn_start: Option<usize>,
     evidence: OnceLock<Evidence>,
     cancel: CancellationToken,
 }
@@ -98,6 +100,7 @@ struct Evidence {
     current_request: Vec<crate::agent::flow_hook::RecentMessage>,
     current_request_cut: bool,
     tool_trail: Vec<crate::agent::flow_hook::ToolTrailEntry>,
+    tool_trail_cut: bool,
 }
 
 impl Evidence {
@@ -106,6 +109,7 @@ impl Evidence {
         parent_captain: &ParentCaptain,
         captain_skill: Option<&str>,
         review: ReviewMode,
+        turn_start: Option<usize>,
     ) -> Self {
         #[cfg(test)]
         EVIDENCE_READS.with(|reads| reads.set(reads.get() + 1));
@@ -127,11 +131,14 @@ impl Evidence {
         let (recent, recent_cut) = recent_with_cut(transcript);
         // Only the consequence review reads these: with the review off the transcript is not
         // walked for them.
-        let (current_request, current_request_cut, tool_trail) = if review == ReviewMode::Off {
-            (Vec::new(), false, Vec::new())
+        let (current_request, current_request_cut, tool_trail, tool_trail_cut) = if review
+            == ReviewMode::Off
+        {
+            (Vec::new(), false, Vec::new(), false)
         } else {
-            let (request, cut) = current_request_with_cut(transcript);
-            (request, cut, tool_trail(transcript, TOOL_TRAIL_CALLS))
+            let (request, cut) = current_request_with_cut(transcript, turn_start);
+            let (trail, trail_cut) = tool_trail_with_cut(transcript, turn_start, TOOL_TRAIL_CALLS);
+            (request, cut, trail, trail_cut)
         };
         Self {
             captain_messages,
@@ -143,6 +150,7 @@ impl Evidence {
             current_request,
             current_request_cut,
             tool_trail,
+            tool_trail_cut,
         }
     }
 }
@@ -155,6 +163,7 @@ impl SessionFlows<'_> {
                 self.parent_captain,
                 self.captain_skill.as_deref(),
                 self.review,
+                self.turn_start,
             )
         })
     }
@@ -186,6 +195,7 @@ impl SessionFlows<'_> {
             current_request: evidence.current_request,
             current_request_cut: evidence.current_request_cut,
             tool_trail: evidence.tool_trail,
+            tool_trail_cut: evidence.tool_trail_cut,
             review: self.review,
             protected_check: query.protected_check,
         }
@@ -420,6 +430,7 @@ pub(super) async fn authorize(
         captain_skill: (call.name == "skill" && call.args["captain_selected"] == true)
             .then(|| call.args["name"].as_str().unwrap_or_default().to_owned()),
         review: actor.review,
+        turn_start: actor.request_start,
         evidence: OnceLock::new(),
         cancel: actor.cancel.clone(),
     };

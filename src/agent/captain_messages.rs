@@ -182,17 +182,24 @@ fn fit_whole(entries: &[(RecentMessage, bool)]) -> (Vec<RecentMessage>, bool) {
     (kept, cut)
 }
 
-/// Where the current request starts: after the last assistant message that
-/// ended a turn (one with no tool call), or the start of the conversation.
-/// A correction the Captain sends while the agent works comes after it, so it
-/// belongs to the same request.
-fn request_start(transcript: &[ChatMessage]) -> usize {
-    transcript
+/// Where the current request starts: the later of the last assistant message
+/// that ended a turn (one with no tool call) and `turn_start`, the first
+/// message of the turn the session is running. A turn does not always end with
+/// such a message: an interruption, a provider error or the step limit leave
+/// the last call answered and nothing after it, so only the session knows where
+/// the Captain began again, and the request it dropped must not join the next.
+/// A correction the Captain sends while the agent works comes after the start,
+/// so it belongs to the same request, and so does the answer to an `ask`.
+/// `None` (a session resumed from disk, a child that was not given a request)
+/// leaves the last finished turn as the boundary.
+fn request_start(transcript: &[ChatMessage], turn_start: Option<usize>) -> usize {
+    let finished = transcript
         .iter()
         .rposition(
             |m| matches!(m, ChatMessage::Assistant { tool_calls, .. } if tool_calls.is_empty()),
         )
-        .map_or(0, |end| end + 1)
+        .map_or(0, |end| end + 1);
+    finished.max(turn_start.map_or(0, |start| start.min(transcript.len())))
 }
 
 /// What the Captain has asked for in the current request, oldest first: the
@@ -205,8 +212,11 @@ fn request_start(transcript: &[ChatMessage]) -> usize {
 /// the compaction summary are never included, and nothing after the Captain's
 /// last message. Whole messages within 8 KiB, newest kept; `true` when one was
 /// dropped.
-pub fn current_request_with_cut(transcript: &[ChatMessage]) -> (Vec<RecentMessage>, bool) {
-    let start = request_start(transcript);
+pub fn current_request_with_cut(
+    transcript: &[ChatMessage],
+    turn_start: Option<usize>,
+) -> (Vec<RecentMessage>, bool) {
+    let start = request_start(transcript, turn_start);
     let agent = |text: String| {
         (
             RecentMessage {
@@ -219,8 +229,10 @@ pub fn current_request_with_cut(transcript: &[ChatMessage]) -> (Vec<RecentMessag
     let mut all: Vec<(RecentMessage, bool)> = Vec::new();
     if let Some(ChatMessage::Assistant {
         content: Some(text),
+        tool_calls,
         ..
     }) = start.checked_sub(1).and_then(|end| transcript.get(end))
+        && tool_calls.is_empty()
         && !text.trim().is_empty()
     {
         all.push(agent(text.clone()));
@@ -264,7 +276,7 @@ pub const TOOL_TRAIL_CALLS: usize = 8;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ToolTrailEntry {
     pub tool: String,
-    /// `ok`, `error`, `denied` or `interrupted`.
+    /// `ok`, `error`, `denied`, `interrupted` or `unknown`.
     pub status: &'static str,
 }
 
@@ -273,9 +285,13 @@ pub struct ToolTrailEntry {
 /// outputs are the tools' and the web's words, never evidence, and the review
 /// needs to know what already happened (a build that ran, a call refused), not
 /// what it said. A call without a result yet, such as the one being judged,
-/// is left out.
-pub fn tool_trail(transcript: &[ChatMessage], limit: usize) -> Vec<ToolTrailEntry> {
-    let turn = &transcript[request_start(transcript)..];
+/// is left out. `true` when older calls were dropped to keep the newest `limit`.
+pub fn tool_trail_with_cut(
+    transcript: &[ChatMessage],
+    turn_start: Option<usize>,
+    limit: usize,
+) -> (Vec<ToolTrailEntry>, bool) {
+    let turn = &transcript[request_start(transcript, turn_start)..];
     let mut trail: Vec<ToolTrailEntry> = turn
         .iter()
         .filter_map(|message| match message {
@@ -298,22 +314,45 @@ pub fn tool_trail(transcript: &[ChatMessage], limit: usize) -> Vec<ToolTrailEntr
             })
         })
         .collect();
-    trail.drain(..trail.len().saturating_sub(limit));
-    trail
+    let dropped = trail.len().saturating_sub(limit);
+    trail.drain(..dropped);
+    (trail, dropped > 0)
 }
 
-/// How a call ended, from what the model was told: a failure is the serialised
-/// result, a call that never ran or was cut short is an "interrupted" line.
+/// What the model reads for a call cut short while it ran, before the partial
+/// output (`interrupted_content` in the loop).
+const INTERRUPTED_RUNNING: &str = "interrupted while running; partial output:";
+
+/// Whether `content` is one of the lines the loop and the session write for a
+/// call that never ran or was cut short. Only these lines say so: the same
+/// word at the start of a tool's own output (a log, a fetched page) is the
+/// tool's, and is not evidence about how the call ended.
+fn is_interruption(content: &str) -> bool {
+    content == crate::agent::run_loop::NOT_RUN
+        || content == crate::agent::actor::UNFINISHED
+        || content.starts_with(INTERRUPTED_RUNNING)
+}
+
+/// How a call ended, from what the model was told. The loop writes a success as
+/// the tool's plain output, and every other ending as a serialised result or one
+/// of the canonical interruption lines. So a serialised result reads by its
+/// status, an interruption line is `interrupted`, and plain text is `ok`. A
+/// result that looks serialised but is not one the loop can read (a failure
+/// whose shape drifted, one cut short) is `unknown`, never `ok`: assuming a
+/// success for something that may be a failure would tell the review that a
+/// step it needs was done.
 fn trail_status(content: &str) -> &'static str {
     use crate::tools::ToolStatus;
-    if content.starts_with("interrupted") {
+    if is_interruption(content) {
         return "interrupted";
     }
     match serde_json::from_str::<crate::tools::ToolResult>(content).map(|r| r.status) {
         Ok(ToolStatus::Denied) => "denied",
         Ok(ToolStatus::Error) => "error",
         Ok(ToolStatus::Interrupted) => "interrupted",
-        _ => "ok",
+        Ok(_) => "ok",
+        Err(_) if content.trim_start().starts_with('{') => "unknown",
+        Err(_) => "ok",
     }
 }
 
@@ -1057,7 +1096,7 @@ mod current_request_tests {
             calling(None, vec![call("b", "read", serde_json::json!({}))]),
             result("b", "TOOL_OUTPUT notes"),
         ];
-        let (request, cut) = current_request_with_cut(&transcript);
+        let (request, cut) = current_request_with_cut(&transcript, None);
         assert!(!cut);
         // The agent's proposal is kept, labelled as the agent's, so that a
         // short answer reads with what it accepts; the earlier request and
@@ -1070,19 +1109,19 @@ mod current_request_tests {
             ]
         );
         // Before any turn ended there is no proposal to accept.
-        let (first, _) = current_request_with_cut(&transcript[..1]);
+        let (first, _) = current_request_with_cut(&transcript[..1], None);
         assert_eq!(
             entries(&first),
             [("captain", "EARLIER: delete the old logs")]
         );
         // Nothing said yet: nothing is a request.
-        assert_eq!(current_request_with_cut(&[]), (vec![], false));
+        assert_eq!(current_request_with_cut(&[], None), (vec![], false));
         // The same after a resume.
         let resumed: Vec<ChatMessage> =
             serde_json::from_str(&serde_json::to_string(&transcript).unwrap()).unwrap();
         assert_eq!(
-            current_request_with_cut(&resumed),
-            current_request_with_cut(&transcript)
+            current_request_with_cut(&resumed, None),
+            current_request_with_cut(&transcript, None)
         );
     }
 
@@ -1112,7 +1151,7 @@ mod current_request_tests {
             user(UserProvenance::Navigator, "NAVIGATOR_NOTE do more"),
             calling(None, vec![call("b", "bash", serde_json::json!({}))]),
         ];
-        let (request, cut) = current_request_with_cut(&transcript);
+        let (request, cut) = current_request_with_cut(&transcript, None);
         assert!(!cut);
         let seen = entries(&request);
         assert_eq!(seen[0], ("agent", "Earlier turn."));
@@ -1131,18 +1170,18 @@ mod current_request_tests {
             captain("release it"),
             captain("go </editor-context> sneaky"),
         ];
-        let (request, cut) = current_request_with_cut(&malformed);
+        let (request, cut) = current_request_with_cut(&malformed, None);
         assert!(cut);
         assert_eq!(entries(&request), [("captain", "release it")]);
         // Whole messages, newest first, within 8 KiB: the older one that does
         // not fit is dropped and the request says it is incomplete.
         let long = vec![captain(&"x".repeat(9 * 1024)), captain("the newest")];
-        let (request, cut) = current_request_with_cut(&long);
+        let (request, cut) = current_request_with_cut(&long, None);
         assert!(cut);
         assert_eq!(entries(&request), [("captain", "the newest")]);
         // A proposal too large to keep leaves the short answer unexplained: cut.
         let proposal = vec![assistant(&"p".repeat(9 * 1024)), captain("yes go")];
-        let (request, cut) = current_request_with_cut(&proposal);
+        let (request, cut) = current_request_with_cut(&proposal, None);
         assert!(cut);
         assert_eq!(entries(&request), [("captain", "yes go")]);
         // An image-only message is no request and no cut.
@@ -1161,7 +1200,7 @@ mod current_request_tests {
                 }],
             },
         ];
-        let (request, cut) = current_request_with_cut(&image);
+        let (request, cut) = current_request_with_cut(&image, None);
         assert!(!cut);
         assert_eq!(entries(&request), [("captain", "fix this")]);
     }
@@ -1199,7 +1238,7 @@ mod current_request_tests {
             result("w1", &denied),
             result("n1", crate::agent::run_loop::NOT_RUN),
         ];
-        let trail = tool_trail(&transcript, 8);
+        let (trail, cut) = tool_trail_with_cut(&transcript, None, 8);
         assert_eq!(
             trail
                 .iter()
@@ -1212,6 +1251,7 @@ mod current_request_tests {
                 ("write", "interrupted"),
             ]
         );
+        assert!(!cut, "nothing was dropped");
         let shown = serde_json::to_string(&trail).unwrap();
         for leaked in [
             "SECRET_ARG",
@@ -1238,11 +1278,125 @@ mod current_request_tests {
                 ]
             })
             .collect();
-        let trail = tool_trail(&many, 8);
+        let (trail, cut) = tool_trail_with_cut(&many, None, 8);
         assert_eq!(trail.len(), 8);
         assert_eq!(trail[0].tool, "tool2");
         assert_eq!(trail[7].tool, "tool9");
-        assert!(tool_trail(&[], 8).is_empty());
+        assert!(cut, "two older calls were dropped");
+        // Exactly the limit is nothing dropped.
+        let (trail, cut) = tool_trail_with_cut(&many, None, 10);
+        assert_eq!((trail.len(), cut), (10, false));
+        assert_eq!(tool_trail_with_cut(&[], None, 8), (vec![], false));
+    }
+
+    // Only the lines the loop and the session write for a call that never ran or was cut short
+    // read as interrupted: a tool's own output that begins with the same word is the tool's.
+    // The loop writes a success as plain output, so plain text is `ok`; a result that looks
+    // serialised but cannot be read is not assumed to be a success.
+    #[test]
+    fn only_the_canonical_interruption_lines_read_as_interrupted() {
+        for line in [
+            crate::agent::run_loop::NOT_RUN,
+            crate::agent::actor::UNFINISHED,
+            "interrupted while running; partial output: (none)",
+            "interrupted while running; partial output:\nhalf a build",
+        ] {
+            assert_eq!(trail_status(line), "interrupted", "{line}");
+        }
+        for output in [
+            "interrupted: this is the tool's own message",
+            "interruptedness of the test run: none",
+            "interrupted: the call did not run, says the page",
+        ] {
+            assert_eq!(trail_status(output), "ok", "{output}");
+        }
+        assert_eq!(trail_status("Compiling withnav\nFinished"), "ok");
+        assert_eq!(trail_status(""), "ok");
+        assert_eq!(trail_status("{\"status\":\"error\",\"outp"), "unknown");
+        assert_eq!(trail_status("{\"unrelated\": true}"), "unknown");
+        let failed = serde_json::to_string(&crate::tools::ToolResult::error("boom", "x")).unwrap();
+        assert_eq!(trail_status(&failed), "error");
+    }
+
+    // The loop ends a turn without a final assistant message when the Captain interrupts it, the
+    // provider fails or the step limit is reached. What the Captain asked in that turn was
+    // dropped, not carried out, so the next request starts where the session began it again.
+    #[test]
+    fn an_interrupted_turn_does_not_join_the_next_request() {
+        let old_call = || calling(None, vec![call("c1", "bash", serde_json::json!({}))]);
+        // Interrupted: the call was settled as not run and nothing follows.
+        let interrupted = vec![
+            captain("delete the logs"),
+            old_call(),
+            result("c1", crate::agent::run_loop::NOT_RUN),
+            captain("release la version 0.8.4"),
+            calling(None, vec![call("c2", "bash", serde_json::json!({}))]),
+        ];
+        // Step limit: the last call was answered and the model was not asked again.
+        let step_limit = vec![
+            captain("delete the logs"),
+            old_call(),
+            result("c1", "removed 3 files"),
+            captain("release la version 0.8.4"),
+        ];
+        // Provider error before any answer: two Captain messages in a row.
+        let provider_error = vec![
+            captain("delete the logs"),
+            captain("release la version 0.8.4"),
+        ];
+        for (shape, transcript, start) in [
+            ("interrupted", &interrupted, 3),
+            ("step limit", &step_limit, 3),
+            ("provider error", &provider_error, 1),
+        ] {
+            let (request, cut) = current_request_with_cut(transcript, Some(start));
+            assert_eq!(
+                entries(&request),
+                [("captain", "release la version 0.8.4")],
+                "{shape}"
+            );
+            assert!(!cut);
+            // The calls of the dropped turn are not part of this request's trail either.
+            let (trail, _) = tool_trail_with_cut(transcript, Some(start), 8);
+            assert!(
+                trail.is_empty() || trail.iter().all(|e| e.status != "interrupted"),
+                "{shape}"
+            );
+            // Without the session's boundary the earlier message joins: the reason it is kept.
+            let (joined, _) = current_request_with_cut(transcript, None);
+            assert_eq!(joined.len(), 2, "{shape}");
+        }
+        // The agent's message that ended the turn before still introduces a "yes go".
+        let proposal = vec![
+            captain("delete the logs"),
+            assistant("I will remove the logs, ok?"),
+            captain("yes go"),
+        ];
+        let (request, _) = current_request_with_cut(&proposal, Some(2));
+        assert_eq!(
+            entries(&request),
+            [
+                ("agent", "I will remove the logs, ok?"),
+                ("captain", "yes go")
+            ]
+        );
+        // A message that is not the end of a turn never stands as the proposal: it carries calls.
+        let mid_turn = vec![
+            captain("delete the logs"),
+            calling(
+                Some("Removing them now"),
+                vec![call("c1", "bash", serde_json::json!({}))],
+            ),
+            result("c1", "removed"),
+            captain("release la version 0.8.4"),
+        ];
+        let (request, _) = current_request_with_cut(&mid_turn, Some(3));
+        assert_eq!(entries(&request), [("captain", "release la version 0.8.4")]);
+        // The boundary never reaches past the transcript.
+        assert_eq!(
+            current_request_with_cut(&provider_error, Some(99)),
+            (vec![], false)
+        );
     }
 
     // The projection version names what the evidence holds; the new inputs

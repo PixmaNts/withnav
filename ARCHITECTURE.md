@@ -327,10 +327,14 @@ the protected check never reads delegation. Both the flow and the protected chec
 `conversation.recent` (`recent_with_cut`): the last 4 Captain and agent messages up to the Captain's last one, labelled
 with their author, so a short Captain answer is read with the proposal it answers. The non-blocking built-in
 `permission-consequence-shadow` flow runs beside that decision on the same `tool.pre_call` event and only logs: it reads
-`conversation.current_request` (`current_request_with_cut`: from the last assistant message that ended a turn, the
-Captain's messages and answers to `ask` since, so a correction joins the request and an earlier request never does) and
-`conversation.tool_trail` (`tool_trail`: tool names and outcomes, no argument or output), and starts only when the event's
-`review_mode` (from `permissions.review`, read once per session into `AgentActor::review`) is `shadow` or `on`. The
+`conversation.current_request` (`current_request_with_cut`: from `AgentActor::request_start`, the message that began the turn running (not moved by the
+answer to an `ask`), or the last assistant message that ended a turn if later, the Captain's messages and answers to `ask`
+since, so a correction joins the request, and neither an earlier request nor a turn that ended without a final message
+(interruption, provider error, step limit) does) and `conversation.tool_trail` (`tool_trail_with_cut`: tool names and
+outcomes, no argument or output, `unknown` for a result that cannot be read), and starts only when the event's
+`review_mode` (from `permissions.review`, read when a session or child session starts into `AgentActor::review`, `off`
+for an actor nobody configured) is `shadow` or `on`. Its runs take one of 8 places per runtime and never feed the
+outage window the blocking decisions share, so a slow or failing review cannot hold a decision back. The
 evidence is built only when the mode is not `off`. It never reaches `resolve_permissions`: the verdict is the same in
 every mode. `PERMISSION_PROJECTION` is 2 since it exists. A skill is decided after its validation, with action `skill` and its
 name as resource: a `deny` rule refuses it on both entry points, no rule loads it

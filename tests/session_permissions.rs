@@ -1744,6 +1744,38 @@ fn with_instinct(env: &Env, provider: &CapturingProvider) -> TestServerConfig {
     config(env, provider).extra_alias("instinct", "instinct-test")
 }
 
+/// Sets `permissions.review` in the file the config wrote. A session, and a child session,
+/// reads it when it starts.
+fn set_review(env: &Env, review: &str) {
+    let file = env.root.join("cfg/config.json");
+    let mut settings: Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    settings["permissions"] = json!({"review": review});
+    std::fs::write(&file, settings.to_string()).unwrap();
+}
+
+/// Waits until the consequence review has a record of `count` runs, the end of a run that
+/// happens beside the call and may come after the turn. Returns what was recorded, which is
+/// fewer when the review never ran.
+async fn wait_for_review_runs(env: &Env, count: usize) -> Vec<instinct_flow::RunRecord> {
+    let workspace = std::fs::canonicalize(&env.ws).unwrap();
+    let records = withnav::flows::records::Records::new(&env.root.join("data"), &workspace);
+    let mut runs = vec![];
+    for _ in 0..400 {
+        runs = records
+            .read()
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.flow_name == "permission-consequence-shadow")
+            .collect();
+        if runs.len() >= count {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    runs
+}
+
 /// Two requests of the Captain, each worked by tool calls, then a call under an allow rule.
 async fn two_requests_ending_in_an_allowed_push(
     env: &Env,
@@ -1869,22 +1901,79 @@ async fn the_review_is_never_asked_when_the_setting_is_off_or_unreadable() {
         )
         .await;
         let state = with_instinct(&env, &provider).state();
-        // The session reads the setting when it starts: add it to the file the config wrote.
-        let file = env.root.join("cfg/config.json");
-        let mut settings: Value =
-            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-        settings["permissions"] = json!({"review": review});
-        std::fs::write(&file, settings.to_string()).unwrap();
+        set_review(&env, review);
         let id = state.create_session(&env.ws, None, false).await.unwrap();
         say(&state, id, "run the check").await;
         wait_events(&state, id, "turn.end", 1).await;
-        // The review would be asked beside the decision: once that was asked, it has had its turn.
         assert!(
             probe.decisions() >= 1,
             "the decision flow still judged the call"
         );
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // The review flow ran beside the decision and stopped at its mode node: its record is
+        // written once the run is over, so a request it was going to send was sent before.
+        let runs = wait_for_review_runs(&env, 1).await;
+        assert!(
+            !runs.is_empty(),
+            "{review}: the review flow never ran, so its silence says nothing"
+        );
         assert!(probe.review().is_empty(), "{review}: {:#?}", probe.review());
+        state.service().close_all().await;
+    }
+}
+
+// Given a session started under `permissions.review: off`, then a child (a subagent) it creates
+// When the child makes a call
+// Then Instinct is not asked a consequence question for it: a child reads the setting when it
+//      starts, like its parent. Under `shadow` the child's call is scored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_child_follows_the_review_setting_it_starts_under() {
+    for review in ["off", "shadow"] {
+        let env = Env::new();
+        let agents = env.ws.join(".withnav/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("checker.md"),
+            "---\nmode: subagent\naccess: full\n---\nRun the requested check.",
+        )
+        .unwrap();
+        let (provider, probe) = provider_with_instinct(
+            vec![
+                done("Hello."),
+                bash_call("c0", "echo CHILD_$((40+2))"),
+                done("Checked."),
+            ],
+            1.0,
+        )
+        .await;
+        let state = with_instinct(&env, &provider).state();
+        set_review(&env, review);
+        let parent = state.create_session(&env.ws, None, false).await.unwrap();
+        say(&state, parent, "hello").await;
+        wait_events(&state, parent, "turn.end", 1).await;
+        assert_eq!(probe.decisions(), 0, "the parent made no call");
+        let child = state
+            .create_child_session(parent, "checker", "run the check")
+            .await
+            .unwrap();
+        wait_events(&state, child, "turn.end", 1).await;
+        assert!(
+            probe.decisions() >= 1,
+            "{review}: the child's call was judged by the decision flow"
+        );
+        if review == "off" {
+            let runs = wait_for_review_runs(&env, 1).await;
+            assert!(
+                !runs.is_empty(),
+                "off: the review flow never ran for the child"
+            );
+            assert!(probe.review().is_empty(), "off: {:#?}", probe.review());
+        } else {
+            assert_eq!(
+                probe.review_requests(1).await.len(),
+                1,
+                "shadow: the child's call was scored"
+            );
+        }
         state.service().close_all().await;
     }
 }

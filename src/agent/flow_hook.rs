@@ -7,7 +7,7 @@ mod captain_evidence;
 pub use captain_evidence::{
     PERMISSION_PROJECTION, RecentMessage, TOOL_TRAIL_CALLS, ToolTrailEntry, captain_messages,
     captain_messages_with_cut, current_request_with_cut, delegation_with_cut, recent_with_cut,
-    tool_trail,
+    tool_trail_with_cut,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -129,6 +129,8 @@ pub struct PermissionCallContext {
     /// The tools already called in the current request and how each ended; no arguments, no
     /// output. Empty when the review is off.
     pub tool_trail: Vec<ToolTrailEntry>,
+    /// Whether older calls were dropped to keep the newest.
+    pub tool_trail_cut: bool,
     /// Whether the consequence review runs beside the decision.
     pub review: crate::settings::ReviewMode,
     /// The host already ran the compiled protected check for this call: its

@@ -76,9 +76,9 @@ The Captain's rating of a remark: useful, noise, or dismissed.
 _Avoid_: feedback, vote
 
 **Current request**:
-What the Captain has asked for since the agent last finished a turn: the agent's message that ended
-that turn, then the Captain's messages and answers since, corrections included. A request already
-carried out is not part of it. The consequence review judges a call against it, never against the
+What the Captain has asked in the turn being run: the agent's message that ended the previous turn,
+then the Captain's messages and answers since, corrections included. A request already carried out
+is not part of it, nor is one the agent never finished (interrupted, provider error, step limit). The consequence review judges a call against it, never against the
 command's name.
 _Avoid_: prompt, task (a task is what the `task` tool delegates)
 

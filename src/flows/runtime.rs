@@ -298,6 +298,7 @@ mod tests {
             current_request: vec![],
             current_request_cut: false,
             tool_trail: vec![],
+            tool_trail_cut: false,
             // Off unless a test asks for the review: the review dials Instinct beside the
             // decision and would change what the other tests count.
             review: crate::settings::ReviewMode::Off,
@@ -2627,6 +2628,185 @@ mod tests {
         (verdict, outcomes)
     }
 
+    /// What goes wrong with the consequence review's request, while the blocking decision's
+    /// requests are answered at once.
+    enum ReviewFault {
+        /// The answer comes only when the test releases it: slower than any budget.
+        Hangs(Arc<tokio::sync::Notify>),
+        /// The provider is unreachable for the review's request.
+        Fails,
+    }
+
+    struct FaultyReview {
+        fault: ReviewFault,
+        decisions: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl DecisionClient for FaultyReview {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities { images: false }
+        }
+        fn identity(&self) -> ClientIdentity {
+            ClientIdentity {
+                model: "fake/faulty-review".into(),
+                variant: None,
+            }
+        }
+        fn decide<'a>(
+            &'a self,
+            request: instinct_flow::protocol::DecisionRequest<'a>,
+            _: &'a CancellationToken,
+            _: Instant,
+        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
+        {
+            let review = request.questions.keys().any(|id| id == "covered");
+            if !review {
+                self.decisions.fetch_add(1, Ordering::SeqCst);
+            }
+            let answers = request
+                .questions
+                .keys()
+                .map(|id| {
+                    (
+                        id.clone(),
+                        instinct_flow::protocol::Answer::Noul { noul: 0.0 },
+                    )
+                })
+                .collect();
+            Box::pin(async move {
+                if review {
+                    match &self.fault {
+                        ReviewFault::Fails => return Err(DecisionError::ProviderError),
+                        ReviewFault::Hangs(release) => release.notified().await,
+                    }
+                }
+                Ok(instinct_flow::protocol::DecisionResponse {
+                    answers,
+                    usage: None,
+                })
+            })
+        }
+    }
+
+    /// Judges one call on a runtime kept between calls, so what one call leaves behind (the
+    /// outage window, the reviews still running) is what the next one meets.
+    async fn judge_on(
+        runtime: &FlowRuntime,
+        ctx: PermissionCallContext,
+        rule: RuleResult,
+    ) -> (FlowVerdict, Vec<tokio::task::JoinHandle<RunOutcome>>) {
+        let (event, context, (protected, host_check)) =
+            FlowRuntime::permission_event(ctx, rule, ContextSnapshot::default());
+        let (verdict, handles, _) = runtime
+            .evaluate_inner(
+                event,
+                context,
+                CancellationToken::new(),
+                Arc::new(NoEffects),
+                Some((rule, protected)),
+                host_check,
+            )
+            .await;
+        (verdict, handles)
+    }
+
+    fn faulty_runtime(fault: ReviewFault) -> (FlowRuntime, Arc<std::sync::atomic::AtomicUsize>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        let decisions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = Arc::new(FaultyReview {
+            fault,
+            decisions: decisions.clone(),
+        });
+        (
+            FlowRuntime::new(store, client, Arc::new(NoEffects)),
+            decisions,
+        )
+    }
+
+    // The review is only a score beside the decision. While the review's runs fed the shared
+    // outage window, one review whose request failed opened the window and the next blocking
+    // decision was failed at once, never asked, and fell back on the flow's fallback instead of
+    // the answer Instinct gives. A review still waiting must not hold the decision back
+    // either, and a burst of calls must not leave more reviews in flight than the runtime
+    // allows, because they share the client's admission with the decisions.
+    #[tokio::test]
+    async fn a_slow_or_failing_review_never_changes_the_verdict_or_delays_it() {
+        use crate::settings::ReviewMode;
+        let within_budget = Duration::from_secs(2);
+
+        // The review's request fails: every call is decided as if there were no review.
+        let (runtime, decisions) = faulty_runtime(ReviewFault::Fails);
+        for call in 0..3 {
+            let started = Instant::now();
+            let (verdict, handles) =
+                judge_on(&runtime, review_ctx(ReviewMode::Shadow), RuleResult::Allow).await;
+            assert!(
+                started.elapsed() < within_budget,
+                "call {call} was held back"
+            );
+            assert_eq!(verdict, FlowVerdict::Allow, "call {call}");
+            for handle in handles {
+                handle.await.unwrap();
+            }
+        }
+        assert_eq!(
+            decisions.load(Ordering::SeqCst),
+            3,
+            "the review's failure never kept a decision from being asked"
+        );
+
+        // The review's answer is slower than the blocking budget: the verdict is out before it.
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (runtime, decisions) = faulty_runtime(ReviewFault::Hangs(release.clone()));
+        let mut running = vec![];
+        for call in 0..2 {
+            let started = Instant::now();
+            let (verdict, handles) =
+                judge_on(&runtime, review_ctx(ReviewMode::Shadow), RuleResult::Allow).await;
+            assert!(
+                started.elapsed() < within_budget,
+                "call {call} was held back"
+            );
+            assert_eq!(verdict, FlowVerdict::Allow, "call {call}");
+            assert!(
+                handles.iter().all(|h| !h.is_finished()),
+                "the verdict of call {call} was out before the review answered"
+            );
+            running.extend(handles);
+        }
+        assert_eq!(decisions.load(Ordering::SeqCst), 2);
+        for _ in &running {
+            release.notify_one();
+        }
+        for handle in running {
+            handle.await.unwrap();
+        }
+
+        // A burst of calls with reviews that never answer keeps the reviews in flight to the cap.
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (runtime, decisions) = faulty_runtime(ReviewFault::Hangs(release.clone()));
+        let calls = REVIEW_RUNS_IN_FLIGHT + 3;
+        let mut running = vec![];
+        for call in 0..calls {
+            let (verdict, handles) =
+                judge_on(&runtime, review_ctx(ReviewMode::Shadow), RuleResult::Allow).await;
+            assert_eq!(verdict, FlowVerdict::Allow, "call {call}");
+            running.extend(handles);
+        }
+        assert_eq!(decisions.load(Ordering::SeqCst), calls);
+        assert!(
+            !running.is_empty() && running.len() <= REVIEW_RUNS_IN_FLIGHT,
+            "{} reviews in flight",
+            running.len()
+        );
+        for _ in &running {
+            release.notify_one();
+        }
+        for handle in running {
+            handle.await.unwrap();
+        }
+    }
+
     fn review_ctx(review: crate::settings::ReviewMode) -> PermissionCallContext {
         use crate::agent::flow_hook::{RecentMessage, ToolTrailEntry};
         let mut ctx = permission_call(PathBuf::from("/project"), false);
@@ -2779,6 +2959,25 @@ mod tests {
             Some(json!(["Change the configuration"]))
         );
         assert_eq!(context.values["conversation.recent"].value, Some(json!([])));
+    }
+
+    // A review told "this is the whole request" when older messages or calls were dropped would
+    // read the gap as nothing happening: each input says whether it was cut.
+    #[test]
+    fn the_request_and_the_trail_say_when_they_were_cut() {
+        use crate::settings::ReviewMode;
+        for (request_cut, trail_cut) in [(false, false), (true, false), (false, true)] {
+            let mut ctx = review_ctx(ReviewMode::Shadow);
+            ctx.current_request_cut = request_cut;
+            ctx.tool_trail_cut = trail_cut;
+            let (_, context, _) =
+                FlowRuntime::permission_event(ctx, RuleResult::Allow, ContextSnapshot::default());
+            assert_eq!(
+                context.values["conversation.current_request"].cut,
+                request_cut
+            );
+            assert_eq!(context.values["conversation.tool_trail"].cut, trail_cut);
+        }
     }
 
     // A flow on `tool.pre_call` that does not block is the way to score a call
@@ -2996,6 +3195,14 @@ impl InputSource for ContextSnapshot {
 /// enough that a transient hiccup does not hide Instinct for long.
 const OUTAGE_COOLDOWN: Duration = Duration::from_secs(30);
 
+/// How many non-blocking runs of permission evaluations may be in flight at once on a runtime.
+/// They share the decision client's admission (16 calls for every host instance) with the
+/// blocking decisions, and a run that waits holds its place until its own 10 s deadline: with
+/// no cap, a burst of tool calls whose reviews stall would leave the decisions to wait for
+/// admission until their budget ends. A call that finds the runs full is decided without the
+/// review: the review is a score, never a condition of the verdict.
+const REVIEW_RUNS_IN_FLIGHT: usize = 8;
+
 #[derive(Default)]
 struct OutageState {
     /// End of the window in which no evaluation dials Instinct.
@@ -3120,6 +3327,7 @@ pub struct FlowRuntime {
     client: Arc<dyn DecisionClient>,
     effects: std::sync::RwLock<Arc<dyn FlowEffects>>,
     outage: Arc<Outage>,
+    review_runs: Arc<tokio::sync::Semaphore>,
     records: Option<Arc<super::records::Records>>,
 }
 impl FlowRuntime {
@@ -3130,6 +3338,7 @@ impl FlowRuntime {
             client: self.client.clone(),
             effects: std::sync::RwLock::new(effects),
             outage: self.outage.clone(),
+            review_runs: self.review_runs.clone(),
             records: self.records.clone(),
         })
     }
@@ -3196,6 +3405,7 @@ impl FlowRuntime {
             client,
             effects: std::sync::RwLock::new(effects),
             outage: Arc::new(Outage::new(OUTAGE_COOLDOWN)),
+            review_runs: Arc::new(tokio::sync::Semaphore::new(REVIEW_RUNS_IN_FLIGHT)),
             records: None,
         }
     }
@@ -3279,6 +3489,17 @@ impl FlowRuntime {
                 run_id: ulid::Ulid::generate().to_string(),
             };
             let flow = flow.clone();
+            // A non-blocking run beside a verdict is a score: it takes a place among the few the
+            // runtime allows, and the call goes without it when they are all taken.
+            let beside_verdict = !header.blocking && permission.is_some();
+            let place = if beside_verdict {
+                match self.review_runs.clone().try_acquire_owned() {
+                    Ok(place) => Some(place),
+                    Err(_) => continue,
+                }
+            } else {
+                None
+            };
             let (client, suppressed) = self.dialable_client();
             let event = event.clone();
             let context = context.clone();
@@ -3289,6 +3510,7 @@ impl FlowRuntime {
             let records = self.records.clone();
             let is_blocking = header.blocking;
             let future = async move {
+                let _place = place;
                 let mut outcome = run(
                     &flow.compiled,
                     &event,
@@ -3328,7 +3550,12 @@ impl FlowRuntime {
                         outcome.trace.fallback_actions = fallback_actions.clone();
                     }
                 }
-                outage.observe(&outcome, effects.as_ref(), suppressed);
+                // The window is the decisions' memory of the endpoint. A score beside the verdict
+                // asks more of Instinct than the decision does and answers on a longer
+                // deadline: its failure says nothing the decision's own outcome will not.
+                if !beside_verdict {
+                    outage.observe(&outcome, effects.as_ref(), suppressed);
+                }
                 if !is_blocking && !cancel.is_cancelled() {
                     let actions = match &outcome.result {
                         RunResult::Success { actions } => actions,
@@ -3594,7 +3821,7 @@ impl FlowRuntime {
             "conversation.tool_trail".into(),
             InputValue {
                 value: Some(json!(ctx.tool_trail)),
-                cut: false,
+                cut: ctx.tool_trail_cut,
                 redacted: false,
             },
         );

@@ -334,6 +334,8 @@ export interface MemoryItemDetail extends MemoryItem {
 }
 
 export interface MemoryFilter {
+  /** The items eligible for this session (active ones unless `status` is set). */
+  session?: string;
   scope?: MemoryScope;
   kind?: MemoryKind;
   status?: MemoryStatus;
@@ -393,4 +395,56 @@ export interface ProjectsBody {
 export interface WideningBody {
   reason: "widening_requires_confirmation";
   affected_projects: MemoryProject[];
+}
+
+// ---------- session ledger (`GET /v1/sessions/{id}/ledger`, `withnav-client-api/src/ledger.rs`) ----------
+
+export type CriterionStatus = "supported" | "contradicted" | "not_checked";
+export type ClaimStatus = "supported" | "contradicted" | "unverified";
+
+export interface CriterionCheck {
+  /** Numbered from 1, like the goal's criteria. */
+  index: number;
+  status: CriterionStatus;
+  /** A quote of the ledger line the status rests on; may be empty. */
+  evidence: string;
+}
+
+export interface ClaimCheck {
+  claim: string;
+  status: ClaimStatus;
+  evidence: string;
+}
+
+/** The last finished goal check of the goal's current revision. */
+export interface GoalCheck {
+  revision: number;
+  /** The turn whose end started the check; a ULID, so it carries the time. */
+  turn_id: string;
+  statuses: CriterionCheck[];
+  claims: ClaimCheck[];
+  note_sent: boolean;
+  note?: string;
+}
+
+export interface SessionGoal {
+  revision: number;
+  objective: string;
+  criteria: string[];
+  status: "active" | "paused";
+}
+
+export interface SessionLedger {
+  through_seq: number | null;
+  turns: { count: number; last?: { turn_id: string; outcome: "done" | "yielded" | "interrupted" | "error" } | null };
+  /** Most recently changed first. */
+  files_touched: { path: string; changes: number; last_turn: number }[];
+  commands: { command: string; outcome: { status: string; code?: number; error?: string }; turn: number }[];
+  /** Most failures first. */
+  repeated_failures: { command: string; count: number; last_error: string }[];
+  last_turn_text?: string | null;
+  open_questions: { kind: "ask" | "secret" | "permission"; id: string; title: string; child_session_id?: string }[];
+  compactions: number;
+  goal?: SessionGoal | null;
+  goal_check?: GoalCheck | null;
 }

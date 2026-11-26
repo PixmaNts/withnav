@@ -1797,7 +1797,13 @@ function receive(event: HostToWebview): void {
       break;
     }
     case "notice": {
-      const notice = el("article", "message control-notice", event.text);
+      // A goal check that queued no note has nothing to say here: the panel reads its statuses.
+      if (event.name === "goal_check" && event.details !== undefined) break;
+      // The Remembered line and the goal note read as themselves, not as a command's output.
+      const own = event.ok !== false && (event.name === "goal_check" || event.name === "remember");
+      const text = own ? event.text.replace(/^\/\w+ · /, "") : event.text;
+      const notice = el("article", "message control-notice", text);
+      if (own) notice.classList.add(event.name === "goal_check" ? "goal-note" : "remembered");
       if (event.operationId) { notice.dataset.operationId = event.operationId; notice.title = `Operation: ${event.operationId}`; }
       if (event.ok === false) notice.classList.add("command-error");
       if (event.details !== undefined) {

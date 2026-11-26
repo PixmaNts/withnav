@@ -13,3 +13,22 @@ test('command outcomes mirror the other clients without JSON', () => {
   for (const name of ['new', 'compact', 'unknown']) assert.equal(outcomeText(name, true, {}), null);
   assert.equal(outcomeText('model', false, {}, 'No'), 'No');
 });
+
+test('memory and goal-check outcomes become the session transcript lines', () => {
+  const item = { id: 'abc123def456', scope: 'project', current_version: 1, current: { title: 'Keep the blue notebook' } };
+  assert.equal(
+    outcomeText('remember', true, { item, scope_label: 'project WithNav' }),
+    'Remembered: "Keep the blue notebook" · project WithNav · undo with /forget abc123def456',
+  );
+  assert.equal(
+    outcomeText('remember', true, { item, notice: 'stored for this session only: project unknown' }),
+    'Remembered: "Keep the blue notebook" · project · undo with /forget abc123def456\nstored for this session only: project unknown',
+  );
+  assert.equal(
+    outcomeText('goal_check', true, { note_sent: true, note: 'Criterion 1 is contradicted by cargo test.' }),
+    'Goal note · automatic observation, not a Captain message\nCriterion 1 is contradicted by cargo test.',
+  );
+  // With notes off nothing reached the agent, so the transcript shows nothing either.
+  assert.equal(outcomeText('goal_check', true, { note_sent: false, statuses: [] }), null);
+});
+

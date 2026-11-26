@@ -14,9 +14,22 @@ requests land in `develop`.
   summary no longer drops dead ends.
 ### Added
 
+- A session view in the web and terminal clients: the web right panel gains a **Session** tab and the terminal column a **Memory** section, showing the goal with each criterion's last check status (and the agent's claims), the ledger, and the memory items the session may be given. The transcript shows `Remembered: "<title>" · <scope> · undo` after `/remember` (on the web, undo invalidates the item) and a goal note, marked as an automatic observation, when a goal check queued one; the editor shows these two lines. The panels read again after each turn, goal change, goal check and register command.
 - Memory and Projects pages in the web client (`#/memory`, `#/projects`, and a sidebar entry with a badge for what waits for you). Browse and filter the register, read every version with a word-by-word comparison, edit, invalidate, restore or change an item's scope with a reason, and undo from a toast. A write refused because the item moved on keeps your draft and shows the newer version; a change that lets more projects read something lists them and asks first. "Needs you" shows the few pending group and session changes; the projects page manages groups, memberships and session links, and a dialog asks which group a new repository belongs to (or "Ask me later").
 - A memory register for Captain-authored knowledge, with scoped items, version history, and confirmation for agent-requested widening or removal from another project. Use `/remember`, `/memory`, and `/forget`. Start `/remember` text with `@global`, `@group:<name>`, `@project`, or `@session` to choose a scope explicitly.
 
+- The goal check now also sets the agent's completion claims in its last answer ("tests pass",
+  "committed", at most five) against the ledger, in the same model call: a claim is supported or
+  contradicted only on a quoted command or file-change line that was sent, and unverified
+  otherwise, never false. The result of every finished check is published to the conversation's
+  clients as a `command.result` named `goal_check` (criteria statuses, claims, whether a note was
+  sent and its text) and the session ledger keeps the last one for the goal's current revision, in
+  the new `goal_check` field. It is shown even with `goal_watch.notes` off: the agent still
+  receives nothing unless notes are on. `goal-checks.jsonl` lines gain a `claims` list.
+- The Instinct calls of the subagent and root watchdogs and of the compaction judge are recorded,
+  one line per call in `instinct-calls.jsonl` in the data directory: caller, conversation, model,
+  the size and SHA-256 of the state (never the state itself), the question names, the answers,
+  the latency, and the error kind, `abandoned` when the caller's deadline passed first.
 - The session ledger: what a conversation did (turns and how the last one ended, files changed,
   shell commands with their exit code, commands that failed more than once, the last answer, the
   questions still waiting), rebuilt from the conversation's stored events on each read, with every
@@ -34,6 +47,9 @@ requests land in `develop`.
   membership change is kept as history.
 ### Fixed
 
+- The compaction judge's request size estimate no longer assumes one Instinct model: it reserves
+  64 bytes for any model identifier, so a longer identifier cannot push a batch past its size
+  bound.
 - A rejected Instinct request now says why, on one line of at most 300 characters. The flow run
   record shows the provider's reason after "provider rejected the request (HTTP 400)" and leaves
   the whole reason out when it echoes a credential, whole or in part. `nav doctor` shows it after
@@ -65,7 +81,8 @@ requests land in `develop`.
   contradicted or not checked; "supported" stands only on a quoted command or file-change line,
   never on the agent's word, and a long goal takes at most half of the input. Each check is one line of
   `goal-checks.jsonl` in the data directory (outcome, statuses with a short evidence quote,
-  latency, size, tokens, model) and is shown nowhere yet. It runs beside the turn, never delaying
+  latency, size, tokens, model); a finished check is also published to the conversation's clients,
+  as the entry on claims says. It runs beside the turn, never delaying
   it: one at a time per conversation, at most ten per hour (the first skip of each hour is
   logged), 60 seconds each; a skipped, timed-out or outdated check is logged as such.
 - Goal watch notes, off by default: with `goal_watch.notes` set to `true`, a goal check that finds a

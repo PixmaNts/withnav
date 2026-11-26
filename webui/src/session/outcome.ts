@@ -5,6 +5,22 @@
 
 import { tokens } from "./reducer";
 
+/** The item a `/remember` result stored, for the transcript's "Remembered" line; null when the result holds none. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function remembered(data: any): { itemId: string; version: number; title: string; scope: string; notice?: string } | null {
+  const item = data?.item;
+  if (typeof item?.id !== "string" || typeof item?.current?.title !== "string" || typeof item?.current_version !== "number") return null;
+  const scope = typeof data.scope_label === "string" ? data.scope_label : typeof item.scope === "string" ? item.scope : "";
+  return { itemId: item.id, version: item.current_version, title: item.current.title, scope, notice: typeof data.notice === "string" ? data.notice : undefined };
+}
+
+/** The note a finished goal check queued for the agent; null when it queued none. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function goalNote(data: any): { text: string; revision: number } | null {
+  if (data?.note_sent !== true || typeof data.note !== "string" || !data.note) return null;
+  return { text: data.note, revision: typeof data.revision === "number" ? data.revision : 0 };
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function outcomeText(name: string, ok: boolean, data: any, error?: string): string | null {
   if (!ok) return error || "the command failed";

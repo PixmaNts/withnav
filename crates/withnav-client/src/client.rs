@@ -11,6 +11,7 @@ use withnav_client_api::{
     attachment::ImageRef,
     event::{McpStatus, PauseToken, SkillsBody},
     ledger::SessionLedger,
+    memory::MemoryItem,
     protocol::{
         AgentsBody, BypassResponse, CommandRequest, CommandResponse, CommandsBody, ContextSnapshot,
         CreateSessionRequest, CreateSessionResponse, LayersBody, ModelsBody, PermissionAnswer,
@@ -222,6 +223,17 @@ impl Client {
     pub async fn ledger(&self, id: &str) -> Result<SessionLedger, String> {
         let request = self.get(&format!("/v1/sessions/{}/ledger", encode_segment(id)));
         self.json(request).await
+    }
+
+    /// The memory register items the session is eligible for (active ones): its own, its
+    /// project's, its groups' and the global ones.
+    pub async fn session_memory(&self, id: &str) -> Result<Vec<MemoryItem>, String> {
+        #[derive(serde::Deserialize)]
+        struct Items {
+            items: Vec<MemoryItem>,
+        }
+        let request = self.get(&format!("/v1/memory?session={}", encode_segment(id)));
+        self.json::<Items>(request).await.map(|body| body.items)
     }
 
     /// Submits a message. Never retried: the server assigns the command id, so

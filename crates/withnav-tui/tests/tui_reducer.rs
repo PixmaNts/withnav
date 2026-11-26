@@ -3134,7 +3134,8 @@ fn every_stream_connection_reads_the_context_back() {
         vec![
             fetch("s1", &s),
             Effect::FetchMcp,
-            Effect::FetchLedger("s1".into())
+            Effect::FetchLedger("s1".into()),
+            Effect::FetchMemory("s1".into())
         ]
     );
 }
@@ -3178,7 +3179,8 @@ fn a_snapshot_missed_during_a_disconnect_is_read_back_on_reconnect() {
         vec![
             fetch("s1", &s),
             Effect::FetchMcp,
-            Effect::FetchLedger("s1".into())
+            Effect::FetchLedger("s1".into()),
+            Effect::FetchMemory("s1".into())
         ]
     );
     let fetched = ClientEvent::Context {
@@ -3444,7 +3446,8 @@ fn each_tab_keeps_its_own_context_epoch() {
         vec![
             fetch("S2", &s),
             Effect::FetchMcp,
-            Effect::FetchLedger("S2".into())
+            Effect::FetchLedger("S2".into()),
+            Effect::FetchMemory("S2".into())
         ]
     );
     assert_eq!(s.tabs[0].conversation.context_epoch, before);
@@ -3459,6 +3462,7 @@ fn each_tab_keeps_its_own_context_epoch() {
             },
             Effect::FetchMcp,
             Effect::FetchLedger("S1".into()),
+            Effect::FetchMemory("S1".into()),
         ]
     );
     assert_eq!(s.tabs[0].conversation.context_epoch, before + 1);

@@ -240,4 +240,41 @@ describe("transcript projection", () => {
       { kind: "notice", key: "n:0", text: "/mcp_tools · MCP tools added: mcp__a__x\nMCP tools removed: mcp__a__y, and 2 more", tone: "info" },
     ]);
   });
+  it("shows a remembered item as a line with its version, and an item-less result as before", () => {
+    seq = 0;
+    const item = { id: "abc123", scope: "project", current_version: 2, current: { title: "Use conventional commits" } };
+    const view = reduceAll(emptyView(), [
+      env("command.result", { operation_id: "o", name: "remember", ok: true, data: { item, scope_label: "project WithNav" } }, "2026-11-25T22:17:00.000Z"),
+      env("command.result", { operation_id: "p", name: "remember", ok: false, error: "usage: /remember [@scope] <text>" }),
+    ]);
+    expect(view.items).toEqual([
+      { kind: "remembered", key: "n:0", itemId: "abc123", version: 2, title: "Use conventional commits", scope: "project WithNav", notice: undefined },
+      { kind: "notice", key: "n:1", text: "/remember · usage: /remember [@scope] <text>", tone: "error" },
+    ]);
+  });
+
+  it("shows a goal note only when the check queued one, marked as an automatic observation", () => {
+    seq = 0;
+    const note = "Goal check (revision 3): criterion 2 is contradicted.";
+    const view = reduceAll(emptyView(), [
+      env("command.result", { operation_id: "o", name: "goal_check", ok: true, data: { revision: 3, turn_id: "T", statuses: [], claims: [], note_sent: false } }),
+      env("command.result", { operation_id: "p", name: "goal_check", ok: true, data: { revision: 3, turn_id: "T", statuses: [], claims: [], note_sent: true, note } }, "2026-11-25T22:17:00.000Z"),
+    ]);
+    expect(view.items).toEqual([{ kind: "goal-note", key: "n:1", text: note, revision: 3, at: "2026-11-25T22:17:00.000Z" }]);
+  });
+
+  it("asks the session panel to read again on a turn end, a goal change, a goal check and the register commands, once each", () => {
+    seq = 0;
+    const epochAfter = (...events: Envelope[]) => reduceAll(emptyView(), events).sessionEpoch;
+    expect(epochAfter(env("turn.end", { turn_id: "t", outcome: "done" }))).toBe(1);
+    expect(epochAfter(env("goal.updated", { revision: 1, objective: "x", criteria: [], status: "active", change: "set" }))).toBe(1);
+    expect(epochAfter(env("goal.cleared", { revision: 1 }))).toBe(1);
+    expect(epochAfter(env("command.result", { operation_id: "o", name: "goal_check", ok: true, data: { revision: 1, turn_id: "T", statuses: [], claims: [], note_sent: false } }))).toBe(1);
+    for (const name of ["remember", "forget", "memory"]) expect(epochAfter(env("command.result", { operation_id: "o", name, ok: true, data: { items: [] } }))).toBe(1);
+    expect(epochAfter(env("command.result", { operation_id: "o", name: "remember", ok: false, error: "no" }))).toBe(0);
+    expect(epochAfter(env("command.result", { operation_id: "o", name: "model", ok: true, data: {} }))).toBe(0);
+    // A replayed envelope is not applied twice.
+    const first = env("turn.end", { turn_id: "t", outcome: "done" });
+    expect(epochAfter(first, first)).toBe(1);
+  });
 });

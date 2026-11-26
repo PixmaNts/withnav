@@ -13,6 +13,8 @@ export const keys = {
   skills: (id: string) => ["skills", id] as const,
   intent: (ws: string) => ["intent", ws] as const,
   context: (id: string) => ["context", id] as const,
+  ledger: (id: string) => ["ledger", id] as const,
+  sessionMemory: (id: string) => ["memory", "session", id] as const,
   settings: (ws: string) => ["settings", ws] as const,
   layers: (ws: string) => ["layers", ws] as const,
   mcp: ["mcp"] as const,
@@ -58,6 +60,14 @@ export const useIntent = (ws: string | null) =>
 /** The context gauge of a live session; `context.updated` is live-only, so a reopened stream lacks it. */
 export const useContextSnapshot = (id: string | null, live: boolean) =>
   useQuery({ queryKey: keys.context(id ?? ""), queryFn: () => api.context(id!), enabled: !!id && live, retry: false });
+
+/** What the session did, from the server's fold of its stored events; read again by the caller on each change. */
+export const useLedger = (id: string | null) =>
+  useQuery({ queryKey: keys.ledger(id ?? ""), queryFn: () => api.ledger(id!), enabled: !!id, retry: false });
+
+/** The register items this session may be given: its own, its project's, its groups' and the global ones. */
+export const useSessionMemory = (id: string | null) =>
+  useQuery({ queryKey: keys.sessionMemory(id ?? ""), queryFn: () => api.memoryItems({ session: id! }), enabled: !!id, retry: false });
 
 export const useSettings = (ws: string | null) =>
   useQuery({ queryKey: keys.settings(ws ?? ""), queryFn: () => api.settings(ws!), enabled: !!ws, retry: false });

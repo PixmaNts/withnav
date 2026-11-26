@@ -6,10 +6,12 @@ import type { Child } from "../session/reducer";
 import type { Chat } from "../session/useChat";
 import { McpAppHost } from "./McpAppHost";
 import { ImageView, type ShownImage } from "./Images";
+import { SessionTab } from "./SessionPanel";
 
-export type PanelTab = "intent" | "agents" | "extensions" | "image" | "app";
+export type PanelTab = "intent" | "session" | "agents" | "extensions" | "image" | "app";
 const BASE_TABS: [PanelTab, string][] = [
   ["intent", "Intent"],
+  ["session", "Session"],
   ["agents", "Crew"],
   ["extensions", "Extensions"],
   ["image", "Image"],
@@ -50,6 +52,7 @@ export function RightPanel({
       </div>
       <div className={`panel-body${tab === "app" && mcpApp ? " app-body" : ""}`} role="tabpanel">
         {tab === "intent" && <IntentTab workspace={workspace} />}
+        {tab === "session" && <SessionTab chat={chat} workspace={workspace} />}
         {tab === "agents" && <AgentsTab chat={chat} onOpenChild={onOpenChild} />}
         {tab === "extensions" && <ExtensionsTab chat={chat} />}
         {tab === "app" && mcpApp && (

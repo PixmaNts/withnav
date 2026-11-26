@@ -117,6 +117,23 @@ pub struct SessionHandle {
 
 pub use crate::bus::event::{SkillEntry, SkillsBody};
 
+/// What the Captain answers a permission request with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptainAnswer {
+    Decide(crate::agent::permissions::PermissionDecision),
+    /// "Hold for me": stop the parallel review and keep the card for the Captain.
+    Hold,
+}
+
+/// How a Captain's answer was taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerOutcome {
+    Accepted,
+    Held,
+    /// The parallel review had already allowed the call: it runs, once.
+    AlreadyStarted,
+}
+
 /// The model selection of a live session, as the service sees it: the alias,
 /// its saved resolution, the variant chosen on it and what it offers are one
 /// value, so a reader never combines the alias of one selection with the
@@ -343,7 +360,7 @@ pub struct Service {
     pub(super) sessions: Arc<Mutex<HashMap<SessionId, SessionHandle>>>,
     pub(crate) config: Arc<SessionConfig>,
     /// The conversation-history store: every conversation is persisted.
-    history: Arc<super::store::HistoryStore>,
+    pub(super) history: Arc<super::store::HistoryStore>,
     /// Image attachments: its own connection to the history database, so blobs never queue
     /// behind the history writer. `None` when the connection could not be opened.
     attachments: Option<Arc<super::attachments::AttachmentStore>>,
@@ -366,6 +383,8 @@ pub struct Service {
     pub client_cache: Arc<crate::provider::openai::ClientCache>,
     /// The shadow goal checks of every root session: the one running, the recent starts.
     pub(super) goal_checks: Arc<super::goal_check::GoalChecks>,
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+    pub(super) permission_reviews: Arc<super::permission_review::PermissionReviews>,
     /// Test seam: parks a command run between its work and the publication
     /// of its result, to interleave lifecycle changes deterministically.
     /// Test seam: parks a model switch after its store write and before its
@@ -662,6 +681,7 @@ impl Service {
             catalog,
             client_cache,
             goal_checks: Arc::default(),
+            permission_reviews: Arc::default(),
             #[cfg(test)]
             install_barrier: Arc::default(),
             #[cfg(test)]
@@ -1507,9 +1527,39 @@ impl Service {
         request_id: Ulid,
         decision: crate::agent::permissions::PermissionDecision,
     ) -> Result<(), ServerError> {
-        decision
-            .validate_message()
-            .map_err(|message| ServerError::MalformedBody(message.into()))?;
+        match self
+            .answer_permission_bound(
+                session_id,
+                request_id,
+                CaptainAnswer::Decide(decision),
+                None,
+                None,
+            )
+            .await?
+        {
+            AnswerOutcome::AlreadyStarted => Err(ServerError::PermissionStale),
+            AnswerOutcome::Accepted | AnswerOutcome::Held => Ok(()),
+        }
+    }
+
+    /// [`Self::answer_permission`] for the Captain's route: the answer may name the call digest
+    /// and the turn it was given for (another one is [`ServerError::PermissionStale`]), and it
+    /// may be "Hold for me", which stops the parallel review and keeps the card. An answer that
+    /// comes after the review already allowed the call is [`AnswerOutcome::AlreadyStarted`]:
+    /// the call runs, and nothing says it was undone.
+    pub async fn answer_permission_bound(
+        &self,
+        session_id: SessionId,
+        request_id: Ulid,
+        answer: CaptainAnswer,
+        call_digest: Option<String>,
+        turn_id: Option<Ulid>,
+    ) -> Result<AnswerOutcome, ServerError> {
+        if let CaptainAnswer::Decide(decision) = &answer {
+            decision
+                .validate_message()
+                .map_err(|message| ServerError::MalformedBody(message.into()))?;
+        }
         let handle = self.routable_handle(session_id).await?;
         if handle.parent_session_id.is_some() {
             return Err(ServerError::ChildReadOnly);
@@ -1545,9 +1595,44 @@ impl Service {
                 ServerError::PermissionStale
             });
         };
+        if !handle
+            .status
+            .permission_binding_matches(request_id, call_digest.as_deref(), turn_id)
+        {
+            return Err(ServerError::PermissionStale);
+        }
+        let decision = match answer {
+            CaptainAnswer::Hold => {
+                let reviewed = handle
+                    .status
+                    .waiting_request()
+                    .filter(|waiting| waiting.request_id == request_id);
+                return match handle.status.hold_permission(request_id) {
+                    runtime::HoldOutcome::Held => {
+                        if let Some(waiting) = reviewed.filter(|w| w.review_state.is_some()) {
+                            super::permission_review::publish_held(
+                                &handle.sequencer,
+                                request_id,
+                                waiting.tool_call_id,
+                                None,
+                            );
+                        }
+                        Ok(AnswerOutcome::Held)
+                    }
+                    runtime::HoldOutcome::AlreadyStarted => Ok(AnswerOutcome::AlreadyStarted),
+                    runtime::HoldOutcome::Stale => Err(ServerError::PermissionStale),
+                };
+            }
+            CaptainAnswer::Decide(decision) => decision,
+        };
         // refused at once, not after the resumed turn.
         if !handle.status.claim_permission(request_id) {
-            return Err(ServerError::PermissionStale);
+            return match handle.status.permission_claimed_by(request_id) {
+                Some(crate::agent::permissions::PermissionOrigin::Metacognition) => {
+                    Ok(AnswerOutcome::AlreadyStarted)
+                }
+                _ => Err(ServerError::PermissionStale),
+            };
         }
         let (reply, accepted) = tokio::sync::oneshot::channel();
         if handle
@@ -1564,7 +1649,7 @@ impl Service {
             return Err(ServerError::PermissionStale);
         }
         match accepted.await {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(())) => Ok(AnswerOutcome::Accepted),
             Ok(Err(_)) => {
                 handle.status.release_permission(request_id);
                 Err(ServerError::PermissionStale)
@@ -3311,6 +3396,17 @@ impl Service {
             actor.system_prompt.clone(),
         );
         let skills = actor.skills.clone();
+        // Installed before the runtime starts, so the first question already finds it.
+        if child_parent.is_none() {
+            self.install_permission_review(
+                &status,
+                &sequencer,
+                &session_cancel,
+                session_id,
+                &workspace,
+                actor.review,
+            );
+        }
         let runtime_task = Arc::new(Mutex::new(Some(runtime::spawn_with_completion(
             session_id,
             actor,

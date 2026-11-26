@@ -181,6 +181,7 @@ pub fn app(state: AppState) -> Router {
             get(super::settings::get).put(super::settings::put),
         )
         .route("/v1/gateways/{name}/test", post(super::settings::test))
+        .route("/v1/waiting", get(super::waiting::get_waiting))
         .route("/v1/sessions", get(list_sessions).post(create_session))
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/messages", post(post_message))
@@ -1108,6 +1109,13 @@ pub struct AnswerPermissionRequest {
     /// What the model reads back on a denial.
     #[serde(default)]
     pub message: Option<String>,
+    /// The `call_digest` of the `permission.requested` the answer was given for: another
+    /// one is `409 permission_stale`.
+    #[serde(default)]
+    pub call_digest: Option<String>,
+    /// The `turn_id` of that `permission.requested`, checked the same way.
+    #[serde(default)]
+    pub turn_id: Option<Ulid>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -1120,6 +1128,8 @@ pub enum DecisionKind {
     AllowConfigSession,
     AllowSkillMachine,
     Deny,
+    /// "Hold for me": stop the parallel review and keep the card.
+    Hold,
 }
 
 async fn list_secrets(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -1198,26 +1208,53 @@ async fn answer_permission(
         ));
     }
     let decision = match body.decision {
-        DecisionKind::AllowOnce => PermissionDecision::AllowOnce,
-        DecisionKind::AllowAlways => PermissionDecision::AllowAlways,
-        DecisionKind::Reject => PermissionDecision::Reject {
+        DecisionKind::Hold => None,
+        DecisionKind::AllowOnce => Some(PermissionDecision::AllowOnce),
+        DecisionKind::AllowAlways => Some(PermissionDecision::AllowAlways),
+        DecisionKind::Reject => Some(PermissionDecision::Reject {
             message: body.message.filter(|m| !m.trim().is_empty()),
-        },
-        DecisionKind::AllowFolder => PermissionDecision::AllowFolder,
-        DecisionKind::AllowConfigSession => PermissionDecision::AllowConfigSession,
+        }),
+        DecisionKind::AllowFolder => Some(PermissionDecision::AllowFolder),
+        DecisionKind::AllowConfigSession => Some(PermissionDecision::AllowConfigSession),
         DecisionKind::AllowSkillMachine => return error_response(ServerError::PermissionStale),
-        DecisionKind::Deny => PermissionDecision::Deny {
+        DecisionKind::Deny => Some(PermissionDecision::Deny {
             message: body
                 .message
                 .filter(|m| !m.trim().is_empty())
                 .unwrap_or_else(|| DEFAULT_DENIAL.to_string()),
-        },
+        }),
+    };
+    let answer = match decision {
+        Some(decision) => crate::session::CaptainAnswer::Decide(decision),
+        None => crate::session::CaptainAnswer::Hold,
     };
     match state
-        .answer_permission(session_id, request_id, decision)
+        .answer_permission_bound(
+            session_id,
+            request_id,
+            answer,
+            body.call_digest,
+            body.turn_id,
+        )
         .await
     {
-        Ok(()) => Json(AcceptedBody { accepted: true }).into_response(),
+        Ok(crate::session::AnswerOutcome::Accepted) => {
+            Json(AcceptedBody { accepted: true }).into_response()
+        }
+        Ok(crate::session::AnswerOutcome::Held) => {
+            Json(json!({"accepted": true, "held": true})).into_response()
+        }
+        // The review allowed the call before this answer: it already started, and the answer
+        // never implies that it was undone.
+        Ok(crate::session::AnswerOutcome::AlreadyStarted) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "the call already started: the review allowed it once",
+                "reason": "permission_already_started",
+                "approved_by": "metacognition",
+            })),
+        )
+            .into_response(),
         Err(err) => error_response(err),
     }
 }

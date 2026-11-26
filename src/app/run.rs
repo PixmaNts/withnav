@@ -366,6 +366,7 @@ pub fn event_to_ui(envelope: &EventEnvelope) -> Option<UiEvent> {
         | EventKind::SessionAgentChanged
         | EventKind::PermissionRequested
         | EventKind::PermissionResolved
+        | EventKind::PermissionReview
         | EventKind::ModelChanged
         | EventKind::SubagentSpawned
         | EventKind::SubagentDone

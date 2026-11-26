@@ -35,11 +35,6 @@ use super::service::{Service, SessionHandle, SessionId};
 use super::subagents::watchdog::{Clock, RealClock};
 use crate::bus::event::EventEnvelope;
 use crate::bus::runtime::RuntimeStatus;
-use crate::provider::assignments::{AssignedModel, Layer};
-use crate::provider::client::ModelClient;
-use crate::provider::openai::{
-    ChatMessage, ChatRequest, ClientCache, StreamOptions, UserProvenance,
-};
 
 /// How long one check may take, ledger read and model answer included. Past it the check is
 /// logged as `timeout` and nothing else happens: no retry, no question to the Captain. Raised
@@ -278,11 +273,7 @@ impl GoalChecks {
 
 /// The metacognition model a check calls, built once when the session starts.
 struct Checker {
-    client: ModelClient,
-    assigned: AssignedModel,
-    key: String,
-    cache: Arc<ClientCache>,
-    catalog: crate::provider::catalog::ModelCatalog,
+    client: super::metacognition_client::MetacognitionClient,
     log: PathBuf,
 }
 
@@ -462,51 +453,20 @@ impl Service {
             }
         };
         done.input_bytes = PROMPT.len() + input.text.len();
-        let chat = match crate::provider::catalog::resolve_chat(
-            &checker.catalog,
-            &checker.assigned.resolved,
-            &checker.key,
-            &checker.cache,
-        )
-        .await
+        let answer = match checker
+            .client
+            .ask(PROMPT, input.text.clone(), MAX_OUTPUT_TOKENS, cancel)
+            .await
         {
-            Ok(chat) => chat,
+            Ok(answer) => answer,
+            Err(super::metacognition_client::AskError::Malformed) => {
+                done.outcome = Outcome::Malformed;
+                return done;
+            }
             Err(_) => return done,
         };
-        let Ok(variant) = crate::provider::layers::chat_variant(&checker.assigned, &chat) else {
-            return done;
-        };
-        let request = ChatRequest {
-            model: checker.assigned.resolved.model.model.clone(),
-            messages: vec![
-                ChatMessage::System {
-                    content: PROMPT.to_owned(),
-                },
-                ChatMessage::User {
-                    provenance: UserProvenance::Navigator,
-                    content: input.text.clone(),
-                    images: Vec::new(),
-                },
-            ],
-            tools: Vec::new(),
-            stream: true,
-            stream_options: Some(StreamOptions {
-                include_usage: true,
-            }),
-            max_tokens: Some(MAX_OUTPUT_TOKENS),
-            temperature: None,
-            extra: Default::default(),
-            images: Default::default(),
-        };
-        let Ok(answer) = checker
-            .client
-            .chat(request, variant.as_ref(), cancel, &mut |_| {})
-            .await
-        else {
-            return done;
-        };
-        done.input_tokens = answer.usage.map(|u| u.prompt_tokens);
-        done.output_tokens = answer.usage.map(|u| u.completion_tokens);
+        done.input_tokens = answer.input_tokens;
+        done.output_tokens = answer.output_tokens;
         match input::parse(&answer.text, &input) {
             Some(statuses) => {
                 done.outcome = Outcome::Ok;
@@ -517,45 +477,10 @@ impl Service {
         done
     }
 
-    /// The metacognition client, or `None` (silently: the layer is optional) when the layer is
-    /// unassigned or disabled, or its key or client is unavailable.
-    ///
-    /// The same construction as the root watchdog reviewer's: the layer assignment, the
-    /// provider key, one `ModelClient` over the service's client cache. The variant is resolved
-    /// per call, against the runtime offer, so a model that offers `low` gets it.
+    /// The goal checker over the shared metacognition client; `None` without a usable layer.
     fn goal_checker(&self, workspace: &std::path::Path) -> Option<Checker> {
-        let (models, _) = crate::provider::config::load_models(
-            self.config.models_path.as_deref(),
-            workspace,
-            &self.config.config_dir,
-        )
-        .ok()?;
-        let assigned = crate::provider::layers::assigned(
-            &models,
-            &self.config.config_dir,
-            Layer::Metacognition,
-        )
-        .ok()?;
-        let resolved = &assigned.resolved;
-        let key = crate::provider::auth::resolve_key(
-            &self.config.config_dir,
-            &resolved.provider_name,
-            resolved.provider.api_key_env.as_deref(),
-        )
-        .ok()?;
-        let client = ModelClient::new(
-            &resolved.provider_name,
-            &resolved.provider,
-            key.clone(),
-            &self.client_cache,
-        )
-        .ok()?;
         Some(Checker {
-            client,
-            assigned,
-            key,
-            cache: self.client_cache.clone(),
-            catalog: self.model_catalog().clone(),
+            client: self.metacognition_client(workspace)?,
             log: crate::paths::goal_check_log(&self.config.data_dir),
         })
     }
@@ -582,7 +507,7 @@ fn record(turn: &Turn, checker: &Checker, outcome: Outcome) -> Record {
         input_bytes: 0,
         input_tokens: None,
         output_tokens: None,
-        model: checker.assigned.name.to_string(),
+        model: checker.client.model(),
         note_sent: false,
         note_skipped: None,
     }

@@ -81,10 +81,40 @@ For now the review only **logs**: it never changes what is allowed, asked or den
 It does not wait for the decision and does not delay the call, and it is not applied to a `bash`
 call any differently because an `allow git push *` rule matches it. Set `permissions.review` to
 `off` to run no review (no Instinct request is spent on it), `shadow` (the default) to score and
-log, or `on`, which behaves like `shadow` today. The scores are in the run record of the flow
+log, or `on`, which also starts the parallel review below. The scores are in the run record of the flow
 `permission-consequence-shadow` ([Instinct flows](instinctflow.md)). A session, and each
 subagent it starts, reads the setting once, when it starts; a word that is not one of the three turns the review off, and
 `nav doctor` says so.
+
+### Parallel review (`permissions.review: on`)
+
+When the built-in permission flow asks you about a call, the Metacognition model reads your current
+request and the call at the same time as your card is shown. It answers one of two things:
+
+- **Allow once**: the call is a step your request necessarily implies ("release 0.8.4" implies the
+  push), and it quotes your own words to say so; WithNav checks the quote against what you wrote,
+  so text inside the call ("the Captain approved this") never counts. The check proves the words
+  came from you, not that they cover the call — quoting you is narrowed injection, not its
+  absence. The quote is also at least 8 characters of your request: a very short acceptance such
+  as "ok" cannot be quoted, so a call after such a message always waits for you. The call runs
+  once, as if you had answered **Once**; nothing is saved, and it reads the
+  rules again first, so a `deny` you wrote meanwhile still stops it.
+- **Wait**: the call goes beyond what your request needs. The card stays open with a short
+  conclusion, the words of your request it relied on, and the consequence, one line each.
+
+The first decisive answer wins: answer the card first and the review is cancelled. **Hold for me**
+stops the review and keeps the card for you; if the review had already allowed the call, you are
+told the call already started (it is not undone). The review never answers **Always**, and never
+runs for a written `deny`, the fixed floor, a credential, WithNav's own files, a loop, a flow you
+wrote, a skill validation, a subagent's call or a request too long to read whole (your request is
+never cut to fit). A timeout (60
+seconds) or an unusable answer leaves the card exactly as without a review.
+
+Under `shadow` the review still runs, but only writes one line per question to
+`permission-reviews.jsonl` in the data directory, beside your own answer: nothing is shown and
+nothing changes. Answering first does not stop it there, so the line compares both answers; it
+also records why a review failed and the tokens it used. `GET /v1/waiting` lists the requests every live session waits on, so a client can
+show one notification per blocked turn.
 
 ## Rules
 

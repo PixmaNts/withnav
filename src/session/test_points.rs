@@ -51,6 +51,10 @@ pub enum ParkPoint {
     LifecycleClaim,
     /// A shutdown parks while its snapshot is taken.
     ShutdownSnapshot,
+    /// A parallel permission review that allowed the call parks before it claims the request.
+    ReviewBeforeClaim,
+    /// A parallel permission review parks after its claim, before its answer reaches the runtime.
+    ReviewAfterClaim,
 }
 
 /// A deterministic pause point inside a child admission flow.
@@ -225,6 +229,16 @@ pub(crate) struct TestPoints {
     /// Injected root-publication failure, consumed on the next publication.
     #[cfg(any(test, feature = "test-support"))]
     root_publication_failure: Arc<std::sync::atomic::AtomicBool>,
+    /// Arming slot for the review-before-claim park.
+    #[cfg(any(test, feature = "test-support"))]
+    review_before_claim_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    /// Arming slot for the review-after-claim park.
+    #[cfg(any(test, feature = "test-support"))]
+    review_after_claim_barrier: Arc<Mutex<Option<ChildPreparationBarrier>>>,
+    /// The next parallel review's answer is sent for a request the runtime does not hold, so
+    /// the runtime refuses it, one shot.
+    #[cfg(any(test, feature = "test-support"))]
+    refuse_review_answer: Arc<std::sync::atomic::AtomicBool>,
     /// Injected child start/publication failure: `Some(true)` fails the
     /// publication pass, `Some(false)` fails the start pass; each is
     /// consumed once.
@@ -239,6 +253,22 @@ impl TestPoints {
     pub(super) fn pause_skill_loading(&self, barrier: ChildPreparationBarrier) {
         *self
             .skill_loading_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    /// Arms the park before a parallel review claims its request.
+    pub(super) fn pause_review_before_claim(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .review_before_claim_barrier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
+    }
+
+    /// Arms the park after a parallel review claimed its request.
+    pub(super) fn pause_review_after_claim(&self, barrier: ChildPreparationBarrier) {
+        *self
+            .review_after_claim_barrier
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(barrier);
     }
@@ -479,6 +509,8 @@ impl TestPoints {
             ParkPoint::WatchdogTeardown => &self.watchdog_teardown_barrier,
             ParkPoint::LifecycleClaim => &self.lifecycle_claim_barrier,
             ParkPoint::ShutdownSnapshot => &self.shutdown_snapshot_barrier,
+            ParkPoint::ReviewBeforeClaim => &self.review_before_claim_barrier,
+            ParkPoint::ReviewAfterClaim => &self.review_after_claim_barrier,
         };
         let barrier = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(barrier) = barrier {
@@ -512,6 +544,18 @@ impl TestPoints {
         } else {
             false
         }
+    }
+
+    /// Arms the refusal of the next review answer.
+    pub(super) fn refuse_review_answer(&self) {
+        self.refuse_review_answer
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Consumes an armed review-answer refusal.
+    pub(super) fn take_review_answer_refusal(&self) -> bool {
+        self.refuse_review_answer
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 
     /// Consumes an armed child-start failure.
@@ -587,6 +631,11 @@ impl TestPoints {
     /// No-op: the feature is off, no failure is armed.
     pub(super) fn take_child_start_failure(&self) -> Option<bool> {
         None
+    }
+
+    /// No-op: the feature is off, no refusal is armed.
+    pub(super) fn take_review_answer_refusal(&self) -> bool {
+        false
     }
 }
 

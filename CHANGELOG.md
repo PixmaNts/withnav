@@ -15,6 +15,24 @@ requests land in `develop`.
 - Permission history keeps the newest 20 000 decisions instead of 1 000.
 ### Added
 
+- Parallel permission review (`permissions.review: on`): when the built-in permission flow asks
+  the Captain about a call, one tool-free Metacognition review reads the current request and the
+  call beside the card, at most 16 KiB, 60 s, never retried. It can only allow the call once (a
+  step the request necessarily implies) or wait; the first decisive answer wins. An allowed call
+  reads the rules again before it runs, so a deny written meanwhile still stops it. "Hold for me"
+  (`{"decision":"hold"}` on the answer route) stops the review and keeps the card; after the
+  review's claim it, and any Captain answer, gets `409 permission_already_started`. Answers may
+  name the request's `call_digest` and `turn_id` (another one is `409 permission_stale`). Never
+  for a written deny, the floor, a credential, a protected check, a loop, a custom flow's ask, a
+  failure fallback, a skill, a subagent's call or a cut request. Under `shadow`, the default, the
+  review only writes `permission-reviews.jsonl` beside the Captain's own answer (the Captain
+  answering first does not stop it; each line has the outcome class and token usage); `off` makes
+  no call. An `allow_once` must quote the Captain's own words verbatim, checked by the host, or it
+  counts as `wait`; the Captain's request is never cut to fit the 16 KiB input (no review then);
+  a review answer the runtime refuses gives its claim back. New durable event `permission.review` (28 kinds), `permission.requested` gains
+  `call_digest` and `turn_id`, `permission.resolved` may carry `approved_by: "metacognition"` and
+  the review's three-line reasoning, and `GET /v1/waiting` lists the requests live sessions wait
+  on, for one notification per blocked turn. ADR 0015 is amended.
 - The setting `permissions.review` (`off`, `shadow` or `on`, default `shadow`) and a non-blocking
   built-in flow, `permission-consequence-shadow`, that scores beside each call's permission decision
   what the whole call changes and whether the Captain's current request covers it, so a release that

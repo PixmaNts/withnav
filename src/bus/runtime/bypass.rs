@@ -120,7 +120,10 @@ impl super::RuntimeStatus {
         let Some(request) = actor.pending_permission() else {
             return;
         };
-        if !self.claim_permission(request.id) {
+        if !self.claim_permission_as(
+            request.id,
+            crate::agent::permissions::PermissionOrigin::Bypass,
+        ) {
             return;
         }
         let (reply, _) = oneshot::channel();

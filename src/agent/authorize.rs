@@ -133,21 +133,14 @@ impl Evidence {
         }
         let (delegation, delegation_cut) = delegation_with_cut(transcript);
         let (recent, recent_cut) = recent_with_cut(transcript);
-        // Only the consequence review reads these: with the review off the transcript is not
-        // walked for them.
-        let (current_request, current_request_cut, tool_trail, tool_trail_cut) = if review
-            == ReviewMode::Off
-        {
-            (Vec::new(), false, Vec::new(), false)
+        // Coverage needs the current request even when the second opinion is off.
+        let (current_request, request_cut) = current_request_with_cut(transcript, turn_start);
+        let current_request_cut = request_cut || turn_start_lost;
+        let (tool_trail, tool_trail_cut) = if review == ReviewMode::Off {
+            (Vec::new(), false)
         } else {
-            let (request, cut) = current_request_with_cut(transcript, turn_start);
             let (trail, trail_cut) = tool_trail_with_cut(transcript, turn_start, TOOL_TRAIL_CALLS);
-            (
-                request,
-                cut || turn_start_lost,
-                trail,
-                trail_cut || turn_start_lost,
-            )
+            (trail, trail_cut || turn_start_lost)
         };
         Self {
             captain_messages,
@@ -666,9 +659,14 @@ fn reviewable(
         && decision.trace.protected_check.is_none()
         && decision.trace.flow_verdict == Some(decide::FlowAnswer::AskCaptain.as_str())
         && !asks.is_empty()
-        && asks
-            .iter()
-            .all(|run| run.flow == "permission-default" && !run.used_rule)
+        && asks.iter().all(|run| {
+            run.flow == "permission-default"
+                && !run.used_rule
+                && !run
+                    .scores
+                    .get("touches_credentials")
+                    .is_some_and(|score| *score >= 0.6)
+        })
         && call.name != "skill"
         && actor
             .parent_captain

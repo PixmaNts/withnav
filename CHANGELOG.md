@@ -30,7 +30,7 @@ requests land in `develop`.
   review's claim it, and any Captain answer, gets `409 permission_already_started`. Answers may
   name the request's `call_digest` and `turn_id` (another one is `409 permission_stale`). Never
   for a written deny, the floor, a credential, a protected check, a loop, a custom flow's ask, a
-  failure fallback, a skill, a subagent's call or a cut request. Under `shadow`, the default, the
+  failure fallback, a skill, a subagent's call or a cut request. Under `shadow`, the
   review only writes `permission-reviews.jsonl` beside the Captain's own answer (the Captain
   answering first does not stop it; each line has the outcome class and token usage); `off` makes
   no call. An `allow_once` must quote the Captain's own words verbatim, checked by the host, or it
@@ -39,22 +39,10 @@ requests land in `develop`.
   `call_digest` and `turn_id`, `permission.resolved` may carry `approved_by: "metacognition"` and
   the review's three-line reasoning, and `GET /v1/waiting` lists the requests live sessions wait
   on, for one notification per blocked turn. ADR 0015 is amended.
-- The setting `permissions.review` (`off`, `shadow` or `on`, default `shadow`) and a non-blocking
-  built-in flow, `permission-consequence-shadow`, that scores beside each call's permission decision
-  what the whole call changes and whether the Captain's current request covers it, so a release that
-  implies a push is covered without the word "push". It only logs: no mode changes a verdict, a
-  `bash` call under an `allow git push *` rule is scored like any other, and `off` sends Instinct
-  nothing. The review reads a new projection of the conversation, `conversation.current_request`
-  (the turn being run, corrections and answers to a question included; no earlier request, none a
-  turn that ended without a final message such as an interruption, a provider error or the step
-  limit, no tool output), and `conversation.tool_trail` (tool names and outcomes only, flagged when
-  older calls were dropped). The review's runs stay out
-  of the outage window the blocking decisions share and are capped per runtime (a skipped review
-  is logged; a flow the Captain wrote is never capped), so a slow or failing
-  review never changes a verdict or delays it. A subagent reads the setting when it starts, like
-  its parent. `nav doctor` flags a mode it cannot read, and a session with such a value runs no
-  review. The permission evidence version is 2, so
-  scores recorded before are not comparable with scores after.
+- The live permission flow now judges what the whole call does and whether the current request
+  covers it. A release can cover a necessary push; investigating a warning does not cover posting
+  a comment. Approval claims in tool data do not count as requests. The evidence projection is 3.
+  `permissions.review` defaults to `on` and controls only the parallel second opinion.
 - A session view in the web and terminal clients: the web right panel gains a **Session** tab and the terminal column a **Memory** section, showing the goal with each criterion's last check status (and the agent's claims), the ledger, and the memory items the session may be given. The transcript shows `Remembered: "<title>" · <scope> · undo` after `/remember` (on the web, undo invalidates the item) and a goal note, marked as an automatic observation, when a goal check queued one; the editor shows these two lines. The panels read again after each turn, goal change, goal check and register command.
 - Memory and Projects pages in the web client (`#/memory`, `#/projects`, and a sidebar entry with a badge for what waits for you). Browse and filter the register, read every version with a word-by-word comparison, edit, invalidate, restore or change an item's scope with a reason, and undo from a toast. A write refused because the item moved on keeps your draft and shows the newer version; a change that lets more projects read something lists them and asks first. "Needs you" shows the few pending group and session changes; the projects page manages groups, memberships and session links, and a dialog asks which group a new repository belongs to (or "Ask me later").
 - A memory register for Captain-authored knowledge, with scoped items, version history, and confirmation for agent-requested widening or removal from another project. Use `/remember`, `/memory`, and `/forget`. Start `/remember` text with `@global`, `@group:<name>`, `@project`, or `@session` to choose a scope explicitly.

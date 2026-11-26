@@ -78,15 +78,14 @@ _Avoid_: feedback, vote
 **Current request**:
 What the Captain has asked in the turn being run: the agent's message that ended the previous turn,
 then the Captain's messages and answers since, corrections included. A request already carried out
-is not part of it, nor is one the agent never finished (interrupted, provider error, step limit). The consequence review judges a call against it, never against the
+is not part of it, nor is one the agent never finished (interrupted, provider error, step limit). The live permission flow judges a call against it, never against the
 command's name.
 _Avoid_: prompt, task (a task is what the `task` tool delegates)
 
-**Consequence review**:
-A log-only Instinct reading of a call beside its permission decision: does the whole call only read
-or change what can be put back, would it change nothing, or does the current request cover it
-(a release covers the push it implies). It never changes a verdict. `permissions.review` is `off`,
-`shadow` (default) or `on`.
+**Consequence criterion**:
+The live Instinct permission decision asks what the whole call changes and whether the current
+request covers it. A release can cover the push it implies. `permissions.review` controls only
+the parallel review (`off`, `shadow`, or `on` by default).
 _Avoid_: approval, second opinion
 
 **Parallel review**:

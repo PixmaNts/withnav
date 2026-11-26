@@ -908,18 +908,18 @@ mod tests {
             ),
             (false, RuleResult::Ask, vec![], false),
             // Under an allow rule a dangerous call asks unless it was requested.
-            (false, RuleResult::Allow, vec![("danger", 0.5)], false),
+            (false, RuleResult::Allow, vec![("destroys", 0.6)], false),
             (
                 false,
                 RuleResult::Allow,
-                vec![("danger", 0.5), ("requested", 0.6)],
+                vec![("destroys", 0.6), ("requested", 0.6)],
                 true,
             ),
             // A dangerous unrequested call is never let through as a read.
             (
                 false,
                 RuleResult::Allow,
-                vec![("danger", 0.5), ("read_only", 1.0), ("recoverable", 1.0)],
+                vec![("destroys", 0.6), ("read_only", 1.0), ("recoverable", 1.0)],
                 false,
             ),
             (false, RuleResult::Allow, vec![], true),
@@ -1019,12 +1019,25 @@ mod tests {
         }
     }
 
-    /// Each round trip to Instinct adds its latency to the permission decision, and the overall
-    /// flow deadline can cut a second or third one: the questions of one path are asked together.
+    /// Outcome questions batch separately from current-request coverage.
     #[tokio::test]
-    async fn the_builtin_flow_asks_the_questions_of_a_path_in_one_request() {
-        let ask_path = ["read_only", "recoverable", "requested"];
-        let allow_path = ["danger", "requested"];
+    async fn the_builtin_flow_separates_coverage_from_outcome_questions() {
+        let ask_path = [
+            "external_effect",
+            "inert",
+            "read_only",
+            "recoverable",
+            "requested",
+            "self_advocating",
+            "touches_credentials",
+        ];
+        let allow_path = [
+            "destroys",
+            "external_effect",
+            "requested",
+            "self_advocating",
+            "touches_credentials",
+        ];
         for (rule, answers, batch, allowed) in [
             (RuleResult::None, vec![], &ask_path[..], false),
             (
@@ -1058,26 +1071,26 @@ mod tests {
             // A danger answer is not read without an allow rule.
             (
                 RuleResult::None,
-                vec![("danger", 1.0)],
+                vec![("destroys", 1.0)],
                 &ask_path[..],
                 false,
             ),
             (RuleResult::Allow, vec![], &allow_path[..], true),
             (
                 RuleResult::Allow,
-                vec![("danger", 0.49)],
+                vec![("destroys", 0.59)],
                 &allow_path[..],
                 true,
             ),
             (
                 RuleResult::Allow,
-                vec![("danger", 0.5)],
+                vec![("destroys", 0.6)],
                 &allow_path[..],
                 false,
             ),
             (
                 RuleResult::Allow,
-                vec![("danger", 0.5), ("requested", 0.6)],
+                vec![("destroys", 0.6), ("requested", 0.6)],
                 &allow_path[..],
                 true,
             ),
@@ -1103,7 +1116,10 @@ mod tests {
                 result.verdict
             );
             let requests = client.1.lock().unwrap().clone();
-            assert_eq!(requests, vec![batch.to_vec()], "{rule:?}");
+            assert!(requests.iter().any(|r| r == &["requested"]));
+            let mut ids: Vec<_> = requests.into_iter().flatten().collect();
+            ids.sort();
+            assert_eq!(ids, batch, "{rule:?}");
         }
     }
 
@@ -1164,6 +1180,7 @@ mod tests {
                 text: "yes go".into(),
             },
         ];
+        call.current_request = call.recent.clone();
         call
     }
 
@@ -2098,7 +2115,7 @@ mod tests {
             event.payload["projection"],
             json!(crate::agent::flow_hook::PERMISSION_PROJECTION)
         );
-        assert_eq!(event.payload["projection"], json!(2));
+        assert_eq!(event.payload["projection"], json!(3));
 
         let dir = tempfile::tempdir().unwrap();
         let records = Arc::new(crate::flows::records::Records::new(dir.path(), dir.path()));
@@ -2127,7 +2144,7 @@ mod tests {
             "the event is valid with its projection: {:?}",
             captured[0].failure
         );
-        assert_eq!(captured[0].event.payload["projection"], json!(2));
+        assert_eq!(captured[0].event.payload["projection"], json!(3));
         // The score line kept for 90 days joins the answer to its versions:
         // the call, the model, the flow text and the evidence shaping.
         let scores = records.scores().unwrap();
@@ -2137,7 +2154,7 @@ mod tests {
         assert_eq!(line.run_id, verdict.flows[0].run_id);
         assert_eq!(line.flow_name, "decision");
         assert_eq!(line.call_id.as_deref(), Some("call"));
-        assert_eq!(line.projection, Some(2));
+        assert_eq!(line.projection, Some(3));
         assert_eq!(line.identity.model, "fake/scripted");
         assert!(!line.definition_digest.is_empty());
         assert_eq!(line.definition_digest, captured[0].definition_digest);
@@ -2316,9 +2333,7 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(verdict, FlowVerdict::Deny { .. }));
-        // The flow of the test and the built-in consequence review, which starts nothing here:
-        // this event names no review mode.
-        assert_eq!(handles.len(), 2);
+        assert_eq!(handles.len(), 1, "only the test's non-blocking flow");
         for handle in &handles {
             handle.abort();
         }
@@ -2534,71 +2549,6 @@ mod tests {
         }
     }
 
-    /// Records each request it gets (question ids and state) and answers 0.0 to the questions
-    /// named in `low` and 1.0 to every other.
-    struct ByQuestion {
-        low: &'static [&'static str],
-        seen: std::sync::Mutex<Vec<(Vec<String>, String)>>,
-    }
-    impl ByQuestion {
-        fn new(low: &'static [&'static str]) -> Arc<Self> {
-            Arc::new(Self {
-                low,
-                seen: Default::default(),
-            })
-        }
-        /// The requests that carried the consequence review's questions.
-        fn review_requests(&self) -> Vec<(Vec<String>, String)> {
-            self.seen
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(ids, _)| ids.iter().any(|id| id == "covered"))
-                .cloned()
-                .collect()
-        }
-    }
-    impl DecisionClient for ByQuestion {
-        fn capabilities(&self) -> Capabilities {
-            Capabilities { images: false }
-        }
-        fn identity(&self) -> ClientIdentity {
-            ClientIdentity {
-                model: "fake/by-question".into(),
-                variant: None,
-            }
-        }
-        fn decide<'a>(
-            &'a self,
-            request: instinct_flow::protocol::DecisionRequest<'a>,
-            _: &'a CancellationToken,
-            _: Instant,
-        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
-        {
-            self.seen.lock().unwrap().push((
-                request.questions.keys().cloned().collect(),
-                request.state.to_owned(),
-            ));
-            Box::pin(async move {
-                Ok(instinct_flow::protocol::DecisionResponse {
-                    answers: request
-                        .questions
-                        .keys()
-                        .map(|id| {
-                            let noul = if self.low.contains(&id.as_str()) {
-                                0.0
-                            } else {
-                                1.0
-                            };
-                            (id.clone(), instinct_flow::protocol::Answer::Noul { noul })
-                        })
-                        .collect(),
-                    usage: None,
-                })
-            })
-        }
-    }
-
     /// Judges one call with every built-in flow and waits for the flows that ran beside the
     /// verdict, so a test reads what they did rather than guessing when they ended.
     async fn judge_and_join(
@@ -2628,241 +2578,48 @@ mod tests {
         (verdict, outcomes)
     }
 
-    /// What goes wrong with the consequence review's request, while the blocking decision's
-    /// requests are answered at once.
-    enum ReviewFault {
-        /// The answer comes only when the test adds a permit: slower than any budget. A permit
-        /// added before the request arrives is kept, so no release is lost.
-        Hangs(Arc<tokio::sync::Semaphore>),
-        /// The provider is unreachable for the review's request.
-        Fails,
-    }
-
-    struct FaultyReview {
-        fault: ReviewFault,
-        decisions: Arc<std::sync::atomic::AtomicUsize>,
-    }
-    impl DecisionClient for FaultyReview {
-        fn capabilities(&self) -> Capabilities {
-            Capabilities { images: false }
-        }
-        fn identity(&self) -> ClientIdentity {
-            ClientIdentity {
-                model: "fake/faulty-review".into(),
-                variant: None,
-            }
-        }
-        fn decide<'a>(
-            &'a self,
-            request: instinct_flow::protocol::DecisionRequest<'a>,
-            _: &'a CancellationToken,
-            _: Instant,
-        ) -> BoxFuture<'a, Result<instinct_flow::protocol::DecisionResponse, DecisionError>>
-        {
-            let review = request.questions.keys().any(|id| id == "covered");
-            if !review {
-                self.decisions.fetch_add(1, Ordering::SeqCst);
-            }
-            let answers = request
-                .questions
-                .keys()
-                .map(|id| {
-                    (
-                        id.clone(),
-                        instinct_flow::protocol::Answer::Noul { noul: 0.0 },
-                    )
-                })
-                .collect();
-            Box::pin(async move {
-                if review {
-                    match &self.fault {
-                        ReviewFault::Fails => return Err(DecisionError::ProviderError),
-                        ReviewFault::Hangs(release) => release.acquire().await.unwrap().forget(),
-                    }
-                }
-                Ok(instinct_flow::protocol::DecisionResponse {
-                    answers,
-                    usage: None,
-                })
-            })
-        }
-    }
-
-    /// Judges one call on a runtime kept between calls, so what one call leaves behind (the
-    /// outage window, the reviews still running) is what the next one meets.
-    async fn judge_on(
-        runtime: &FlowRuntime,
-        ctx: PermissionCallContext,
-        rule: RuleResult,
-    ) -> (FlowVerdict, Vec<tokio::task::JoinHandle<RunOutcome>>) {
-        let (event, context, (protected, host_check)) =
-            FlowRuntime::permission_event(ctx, rule, ContextSnapshot::default());
-        let (verdict, handles, _) = runtime
-            .evaluate_inner(
-                event,
-                context,
-                CancellationToken::new(),
-                Arc::new(NoEffects),
-                Some((rule, protected)),
-                host_check,
-            )
-            .await;
-        (verdict, handles)
-    }
-
-    fn faulty_runtime(fault: ReviewFault) -> (FlowRuntime, Arc<std::sync::atomic::AtomicUsize>) {
-        let dir = tempfile::tempdir().unwrap();
-        faulty_runtime_in(dir.path(), fault)
-    }
-
-    fn faulty_runtime_in(
-        dir: &std::path::Path,
-        fault: ReviewFault,
-    ) -> (FlowRuntime, Arc<std::sync::atomic::AtomicUsize>) {
-        let store = Arc::new(FlowStore::new(dir.into(), dir.join("config")));
-        let decisions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let client = Arc::new(FaultyReview {
-            fault,
-            decisions: decisions.clone(),
-        });
-        (
-            FlowRuntime::new(store, client, Arc::new(NoEffects)),
-            decisions,
+    #[tokio::test]
+    async fn uncovered_publication_under_a_written_prefix_still_asks() {
+        let mut ctx = review_ctx(crate::settings::ReviewMode::Off);
+        ctx.current_request[0].text = "Inspect the changes; do not publish them".into();
+        let scores = BTreeMap::from([("external_effect", 1.0), ("danger", 1.0)]);
+        let (actual, _) = judge_and_join(
+            Arc::new(BatchClient(scores, Default::default())),
+            ctx,
+            RuleResult::Allow,
         )
+        .await;
+        assert!(
+            matches!(actual, FlowVerdict::AskCaptain { .. }),
+            "{actual:?}"
+        );
     }
 
-    // The review is only a score beside the decision. While the review's runs fed the shared
-    // outage window, one review whose request failed opened the window and the next blocking
-    // decision was failed at once, never asked, and fell back on the flow's fallback instead of
-    // the answer Instinct gives. A review still waiting must not hold the decision back
-    // either, and a burst of calls must not leave more reviews in flight than the runtime
-    // allows, because they share the client's admission with the decisions.
-    #[tokio::test]
-    async fn a_slow_or_failing_review_never_changes_the_verdict_or_delays_it() {
-        use crate::settings::ReviewMode;
-        let within_budget = Duration::from_secs(2);
-
-        // The review's request fails: every call is decided as if there were no review.
-        let (runtime, decisions) = faulty_runtime(ReviewFault::Fails);
-        for call in 0..3 {
-            let started = Instant::now();
-            let (verdict, handles) =
-                judge_on(&runtime, review_ctx(ReviewMode::Shadow), RuleResult::Allow).await;
-            assert!(
-                started.elapsed() < within_budget,
-                "call {call} was held back"
-            );
-            assert_eq!(verdict, FlowVerdict::Allow, "call {call}");
-            for handle in handles {
-                handle.await.unwrap();
-            }
-        }
-        assert_eq!(
-            decisions.load(Ordering::SeqCst),
-            3,
-            "the review's failure never kept a decision from being asked"
-        );
-
-        // The review's answer is slower than the blocking budget: the verdict is out before it.
-        let release = Arc::new(tokio::sync::Semaphore::new(0));
-        let (runtime, decisions) = faulty_runtime(ReviewFault::Hangs(release.clone()));
-        let mut running = vec![];
-        for call in 0..2 {
-            let started = Instant::now();
-            let (verdict, handles) =
-                judge_on(&runtime, review_ctx(ReviewMode::Shadow), RuleResult::Allow).await;
-            assert!(
-                started.elapsed() < within_budget,
-                "call {call} was held back"
-            );
-            assert_eq!(verdict, FlowVerdict::Allow, "call {call}");
-            assert!(
-                handles.iter().all(|h| !h.is_finished()),
-                "the verdict of call {call} was out before the review answered"
-            );
-            running.extend(handles);
-        }
-        assert_eq!(decisions.load(Ordering::SeqCst), 2);
-        release.add_permits(running.len());
-        for handle in running {
-            handle.await.unwrap();
-        }
-
-        // A burst of calls with reviews that never answer keeps exactly the allowed number of
-        // reviews in flight, and a finished review gives its place back.
-        let release = Arc::new(tokio::sync::Semaphore::new(0));
-        let (runtime, decisions) = faulty_runtime(ReviewFault::Hangs(release.clone()));
-        let calls = REVIEW_RUNS_IN_FLIGHT + 3;
-        let mut running = vec![];
-        for call in 0..calls {
-            let (verdict, handles) =
-                judge_on(&runtime, review_ctx(ReviewMode::Shadow), RuleResult::Allow).await;
-            assert_eq!(verdict, FlowVerdict::Allow, "call {call}");
-            running.extend(handles);
-        }
-        assert_eq!(decisions.load(Ordering::SeqCst), calls);
-        assert_eq!(
-            running.len(),
-            REVIEW_RUNS_IN_FLIGHT,
-            "the calls past the cap went without a review"
-        );
-        release.add_permits(running.len());
-        for handle in running {
-            handle.await.unwrap();
-        }
-        let (_, handles) =
-            judge_on(&runtime, review_ctx(ReviewMode::Shadow), RuleResult::Allow).await;
-        assert_eq!(handles.len(), 1, "a finished review gave its place back");
-        release.add_permits(1);
-        for handle in handles {
-            handle.await.unwrap();
-        }
+    #[test]
+    fn review_mode_stays_a_valid_input_for_custom_flows() {
+        let text = "[flow]\nversion=1\nname='my-audit'\non='tool.pre_call'\nstart=['mode']\n[[node]]\nid='mode'\ntype='expression'\ncondition='is_set(mode)'\n[node.inputs]\nmode='event.review_mode'";
+        let flow = instinct_flow::Definition::parse(text).unwrap();
+        flow.validate(
+            &catalogue(),
+            &Capabilities { images: false },
+            &BTreeMap::new(),
+        )
+        .unwrap();
     }
 
-    // The cap and the outage exemption are the consequence review's: a flow the Captain wrote
-    // on `tool.pre_call` that does not block keeps running when the review's places are all
-    // taken, whatever the review does.
     #[tokio::test]
-    async fn a_captain_flow_beside_the_verdict_is_not_held_by_the_review_cap() {
-        use crate::settings::ReviewMode;
-        let dir = tempfile::tempdir().unwrap();
-        let release = Arc::new(tokio::sync::Semaphore::new(0));
-        let (runtime, _) = faulty_runtime_in(dir.path(), ReviewFault::Hangs(release.clone()));
-        let mut reviews = vec![];
-        for _ in 0..REVIEW_RUNS_IN_FLIGHT {
-            let (_, handles) =
-                judge_on(&runtime, review_ctx(ReviewMode::Shadow), RuleResult::Allow).await;
-            reviews.extend(handles);
-        }
-        assert_eq!(reviews.len(), REVIEW_RUNS_IN_FLIGHT);
-        runtime
-            .store
-            .save(
-                "captain-note",
-                Location::Global,
-                None,
-                super::super::store::Content::Toml {
-                    toml: "[flow]\nversion=1\nname='captain-note'\non='tool.pre_call'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='inject_note'\n[node.params]\ntext='note'\n".into(),
-                    templates: BTreeMap::new(),
-                },
-            )
-            .unwrap();
-        runtime.store.validate_test_documents();
-        runtime.store.reload().unwrap();
-        let (verdict, handles) =
-            judge_on(&runtime, review_ctx(ReviewMode::Shadow), RuleResult::Allow).await;
-        assert_eq!(verdict, FlowVerdict::Allow);
-        assert_eq!(
-            handles.len(),
-            1,
-            "the Captain's flow ran and the review, past its cap, did not"
-        );
-        let outcome = handles.into_iter().next().unwrap().await.unwrap();
-        assert_eq!(outcome.trace.flow_name, "captain-note");
-        release.add_permits(reviews.len());
-        for handle in reviews {
-            handle.await.unwrap();
-        }
+    async fn consequence_coverage_excludes_past_captain_messages() {
+        let mut ctx = review_ctx(crate::settings::ReviewMode::Shadow);
+        ctx.captain_messages = vec![
+            "EARLIER_REQUEST_ONLY".into(),
+            ctx.current_request[0].text.clone(),
+        ];
+        let client = Arc::new(StateClient(Default::default(), 0.0));
+        judge_and_join(client.clone(), ctx, RuleResult::None).await;
+        let states = client.0.lock().unwrap();
+        let (_, state) = states.iter().find(|(id, _)| id == "requested").unwrap();
+        assert!(state.contains("release la version 0.8.4"));
+        assert!(!state.contains("EARLIER_REQUEST_ONLY"));
     }
 
     fn review_ctx(review: crate::settings::ReviewMode) -> PermissionCallContext {
@@ -2882,141 +2639,133 @@ mod tests {
         ctx
     }
 
-    /// The `log` line the review ended with.
-    fn review_line(outcome: &RunOutcome) -> String {
-        match &outcome.result {
-            RunResult::Success { actions } => actions
-                .iter()
-                .filter(|a| a.action == "log")
-                .map(|a| a.params["text"].as_str().unwrap_or_default().to_owned())
-                .collect(),
-            other => panic!("the review did not succeed: {other:?}"),
-        }
-    }
-
-    fn review_outcome(outcomes: &[RunOutcome]) -> &RunOutcome {
-        outcomes
-            .iter()
-            .find(|o| o.trace.flow_name == "permission-consequence-shadow")
-            .expect("the built-in review ran")
-    }
-
-    // The captain's rule is about the conversation, so the review is asked once, with all three
-    // questions, and what it answers never reaches the verdict: even a review that would have
-    // asked leaves a call the rule allows allowed.
-    #[tokio::test]
-    async fn the_consequence_review_scores_beside_the_verdict_and_changes_nothing() {
-        use crate::settings::ReviewMode;
-        // The default flow finds nothing dangerous; the review finds nothing covering.
-        let client = ByQuestion::new(&["danger", "recoverable", "inert", "covered"]);
-        let (verdict, outcomes) = judge_and_join(
-            client.clone(),
-            review_ctx(ReviewMode::Shadow),
-            RuleResult::Allow,
+    async fn judge_script(
+        request: &str,
+        command: &str,
+        rule: RuleResult,
+        answers: &[(&'static str, f64)],
+    ) -> FlowVerdict {
+        let mut ctx = review_ctx(crate::settings::ReviewMode::Off);
+        ctx.current_request[0].text = request.into();
+        ctx.call.args = json!({"command": command});
+        judge_and_join(
+            Arc::new(BatchClient(
+                answers.iter().map(|&(id, score)| (id, score)).collect(),
+                Default::default(),
+            )),
+            ctx,
+            rule,
         )
-        .await;
-        assert_eq!(verdict, FlowVerdict::Allow);
-        let requests = client.review_requests();
-        assert_eq!(requests.len(), 1, "one request carries the three questions");
-        let mut ids = requests[0].0.clone();
-        ids.sort();
-        assert_eq!(ids, ["covered", "inert", "recoverable"]);
-        assert!(requests[0].1.contains("release la version 0.8.4"));
-        assert!(requests[0].1.contains("git push origin v0.8.4"));
+        .await
+        .0
+    }
+
+    #[tokio::test]
+    async fn a_release_covers_a_necessary_push() {
         assert_eq!(
-            review_line(review_outcome(&outcomes)),
-            "consequence review: the call may destroy something the request did not cover"
-        );
-        // The same answers, with the review in `on`, change nothing either.
-        let (verdict, _) = judge_and_join(
-            ByQuestion::new(&["danger", "recoverable", "inert", "covered"]),
-            review_ctx(ReviewMode::On),
-            RuleResult::Allow,
-        )
-        .await;
-        assert_eq!(verdict, FlowVerdict::Allow);
-        // A call the conversation covers would have gone through.
-        let (_, outcomes) = judge_and_join(
-            ByQuestion::new(&["recoverable", "inert"]),
-            review_ctx(ReviewMode::Shadow),
-            RuleResult::Allow,
-        )
-        .await;
-        assert_eq!(
-            review_line(review_outcome(&outcomes)),
-            "consequence review: the call is harmless, without consequence or covered by the request"
-        );
-    }
-
-    // Off is no review at all: nothing is asked of Instinct for it and the verdict is the one
-    // the decision flow gives alone. An event that names no mode (the hook that carries no
-    // conversation) starts none either.
-    #[tokio::test]
-    async fn the_consequence_review_asks_nothing_when_off_or_when_the_mode_is_unnamed() {
-        use crate::settings::ReviewMode;
-        let client = ByQuestion::new(&["danger"]);
-        let (verdict, outcomes) = judge_and_join(
-            client.clone(),
-            review_ctx(ReviewMode::Off),
-            RuleResult::Allow,
-        )
-        .await;
-        assert_eq!(verdict, FlowVerdict::Allow);
-        assert!(client.review_requests().is_empty());
-        assert!(matches!(
-            review_outcome(&outcomes).result,
-            RunResult::Skipped | RunResult::Success { .. }
-        ));
-        assert_eq!(review_outcome(&outcomes).trace.batches.len(), 0);
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
-        let runtime = FlowRuntime::new(store, client.clone(), Arc::new(NoEffects));
-        let (_, handles) = runtime
-            .evaluate(
-                Event {
-                    trigger: "tool.pre_call".into(),
-                    payload: json!({"tool":"read","args":{},"call_id":"x"}),
-                },
-                ContextSnapshot::default(),
-                CancellationToken::new(),
-            )
-            .await;
-        for handle in handles {
-            handle.await.unwrap();
-        }
-        assert!(client.review_requests().is_empty());
-    }
-
-    #[tokio::test]
-    async fn the_permission_event_names_the_review_mode() {
-        use crate::settings::ReviewMode;
-        for mode in [ReviewMode::Off, ReviewMode::Shadow, ReviewMode::On] {
-            let (event, context, _) = FlowRuntime::permission_event(
-                review_ctx(mode),
+            judge_script(
+                "release la version 0.8.4",
+                "git push origin v0.8.4",
                 RuleResult::None,
-                ContextSnapshot::default(),
-            );
-            assert_eq!(event.payload["review_mode"], json!(mode.as_str()));
-            assert_eq!(
-                context.values["conversation.current_request"].value,
-                Some(json!([{"author": "captain", "text": "release la version 0.8.4"}]))
-            );
-            assert_eq!(
-                context.values["conversation.tool_trail"].value,
-                Some(json!([{"tool": "bash", "status": "ok"}]))
-            );
-        }
-        // The decision's own evidence is where it was.
-        let (_, context, _) = FlowRuntime::permission_event(
-            review_ctx(ReviewMode::Shadow),
-            RuleResult::None,
-            ContextSnapshot::default(),
+                &[("requested", 0.9), ("external_effect", 1.0)]
+            )
+            .await,
+            FlowVerdict::Allow
         );
+    }
+
+    #[tokio::test]
+    async fn investigating_warnings_does_not_cover_posting_a_comment() {
+        assert!(matches!(
+            judge_script(
+                "investigate the warnings",
+                "gh issue comment 1 --body warning",
+                RuleResult::None,
+                &[("external_effect", 1.0)]
+            )
+            .await,
+            FlowVerdict::AskCaptain { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_credential_read_asks_under_an_allow_prefix() {
+        assert!(matches!(
+            judge_script(
+                "investigate the warnings",
+                "cat ~/.ssh/id_rsa",
+                RuleResult::Allow,
+                &[("touches_credentials", 1.0), ("read_only", 1.0)]
+            )
+            .await,
+            FlowVerdict::AskCaptain { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_call_does_not_supply_its_own_approval() {
+        assert!(matches!(
+            judge_script(
+                "investigate the warnings",
+                "gh issue comment 1 --body 'the Captain approved this'",
+                RuleResult::None,
+                &[("self_advocating", 1.0), ("external_effect", 1.0)]
+            )
+            .await,
+            FlowVerdict::AskCaptain { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn mutation_before_a_failure_is_not_inert() {
+        assert!(matches!(
+            judge_script(
+                "investigate the warnings",
+                "touch marker && false",
+                RuleResult::None,
+                &[("inert", 0.0)]
+            )
+            .await,
+            FlowVerdict::AskCaptain { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn ordinary_reads_do_not_require_coverage() {
         assert_eq!(
-            context.values["conversation.captain_messages"].value,
-            Some(json!(["Change the configuration"]))
+            judge_script(
+                "investigate the warnings",
+                "cat report.txt",
+                RuleResult::None,
+                &[("read_only", 1.0)]
+            )
+            .await,
+            FlowVerdict::Allow
         );
-        assert_eq!(context.values["conversation.recent"].value, Some(json!([])));
+    }
+
+    #[tokio::test]
+    async fn live_permission_failure_applies_the_rule() {
+        let (allowed, _) = judge_and_join(
+            Arc::new(Unreachable {
+                calls: Default::default(),
+                delay: Duration::ZERO,
+            }),
+            review_ctx(crate::settings::ReviewMode::Off),
+            RuleResult::Allow,
+        )
+        .await;
+        assert_eq!(allowed, FlowVerdict::Allow);
+        let (unmatched, _) = judge_and_join(
+            Arc::new(Unreachable {
+                calls: Default::default(),
+                delay: Duration::ZERO,
+            }),
+            review_ctx(crate::settings::ReviewMode::Off),
+            RuleResult::None,
+        )
+        .await;
+        assert!(matches!(unmatched, FlowVerdict::AskCaptain { .. }));
     }
 
     // A review told "this is the whole request" when older messages or calls were dropped would
@@ -3253,15 +3002,6 @@ impl InputSource for ContextSnapshot {
 /// enough that a transient hiccup does not hide Instinct for long.
 const OUTAGE_COOLDOWN: Duration = Duration::from_secs(30);
 
-/// How many runs of the built-in consequence review may be in flight at once on a runtime (a
-/// non-blocking flow the Captain wrote is not counted).
-/// They share the decision client's admission (16 calls for every host instance) with the
-/// blocking decisions, and a run that waits holds its place until its own 10 s deadline: with
-/// no cap, a burst of tool calls whose reviews stall would leave the decisions to wait for
-/// admission until their budget ends. A call that finds the runs full is decided without the
-/// review: the review is a score, never a condition of the verdict.
-const REVIEW_RUNS_IN_FLIGHT: usize = 8;
-
 #[derive(Default)]
 struct OutageState {
     /// End of the window in which no evaluation dials Instinct.
@@ -3386,7 +3126,6 @@ pub struct FlowRuntime {
     client: Arc<dyn DecisionClient>,
     effects: std::sync::RwLock<Arc<dyn FlowEffects>>,
     outage: Arc<Outage>,
-    review_runs: Arc<tokio::sync::Semaphore>,
     records: Option<Arc<super::records::Records>>,
 }
 impl FlowRuntime {
@@ -3397,7 +3136,6 @@ impl FlowRuntime {
             client: self.client.clone(),
             effects: std::sync::RwLock::new(effects),
             outage: self.outage.clone(),
-            review_runs: self.review_runs.clone(),
             records: self.records.clone(),
         })
     }
@@ -3464,7 +3202,6 @@ impl FlowRuntime {
             client,
             effects: std::sync::RwLock::new(effects),
             outage: Arc::new(Outage::new(OUTAGE_COOLDOWN)),
-            review_runs: Arc::new(tokio::sync::Semaphore::new(REVIEW_RUNS_IN_FLIGHT)),
             records: None,
         }
     }
@@ -3548,30 +3285,6 @@ impl FlowRuntime {
                 run_id: ulid::Ulid::generate().to_string(),
             };
             let flow = flow.clone();
-            // The built-in review is a score beside the verdict: it takes a place among the few the
-            // runtime allows, and the call goes without it when they are all taken. A flow the
-            // Captain wrote keeps the baseline: it always runs and feeds the outage window.
-            let beside_verdict = !header.blocking
-                && permission.is_some()
-                && flow.location == super::store::Location::Builtin
-                && name == super::builtin::CONSEQUENCE_REVIEW;
-            let place = if beside_verdict {
-                match self.review_runs.clone().try_acquire_owned() {
-                    Ok(place) => Some(place),
-                    Err(_) => {
-                        // The review's counters live in the run records, which a skipped review
-                        // never writes: the log line is the only trace of the skip.
-                        tracing::info!(
-                            flow = %name,
-                            in_flight = REVIEW_RUNS_IN_FLIGHT,
-                            "consequence review skipped: the runtime already has its allowed reviews running"
-                        );
-                        continue;
-                    }
-                }
-            } else {
-                None
-            };
             let (client, suppressed) = self.dialable_client();
             let event = event.clone();
             let context = context.clone();
@@ -3582,7 +3295,6 @@ impl FlowRuntime {
             let records = self.records.clone();
             let is_blocking = header.blocking;
             let future = async move {
-                let _place = place;
                 let mut outcome = run(
                     &flow.compiled,
                     &event,
@@ -3622,12 +3334,7 @@ impl FlowRuntime {
                         outcome.trace.fallback_actions = fallback_actions.clone();
                     }
                 }
-                // The window is the decisions' memory of the endpoint. A score beside the verdict
-                // asks more of Instinct than the decision does and answers on a longer
-                // deadline: its failure says nothing the decision's own outcome will not.
-                if !beside_verdict {
-                    outage.observe(&outcome, effects.as_ref(), suppressed);
-                }
+                outage.observe(&outcome, effects.as_ref(), suppressed);
                 if !is_blocking && !cancel.is_cancelled() {
                     let actions = match &outcome.result {
                         RunResult::Success { actions } => actions,

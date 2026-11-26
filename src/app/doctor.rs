@@ -352,7 +352,7 @@ pub async fn inspect(
                 error,
                 Some(
                     "Set \"permissions.review\" to \"off\", \"shadow\" or \"on\" in config.json; \
-                     until then no session runs the consequence review.",
+                     the default is \"on\" when omitted; an invalid value disables the metacognition review.",
                 ),
             );
         }

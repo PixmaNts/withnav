@@ -42,13 +42,12 @@ pub enum SettingsError {
 /// the file when they start.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ReviewMode {
-    /// No review: neither the consequence flow nor the metacognition review starts.
+    /// No metacognition review.
     Off,
-    /// Both reviews run beside the decision and are only logged; no decision changes.
-    #[default]
+    /// The metacognition review is logged and cannot answer the card.
     Shadow,
-    /// The consequence flow still only logs; the metacognition review of an ordinary question
-    /// runs beside the Captain's card and may allow the call once, or leave it waiting for him.
+    /// A review of an ordinary question may allow the call once or leave it waiting.
+    #[default]
     On,
 }
 
@@ -119,9 +118,7 @@ impl Settings {
                 .ok_or_else(|| "goal_watch.notes must be a boolean".into()),
         }
     }
-    /// `permissions.review`: whether, beside the permission flow, every judged call is also
-    /// reviewed on its consequence against the Captain's current request. Shadow when absent:
-    /// it is scored and logged, never decisive, so the calibration starts without a manual step.
+    /// `permissions.review`: the metacognition review mode, on when absent.
     pub fn permissions_review(&self) -> Result<ReviewMode, String> {
         match self.get_dotted("permissions.review") {
             None => Ok(ReviewMode::default()),
@@ -682,9 +679,9 @@ mod tests {
     }
 
     #[test]
-    fn permissions_review_defaults_to_shadow_and_takes_three_words() {
+    fn permissions_review_defaults_to_on_and_takes_three_words() {
         let mut settings = Settings::default();
-        assert_eq!(settings.permissions_review(), Ok(ReviewMode::Shadow));
+        assert_eq!(settings.permissions_review(), Ok(ReviewMode::On));
         for (word, mode) in [
             ("off", ReviewMode::Off),
             ("shadow", ReviewMode::Shadow),
@@ -712,7 +709,7 @@ mod tests {
         }
         // The sibling key keeps its own reading.
         settings.set_dotted("permissions", serde_json::json!({"scratch_dirs": []}));
-        assert_eq!(settings.permissions_review(), Ok(ReviewMode::Shadow));
+        assert_eq!(settings.permissions_review(), Ok(ReviewMode::On));
         assert!(settings.permissions_scratch_dirs().unwrap().is_empty());
     }
 

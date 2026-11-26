@@ -64,7 +64,7 @@ pub fn label(key: &str) -> &str {
         "compaction.writer" => "Compaction summary writer",
         "compaction.chunk_tokens" => "Compaction chunk tokens",
         "goal_watch.notes" => "Goal watch notes",
-        "permissions.review" => "Consequence review",
+        "permissions.review" => "Permission review",
         "layers.reflex" => "Reflex · Completion",
         "layers.instinct" => "Instinct · Triage",
         "layers.metacognition" => "Metacognition · Beacon",
@@ -85,7 +85,7 @@ pub fn description(key: &str) -> &'static str {
             "Passes goal check findings to Nav as a note at its next turn; off by default."
         }
         "permissions.review" => {
-            "Judges what a whole tool call changes against your current request: off, shadow (scored and logged, never decisive; the default) or on."
+            "Second opinion on eligible permission questions: off, shadow (logged only), or on (the default; may allow once)."
         }
         "layers.reflex" => "Completes as you type from code around the cursor.",
         "layers.instinct" => "Triages events and judges the permission flow's questions.",

@@ -113,14 +113,14 @@ pub struct AgentActor {
     pub scratch_roots: Vec<std::path::PathBuf>,
     /// Captain setting `yolo`: no permission control at all for this session.
     pub yolo: bool,
-    /// Captain setting `permissions.review`: whether the consequence review runs beside each
-    /// call's decision. Fixed for the session, like `yolo`. An actor nobody configured does not
+    /// Captain setting `permissions.review`: the metacognition second opinion on eligible asks.
+    /// Fixed for the session, like `yolo`. An actor nobody configured does not
     /// ask: the session sets the mode from the setting, and a child session reads the setting
     /// itself when it starts.
     pub review: crate::settings::ReviewMode,
     /// Index in `transcript` of the message that began the turn running now, set when a batch
     /// of commands starts a turn and left alone when it only answers a pending `ask`. The
-    /// consequence review's current request begins here, because a turn that ended without a
+    /// permission flow's current request begins here, because a turn that ended without a
     /// final assistant message (interrupted, provider error, step limit) leaves nothing in the
     /// transcript that says the Captain began again. `None` until a turn begins, as in a
     /// session resumed from disk.
@@ -404,7 +404,7 @@ impl AgentActor {
         }
     }
 
-    /// Where the consequence review's current request begins in `transcript`, and whether that
+    /// Where the current request begins in `transcript`, and whether that
     /// boundary was lost. The index is only good while the transcript holds the same message
     /// just before it as when the turn began; when it does not (a message was removed or
     /// inserted ahead of it) the index points at some other message, so it is not used: the

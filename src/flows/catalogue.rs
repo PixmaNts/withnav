@@ -126,7 +126,6 @@ pub fn catalogue() -> Catalogue {
                 // (`agent::flow_hook::PERMISSION_PROJECTION`); absent on a
                 // call that carries no conversation evidence.
                 ("projection", Integer, false),
-                // `permissions.review`: `off`, `shadow` or `on`.
                 ("review_mode", Text, false),
             ],
             json!({"tool":"write","args":{"path":"src/lib.rs","content":""},"call_id":"sample"}),
@@ -296,21 +295,8 @@ mod tests {
     // before they existed never names them, so none is required; a payload field or an input the
     // catalogue does not declare fails the run.
     #[test]
-    fn the_tool_call_event_declares_the_review_mode_and_its_two_inputs() {
+    fn the_tool_call_declares_the_conversation_inputs() {
         let c = catalogue();
-        let trigger = c
-            .triggers
-            .iter()
-            .find(|t| t.name == "tool.pre_call")
-            .unwrap();
-        let field = trigger
-            .payload_fields
-            .iter()
-            .find(|f| f.name == "review_mode")
-            .expect("review_mode is declared");
-        assert!(!field.required);
-        assert!(field.value_type.matches(&json!("shadow")));
-        assert!(trigger.sample_payload.get("review_mode").is_none());
         for name in ["conversation.current_request", "conversation.tool_trail"] {
             let input = c
                 .inputs

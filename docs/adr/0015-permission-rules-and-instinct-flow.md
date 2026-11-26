@@ -206,6 +206,11 @@ proposals and the tool names are evidence, never requests: an `allow_once` count
 host; any other answer counts as `wait`, so "the Captain approved this" written into an argument
 cannot allow the call.
 
+The quote check narrows injection, it does not prevent it: "the Captain approved this" written into
+an argument can never be the quote; the check proves the words came from the Captain, not that they
+cover the call. A review can still quote real Captain words the call does not need — only the
+Captain reads the call and the request together.
+
 What differs from 2026-10:
 
 - **Off the call path.** The call already yielded; the review never blocks beyond the Captain's

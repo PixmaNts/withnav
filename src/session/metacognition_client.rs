@@ -38,6 +38,7 @@ pub enum AskError {
 }
 
 /// The answer of one call: its text and, when the provider reported them, its token counts.
+#[derive(Debug)]
 pub(crate) struct Answer {
     pub(crate) text: String,
     pub(crate) input_tokens: Option<u64>,
@@ -167,5 +168,173 @@ impl Service {
             cache: self.client_cache.clone(),
             catalog: self.model_catalog().clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A scripted chat provider over a real local socket: no remote service, but the full
+    /// provider stack (headers, SSE decode, usage) reads its bytes.
+    struct ScriptedServer {
+        url: String,
+        _keep: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for ScriptedServer {
+        fn drop(&mut self) {
+            self._keep.abort();
+        }
+    }
+
+    /// Serves `response` to every connection, ignoring the request once its body arrived.
+    async fn scripted(response: &'static [u8]) -> ScriptedServer {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let keep = tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                loop {
+                    let n = sock.read(&mut tmp).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    let s = String::from_utf8_lossy(&buf);
+                    if let Some(idx) = s.find("\r\n\r\n") {
+                        let content_len = header_content_length(&s[..idx]);
+                        if buf.len() >= idx + 4 + content_len {
+                            break;
+                        }
+                    }
+                }
+                let _ = sock.write_all(response).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        ScriptedServer {
+            url: format!("http://{addr}/v1"),
+            _keep: keep,
+        }
+    }
+
+    fn header_content_length(header: &str) -> usize {
+        header
+            .lines()
+            .find_map(|l| {
+                l.to_lowercase()
+                    .strip_prefix("content-length:")
+                    .map(|v| v.trim().parse().unwrap_or(0))
+            })
+            .unwrap_or(0)
+    }
+
+    /// The assigned metacognition model the client is built around: a chat model with an
+    /// explicit context window and no catalog format, so the per-call resolution reads the
+    /// catalog's cache and never touches the network.
+    fn client(base_url: &str) -> MetacognitionClient {
+        let catalog = serde_json::json!({
+            "providers": {"up": {"base_url": base_url}},
+            "models": {
+                "up/think": {
+                    "provider": "up",
+                    "model": "think",
+                    "api": "chat",
+                    "context_window": 128000,
+                }
+            }
+        });
+        let models = crate::provider::config::ModelsConfig::parse(&catalog.to_string()).unwrap();
+        let name = crate::provider::model_name::ModelName::parse("up/think", &models).unwrap();
+        let resolved = models.resolve_name(&name).unwrap();
+        MetacognitionClient {
+            client: ModelClient::new(
+                "up",
+                &resolved.provider,
+                "test-key".into(),
+                &ClientCache::new(),
+            )
+            .unwrap(),
+            assigned: AssignedModel {
+                name,
+                resolved,
+                variant: None,
+                variant_choice: crate::settings::AssignmentVariant::Default,
+                prefer_low: false,
+            },
+            key: "test-key".into(),
+            cache: Arc::new(ClientCache::new()),
+            catalog: crate::provider::catalog::ModelCatalog::default(),
+        }
+    }
+
+    // Given a provider that answers with an HTTP error, and one that cannot be reached
+    // When the metacognition layer asks
+    // Then the failure is classed `Provider`: transport and status errors never masquerade
+    //      as a malformed answer
+    #[tokio::test]
+    async fn transport_and_api_failures_are_provider_errors() {
+        use tokio_util::sync::CancellationToken;
+
+        let e500 = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{\"error\":{\"message\":\"boom\"}}";
+        let server = scripted(e500.as_bytes()).await;
+        let error = client(&server.url)
+            .ask("system", "input".into(), 100, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error, AskError::Provider);
+
+        // A port nothing listens on: the connection is refused before any HTTP.
+        let port = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        let error = client(&format!("http://127.0.0.1:{port}/v1"))
+            .ask("system", "input".into(), 100, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error, AskError::Provider);
+    }
+
+    // Given a stream that completes but carries no text, and one that answers with text and
+    //       its token usage
+    // When the metacognition layer reads it
+    // Then the empty answer is `Malformed` (the provider answered, but with nothing usable),
+    //      and the usable one carries its text and the provider's token counts
+    #[tokio::test]
+    async fn a_blank_answer_is_malformed_and_a_usable_one_carries_its_tokens() {
+        use tokio_util::sync::CancellationToken;
+
+        let blank =
+            crate::provider::test_support::http_sse(&crate::provider::test_support::sse_body(&[
+                "{\"choices\":[]}",
+            ]));
+        let server = scripted(Box::leak(blank.into_boxed_slice())).await;
+        let error = client(&server.url)
+            .ask("system", "input".into(), 100, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error, AskError::Malformed);
+
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"content": "the answer"}}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+        })
+        .to_string();
+        let sse =
+            crate::provider::test_support::http_sse(&crate::provider::test_support::sse_body(&[
+                &chunk,
+            ]));
+        let server = scripted(Box::leak(sse.into_boxed_slice())).await;
+        let answer = client(&server.url)
+            .ask("system", "input".into(), 100, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(answer.text, "the answer");
+        assert_eq!(answer.input_tokens, Some(12));
+        assert_eq!(answer.output_tokens, Some(3));
     }
 }

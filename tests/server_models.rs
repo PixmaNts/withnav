@@ -182,7 +182,10 @@ async fn lists_all_api_kinds_with_canonical_identity_and_configured_default_agen
     let fim = by_alias(&body, "mock-fim");
     assert_eq!(fim["provider_group"], PROVIDER);
     assert_eq!(fim["api"], "fim");
-    assert_eq!(by_alias(&body, "example/decision-model")["api"], "systemone");
+    assert_eq!(
+        by_alias(&body, "example/decision-model")["api"],
+        "systemone"
+    );
     assert_eq!(body["default_agent"], "plan");
     assert!(body.get("default").is_none());
     for model in body["models"].as_array().unwrap() {

@@ -8,6 +8,18 @@ requests land in `develop`.
 
 ### Changed
 
+- The compaction judge's questions no longer embed a candidate tool output's text: the tool
+  name, the head of its arguments and head/middle/tail windows of its output travel in the
+  call's state under the candidate's key, and the questions are static text that refers to the
+  candidate by key, so untrusted output can never ride inside an instruction. The batch the
+  judge sees is recomputed around the state-bound split, so a request never exceeds its size
+  bound. An output longer than the windows the judge read is never elided entirely any more:
+  it keeps a head-and-tail excerpt of the windows the judge saw, and only an output the judge
+  read whole is replaced by the elision marker. The two questions now ask whether the assistant
+  will still need a value, path, name or error in the output, and whether removing the middle
+  would lose exact evidence, each with its no-cases written out. The drop and middle-removal
+  cuts moved off the decision model's no-information value of 0.5 (a usefulness below 0.4 to
+  drop, below 0.45 to shorten to head and tail), so a score at the value keeps the output.
 - Compaction summaries keep the evidence Nav continues from: each verified change names the check
   that confirmed it and its observed result, unconfirmed claims are listed apart, failed attempts
   stay with what not to retry, and the open criteria and the next check close the summary. A

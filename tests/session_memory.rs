@@ -268,3 +268,107 @@ async fn a_remembered_text_never_reaches_the_permission_flow_input() {
     assert!(messages.is_empty());
     assert!(!cut);
 }
+
+#[tokio::test]
+async fn a_secret_in_remembered_text_is_stored_redacted() {
+    use common::server::request_json;
+    use withnav::secrets::SecretSubmission;
+
+    const VALUE: &str = "sk-live-7f3a9c2e1d0b4a68";
+    let (tmp, workspace) = temp_workspace();
+    let state = TestServerConfig::unreachable(tmp.path()).state();
+    let session = state.create_session(&workspace, None, false).await.unwrap();
+    // Storing a value with no request waiting is how a session comes to hold a
+    // secret (the same entry point the Captain's "Provide anyway" uses).
+    state
+        .submit_secret(
+            session,
+            "remember-redaction",
+            SecretSubmission {
+                name: Some("API_KEY".into()),
+                value: Some(VALUE.into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("store the secret");
+    let text = format!("the staging key is {VALUE} tonight");
+    let result = state.run_command(session, "remember", &text).await.unwrap();
+    assert!(result.ok, "{:?}", result.error);
+    let item = result.data.unwrap()["item"].clone();
+    assert_eq!(item["scope"], "project");
+    let redacted = "the staging key is [secret API_KEY] tonight";
+    assert_eq!(item["current"]["body"], redacted);
+    assert_eq!(item["current"]["title"], redacted);
+    let id = item["id"].as_str().unwrap();
+    let revised = format!("revise {id} v1 the staging key is {VALUE} at night");
+    let result = state
+        .run_command(session, "memory", &revised)
+        .await
+        .unwrap();
+    assert!(result.ok, "{:?}", result.error);
+    let history = state
+        .run_command(session, "memory", &format!("history {id}"))
+        .await
+        .unwrap()
+        .data
+        .unwrap();
+    let versions = history["versions"].as_array().unwrap();
+    assert_eq!(versions.len(), 2);
+    for version in versions {
+        let text = serde_json::to_string(version).unwrap();
+        assert!(
+            !text.contains(VALUE),
+            "a stored memory version leaks the secret: {text}"
+        );
+        assert!(
+            text.contains("[secret API_KEY]"),
+            "the version must keep the redaction: {text}"
+        );
+    }
+    // The same contract over HTTP: POST /v1/memory applies the redaction of
+    // the session named by source_session_id, and so does every version it
+    // appends afterwards.
+    let app = withnav::server::routes::app(state.clone());
+    let (status, posted) = request_json(
+        &app,
+        "POST",
+        "/v1/memory",
+        Some(&serde_json::json!({
+            "scope": "global",
+            "text": format!("the cache key is {VALUE} today"),
+            "source_session_id": session.to_string(),
+        })),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    assert_eq!(
+        posted["current"]["body"],
+        "the cache key is [secret API_KEY] today"
+    );
+    let path = format!("/v1/memory/{}", posted["id"].as_str().unwrap());
+    let (status, revised) = request_json(
+        &app,
+        "POST",
+        &format!("{path}/revise"),
+        Some(&serde_json::json!({
+            "expected_version": 1,
+            "text": format!("the cache key is {VALUE} tomorrow"),
+            "source_session_id": session.to_string(),
+        })),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(
+        revised["current"]["body"],
+        "the cache key is [secret API_KEY] tomorrow"
+    );
+    let (status, detail) = request_json(&app, "GET", &path, None).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let whole = serde_json::to_string(&detail).unwrap();
+    assert!(
+        !whole.contains(VALUE),
+        "the stored memory detail leaks the secret: {whole}"
+    );
+    assert!(whole.contains("[secret API_KEY]"));
+}

@@ -330,6 +330,44 @@ request on its own. Both the permission flow and the protected check read it. Ed
 removed through their final outer closing delimiter; malformed framing drops
 the whole message and marks evidence cut, including after transcript resume.
 
+`conversation.current_request` is what the Captain asked for in the request being worked, in the same
+`{author, text}` shape: it starts where the turn being run began, or after the last assistant message
+that ended a turn (one with no tool call) if that is later. The session records where each turn
+begins because a turn does not always end with such a message: an interruption, a provider error
+or the step limit leave nothing in the transcript, and what the Captain asked in that turn was
+dropped, not carried out, so it does not join the next request. A correction the Captain sends
+while the agent works, and the answer to an `ask`, belong to the request; an earlier request never
+does, however few messages separate them. A session resumed from disk has no recorded start until
+its next turn and falls back on the last finished turn, and so does a session whose transcript no
+longer holds the message that stood before the start when the turn began (the start is an index,
+and a transcript rewritten under the turn would leave it on another message): the request and the
+trail are then flagged `cut`. It holds the agent's message that ended
+the previous turn (the proposal a short answer accepts, labelled `agent`, only when it carries no
+tool call), then the Captain's messages and answers
+to `ask` since, each `ask` question labelled `agent`. The agent's prose while it works, tool
+outputs, fetched text and the compaction summary are never in it. Whole messages within 8 KiB with a
+cut flag. `conversation.tool_trail` lists the tools called in that request and how each ended
+(`ok`, `error`, `denied` or `interrupted`), the newest 8, oldest first, with `cut` set
+when older calls were dropped: names and outcomes only, never arguments or output. Only the lines
+the loop writes for a call that never ran or was cut short read as `interrupted`; a tool's own
+output that starts with the same word is `ok`, and so is a tool's own output that is JSON: only a
+payload that parses as the tool-result envelope reads as `error` or `denied`. The event also carries `review_mode` (`off`, `shadow` or `on`, from
+`permissions.review`). The projection version is 2 since these inputs exist; a score from
+version 1 was made from other evidence and is not comparable.
+
+The embedded `permission-consequence-shadow` flow is the only reader of these inputs. It does not
+block and only logs: beside the decision it asks one Instinct request with three questions
+(`recoverable`: does the whole call only read or change things that can be put back; `inert`:
+would it change nothing in practice; `covered`: does the current request cover everything it does,
+including the steps it necessarily implies) and logs whether a review that answered would have
+let the call through or asked the Captain. The criterion is the conversation, not the command: a
+push is covered by "release 0.8.4" though the Captain never wrote "push". It starts only when the
+event names `shadow` or `on`; `off`, or an event with no mode, asks nothing. No mode changes the
+verdict. The scores and the log line are in the run record, and its state shows the review the
+same evidence as the decision minus the rule and the Captain's earlier requests. A run record
+leaves out a state that holds something shaped like a credential; the live request carries the
+call's arguments exactly as the decision flow's does.
+
 Protected calls always carry `protected = true`. `protected_checked = true` means
 the host already answered its compiled check; the built-in skips that node, while
 custom flows may still ask or deny. The strictest verdict wins.

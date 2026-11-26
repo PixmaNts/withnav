@@ -2,6 +2,10 @@
 use instinct_flow::Definition;
 use std::collections::BTreeMap;
 
+/// Name of the built-in review that scores each judged call beside the permission verdict. The
+/// runtime limits and isolates this flow only, never a flow the Captain wrote.
+pub const CONSEQUENCE_REVIEW: &str = "permission-consequence-shadow";
+
 pub fn definitions() -> Vec<(Definition, BTreeMap<String, String>)> {
     [
         (
@@ -31,20 +35,30 @@ pub fn definitions() -> Vec<(Definition, BTreeMap<String, String>)> {
 pub fn all_definitions() -> Vec<(Definition, BTreeMap<String, String>)> {
     definitions()
         .into_iter()
-        .chain(std::iter::once((
-            Definition::parse(include_str!("permission-default.toml"))
-                .expect("embedded permission flow parses"),
-            BTreeMap::from([
-                (
+        .chain([
+            (
+                Definition::parse(include_str!("permission-default.toml"))
+                    .expect("embedded permission flow parses"),
+                BTreeMap::from([
+                    (
+                        "state.md".into(),
+                        include_str!("permission-default-state.md").into(),
+                    ),
+                    (
+                        "protected-state.md".into(),
+                        include_str!("permission-default-protected-state.md").into(),
+                    ),
+                ]),
+            ),
+            (
+                Definition::parse(include_str!("permission-consequence-shadow.toml"))
+                    .expect("embedded consequence review flow parses"),
+                BTreeMap::from([(
                     "state.md".into(),
-                    include_str!("permission-default-state.md").into(),
-                ),
-                (
-                    "protected-state.md".into(),
-                    include_str!("permission-default-protected-state.md").into(),
-                ),
-            ]),
-        )))
+                    include_str!("permission-consequence-shadow-state.md").into(),
+                )]),
+            ),
+        ])
         .collect()
 }
 

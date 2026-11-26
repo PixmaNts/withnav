@@ -1660,3 +1660,320 @@ async fn deleting_a_conversation_forgets_its_permission_decisions() {
         "the history delete still removed the conversation"
     );
 }
+
+/// What Instinct was asked while a scripted conversation ran: the states of the two kinds of
+/// question the permission flows send, and the answers the mock gave.
+struct InstinctProbe {
+    review_states: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    decision_states: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl InstinctProbe {
+    fn review(&self) -> Vec<String> {
+        self.review_states.lock().unwrap().clone()
+    }
+
+    /// How many requests the decision flow sent.
+    fn decisions(&self) -> usize {
+        self.decision_states.lock().unwrap().len()
+    }
+
+    /// Waits for `count` review requests; the review runs beside the call and may end after it.
+    async fn review_requests(&self, count: usize) -> Vec<String> {
+        for _ in 0..400 {
+            if self.review().len() >= count {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        self.review()
+    }
+}
+
+/// A provider that answers Instinct with `answer` for every question (and records the state of
+/// what it was asked) and the model with `chat`, one response per request, in order.
+async fn provider_with_instinct(
+    chat: Vec<Vec<u8>>,
+    answer: f64,
+) -> (CapturingProvider, InstinctProbe) {
+    let probe = InstinctProbe {
+        review_states: Default::default(),
+        decision_states: Default::default(),
+    };
+    let (review, decisions) = (probe.review_states.clone(), probe.decision_states.clone());
+    let chat = std::sync::Mutex::new(chat.into_iter());
+    let provider = common::sse::spawn_responding_provider(60, move |_, request| {
+        if request.contains("/systemone") {
+            let body: Value = serde_json::from_str(
+                request.split("\r\n\r\n").nth(1).unwrap_or_default(),
+            )
+            .unwrap_or_default();
+            let ids: Vec<String> = body["questions"]
+                .as_object()
+                .map(|q| q.keys().cloned().collect())
+                .unwrap_or_default();
+            let state = body["state"].as_str().unwrap_or_default().to_owned();
+            if ids.iter().any(|id| id == "covered") {
+                review.lock().unwrap().push(state);
+            } else {
+                decisions.lock().unwrap().push(state);
+            }
+            let answers: serde_json::Map<String, Value> = ids
+                .iter()
+                .map(|id| (id.clone(), json!({"type": "noul", "noul": answer})))
+                .collect();
+            let body = json!({ "answers": answers }).to_string();
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_bytes()
+        } else {
+            chat.lock().unwrap().next().unwrap_or_else(|| done("done"))
+        }
+    })
+    .await;
+    (provider, probe)
+}
+
+fn bash_call(id: &str, command: &str) -> Vec<u8> {
+    calls(&[(id, "bash", json!({"command": command}))])
+}
+
+fn with_instinct(env: &Env, provider: &CapturingProvider) -> TestServerConfig {
+    config(env, provider).extra_alias("instinct", "instinct-test")
+}
+
+/// Sets `permissions.review` in the file the config wrote. A session, and a child session,
+/// reads it when it starts.
+fn set_review(env: &Env, review: &str) {
+    let file = env.root.join("cfg/config.json");
+    let mut settings: Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    settings["permissions"] = json!({"review": review});
+    std::fs::write(&file, settings.to_string()).unwrap();
+}
+
+/// Waits until the consequence review has a record of `count` runs, the end of a run that
+/// happens beside the call and may come after the turn. Returns what was recorded, which is
+/// fewer when the review never ran.
+async fn wait_for_review_runs(env: &Env, count: usize) -> Vec<instinct_flow::RunRecord> {
+    let workspace = std::fs::canonicalize(&env.ws).unwrap();
+    let records = withnav::flows::records::Records::new(&env.root.join("data"), &workspace);
+    let mut runs = vec![];
+    for _ in 0..400 {
+        runs = records
+            .read()
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.flow_name == "permission-consequence-shadow")
+            .collect();
+        if runs.len() >= count {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    runs
+}
+
+/// Two requests of the Captain, each worked by tool calls, then a call under an allow rule.
+async fn two_requests_ending_in_an_allowed_push(
+    env: &Env,
+    answer: f64,
+) -> (AppState, ulid::Ulid, InstinctProbe, CapturingProvider) {
+    let (provider, probe) = provider_with_instinct(
+        vec![
+            bash_call("b0", "echo RESULT_$((40+2))"),
+            done("Tidied. Shall I also release 0.8.4?"),
+            bash_call("b1", "echo RESULT_$((40+3))"),
+            bash_call("b2", "git push --dry-run origin main"),
+            done("Released."),
+        ],
+        answer,
+    )
+    .await;
+    // `git push` is allowed once and for all: the rule answers, never the Captain.
+    withnav::permission::store::PermissionStore::open(env.root.join("data"))
+        .unwrap()
+        .add(
+            "bash",
+            "git push *",
+            withnav::permission::rules::Effect::Allow,
+            withnav::permission::rules::RuleScope::Global,
+            withnav::permission::rules::RuleOrigin::Manual,
+        )
+        .unwrap();
+    let state = with_instinct(env, &provider).state();
+    let id = state.create_session(&env.ws, None, false).await.unwrap();
+    say(&state, id, "EARLIER_REQUEST tidy the notes").await;
+    wait_events(&state, id, "turn.end", 1).await;
+    say(&state, id, "CURRENT_REQUEST release la version 0.8.4").await;
+    wait_events(&state, id, "turn.end", 2).await;
+    (state, id, probe, provider)
+}
+
+// Given a conversation with an earlier request already carried out, tool outputs in the
+//       current request, and the call being judged
+// When the consequence review is sent the state for that call
+// Then the state holds the current request, the agent's message that ended the earlier turn and
+//      the tools already called with their outcomes,
+//      and no tool output and nothing of the earlier request
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_shadow_state_holds_no_tool_output_and_no_earlier_request() {
+    let env = Env::new();
+    let (state, _id, probe, _provider) = two_requests_ending_in_an_allowed_push(&env, 1.0).await;
+    // Every judged call is reviewed: one in the first request, two in the second.
+    let reviewed = probe.review_requests(3).await;
+    assert_eq!(reviewed.len(), 3, "{reviewed:#?}");
+    let pushed = reviewed
+        .iter()
+        .find(|s| s.contains("git push --dry-run"))
+        .expect("the push was reviewed");
+    assert!(
+        pushed.contains("CURRENT_REQUEST release la version 0.8.4"),
+        "{pushed}"
+    );
+    // The proposal the Captain may be answering is the agent's, labelled as such.
+    assert!(
+        pushed.contains(r#"{"author":"agent","text":"Tidied. Shall I also release 0.8.4?"}"#),
+        "{pushed}"
+    );
+    // What the agent already did is a name and an outcome, never what it printed.
+    assert!(
+        pushed.contains(r#"[{"status":"ok","tool":"bash"}]"#),
+        "{pushed}"
+    );
+    // The earlier request is the current one for its own call, and for that call only.
+    let earlier: Vec<_> = reviewed
+        .iter()
+        .filter(|s| s.contains("EARLIER_REQUEST"))
+        .collect();
+    assert_eq!(earlier.len(), 1, "{reviewed:#?}");
+    assert!(earlier[0].contains("echo RESULT_$((40+2))"));
+    for state in &reviewed {
+        for output in ["RESULT_42", "RESULT_43"] {
+            assert!(
+                !state.contains(output),
+                "{output} reached the review: {state}"
+            );
+        }
+        if state.contains("CURRENT_REQUEST") {
+            assert!(!state.contains("EARLIER_REQUEST"), "{state}");
+        }
+    }
+    state.service().close_all().await;
+}
+
+// Given a bash call under an allow rule for `git push *`
+// When the call is judged
+// Then the consequence review scores it as it scores any other call, and the rule still answers
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bash_call_under_an_allow_prefix_rule_is_scored() {
+    let env = Env::new();
+    let (state, id, probe, _provider) = two_requests_ending_in_an_allowed_push(&env, 1.0).await;
+    let reviewed = probe.review_requests(3).await;
+    assert!(
+        reviewed
+            .iter()
+            .any(|s| s.contains("git push --dry-run origin main")),
+        "{reviewed:#?}"
+    );
+    // The decision is where it was: the rule and the decision flow let every call through,
+    // and the Captain was never asked.
+    assert!(
+        probe.decisions() >= 3,
+        "the decision flow still judged each call"
+    );
+    assert!(events(&state, id, "permission.requested").await.is_empty());
+    state.service().close_all().await;
+}
+
+// Given the setting `permissions.review` at `off`, or at a word that is not a mode
+// When a conversation makes calls
+// Then Instinct is never asked a consequence question, and the calls are judged as before
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_review_is_never_asked_when_the_setting_is_off_or_unreadable() {
+    for review in ["off", "maybe"] {
+        let env = Env::new();
+        let (provider, probe) = provider_with_instinct(
+            vec![bash_call("b0", "echo RESULT_$((40+2))"), done("Done.")],
+            1.0,
+        )
+        .await;
+        let state = with_instinct(&env, &provider).state();
+        set_review(&env, review);
+        let id = state.create_session(&env.ws, None, false).await.unwrap();
+        say(&state, id, "run the check").await;
+        wait_events(&state, id, "turn.end", 1).await;
+        assert!(
+            probe.decisions() >= 1,
+            "the decision flow still judged the call"
+        );
+        // The review flow ran beside the decision and stopped at its mode node: its record is
+        // written once the run is over, so a request it was going to send was sent before.
+        let runs = wait_for_review_runs(&env, 1).await;
+        assert!(
+            !runs.is_empty(),
+            "{review}: the review flow never ran, so its silence says nothing"
+        );
+        assert!(probe.review().is_empty(), "{review}: {:#?}", probe.review());
+        state.service().close_all().await;
+    }
+}
+
+// Given a session started under `permissions.review: off`, then a child (a subagent) it creates
+// When the child makes a call
+// Then Instinct is not asked a consequence question for it: a child reads the setting when it
+//      starts, like its parent. Under `shadow` the child's call is scored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_child_follows_the_review_setting_it_starts_under() {
+    for review in ["off", "shadow"] {
+        let env = Env::new();
+        let agents = env.ws.join(".withnav/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("checker.md"),
+            "---\nmode: subagent\naccess: full\n---\nRun the requested check.",
+        )
+        .unwrap();
+        let (provider, probe) = provider_with_instinct(
+            vec![
+                done("Hello."),
+                bash_call("c0", "echo CHILD_$((40+2))"),
+                done("Checked."),
+            ],
+            1.0,
+        )
+        .await;
+        let state = with_instinct(&env, &provider).state();
+        set_review(&env, review);
+        let parent = state.create_session(&env.ws, None, false).await.unwrap();
+        say(&state, parent, "hello").await;
+        wait_events(&state, parent, "turn.end", 1).await;
+        assert_eq!(probe.decisions(), 0, "the parent made no call");
+        let child = state
+            .create_child_session(parent, "checker", "run the check")
+            .await
+            .unwrap();
+        wait_events(&state, child, "turn.end", 1).await;
+        assert!(
+            probe.decisions() >= 1,
+            "{review}: the child's call was judged by the decision flow"
+        );
+        if review == "off" {
+            let runs = wait_for_review_runs(&env, 1).await;
+            assert!(
+                !runs.is_empty(),
+                "off: the review flow never ran for the child"
+            );
+            assert!(probe.review().is_empty(), "off: {:#?}", probe.review());
+        } else {
+            assert_eq!(
+                probe.review_requests(1).await.len(),
+                1,
+                "shadow: the child's call was scored"
+            );
+        }
+        state.service().close_all().await;
+    }
+}

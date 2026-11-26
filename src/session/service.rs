@@ -2688,6 +2688,15 @@ impl Service {
         );
         actor.compaction_catalog = Some(self.catalog.clone());
         actor.yolo = execution.yolo;
+        // The review reads the file once per session. A word it does not know turns the review
+        // off, never on: a review nobody asked for would spend the Captain's Instinct calls.
+        actor.review = match settings.permissions_review() {
+            Ok(mode) => mode,
+            Err(error) => {
+                tracing::warn!("permissions.review ignored, review off: {error}");
+                crate::settings::ReviewMode::Off
+            }
+        };
         // An unavailable database is an explicit degraded mode: no rules can
         // be read or saved, but the floor and permission flows still apply.
         // Opened on the blocking pool: the database may wait on another

@@ -5,8 +5,9 @@ use tokio_util::sync::CancellationToken;
 #[path = "captain_messages.rs"]
 mod captain_evidence;
 pub use captain_evidence::{
-    PERMISSION_PROJECTION, RecentMessage, captain_messages, captain_messages_with_cut,
-    delegation_with_cut, recent_with_cut,
+    PERMISSION_PROJECTION, RecentMessage, TOOL_TRAIL_CALLS, ToolTrailEntry, captain_messages,
+    captain_messages_with_cut, current_request_with_cut, delegation_with_cut, recent_with_cut,
+    tool_trail_with_cut,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -120,6 +121,18 @@ pub struct PermissionCallContext {
     /// agent's are context for a short Captain answer, never a request.
     pub recent: Vec<RecentMessage>,
     pub recent_cut: bool,
+    /// What the Captain asked for in the current request: the agent's message that ended the
+    /// previous turn, then the Captain's messages and answers since. Empty when the review is
+    /// off, because nothing reads it then.
+    pub current_request: Vec<RecentMessage>,
+    pub current_request_cut: bool,
+    /// The tools already called in the current request and how each ended; no arguments, no
+    /// output. Empty when the review is off.
+    pub tool_trail: Vec<ToolTrailEntry>,
+    /// Whether older calls were dropped to keep the newest.
+    pub tool_trail_cut: bool,
+    /// Whether the consequence review runs beside the decision.
+    pub review: crate::settings::ReviewMode,
     /// The host already ran the compiled protected check for this call: its
     /// answer is the only authority, and the flows do not ask it again.
     pub protected_check: Option<ProtectedCheck>,

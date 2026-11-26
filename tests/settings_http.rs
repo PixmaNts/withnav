@@ -393,3 +393,103 @@ async fn goal_watch_notes_is_listed_off_by_default_and_takes_only_a_boolean() {
     assert_eq!(field(&current)["set"], json!(false));
     assert_eq!(field(&current)["default"], json!(false));
 }
+
+// Given a settings file that does not name `permissions.review`
+// When a client reads the settings, sets the key to each mode, to a word that is none, and removes it
+// Then the field is listed as `shadow` by default, a mode is stored, anything else is refused
+//      without a write, and removing it brings the default back; the sibling `scratch_dirs` key is
+//      still listed and editable
+#[tokio::test]
+async fn permissions_review_is_listed_as_shadow_by_default_and_takes_only_its_three_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = TestServerConfig::unreachable(dir.path())
+        .bearer_token("secret")
+        .state();
+    let app = withnav::server::app(state);
+    let mut url = reqwest::Url::parse("http://localhost/v1/settings").unwrap();
+    url.query_pairs_mut()
+        .append_pair("workspace", &dir.path().to_string_lossy());
+    let uri = format!("{}?{}", url.path(), url.query().unwrap());
+    let field = |body: &Value, key: &str| {
+        body["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["key"] == key)
+            .cloned()
+            .unwrap_or_else(|| panic!("{key} is listed"))
+    };
+    let (_, current) = request(&app, "GET", &uri, Value::Null, true).await;
+    let listed = field(&current, "permissions.review");
+    assert_eq!(listed["default"], json!("shadow"));
+    assert_eq!(listed["value"], Value::Null);
+    assert_eq!(listed["set"], json!(false));
+    assert_eq!(listed["error"], Value::Null);
+    assert_eq!(listed["applies"], "new_sessions");
+    assert_eq!(listed["label"], "Consequence review");
+    assert!(
+        listed["description"].as_str().unwrap().contains("shadow"),
+        "{listed}"
+    );
+    assert_eq!(
+        field(&current, "permissions.scratch_dirs")["applies"],
+        "new_sessions"
+    );
+
+    let path = dir.path().join("cfg/config.json");
+    let mut current = current;
+    for mode in ["off", "on", "shadow"] {
+        let (status, next) = request(
+            &app,
+            "PUT",
+            &uri,
+            json!({"revision":current["revision"],"key":"permissions.review","value":mode}),
+            true,
+        )
+        .await;
+        assert_eq!(status, 200, "{next}");
+        assert_eq!(field(&next, "permissions.review")["value"], json!(mode));
+        let raw: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["permissions"]["review"], json!(mode));
+        current = next;
+    }
+
+    for bad in [
+        json!("Shadow"),
+        json!("auto"),
+        json!(true),
+        json!(1),
+        json!({"on":true}),
+    ] {
+        let (status, error) = request(
+            &app,
+            "PUT",
+            &uri,
+            json!({"revision":current["revision"],"key":"permissions.review","value":bad}),
+            true,
+        )
+        .await;
+        assert_eq!(status, 400, "{error}");
+        assert_eq!(error["reason"], "invalid");
+        assert_eq!(error["key"], "permissions.review");
+    }
+    let raw: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        raw["permissions"]["review"],
+        json!("shadow"),
+        "a refused value writes nothing"
+    );
+
+    let (status, current) = request(
+        &app,
+        "PUT",
+        &uri,
+        json!({"revision":current["revision"],"key":"permissions.review","value":null}),
+        true,
+    )
+    .await;
+    assert_eq!(status, 200, "{current}");
+    let listed = field(&current, "permissions.review");
+    assert_eq!(listed["set"], json!(false));
+    assert_eq!(listed["default"], json!("shadow"));
+}

@@ -2240,3 +2240,311 @@ async fn the_flows_and_the_protected_check_read_the_whole_conversation() {
         assert_eq!(conversation(ctx), expected);
     }
 }
+
+// The consequence review reads the current request and the tool trail from the transcript; with
+// the review off nobody reads them, so the transcript is not walked for them and the flows see
+// the mode the session was started with.
+#[tokio::test]
+async fn the_review_evidence_is_built_only_when_the_review_is_on() {
+    use crate::provider::openai::{ChatMessage, UserProvenance};
+    use crate::settings::ReviewMode;
+    for review in [ReviewMode::Off, ReviewMode::Shadow, ReviewMode::On] {
+        let flows = Arc::new(RecordingFlows::default());
+        let mut actor = actor_with(None);
+        actor.tool_flows = Some(flows.clone());
+        actor.review = review;
+        actor.transcript = vec![ChatMessage::User {
+            provenance: UserProvenance::Captain,
+            content: "release la version 0.8.4".into(),
+            images: Vec::new(),
+        }];
+        let call = crate::provider::ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            args: json!({"path": actor.tool_context.workspace.join("notes.txt"), "content": "x"}),
+            args_valid: true,
+        };
+        let before = evidence_reads();
+        let authorized = crate::agent::authorize::authorize(&actor, &call, 1, None, false).await;
+        assert!(matches!(
+            authorized,
+            crate::agent::authorize::Authorized::Run(_)
+        ));
+        assert_eq!(evidence_reads(), before + 1, "still read once per call");
+        let asked = flows.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].review, review);
+        // The decision's own evidence does not depend on the mode.
+        assert_eq!(
+            asked[0].captain_messages,
+            ["release la version 0.8.4".to_string()]
+        );
+        let request: Vec<_> = asked[0]
+            .current_request
+            .iter()
+            .map(|m| (m.author, m.text.as_str()))
+            .collect();
+        if review == ReviewMode::Off {
+            assert!(request.is_empty());
+        } else {
+            assert_eq!(request, [("captain", "release la version 0.8.4")]);
+        }
+    }
+}
+
+fn review_call(actor: &AgentActor) -> crate::provider::ToolCall {
+    crate::provider::ToolCall {
+        id: "w9".into(),
+        name: "write".into(),
+        args: json!({"path": actor.tool_context.workspace.join("notes.txt"), "content": "x"}),
+        args_valid: true,
+    }
+}
+
+/// What the review is handed for the call `actor` is about to run.
+async fn review_context_of(
+    actor: &mut AgentActor,
+) -> crate::agent::flow_hook::PermissionCallContext {
+    let flows = Arc::new(RecordingFlows::default());
+    actor.tool_flows = Some(flows.clone());
+    let call = review_call(actor);
+    let authorized = crate::agent::authorize::authorize(actor, &call, 1, None, false).await;
+    assert!(matches!(
+        authorized,
+        crate::agent::authorize::Authorized::Run(_)
+    ));
+    flows
+        .asked
+        .lock()
+        .unwrap()
+        .pop()
+        .expect("the flows were asked")
+}
+
+fn assistant_calling(id: &str, tool: &str) -> crate::provider::openai::ChatMessage {
+    crate::provider::openai::ChatMessage::Assistant {
+        content: None,
+        reasoning_content: None,
+        tool_calls: vec![crate::provider::openai::RequestToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: crate::provider::openai::RequestFunction {
+                name: tool.into(),
+                arguments: "{}".into(),
+            },
+        }],
+        opaque: None,
+    }
+}
+
+fn request_of(ctx: &crate::agent::flow_hook::PermissionCallContext) -> Vec<(&'static str, &str)> {
+    ctx.current_request
+        .iter()
+        .map(|m| (m.author, m.text.as_str()))
+        .collect()
+}
+
+// An actor nobody configured asks for no review: a child session that was not given the setting
+// would otherwise send a request to Instinct against `permissions.review: off`. The session
+// sets the mode from the setting, and a child reads the setting itself when it starts.
+#[tokio::test]
+async fn an_actor_nobody_configured_asks_for_no_review() {
+    let mut actor = actor_with(None);
+    assert_eq!(actor.review, crate::settings::ReviewMode::Off);
+    actor.push_user("release la version 0.8.4");
+    let ctx = review_context_of(&mut actor).await;
+    assert_eq!(ctx.review, crate::settings::ReviewMode::Off);
+    assert!(ctx.current_request.is_empty() && ctx.tool_trail.is_empty());
+}
+
+// A turn that ends without a final assistant message leaves nothing in the transcript that says
+// the Captain began again: the actor records where each turn begins. The Captain's earlier
+// message was not carried out, so the review is not told it is part of this request; the answer
+// to an `ask` and a correction during the turn are.
+#[tokio::test]
+async fn a_turn_begun_after_an_interrupted_one_is_its_own_request() {
+    let mut actor = actor_with(None);
+    actor.review = crate::settings::ReviewMode::Shadow;
+    actor.push_user("delete the logs");
+    assert_eq!(actor.request_start, Some(0));
+    actor.transcript.push(assistant_calling("c1", "bash"));
+    // What the loop does when the Captain interrupts: the turn ends, its call is settled.
+    actor.end_skill_turn();
+    append_interrupted(&mut actor, "c1");
+    actor.push_user("release la version 0.8.4");
+    assert_eq!(actor.request_start, Some(3));
+    let ctx = review_context_of(&mut actor).await;
+    assert_eq!(request_of(&ctx), [("captain", "release la version 0.8.4")]);
+    assert!(
+        ctx.tool_trail.is_empty(),
+        "the dropped turn's calls are not this trail"
+    );
+
+    // The answer to a question the agent asked is the same request, not a new one.
+    let mut actor = actor_with(None);
+    actor.review = crate::settings::ReviewMode::Shadow;
+    actor.push_user("deploy the app");
+    actor.transcript.push(assistant_calling("q1", "ask"));
+    actor.pending = Some(crate::agent::actor::PendingInteraction::Ask {
+        tool_call_id: "q1".into(),
+    });
+    actor.push_user("staging");
+    assert_eq!(actor.request_start, Some(0));
+    let ctx = review_context_of(&mut actor).await;
+    assert_eq!(request_of(&ctx)[0], ("captain", "deploy the app"));
+    assert_eq!(request_of(&ctx).last(), Some(&("captain", "staging")));
+}
+
+// A correction the Captain sends while the agent works, with no question pending, is the same
+// request: the turn has not ended, so the original message is not dropped. A turn that ended
+// (the test above) is what starts a new request.
+#[tokio::test]
+async fn a_correction_sent_while_the_agent_works_stays_in_the_request() {
+    let mut actor = actor_with(None);
+    actor.review = crate::settings::ReviewMode::Shadow;
+    actor.push_user("release la version 0.8.4");
+    actor.transcript.push(assistant_calling("c1", "bash"));
+    append_tool_result(&mut actor, "c1", &crate::tools::ToolResult::ok("built"));
+    actor.push_user("make it 0.8.5");
+    assert_eq!(actor.request_start, Some(0));
+    let ctx = review_context_of(&mut actor).await;
+    assert_eq!(
+        request_of(&ctx),
+        [
+            ("captain", "release la version 0.8.4"),
+            ("captain", "make it 0.8.5")
+        ]
+    );
+    assert_eq!(
+        ctx.tool_trail
+            .iter()
+            .map(|e| (e.tool.as_str(), e.status))
+            .collect::<Vec<_>>(),
+        [("bash", "ok")]
+    );
+    assert!(!ctx.current_request_cut && !ctx.tool_trail_cut);
+}
+
+// The boundary is an index into the transcript. Nothing rewrites the transcript during a turn
+// today, but a rewrite that moved messages would leave the index on another message, and the
+// request would then start in the wrong place or be empty. The actor remembers what stood just
+// before the boundary and, when that is no longer there, falls back on the last finished turn and
+// tells the review that the request was cut.
+#[tokio::test]
+async fn a_transcript_rewritten_under_the_turn_marks_the_request_cut() {
+    let mut actor = actor_with(None);
+    actor.review = crate::settings::ReviewMode::Shadow;
+    actor.push_user("delete the logs");
+    actor
+        .transcript
+        .push(crate::provider::openai::ChatMessage::Assistant {
+            content: Some("Done, the logs are gone.".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            opaque: None,
+        });
+    actor.end_skill_turn();
+    actor.push_user("release la version 0.8.4");
+    assert_eq!(actor.request_start, Some(2));
+
+    // Appended to, as every turn does: the boundary holds and nothing is cut.
+    let ctx = review_context_of(&mut actor).await;
+    assert_eq!(
+        request_of(&ctx),
+        [
+            ("agent", "Done, the logs are gone."),
+            ("captain", "release la version 0.8.4")
+        ]
+    );
+    assert!(!ctx.current_request_cut && !ctx.tool_trail_cut);
+
+    // The first message is gone: index 2 is now past the end.
+    actor.transcript.remove(0);
+    let ctx = review_context_of(&mut actor).await;
+    assert_eq!(
+        request_of(&ctx),
+        [
+            ("agent", "Done, the logs are gone."),
+            ("captain", "release la version 0.8.4")
+        ]
+    );
+    assert!(ctx.current_request_cut, "the boundary could not be trusted");
+    assert!(ctx.tool_trail_cut);
+
+    // A message inserted before it: the index now points at the Captain's own message.
+    let mut actor = actor_with(None);
+    actor.review = crate::settings::ReviewMode::Shadow;
+    actor.push_user("delete the logs");
+    actor
+        .transcript
+        .push(crate::provider::openai::ChatMessage::Assistant {
+            content: Some("Done, the logs are gone.".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            opaque: None,
+        });
+    actor.end_skill_turn();
+    actor.push_user("release la version 0.8.4");
+    actor.transcript.insert(
+        0,
+        crate::provider::openai::ChatMessage::System {
+            content: "inserted".into(),
+        },
+    );
+    let ctx = review_context_of(&mut actor).await;
+    assert_eq!(
+        request_of(&ctx),
+        [
+            ("agent", "Done, the logs are gone."),
+            ("captain", "release la version 0.8.4")
+        ]
+    );
+    assert!(ctx.current_request_cut);
+}
+
+// The trail reads the lines the loop really writes: a success is plain output, a failure or a
+// refusal a serialised result, an interruption one of the canonical lines. The same word at the
+// start of a tool's own output is not an interruption.
+#[test]
+fn the_trail_reads_what_the_loop_writes() {
+    let mut actor = actor_with(None);
+    actor.push_user("go");
+    let results = [
+        (
+            "ok",
+            crate::tools::ToolResult::ok("interrupted: a log line"),
+        ),
+        // A tool whose own output is JSON is a success, whatever the JSON says.
+        (
+            "ok",
+            crate::tools::ToolResult::ok(r#"{"items":[1,2],"next":null}"#),
+        ),
+        (
+            "ok",
+            crate::tools::ToolResult::ok(r#"{"status":"error","message":"the API said so"}"#),
+        ),
+        ("error", crate::tools::ToolResult::error("boom", "failed")),
+        ("denied", crate::tools::ToolResult::permission_denied("no")),
+        ("interrupted", crate::tools::ToolResult::not_started()),
+        ("interrupted", crate::tools::ToolResult::interrupted()),
+        (
+            "interrupted",
+            crate::tools::ToolResult::interrupted_with("half a build"),
+        ),
+    ];
+    for (n, (_, result)) in results.iter().enumerate() {
+        actor
+            .transcript
+            .push(assistant_calling(&format!("c{n}"), "bash"));
+        append_tool_result(&mut actor, &format!("c{n}"), result);
+    }
+    let (trail, cut) = crate::agent::flow_hook::tool_trail_with_cut(&actor.transcript, Some(0), 8);
+    assert!(!cut);
+    assert_eq!(
+        trail.iter().map(|e| e.status).collect::<Vec<_>>(),
+        results
+            .iter()
+            .map(|(status, _)| *status)
+            .collect::<Vec<_>>()
+    );
+}

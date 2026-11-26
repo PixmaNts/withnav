@@ -1,0 +1,28 @@
+---
+source: crates/withnav-tui/tests/tui_view.rs
+expression: snapshot
+---
+ Conversations       │ ◆ withnav  ~/dev/project           ▌◎ build  cognition · assigned · — / 200k 
+▌1 Fix parser        │──────────────────────────────────────────────────────────────────────────────
+▌  ◎ Nav · idle      │ │ NOTICE                                                                     
+                     │ │  Remembered: "Use conventional commits" · project WithNav · undo with      
+                     │ │ /forget m1                                                                 
+                     │ │                                                                            
+                     │ │ NOTICE                                                                     
+                     │ │  Goal note · automatic observation, not a Captain message                  
+                     │ │  Goal check (revision 3): criterion 2 is contradicted.                     
+                     │ │                                                                            
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │                                                                              
+                     │──────────────────────────────────────────────────────────────────────────────
+                     │ ready                                                          session — tok 
+                     │┌ Message ───────────────────────────────────────────────────────────────────┐
+ alt+1…9 switch      ││                                                                            │
+ alt+w close         │└────────────────────────────────────────────────────────────────────────────┘
+ alt+b hide bar      │ tab build/plan · ctrl+p palette · alt+1…9 tabs · /model · /compact · esc stop

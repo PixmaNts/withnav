@@ -20,6 +20,7 @@ import type {
   McpStatus,
   ModelEntry,
   ProjectsBody,
+  SessionLedger,
   SessionListEntry,
   SessionSummary,
   SecretView,
@@ -49,6 +50,7 @@ export const api = {
     get<AgentsBody>(`/v1/agents?workspace=${q(workspace)}${sessionId ? `&session_id=${q(sessionId)}` : ""}`),
   commands: () => get<{ commands: CommandInfo[] }>("/v1/commands").then((b) => b.commands ?? []),
   skills: (id: string) => get<SkillsBody>(`/v1/sessions/${q(id)}/skills`),
+  ledger: (id: string) => get<SessionLedger>(`/v1/sessions/${q(id)}/ledger`),
   context: (id: string) => get<ContextSnapshot>(`/v1/sessions/${q(id)}/context`),
   layers: (workspace: string) => get<{ layers: LayerEntry[] }>(`/v1/layers?workspace=${q(workspace)}`).then((b) => b.layers ?? []),
   /** The service's MCP servers; the live `mcp.status` event carries the same body. */

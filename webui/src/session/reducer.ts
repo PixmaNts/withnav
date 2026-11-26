@@ -7,7 +7,7 @@
 // for a step's text and reasoning; deltas only fill it in while it streams.
 
 import type { ContextSnapshot, Envelope, ImageRef } from "../api/types";
-import { outcomeText } from "./outcome";
+import { goalNote, outcomeText, remembered } from "./outcome";
 import { parseWake, type WakeNote } from "./wake";
 
 export type ToolStatus = "running" | "ok" | "error" | "denied" | "interrupted";
@@ -110,7 +110,11 @@ export type Item =
   | Turn
   /** A permission asked outside any turn shown here (a stream cut mid-turn). */
   | { kind: "permission"; key: string; requestId: string }
-  | { kind: "notice"; key: string; text: string; tone: "info" | "error" };
+  | { kind: "notice"; key: string; text: string; tone: "info" | "error" }
+  /** What `/remember` stored: `version` is the one an undo invalidates. */
+  | { kind: "remembered"; key: string; itemId: string; version: number; title: string; scope: string; notice?: string }
+  /** What a goal check told the agent: an automatic observation, never a Captain message. */
+  | { kind: "goal-note"; key: string; text: string; revision: number; at: string };
 
 export interface Child {
   id: string;
@@ -147,6 +151,8 @@ export interface SessionView {
   workspace: string | null;
   startedAt: string | null;
   endedAt: string | null;
+  /** Goes up whenever what the session panel shows (ledger, goal, memory) may have changed. */
+  sessionEpoch: number;
 }
 
 export const emptyView = (): SessionView => ({
@@ -167,6 +173,7 @@ export const emptyView = (): SessionView => ({
   workspace: null,
   startedAt: null,
   endedAt: null,
+  sessionEpoch: 0,
 });
 
 const str = (value: unknown, fallback = ""): string => (typeof value === "string" ? value : fallback);
@@ -304,6 +311,7 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
         outcome === "error" ? "error" : outcome === "interrupted" ? "interrupted" : outcome === "yielded" ? "yielded" : "done";
       const error = p.error ? str(p.error.message, JSON.stringify(p.error)) : undefined;
       next.currentTurn = null;
+      next.sessionEpoch += 1;
       // A turn yielded to a waiting permission is not over for the Captain.
       const waiting = status === "yielded" && Object.values(next.permissions).some((perm) => !perm.resolution);
       next.activity = next.activity === "stopped" ? "stopped" : waiting ? "running" : "idle";
@@ -412,7 +420,20 @@ export function reduce(view: SessionView, envelope: Envelope): SessionView {
       return next;
     case "context.compacted":
       return notice(next, envelope.seq, `Context compacted: about ${tokens(p.estimate_before)} → ${tokens(p.estimate_after)} tokens`, "info");
+    case "goal.updated":
+    case "goal.cleared":
+      next.sessionEpoch += 1;
+      return next;
     case "command.result": {
+      const name = str(p.name);
+      if (p.ok !== false && ["goal_check", "remember", "forget", "memory"].includes(name)) next.sessionEpoch += 1;
+      if (p.ok !== false && name === "goal_check") {
+        const note = goalNote(p.data);
+        if (!note) return next;
+        return { ...next, items: [...next.items, { kind: "goal-note", key: `n:${envelope.seq}`, ...note, at: envelope.occurred_at }] };
+      }
+      const stored = p.ok !== false && name === "remember" ? remembered(p.data) : null;
+      if (stored) return { ...next, items: [...next.items, { kind: "remembered", key: `n:${envelope.seq}`, ...stored }] };
       // Selection switches already show up as `model.changed`.
       const text = outcomeText(str(p.name), p.ok !== false, p.data, typeof p.error === "string" ? p.error : undefined);
       if (text === null) return next;

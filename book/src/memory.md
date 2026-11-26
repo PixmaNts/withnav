@@ -45,4 +45,6 @@ Root sessions with write access can use `project_group_add(project_id, group_id)
 - `#/projects` shows groups with their member and item counts, each project with its paths and sessions, and a history of membership changes. Add or remove a project from a group (adding asks first when it widens who reads what), attach or detach a session (the link stays in the history), and create or rename a group.
 - The first time a session starts in a repository the register does not know, a dialog asks which group it belongs to. **Ask me later** leaves the question open; it is asked again at the next start.
 
+In a session, the web client's **Session** tab lists the items that session may be given (`GET /v1/memory?session=<id>`), and the transcript shows a `Remembered: "<title>" · <scope> · undo` line after `/remember`. See [The session view](using-nav.md#the-session-view).
+
 Not shown yet: relations between items, which sessions an item was sent to, pinning, and filtering by authority. Proposed items cannot be accepted from the page because the server has no route for it.

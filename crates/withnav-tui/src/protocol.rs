@@ -112,6 +112,11 @@ pub enum ClientEvent {
         generation: Generation,
         result: Result<withnav_client_api::ledger::SessionLedger, String>,
     },
+    /// The answer to `Effect::FetchMemory`.
+    Memory {
+        generation: Generation,
+        result: Result<Vec<crate::state::MemoryEntry>, String>,
+    },
     Submitted {
         generation: Generation,
         revision: u64,
@@ -404,6 +409,9 @@ pub enum Effect {
     },
     /// Reads the session ledger; the answer comes back as `ClientEvent::Ledger`.
     FetchLedger(String),
+    /// Reads the memory items the session may be given; the answer comes back as
+    /// `ClientEvent::Memory`.
+    FetchMemory(String),
     Subscribe {
         session_id: String,
         cursor: Option<u64>,

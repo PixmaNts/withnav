@@ -70,6 +70,29 @@ WithNav rebuilds it from the conversation's history whenever it is read, so it c
 and a stopped conversation has one too. Every list and text is bounded. The terminal client shows
 it in the right column; a client reads it at `GET /v1/sessions/{id}/ledger`.
 
+## The session view
+
+The web client's right panel has a **Session** tab, and the terminal client's right column shows the
+same three things, read again after each turn, each goal change, each finished goal check and each
+`/remember`, `/forget` or `/memory` command:
+
+- **Goal**: the objective (three lines, expandable on the web), its revision and status, and each
+  criterion with the status of its last check: supported, contradicted or not checked. On the web,
+  hover a criterion for the evidence the status rests on; the panel also says when the goal was last
+  checked. After a check of the goal's current revision, the agent's completion claims are listed
+  too, as supported, contradicted or unverified (unverified is never false). A check of an older
+  revision shows every criterion as not checked.
+- **Ledger**: the turns, the files changed (the last three are named), the repeated failures (the
+  worst is named) and the open questions.
+- **Memory**: the [memory items](memory.md) this session may be given, by title with their scope.
+  What is actually sent to the agent in a turn is not shown yet.
+
+Two lines appear in the transcript. `Remembered: "<title>" · <scope> · undo` follows a successful
+`/remember`; on the web, **undo** invalidates the item at the version `/remember` stored (and
+offers **redo**), and the terminal and editor lines tell you to use `/forget <id>`. A **Goal note**
+follows a goal check that queued a note for the agent (see below), marked as an automatic
+observation, not a Captain message. The editor shows these two lines only.
+
 ## Session goal
 
 `/goal <objective>` records what counts as done for this conversation. `/goal criterion <text>`

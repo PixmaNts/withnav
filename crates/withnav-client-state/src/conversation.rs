@@ -187,6 +187,22 @@ pub struct Conversation {
     /// A ledger read is running; `ledger_again` asks for one more when it returns.
     pub ledger_reading: bool,
     pub ledger_again: bool,
+    /// The register items this session may be given (`GET /v1/memory?session=<id>`), read when
+    /// the stream connects, after each turn and after a register command; `None` until the
+    /// first read answers.
+    pub memory: Option<Vec<MemoryEntry>>,
+    /// A memory read is running; `memory_again` asks for one more when it returns.
+    pub memory_reading: bool,
+    pub memory_again: bool,
+}
+
+/// One register item as the session panel lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryEntry {
+    pub id: String,
+    pub title: String,
+    /// `global`, `group`, `project` or `session`.
+    pub scope: String,
 }
 
 pub fn block(id: impl Into<String>, kind: BlockKind) -> Block {

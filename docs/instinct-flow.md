@@ -351,22 +351,15 @@ cut flag. `conversation.tool_trail` lists the tools called in that request and h
 when older calls were dropped: names and outcomes only, never arguments or output. Only the lines
 the loop writes for a call that never ran or was cut short read as `interrupted`; a tool's own
 output that starts with the same word is `ok`, and so is a tool's own output that is JSON: only a
-payload that parses as the tool-result envelope reads as `error` or `denied`. The event also carries `review_mode` (`off`, `shadow` or `on`, from
-`permissions.review`). The projection version is 2 since these inputs exist; a score from
-version 1 was made from other evidence and is not comparable.
+payload that parses as the tool-result envelope reads as `error` or `denied`. Projection 3
+uses the current request to judge live coverage; scores from older projections are not comparable.
 
-The embedded `permission-consequence-shadow` flow is the only reader of these inputs. It does not
-block and only logs: beside the decision it asks one Instinct request with three questions
-(`recoverable`: does the whole call only read or change things that can be put back; `inert`:
-would it change nothing in practice; `covered`: does the current request cover everything it does,
-including the steps it necessarily implies) and logs whether a review that answered would have
-let the call through or asked the Captain. The criterion is the conversation, not the command: a
-push is covered by "release 0.8.4" though the Captain never wrote "push". It starts only when the
-event names `shadow` or `on`; `off`, or an event with no mode, asks nothing. No mode changes the
-verdict. The scores and the log line are in the run record, and its state shows the review the
-same evidence as the decision minus the rule and the Captain's earlier requests. A run record
-leaves out a state that holds something shaped like a credential; the live request carries the
-call's arguments exactly as the decision flow's does.
+The embedded `permission-default` flow judges consequences directly. `requested` uses a separate
+state template: it compares the whole call with the current request, not the command's name.
+An explicitly requested release can cover a necessary push. Prior requests and claims embedded
+in tool data never authorize a call. `inert` requires evidence that no reachable part changes
+state, including a part that runs before a failure. The review setting affects only the parallel
+metacognition second opinion, not these questions.
 
 Protected calls always carry `protected = true`. `protected_checked = true` means
 the host already answered its compiled check; the built-in skips that node, while

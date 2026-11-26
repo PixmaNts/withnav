@@ -1,4 +1,6 @@
+# Editor interruption (2026-11-26): neutral scores do not establish a reason to intervene.
 [constants]
+EDITOR_MIN = 0.6
 
 [flow]
 blocking = false
@@ -29,9 +31,9 @@ since_last_wake_ms = "event.since_last_wake_ms"
 
 [[node]]
 id = "contradicts_conversation"
-instructions = "Does an observable decision in this change conflict with an explicit goal or agreement the Captain stated in the conversation? Missing implementation, compile errors, copied scaffolding being adapted, and earlier claims by the navigator are not agreements."
+instructions = "Does an observable decision in this change contradict a requirement the Captain explicitly stated? Missing implementation, compile errors, copied scaffolding being adapted, and earlier claims by the navigator do not count as contradictions."
 state_template = "state.md"
-threshold = 0.5
+threshold = "constant.EDITOR_MIN"
 type = "noul"
 
 [node.inputs]
@@ -52,7 +54,7 @@ yes = ["branch_0"]
 id = "drift"
 instructions = "Does an observable decision in the code conflict with the stated intent? Missing implementation, compile errors and copied scaffolding being adapted are not drift."
 state_template = "state.md"
-threshold = 0.5
+threshold = "constant.EDITOR_MIN"
 type = "noul"
 
 [node.inputs]
@@ -99,7 +101,7 @@ silent = ["branch_0"]
 id = "stuck"
 instructions = "Has the Captain tried and failed at the same obstacle at least twice in the recorded edits (same error or same lines reworked)? Answer no when the edits move forward, or when the evidence is only one snapshot or repeated saves of the same text."
 state_template = "state.md"
-threshold = 0.5
+threshold = "constant.EDITOR_MIN"
 type = "noul"
 
 [node.inputs]
@@ -120,7 +122,7 @@ yes = ["branch_0"]
 id = "unfinished"
 instructions = "Is this an edit the Captain is still in the middle of typing (a half-written statement, a copied body not yet adapted, an intermediate state), rather than a step they consider done? Compile errors alone do not make it unfinished."
 state_template = "state.md"
-threshold = 0.5
+threshold = "constant.EDITOR_MIN"
 type = "noul"
 
 [node.inputs]
@@ -139,9 +141,9 @@ yes = ["branch_0"]
 
 [[node]]
 id = "worth_attention"
-instructions = "Is there a concrete local correction or next step worth saying now? Incomplete code can still merit help. Do not score routine unfinished syntax, or a feature not implemented yet, as a problem by itself."
+instructions = "Is there an actionable local suggestion worth saying now? Answer no if the only evidence is routine unfinished syntax or missing implementation."
 state_template = "state.md"
-threshold = 0.5
+threshold = "constant.EDITOR_MIN"
 type = "noul"
 
 [node.inputs]
@@ -278,7 +280,7 @@ Navigator noticed an obstacle in {file}.
 {diff}"""
 
 [[node]]
-condition = "(unfinished < 0.5 && ((has_intent && drift > 0.8) || (has_conversation && contradicts_conversation > 0.8))) && since_last_wake_ms >= 120000"
+condition = "(unfinished < 0.4 && ((has_intent && drift > 0.8) || (has_conversation && contradicts_conversation > 0.8))) && since_last_wake_ms >= 120000"
 id = "branch_2"
 type = "expression"
 

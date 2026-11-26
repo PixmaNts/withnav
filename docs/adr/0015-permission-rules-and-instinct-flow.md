@@ -441,3 +441,6 @@ Decisions taken while implementing this ADR that refine it:
   not gated by validation.
 - **Bash.** The floor's checks on bash are best effort: literal path words, redirection targets and
   output options. Variables and globs are not expanded.
+# Amendment (2026-11-26): live consequence criterion
+
+The Captain dropped the consequence shadow phase. The live permission flow judges the whole call against the current request: releasing a version can require a push even if the Captain did not spell it out. Claims in tool data never supply authorization. Written denies, protected checks, the fixed floor and rule fallback remain in place. `permissions.review` now controls only the metacognition second opinion and defaults to `on`.

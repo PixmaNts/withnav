@@ -2,10 +2,6 @@
 use instinct_flow::Definition;
 use std::collections::BTreeMap;
 
-/// Name of the built-in review that scores each judged call beside the permission verdict. The
-/// runtime limits and isolates this flow only, never a flow the Captain wrote.
-pub const CONSEQUENCE_REVIEW: &str = "permission-consequence-shadow";
-
 pub fn definitions() -> Vec<(Definition, BTreeMap<String, String>)> {
     [
         (
@@ -35,30 +31,28 @@ pub fn definitions() -> Vec<(Definition, BTreeMap<String, String>)> {
 pub fn all_definitions() -> Vec<(Definition, BTreeMap<String, String>)> {
     definitions()
         .into_iter()
-        .chain([
-            (
-                Definition::parse(include_str!("permission-default.toml"))
-                    .expect("embedded permission flow parses"),
-                BTreeMap::from([
-                    (
-                        "state.md".into(),
-                        include_str!("permission-default-state.md").into(),
-                    ),
-                    (
-                        "protected-state.md".into(),
-                        include_str!("permission-default-protected-state.md").into(),
-                    ),
-                ]),
-            ),
-            (
-                Definition::parse(include_str!("permission-consequence-shadow.toml"))
-                    .expect("embedded consequence review flow parses"),
-                BTreeMap::from([(
+        .chain([(
+            Definition::parse(include_str!("permission-default.toml"))
+                .expect("embedded permission flow parses"),
+            BTreeMap::from([
+                (
+                    "call-state.md".into(),
+                    include_str!("permission-default-call-state.md").into(),
+                ),
+                (
                     "state.md".into(),
-                    include_str!("permission-consequence-shadow-state.md").into(),
-                )]),
-            ),
-        ])
+                    include_str!("permission-default-state.md").into(),
+                ),
+                (
+                    "protected-state.md".into(),
+                    include_str!("permission-default-protected-state.md").into(),
+                ),
+                (
+                    "requested-state.md".into(),
+                    include_str!("permission-default-requested-state.md").into(),
+                ),
+            ]),
+        )])
         .collect()
 }
 
@@ -91,6 +85,49 @@ mod tests {
                     &templates,
                 )
                 .unwrap();
+        }
+    }
+
+    #[test]
+    fn embedded_questions_avoid_neutral_cuts_and_compound_applicability() {
+        use instinct_flow::{NodeKind, Threshold};
+        let catalogue = crate::flows::catalogue::catalogue();
+        for (definition, templates) in super::all_definitions() {
+            for template in templates.values() {
+                assert!(template.len() <= catalogue.limits.template_bytes);
+            }
+            for node in &definition.node {
+                let instructions = match &node.kind {
+                    NodeKind::Noul {
+                        instructions,
+                        threshold,
+                        ..
+                    } => {
+                        let cut = match threshold {
+                            Threshold::Number(value) => *value,
+                            Threshold::Reference(path) => definition.constants
+                                [path.strip_prefix("constant.").unwrap()]
+                            .as_f64()
+                            .unwrap(),
+                        };
+                        assert!(
+                            (cut - 0.5).abs() > f64::EPSILON,
+                            "{}: {}",
+                            definition.flow.name,
+                            node.id
+                        );
+                        instructions
+                    }
+                    NodeKind::Choice { instructions, .. }
+                    | NodeKind::Score { instructions, .. } => instructions,
+                    _ => continue,
+                };
+                assert!(
+                    !instructions
+                        .to_ascii_lowercase()
+                        .contains(" or if applicable")
+                );
+            }
         }
     }
 

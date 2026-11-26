@@ -14,7 +14,7 @@ use crate::provider::openai::ChatMessage;
 /// budget, a label or what is excluded, here or where the event is built
 /// (`flows::runtime::FlowRuntime::permission_event`). Version 2 added the
 /// current request and the tool trail, which the consequence review reads.
-pub const PERMISSION_PROJECTION: u32 = 2;
+pub const PERMISSION_PROJECTION: u32 = 3;
 
 pub fn captain_messages(transcript: &[ChatMessage]) -> Vec<String> {
     captain_messages_with_cut(transcript).0
@@ -1399,6 +1399,6 @@ mod current_request_tests {
     // changed it, so scores from before cannot be compared with scores after.
     #[test]
     fn the_projection_version_moved_with_the_current_request_inputs() {
-        assert_eq!(PERMISSION_PROJECTION, 2);
+        assert_eq!(PERMISSION_PROJECTION, 3);
     }
 }

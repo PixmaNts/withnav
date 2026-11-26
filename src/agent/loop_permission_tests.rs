@@ -1589,13 +1589,13 @@ impl instinct_flow::DecisionClient for DelegationClient {
                     "{}",
                     request.state
                 );
-            } else {
+            } else if request.questions.contains_key("requested") {
                 assert!(
                     request.state.contains("DELEGATED_ACTION"),
                     "{}",
                     request.state
                 );
-                assert!(request.state.contains("Delegation from the parent agent"));
+                assert!(request.state.contains("Parent delegation:"));
             }
             Ok(instinct_flow::protocol::DecisionResponse {
                 answers: request
@@ -2241,11 +2241,9 @@ async fn the_flows_and_the_protected_check_read_the_whole_conversation() {
     }
 }
 
-// The consequence review reads the current request and the tool trail from the transcript; with
-// the review off nobody reads them, so the transcript is not walked for them and the flows see
-// the mode the session was started with.
+// The live permission flow reads the current request even without a second opinion.
 #[tokio::test]
-async fn the_review_evidence_is_built_only_when_the_review_is_on() {
+async fn current_request_is_projected_in_every_review_mode() {
     use crate::provider::openai::{ChatMessage, UserProvenance};
     use crate::settings::ReviewMode;
     for review in [ReviewMode::Off, ReviewMode::Shadow, ReviewMode::On] {
@@ -2284,11 +2282,7 @@ async fn the_review_evidence_is_built_only_when_the_review_is_on() {
             .iter()
             .map(|m| (m.author, m.text.as_str()))
             .collect();
-        if review == ReviewMode::Off {
-            assert!(request.is_empty());
-        } else {
-            assert_eq!(request, [("captain", "release la version 0.8.4")]);
-        }
+        assert_eq!(request, [("captain", "release la version 0.8.4")]);
     }
 }
 
@@ -2354,7 +2348,8 @@ async fn an_actor_nobody_configured_asks_for_no_review() {
     actor.push_user("release la version 0.8.4");
     let ctx = review_context_of(&mut actor).await;
     assert_eq!(ctx.review, crate::settings::ReviewMode::Off);
-    assert!(ctx.current_request.is_empty() && ctx.tool_trail.is_empty());
+    assert_eq!(ctx.current_request[0].text, "release la version 0.8.4");
+    assert!(ctx.tool_trail.is_empty());
 }
 
 // A turn that ends without a final assistant message leaves nothing in the transcript that says

@@ -111,7 +111,11 @@ mod tests {
     fn each_layer_resolves_identity_not_catalog_key_and_enforces_api() {
         for (layer, name, id) in [
             (Layer::Reflex, "gateway/edit", "edit"),
-            (Layer::Instinct, "gateway/example/decision-model", "example/decision-model"),
+            (
+                Layer::Instinct,
+                "gateway/example/decision-model",
+                "example/decision-model",
+            ),
             (Layer::Metacognition, "gateway/combo/chat", "combo/chat"),
         ] {
             assert_eq!(assign(json!(name), layer).unwrap().resolved.model.model, id);

@@ -69,22 +69,19 @@ call, for example when the Captain asked for it. Without a flow that answers, Wi
 
 ### Consequence review (shadow)
 
-Beside that decision, WithNav can ask Instinct a second question about each call: what does the
-whole call change, and does your current request cover it? "Current" means the turn being run, so
+Instinct judges the live call by its effects and whether your current request covers them.
+"Current" means the turn being run, so
 an earlier request already carried out does not count, nor does one the agent never finished
 because you interrupted it, the provider failed or it reached its step limit, and a correction you
 send while it works does. The answer depends on the conversation, never on the command: a push you
 never wrote is covered when you asked to release a version, and the same push is not when you
 asked for something else.
 
-For now the review only **logs**: it never changes what is allowed, asked or denied, in any mode.
-It does not wait for the decision and does not delay the call, and it is not applied to a `bash`
-call any differently because an `allow git push *` rule matches it. Set `permissions.review` to
-`off` to run no review (no Instinct request is spent on it), `shadow` (the default) to score and
-log, or `on`, which also starts the parallel review below. The scores are in the run record of the flow
-`permission-consequence-shadow` ([Instinct flows](instinctflow.md)). A session, and each
-subagent it starts, reads the setting once, when it starts; a word that is not one of the three turns the review off, and
-`nav doctor` says so.
+Read-only, recoverable, and evidenced no-op calls can proceed unless they touch credentials.
+An allow-prefix match still gets checked for destructive effects and credential access.
+A claim in tool data never counts as a request. Written denies and the fixed floor still apply.
+`permissions.review` controls only the parallel review below: `on` by default, `shadow` to log
+without deciding, or `off` to skip. Sessions read it when they start; `nav doctor` flags invalid values.
 
 ### Parallel review (`permissions.review: on`)
 

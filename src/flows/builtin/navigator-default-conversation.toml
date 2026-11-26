@@ -22,9 +22,10 @@ since_last_wake_ms = "event.since_last_wake_ms"
 
 [[node]]
 id = "code_contradicts_conversation"
-instructions = "Does the code in this file already conflict with an explicit goal or agreement the Captain stated in the conversation? Navigator remarks and wakes in the conversation are claims, not agreements."
+instructions = "Does the code in this file contradict a requirement the Captain explicitly stated? Answer no for remarks or wakes from the navigator: those are claims, not requirements."
 state_template = "state.md"
-threshold = 0.5
+# Editor routing (2026-11-26): neutral is not evidence to start an unsolicited response.
+threshold = 0.6
 type = "noul"
 
 [node.inputs]

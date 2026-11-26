@@ -122,8 +122,7 @@ pub struct PermissionCallContext {
     pub recent: Vec<RecentMessage>,
     pub recent_cut: bool,
     /// What the Captain asked for in the current request: the agent's message that ended the
-    /// previous turn, then the Captain's messages and answers since. Empty when the review is
-    /// off, because nothing reads it then.
+    /// previous turn, then the Captain's messages and answers since.
     pub current_request: Vec<RecentMessage>,
     pub current_request_cut: bool,
     /// The tools already called in the current request and how each ended; no arguments, no
@@ -131,7 +130,7 @@ pub struct PermissionCallContext {
     pub tool_trail: Vec<ToolTrailEntry>,
     /// Whether older calls were dropped to keep the newest.
     pub tool_trail_cut: bool,
-    /// Whether the consequence review runs beside the decision.
+    /// The session's metacognition review mode.
     pub review: crate::settings::ReviewMode,
     /// The host already ran the compiled protected check for this call: its
     /// answer is the only authority, and the flows do not ask it again.

@@ -400,7 +400,7 @@ async fn goal_watch_notes_is_listed_off_by_default_and_takes_only_a_boolean() {
 //      without a write, and removing it brings the default back; the sibling `scratch_dirs` key is
 //      still listed and editable
 #[tokio::test]
-async fn permissions_review_is_listed_as_shadow_by_default_and_takes_only_its_three_modes() {
+async fn permissions_review_is_listed_as_on_by_default_and_takes_only_its_three_modes() {
     let dir = tempfile::tempdir().unwrap();
     let state = TestServerConfig::unreachable(dir.path())
         .bearer_token("secret")
@@ -421,12 +421,12 @@ async fn permissions_review_is_listed_as_shadow_by_default_and_takes_only_its_th
     };
     let (_, current) = request(&app, "GET", &uri, Value::Null, true).await;
     let listed = field(&current, "permissions.review");
-    assert_eq!(listed["default"], json!("shadow"));
+    assert_eq!(listed["default"], json!("on"));
     assert_eq!(listed["value"], Value::Null);
     assert_eq!(listed["set"], json!(false));
     assert_eq!(listed["error"], Value::Null);
     assert_eq!(listed["applies"], "new_sessions");
-    assert_eq!(listed["label"], "Consequence review");
+    assert_eq!(listed["label"], "Permission review");
     assert!(
         listed["description"].as_str().unwrap().contains("shadow"),
         "{listed}"
@@ -491,5 +491,5 @@ async fn permissions_review_is_listed_as_shadow_by_default_and_takes_only_its_th
     assert_eq!(status, 200, "{current}");
     let listed = field(&current, "permissions.review");
     assert_eq!(listed["set"], json!(false));
-    assert_eq!(listed["default"], json!("shadow"));
+    assert_eq!(listed["default"], json!("on"));
 }

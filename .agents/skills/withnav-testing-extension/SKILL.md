@@ -26,18 +26,30 @@ Same protocol as `withnav-testing`. `<run>` is the run folder.
   restarts the server by itself, so wait for the chat to reconnect and record whether it did.
   Notices ("instinct rejected") show in the chat: quote them. The Captain reads this conversation's
   title in `WithNav: Show Sessions` for the id check. G4c and G5c: what the chat shows of the check
-  result and the note.
+  result and the note. G4c: the chat shows no criterion statuses (no goal panel): `Not shown`, SKIP.
+  G5c: the transcript block `Goal note · automatic observation, not a Captain message` and the
+  note's text, styled as a quiet line.
 - **R**: the memory conversation is a second chat whose workspace is `<run>/memrepo`: open that
   folder in a second VS Code window (`code <run>/memrepo`) and start a conversation there. The
-  slash commands are typed in its composer and answer as transcript lines: `Remembered "<title>" ·
-  <scope> · <id> v<n>`, `Forgot …`, `<title> · <id> v<n>`.
+  slash commands are typed in its composer and answer as transcript lines: `Remembered: "<title>" ·
+  <scope> · undo with /forget <id>`, `Forgot "<title>" · <scope> · <id> v<n>`, `<title> · <id> v<n>`.
 - **D**: the extension has no Projects or Memory page. The Captain runs `nav web --workspace <run>`
   in a browser and does D1–D10 there as the web skill says; D5's conversation starts in a VS Code
   window opened on `<run>/memrepo-new` (record where the question appears).
-- **O**: the chat header and the session controls; O1 to O3 are SKIP unless the chat shows the goal
-  or ledger (record what it shows). O4's `Remembered` and `Forgot` lines are checked in E16.
-- **H** (pending): cards show Allow and Reject; record where a Hold for me action and a
-  waiting-for-you notification would appear.
+- **O**: the editor has no session panel (it shows only the `Remembered` line and the Goal note in
+  the chat): O1 to O3 are SKIP, naming that. O4's `Remembered: … · undo with /forget <id>` and
+  `Forgot` lines are checked in E16; there is no undo link, the Captain types `/forget <id>`.
+- **H**: the card has **Allow**, the Always label when offered, **Reject** with an optional message
+  and, only while the review runs, **Hold for me**. Review lines: "Metacognition is reviewing…",
+  "Waiting for you: Metacognition did not allow this call." (then the conclusion, `Relied on: …`,
+  `Consequence: …`), "Held for you: the review stopped.", "No review; your call."; outcomes "Allowed
+  once by Metacognition", "Denied", "Review cancelled: you answered first.", and "Already started by
+  Metacognition — it ran once." when Allow or Hold came too late. H8: no notification; the tab's
+  status icon shows waiting and `WithNav: Show Sessions` lists the conversation under **Waiting for
+  you**. **Settings for H:** the **WithNav: Open Settings** command or the gear in the chat,
+  `permissions.review` to `on`, then `WithNav: New Conversation` (a session reads the setting when it
+  starts). H7: the editor restarts the server by itself; wait for the chat to reconnect and record
+  whether the card came back.
 - **After A2**: wait for the second park, then the Captain clicks the child's Continue button.
   PASS (record as **E9**) when it resumes and its next notice still reports top-ups used 1/3. Then
   run A3 on that park.

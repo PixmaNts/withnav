@@ -21,18 +21,35 @@ Same protocol as `withnav-testing`. `<run>` is the run folder.
   restart: the Captain runs `nav serve stop` in a terminal, then `nav web --workspace <run>` and
   reopens this conversation from the new link. The conversation's title in the sidebar is what the
   Captain reads for the id check. Notices ("instinct rejected") show in the transcript: quote them.
-  G4c and G5c: what the session panel and transcript show of the check result and the note.
+  G4c: the right panel's **Session** tab, **GOAL** section: each criterion reads `supported`,
+  `contradicted` or `not checked` (evidence on hover), the goal row `last checked <time>`, and
+  **CLAIMS · agent's last turn** lists the claims as `supported`, `contradicted` or `unverified`.
+  G5c: the transcript block `Goal note · automatic observation, not a Captain message` with the
+  note's text and its age.
 - **R**: the memory conversation is a conversation whose workspace is `<run>/memrepo`. Start `nav
   web` with `--workspace <run> --workspace <run>/memrepo` (repeat the flag) so the page offers both,
   or the Captain runs a second `nav web --workspace <run>/memrepo` for it. Slash commands answer as
-  transcript lines (`Remembered "<title>" · <scope> · <id> v<n>`, `Forgot …`, `<title> · <id> v<n>`).
+  transcript lines (`Remembered: "<title>" · <scope> · undo` with a link, `Forgot "<title>" · <scope> ·
+  <id> v<n>`, `<title> · <id> v<n>`); the Remembered line does not show the item's id: read it from HTTP.
 - **D**: the sidebar's top entries **Memory** and **Projects** (`#/memory`, `#/projects`), the badge
   on **Memory** (what waits for the Captain), and the group dialog. D5's conversation starts in
   `<run>/memrepo-new`, so the page needs `--workspace <run>/memrepo-new` too.
-- **O**: the session panel. O2 and O3 (Goal criteria statuses, Memory tab) are pending until the
-  Session tab lands; run them then. O4's quiet lines in the transcript, same.
-- **H** (pending): the permission card, its "reviewing…" line, Hold for me, the badges and the
-  browser notification (H8: the browser must have granted notifications; record the permission).
+- **O**: the right panel's **Session** tab (**GOAL**, **LEDGER**, **MEMORY · applies to this session**
+  with **Open Memory**); O1 to O3 read it as the base skill says, O4's lines are in the transcript
+  (the `undo` link of the Remembered line, the Goal note block). That is also W11.
+- **H**: the permission card has **Once**, the Always label when offered, **Reject** with an optional
+  message and, only while the review runs, **Hold for me**. Review lines: "Metacognition is
+  reviewing…", the badge "Waiting for you" with the conclusion, "Relied on: …" and "Consequence: …",
+  "Held for you: the review stopped.", "No review; your call."; outcomes "Allowed once by
+  Metacognition.", "Denied.", "Review cancelled: you answered first.", and the error "Already
+  started by Metacognition — it ran once." under the card. The top bar shows `<n> waiting` (the
+  bell) with the sessions' list, a mute bell per session and, while the browser's permission is
+  undecided, **Notify me when I am away**; the sidebar marks a waiting session with a dot. H8: the
+  browser must have allowed notifications (record the permission); keep the page behind another
+  window, since the page raises none while it is visible on that conversation. **Settings for H:**
+  the gear, `permissions.review` to `on` (it applies to a new session): the sidebar's **New
+  session** starts the conversation that H runs in. H7: reopen the page from the link `nav web`
+  prints.
 
 ## Client checks
 
@@ -64,10 +81,17 @@ Same protocol as `withnav-testing`. `<run>` is the run folder.
   item, and in the detail the version checkboxes and the edit, invalidate, restore and scope
   actions; Enter or Space activates. PASS when each is reachable that way and the focus ring is
   visible. The unreachable-server banner is not forced: it would stop this conversation.
-- **W11 Session tab (pending).** The Goal, Ledger and Memory sections of the session panel and the
-  "Remembered" line with an undo: PASS when they equal O1–O4 against HTTP. SKIP — not built until
-  the Session tab lands.
-- **Order.** W8–W11 and D1–D10 run before W7.
+- **W11 Session tab.** The right panel's **Session** tab (the Captain opens the panel and picks it):
+  PASS when the **GOAL**, **LEDGER** and **MEMORY** sections, the `undo` / `redo` of the Remembered
+  line and the Goal note block equal O1 to O4 against HTTP, **Show more** expands a long
+  objective (more than about 120 characters: the Captain sets one with `/goal`) and collapses it
+  again, hovering a criterion shows its evidence, **Open Memory** goes to `#/memory`, and the
+  panel updates by itself after a `/remember` and after the next goal check (no reload).
+- **W12 Waiting list by keyboard** (during H8). PASS when the top bar's count is a button
+  (`aria-expanded`), Enter or Space opens the list, each row opens its session, the mute bells are
+  reachable with Tab and report `aria-pressed`, and a second press of the count closes the list
+  (record whether Escape also does).
+- **Order.** W8–W12 and D1–D10 run before W7.
 - **W7 Failed send, last.** Stopping the server stops this conversation too, so write the report
   first, then give the Captain the whole procedure in one message and end your turn:
   1. Type "W7 draft" in the composer without sending.

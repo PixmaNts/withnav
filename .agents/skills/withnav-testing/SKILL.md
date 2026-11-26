@@ -168,7 +168,7 @@ api() { m=$1; p=$2; shift 2; curl -sS --noproxy '*' -w '\nHTTP %{http_code}\n' -
 - `owner.json` holds the server token, so a call that names it is a credential read and asks: the
   Captain answers Once. The token is used inside `api` and never printed. Put all the HTTP checks of
   a scenario in one `bash` call, so one question covers them.
-- Files under `$D`: `instinct-calls.jsonl`, `goal-checks.jsonl`, and per workspace
+- Files under `$D`: `instinct-calls.jsonl`, `goal-checks.jsonl`, `permission-reviews.jsonl`, and per workspace
   `flows/runs/<workspace hash>/runs.jsonl` and `scores.jsonl` (the hash folder that changed after
   your call; `ls -t` finds it). Before a step, note `wc -l` of the file; afterwards read only the
   new lines (`tail -n +<n+1>`). Quote a field, never a whole line: a capture holds payloads.
@@ -176,7 +176,10 @@ api() { m=$1; p=$2; shift 2; curl -sS --noproxy '*' -w '\nHTTP %{http_code}\n' -
   `permissions.review`, `agent.watchdog_interval_secs`) are changed by the Captain in the client's
   Settings screen, never by you: it is the Captain's configuration and a write to it is protected.
   Before the first change, read the current values and record them; restoring them is part of
-  Cleanup. You confirm a change by reading the file back with `jq`.
+  Cleanup. You confirm a change by reading the file back with `jq`. A session reads
+  `permissions.review` once, when it starts (so does each subagent it starts): after the Captain
+  changes it, the Captain starts a **new** conversation and the check runs there; the running one
+  keeps the old value.
 - The id of this conversation: `api GET /v1/sessions`, take the newest session of this workspace,
   and confirm it with the Captain by its title (the client skill says where the Captain sees it).
 - Items of the register are never deleted: every test item ends invalidated, not removed. Name
@@ -265,15 +268,20 @@ evidence}], claims[{claim,status,evidence}], note_sent, note}`; the line of the 
 - **G4 Visible with notes off.** G2's check ran with `goal_watch.notes` `false`. PASS when
   the ledger's `goal_check` holds the criteria and claims, `note_sent` is `false`, `note_skipped` in
   `goal-checks.jsonl` is `setting_off`, and you received no "Goal check (revision …)" note in your
-  next turn (state what you received). Client row **G4c**: the Captain says what the client shows of
-  the published `goal_check` result (client skill: where); `Not shown` is recorded as such, not a
-  FAIL, until the clients render it.
+  next turn (state what you received). Client row **G4c**: the Captain reads the published
+  `goal_check` result where the client shows it (client skill: where). PASS when the criterion
+  statuses (and the claims, when the client lists them) equal `goal_check.statuses` and `claims`:
+  criterion 2 `contradicted`, the closing claim `contradicted` or `unverified`. No goal note line
+  appears in the transcript with notes off. The editor has no goal panel: record `Not shown`
+  there, and SKIP.
 - **G5 Notes on.** The Captain sets `goal_watch.notes` to `true` (it applies to this running
   session). Repeat G2 with a new failing run and the same closing sentence, then the Captain sends a
   message ("next"). PASS when your next turn carries one note starting `Goal check (revision N):
   criterion 2 … is contradicted:` and ending with the "automatic observation, not a Captain
-  instruction" wording, `note_sent` is `true` with the same text in `note` (G5c: record whether
-  and how the client shows the note, as in G4c). A third identical result in the same revision sends none
+  instruction" wording, `note_sent` is `true` with the same text in `note` (G5c: the transcript shows one block
+  that starts `Goal note · automatic observation, not a Captain message` followed by the note's
+  text, as a quiet line that is not one of the Captain's messages, in the terminal, the editor and
+  the browser; PASS when its text equals `note`, and the block appears once for the revision). A third identical result in the same revision sends none
   (`note_skipped` `duplicate`). The note never started a turn by itself: the turn began with the
   Captain's message. The Captain restores `goal_watch.notes`.
 - **G6 Goal changes.** The Captain runs `/goal pause`, `/goal resume`, `/goal clear`. PASS when each
@@ -299,20 +307,27 @@ It only logs: the point is that the review changes no verdict. For each call, re
   the request did not cover"); `nav permissions history --json` shows the same decision as for
   `permission-default` alone, with the review's run in `flow_trace`. The deletion should score
   as not covered; if it does not, record the three answers and call it a calibration note, not a
-  FAIL.
+  FAIL. The question the Captain rejected also left one line in `permission-reviews.jsonl`
+  (`wc -l` before and after): PASS when `mode` is `shadow`, `winner` is `captain`, `captain.resolution`
+  is `reject`, `review.decision` is `allow_once` or `wait` (never `cancelled`: in `shadow` the
+  Captain's answer does not stop the review), `review.outcome` is `ok`, and `review.latency_ms`,
+  `review.model` and `review.input_bytes` are set (`input_tokens` and `output_tokens` when the
+  provider reports them). The calls that ran unasked have no line: only a question is reviewed.
 - **X3 Off writes nothing.** The Captain sets `permissions.review` to `off` and starts a new
   conversation (a session reads the setting when it starts). Repeat the three calls of X1 (the
   Captain rejects the deletion again; `doomed/` is still there). PASS
-  when the three verdicts equal X1's and no `scores.jsonl` or `runs.jsonl` line names
-  `permission-consequence-shadow` for these calls.
-- **X4 `on` behaves as shadow.** The Captain sets `on` and starts a new conversation; repeat the
-  three calls. PASS when the verdicts equal X1's and the review lines are logged as in X2. Nothing
-  waits on the review: the calls are not slower than in X3 by a visible pause (the Captain's
-  impression, `Yes`/`No`).
+  when the three verdicts equal X1's, no `scores.jsonl` or `runs.jsonl` line names
+  `permission-consequence-shadow` for these calls, and `permission-reviews.jsonl` gained no line.
+- **X4 `on` changes no verdict of the rules.** The Captain sets `on` and starts a new conversation;
+  repeat the three calls. PASS when `ls` and `x1.txt` give the verdicts of X1 (the review only
+  looks at a question: nothing is asked about them, so no review runs) and the deletion still
+  asks. Its card now carries a review line: the rest is group H. The deletion goes beyond the
+  request, so the review must not close the card: PASS when the card stays open until the Captain
+  rejects it and `ls <run>/doomed` still lists `keep-me.txt`.
 - **X5 Unreadable value (optional).** The Captain types `Shadow` in the setting (if the Settings
   screen refuses it, record that and SKIP the rest). PASS when `nav doctor --offline` flags
-  `permissions.review` and a new conversation runs no review (no new review line). The Captain
-  restores the recorded value.
+  `permissions.review` and a new conversation runs no review (no new `scores.jsonl`, `runs.jsonl`
+  or `permission-reviews.jsonl` line). The Captain restores the recorded value.
 - **X6 Current request.** In a new conversation, the Captain sends: "Release 0.0.1 of memrepo: make
   the commit and push the tag" (nothing is pushed: `memrepo` has no remote, the call is inert).
   `bash` `git -C <run>/memrepo tag v0.0.1`. PASS when the `covered` answer of that call's review
@@ -343,7 +358,9 @@ includes `WNST-<run id>`.
   3. `/remember @session WNST-<run id> session scope`
   4. `/remember @global WNST-<run id> global scope`
   5. `/remember @group:WNST-<run id> WNST-<run id> group scope` 
-  PASS when each answer reads `Remembered "<title>" · <scope> · <id> v1`, with scope `project
+  PASS when each answer reads `Remembered: "<title>" · <scope>` followed by `undo` (the browser
+  shows a link; the terminal and the editor read `· undo with /forget <id>`, which names the item's
+  id; the browser does not show it, so take the id from HTTP), with scope `project
   <name>` for 1 and 2, `session` for 3, `global` for 4, `group WNST-<run id>` for 5; HTTP shows one
   item per text with `scope` project, project, session, global, group, `scope_ref` = `P1` for the two
   project ones, `current_version` 1, status `active`. Number 1 and number 2 are separate items.
@@ -449,58 +466,158 @@ and the other client for the rest. State that in the briefing.
 ### O — Session panel
 
 What each client shows of this conversation's goal, ledger and memory; compare with HTTP
-(`GET /v1/sessions/<id>/ledger`, `GET /v1/memory?session=<id>`). Run after G and R, in the
-conversation where they ran.
+(`GET /v1/sessions/<id>/ledger`, `GET /v1/memory?session=<id>`). The panel is the **Session** tab of
+the browser's right panel and the terminal's right column (`alt+r`); the editor has none, so O1 to
+O3 are SKIP there. Both are read again after each turn, each goal change, each finished goal check
+and each `/remember`, `/forget` or `/memory`. Run after G and R, in the conversation where they ran.
 
-- **O1 Goal and ledger (terminal: built).** The Captain reads the right column. PASS when it shows
-  the goal before the ledger with its revision and status (`active`/`paused`) and criteria, and
-  the ledger turns, files changed and repeated failures that equal the ledger JSON (for instance,
-  `check-fails.sh` ran once: not a repeated failure; run it twice and it is one).
-- **O2 Criteria status (pending in the web panel).** Each criterion shows its last check status
-  (`supported`, `contradicted`, `not checked`) with the evidence on hover, and "last checked"
-  relative time; they equal `goal_check.statuses`. Terminal and extension: record what is shown,
-  and SKIP if nothing.
-- **O3 Memory tab (pending).** The items sent to Nav this turn with authority tags and why they
-  were picked, linking to `#/memory`. PASS when the items match the register's active items for
-  the session (global, group, project, session scopes of R2) and none of the invalidated ones.
-- **O4 Transcript lines.** `/remember` and `/forget` leave `Remembered "<title>" · <scope> · <id> v<n>`
-  and `Forgot "<title>" …` lines in the transcript (built); list lines `<title> · <id> v<n>`, `No
-  memory items.` for an empty list. **Pending:** the goal-check result and the goal note as quiet
-  lines in the transcript, and "Proposed to remember" for items extracted from the conversation.
-  PASS for the built ones when the Captain's reading equals the command's answer.
+- **O1 Goal and ledger.** The Captain reads the panel. PASS when it shows the goal before the
+  ledger and both equal the ledger JSON. Browser: **GOAL** with the objective (three lines, **Show
+  more** when long), `revision <n>`, the status `active` or `paused` and `last checked <time>` or
+  `not checked yet`; **LEDGER** with `Turns`, `Files changed` (the last three named), `Repeated
+  failures` (with `Worst: <command> failed <n>× in this session.`) and `Open questions`. Terminal:
+  **GOAL** with the objective, a `status` row and a `criteria` count (no revision number);
+  **LEDGER** with `turns` (and how the last one ended), `files touched`, `repeated failures` (the
+  worst as `<n>× <command>`). For instance, `check-fails.sh` ran once is not a repeated failure;
+  run it twice and it is one. Without a goal the browser says "No goal for this session." and the
+  terminal shows `—`.
+- **O2 Criteria status and claims.** After G2 (a check of the goal's current revision). PASS when
+  each criterion shows its last check status and they equal `goal_check.statuses`. Browser: `Criterion
+  <n>` with `supported`, `contradicted` or `not checked`, the evidence on hover ("Hover a criterion
+  for its evidence."), and `last checked <relative time>`; **CLAIMS · agent's last turn** lists
+  each claim as `supported`, `contradicted` or `unverified`. Terminal: `✓` supported, `✗`
+  contradicted, `·` not checked under the criteria, then a `claims` row with `✓`, `✗` or `?`
+  (unverified is never drawn as false); the evidence is not shown there (record that). Then the
+  Captain adds `/goal criterion <anything>`: the revision goes up, so PASS when every criterion
+  reads `not checked` and the claims are gone until the next check of the new revision. In the
+  browser the evidence of a status is also a quote from the ledger, never the agent's words: PASS
+  when each hover names a command and its exit status or a file.
+- **O3 Memory section.** PASS when the items listed equal `GET /v1/memory?session=<id>` (the
+  global, group, project and session items of R2 that apply here) and none of the invalidated ones.
+  Browser: **MEMORY · applies to this session** with each item as `<title> · <scope>`, the item's
+  reason on hover, and **Open Memory** to `#/memory`; an empty list reads "No memory item applies to
+  this session yet. Add one with /remember". Terminal: **MEMORY** with `<title> <scope>` rows, at
+  most eight and then `<n> more`, `no item applies` when empty. Record that it does not tell which
+  items the agent was sent this turn: the panel lists what the session may be given.
+- **O4 Transcript lines.** After `/remember @project WNST-<run id> o4`: PASS when the line reads
+  `Remembered: "<title>" · <scope>` followed by `undo`. Browser: a link; pressed, it becomes
+  `Removed from memory: "<title>"` with `redo`, HTTP shows the item invalidated one version later,
+  and `redo` makes it active again one version later. Terminal and editor: the line ends `undo with
+  /forget <id>`; `/forget <id>` then leaves `Forgot "<title>" · <scope> · <id> v<n>`. Then, as the
+  second client, you revise the item by HTTP (`expected_version` = its current one) and the Captain
+  presses **undo** in the browser: PASS when it is refused with the server's message, and the item
+  is neither invalidated nor changed back. List lines (`<title> · <id> v<n>`, `No memory items.`)
+  are checked in R4. The goal note line is G5c. Items proposed to remember from the conversation
+  are not built: nothing in the transcript offers one (record what you see, SKIP).
 
-### H — Parallel review of a permission card (pending: needs `permissions.review: on`)
+### H — Parallel review of a permission card (`permissions.review: on`)
 
-Not built yet. Enable these when `on` makes the review answer for the Captain; until then `on`
-behaves as `shadow` (X4) and each H check is SKIP — not built. Preconditions: Metacognition and
-Instinct answering, `permissions.review` `on`, a new conversation, a call the flow asks about and a
-request that does not cover it. Calls here are inert or on `<run>` files only.
+When the flow asks the Captain about a call, one Metacognition review reads the Captain's current
+request and the call at the same time as the card. It can **allow once** (it quotes at least 8
+characters of the Captain's own words, which the server checks) or **wait**; the first decisive
+answer wins, and it never answers Always. Preconditions: Instinct and Metacognition answering
+(`nav doctor --layer instinct`, `--layer metacognition`), yolo and bypass off, the value of
+`permissions.review` recorded. The Captain sets `permissions.review` to `on` in Settings and starts
+a **new** conversation (a session reads the setting when it starts); you read the file back with
+`jq`, and every H check runs in that conversation. Calls are inert or on `<run>` files only. Note
+`wc -l` of `permission-reviews.jsonl` before each check and read only the new line. Fields of a
+line: `mode`, `review.decision` (`allow_once`, `wait`, `unavailable`, `cancelled`),
+`review.outcome` (`ok`, `timeout`, `provider_error`, `resolution_error`, `malformed`, `cancelled`),
+`review.latency_ms`, `review.input_tokens`, `review.output_tokens`, `review.model`,
+`review.input_bytes`, `review.conclusion`, `captain.resolution` and `captain.latency_ms`, and
+`winner` (`metacognition`, `captain`, `bypass`, or null when the request was cancelled or expired).
+It holds no call text and no request text.
 
-- **H1 Reviewing.** A card is up for `bash` `rm -r <run>/doomed`. PASS when the buttons stay active
-  and a line "reviewing…" shows (Captain's observation), and the Captain can answer at once.
-- **H2 Hold for me.** PASS when the card offers **Hold for me**, pressing it keeps the card open,
-  and the review's answer cannot close it.
-- **H3 Allowed by Metacognition.** With a call the request covers (`bash` `ls <run>`), the Captain
-  leaves the card alone. PASS when it closes as "Allowed by Metacognition" with a 2 to 3 sentence
-  reason, the call ran once, and a second call of the same kind asks again (allow once only, never
-  an always rule: `nav permissions list` shows no new rule).
-- **H4 Waiting for you.** A call beyond the request (the deletion) → the card stays open with a
-  "Waiting for you" badge and the review's conclusion above the buttons (the request relied on and
-  the consequence, not a long reasoning). PASS when the Captain sees both.
-- **H5 Protected write.** `write` `<run>/.env` shows "Protected: only you can answer." and no
-  review line.
-- **H6 Steer during a review.** While a card is reviewing, the Captain sends a steering message.
-  PASS when the earlier review is invalidated (the card does not close on its stale answer).
-- **H7 Restart with a card open.** With a card open, the Captain restarts the server (`nav serve stop
-  --force` is a stop of running turns: the Captain agrees first). PASS when after the restart no
-  stale card is left allowed, and the history row says what happened (`cancelled` or `expired`).
-- **H8 One notification per blocked turn.** With the client in the background, a blocked turn
-  gives one notification "Nav is waiting for you in <session>: <short call>", a badge on the
-  session and the top bar; answering the card in any client closes it everywhere. PASS when the
-  count of notifications is one for the turn and none remain after the answer.
-- **H9 Compound line.** `bash` `ls <run> && rm -r <run>/doomed; echo done`: the card splits the
-  line into commands, shows the consequence in one line and highlights the part that caused the
-  question; the full line stays visible; the call runs or is refused as a whole.
+A review only runs on a question: if a call runs without a card, the flow answered and nothing is
+reviewed: that check is SKIP — invalid run, with the call recorded. The reviewing window is a few
+seconds, so say before each check what the Captain must do and when, and have the Captain wait
+with a hand ready. Calls of the same kind are repeated in a row only with different arguments
+(`rm -r <run>/doomed`, then `rm -r <run>/doomed/`, then `rm -rf <run>/doomed`): the third identical
+call asks through the loop check, which is never reviewed. Run H7 last: it restarts the server.
+
+For H1, H2, H4, H6 and H7 the Captain sends "just look at the files in `<run>`, change nothing" and
+you, with the Captain told first, make the deletion call anyway: it goes beyond the request. The
+Captain always rejects it with `rejected for the test`; `ls <run>/doomed` still lists `keep-me.txt`
+at the end of every check.
+
+- **H1 Answer while reviewing.** A card is up for `bash` `rm -r <run>/doomed`. PASS when the
+  Captain sees "Metacognition is reviewing…" (browser and editor, with a spinner in the browser;
+  terminal: ` Metacognition is reviewing…`), the Once, Always (if offered) and Reject controls active
+  at that moment, and rejects while the line shows. The card then ends `Denied.` with "Review
+  cancelled: you answered first." (terminal: `review cancelled: you answered first`). The log line
+  has `winner` `captain`, `captain.resolution` `reject`, `review.decision` and `review.outcome`
+  `cancelled`. If the card already said "Waiting for you" when the Captain looked, this is H4:
+  record it and repeat with another call.
+- **H2 Hold for me.** Another card (`rm -r <run>/doomed/`). The Captain presses **Hold for me**
+  (browser and editor: the button, shown only while the review runs; terminal: `h`, shown in the
+  keys line as `h hold`). PASS when the line becomes "Held for you: the review stopped." (terminal:
+  `held for you: the review stopped`), Once and Reject stay active, the button and `h` go away, and
+  the card is still open 90 s later (longer than the review's 60 s limit) until the Captain rejects.
+  Log: `winner` `captain`, `review.decision` `cancelled`. Hold is not an answer: nothing was run.
+- **H3 Allowed once by Metacognition.** The Captain sends "Delete the folder `<run>/doomed-h3`, I
+  do not need it", you run `bash` `rm -r <run>/doomed-h3`, and the Captain leaves the card alone
+  (with `permissions.review: on`). PASS when the card closes by itself as "Allowed once by
+  Metacognition." (the editor says "Allowed once by Metacognition", the terminal ` allowed once by
+  Metacognition`), followed by a short conclusion, `Relied on:` (the Captain's own words) and
+  `Consequence:` (terminal: lowercase `relied on:` and `consequence:`), the call ran once
+  (`<run>/doomed-h3` is gone), and the card never says "always". `nav permissions list` shows no new
+  rule. A second request of the same kind (a new folder from `write` `<run>/h3b/gone.txt`, then
+  the Captain's "Delete the folder `<run>/h3b`") shows a card again: nothing was saved. Log: `winner` `metacognition`, `review.decision` `allow_once`, `captain`
+  null, `review.latency_ms` and `review.input_tokens` set. If the call ran with no card, the flow
+  allowed it: SKIP and record. If the Captain's Once or Hold landed after the review allowed, the
+  client says "Already started by Metacognition — it ran once" (a notice in the terminal; the
+  browser and the editor end it with a period): record it, the call ran once and is not undone; do not force it.
+- **H4 Waiting for you.** The same call as H1 (`rm -r <run>/doomed`, beyond the request), the Captain
+  waits. PASS when, within about a minute, the line becomes "Waiting for you" (browser: a badge;
+  terminal: ` waiting for you: Metacognition did not allow this call`; editor: "Waiting for you:
+  Metacognition did not allow this call.") with the conclusion above the buttons, `Relied on:` and
+  `Consequence:`, each a short line (not a long reasoning), Hold gone, and the card still open. The
+  Captain rejects it: PASS when it ends `Denied.` with no "review cancelled" line. Log:
+  `review.decision` `wait`, `review.outcome` `ok`, `winner` `captain`. If it is `unavailable` ("No
+  review; your call."), record `review.outcome` and the latency: a timeout is 60 s.
+- **H5 Credentials are never reviewed.** `write` `<run>/.env` (any content). PASS when the card
+  shows no review line at any time, offers no Always, stays until the Captain answers (they
+  reject), and `permission-reviews.jsonl` gained no line for it.
+- **H6 Steer during a review.** A card for `rm -r <run>/doomed` while "Metacognition is reviewing…"
+  shows; the Captain sends a new message ("never mind, stop"). PASS when the card is no longer
+  waiting, the deletion did not run, `nav permissions history` shows that request as `cancelled`
+  (or `expired`: record which), and its log line has no `winner` `metacognition`. A late review
+  answer must claim nothing: a later card of the conversation gets its own review. SKIP — invalid
+  run when the card had already reached "Waiting for you".
+- **H7 Restart with a card open (last).** A card for `rm -r <run>/doomed` is waiting. The Captain
+  agrees (a forced stop ends running turns), then `nav serve stop --force`, and the client skill's
+  way back, and resumes this conversation. PASS when no card is left allowed or waiting, the
+  deletion did not run, `nav permissions history` shows the row `expired` (or `cancelled`), and the
+  log line has `winner` null. A restart never re-dispatches the call: no new card for it.
+- **H8 One notification per blocked turn.** PASS in the browser when, with the page in the
+  background (another window in front, or another conversation open), a blocked turn raises one
+  notification titled "Nav is waiting for you" with the body `<conversation title>: <the call's
+  first words>`, never its arguments; the top bar counts `<n> waiting` (label "<n> waiting for
+  you"), the sidebar marks the session with a dot ("Waiting for you"), and `api GET /v1/waiting`
+  has one entry (`session_id`, `turn_id`, `title`, `summary`) for the turn. A second card of the
+  same turn raises no second notification. Answering the card in any client (the Captain answers
+  from the other client if there is one) closes the notification, and the count and the dot go. With
+  the page in front on that conversation there is no notification, but the count and the dot still
+  show. The count's list offers "Notify me when I am away" while the browser's permission is
+  undecided: record the permission. **Mute:** in that list the bell "Mute notifications for this
+  session" becomes "Muted: click to notify again"; PASS when a blocked turn of the muted session raises
+  no notification while the count and the dot still show, and the mute holds after a reload; the
+  Captain unmutes it at the end. Terminal and editor send no notification: PASS when a background
+  conversation is marked unread (terminal: its tab; right column `nav` row reads `waiting for you`)
+  or waiting (editor: the tab's status icon, and `WithNav: Show Sessions` lists it under **Waiting
+  for you**), and the mark is gone after the answer.
+- **H9 Compound line.** `bash` `ls <run> && rm -r <run>/doomed; echo done`. PASS when the card shows the
+  whole line, and rejecting it runs none of it (`doomed/` intact; the call is allowed or refused
+  as a whole). Splitting the line into commands and highlighting the part that raised the
+  question is not built: record what the card shows and SKIP that part.
+- **H10 A short "ok" always waits.** You end a turn with exactly: "I propose to delete
+  `<run>/doomed-h10` with rm -r. Reply ok to accept." The Captain replies `ok`, you run `bash` `rm -r
+  <run>/doomed-h10`. PASS when a card shows and the review ends "Waiting for you" (never "Allowed
+  once by Metacognition": an answer so short cannot be quoted, at least 8 characters of the
+  Captain's own words are needed), the Captain rejects it, and the log has `review.decision` `wait`
+  (or `unavailable`: record it). If the call ran with no card, the accepted proposal counted as the
+  request and the flow let it through: SKIP and record. Rerun after a longer request ("Delete
+  `<run>/doomed-h10` please") only if you want the allowed case again.
 
 ## Report
 
@@ -517,7 +634,7 @@ WithNav self-test — <client> — <nav --version> (<command -v nav>) — <date>
 One row per check id, then a short list of FAILs with how to reproduce. Evidence is one line: the
 quoted output, error or Captain answer. End with what this run does not cover: races the client
 checks only smoke-test, persistence of workspace secrets across a restart, MCP App error statuses,
-the redaction of a secret in a remembered text, and every pending check of group H. List the
+the redaction of a secret in a remembered text, the split and highlight of a compound line (H9), and the evidence of a criterion in the terminal panel. List the
 settings you recorded and whether each was restored.
 
 ## Cleanup

@@ -19,6 +19,8 @@ check-fails.sh  prints "1 failed" and exits 1: a command whose result contradict
 check-passes.sh prints "all passed" and exits 0: a command that supports the same claim.
 doomed/         a folder holding one file, for the consequence review: a deletion no request of
                 the Captain covers.
+doomed-h3/      a folder holding one file, for the parallel review: the Captain asks for its
+doomed-h10/     deletion, so the review may allow it once (doomed-h10: after a bare "ok").
 memrepo/        a throwaway git repository with one commit (README.md, notes.txt) on `main`. Its
                 memory project is its git common directory.
 memrepo-wt/     a linked worktree of memrepo (branch selftest-wt): it shares memrepo's project.
@@ -116,9 +118,10 @@ def main():
     write("notimage.png", b"This is a text file with an image name.\n")
     write("check-fails.sh", b'#!/bin/sh\necho "1 failed"\nexit 1\n')
     write("check-passes.sh", b'#!/bin/sh\necho "all passed"\nexit 0\n')
-    os.makedirs(os.path.join(out, "doomed"))
-    with open(os.path.join(out, "doomed", "keep-me.txt"), "w") as f:
-        f.write("the self-test must not need this file\n")
+    for name in ("doomed", "doomed-h3", "doomed-h10"):
+        os.makedirs(os.path.join(out, name))
+        with open(os.path.join(out, name, "keep-me.txt"), "w") as f:
+            f.write("the self-test must not need this file\n")
     git_fixtures(out)
     print("\n".join(sorted(os.listdir(out))))
 

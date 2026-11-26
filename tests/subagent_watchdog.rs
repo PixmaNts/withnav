@@ -49,16 +49,34 @@ async fn repeat_a_failure(
     service: &withnav::server::AppState,
     child: SessionId,
     provider: &mut common::sse::StreamingProvider,
+    stream: mpsc::UnboundedSender<String>,
+    times: usize,
+) -> mpsc::UnboundedSender<String> {
+    repeat_a_failing_call(
+        service,
+        child,
+        provider,
+        stream,
+        times,
+        "read",
+        &json!({"path": "missing.txt"}),
+    )
+    .await
+}
+
+/// [`repeat_a_failure`] with a given tool call, repeated `times` times.
+async fn repeat_a_failing_call(
+    service: &withnav::server::AppState,
+    child: SessionId,
+    provider: &mut common::sse::StreamingProvider,
     mut stream: mpsc::UnboundedSender<String>,
     times: usize,
+    tool: &str,
+    args: &Value,
 ) -> mpsc::UnboundedSender<String> {
     for n in 0..times {
         stream
-            .send(tool_call_chunk(
-                &format!("loop{n}"),
-                "read",
-                &json!({"path": "missing.txt"}),
-            ))
+            .send(tool_call_chunk(&format!("loop{n}"), tool, args))
             .unwrap();
         drop(stream);
         (_, stream) = provider
@@ -758,6 +776,9 @@ async fn failed_stop_write_restores_doubt_and_captain_continue_releases_waiter()
 
 #[derive(Debug, Default)]
 struct HeldTool {
+    /// Calls that fail at once before the tool starts holding: they let a test build the loop
+    /// the watchdog needs to see before a stop stands.
+    fast_failures: std::sync::atomic::AtomicUsize,
     entered: tokio::sync::Notify,
     cancelled: tokio::sync::Notify,
     release: tokio::sync::Notify,
@@ -791,6 +812,28 @@ impl withnav::tools::Tool for HeldToolAdapter {
         >,
     > {
         Box::pin(async move {
+            // A plain compare-exchange loop: the atomic update helpers are deprecated or newer
+            // than the supported toolchain, depending on the compiler.
+            let mut left = self
+                .fast_failures
+                .load(std::sync::atomic::Ordering::Acquire);
+            let fast = loop {
+                if left == 0 {
+                    break false;
+                }
+                match self.fast_failures.compare_exchange_weak(
+                    left,
+                    left - 1,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                ) {
+                    Ok(_) => break true,
+                    Err(now) => left = now,
+                }
+            };
+            if fast {
+                return Err(withnav::error::ToolError::NoMatch);
+            }
             self.entered.notify_one();
             cancel.cancelled().await;
             self.cancelled.notify_one();
@@ -1003,6 +1046,9 @@ async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
     let service = withnav::server::AppState::with_hooks(
         TestServerConfig::mock(tmp.path(), &provider.url)
             .chat_tools(128000)
+            // The third identical call in a row asks for permission (the repeat guard); allowing
+            // it lets the held call start, as the loop the watchdog must see needs three alike.
+            .allow_everything()
             .config(),
         Arc::new(HeldToolHooks(tool.clone())),
         Arc::new(withnav_provider::openai::ClientCache::new()),
@@ -1042,8 +1088,20 @@ async fn running_tool_keeps_capacity_and_completion_until_it_has_ended() {
         .bounded(file!(), line!())
         .await
         .unwrap();
-    // The counts must show a loop for a stop to stand: the same failing read twice, then the held call.
-    let stream = repeat_a_failure(&service, child, &mut provider, stream, 2).await;
+    // The counts must show a loop for a stop to stand, and a call in flight stops nothing unless
+    // it repeats that loop: the same failing glob twice, then the same glob held.
+    tool.fast_failures
+        .store(2, std::sync::atomic::Ordering::Release);
+    let stream = repeat_a_failing_call(
+        &service,
+        child,
+        &mut provider,
+        stream,
+        2,
+        "glob",
+        &json!({"pattern":"*"}),
+    )
+    .await;
     stream
         .send(tool_call_chunk("held", "glob", &json!({"pattern":"*"})))
         .unwrap();

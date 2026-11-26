@@ -185,12 +185,35 @@ pub async fn judge_progress_with(
 const LOOP_MIN_REPEATS: u64 = 2;
 
 /// Whether the computed counts show a loop: the last call repeated its result, failures are
-/// waiting for an answer, and nothing progressed since the previous check. The model's verdict is
+/// waiting for an answer, nothing progressed since the previous check, and any call still running
+/// is that same call again. A different call in flight is a new attempt: a review on 2026-11-26
+/// showed a 20-minute build after three failed tests being stopped mid-run. The model's verdict is
 /// capped at `doubt` without it, so facts can only prevent a stop, never cause one.
 fn loop_shown(snapshot: &Snapshot) -> bool {
     snapshot.counts.repeat_streak >= LOOP_MIN_REPEATS
         && snapshot.counts.failures_unanswered > 0
         && !snapshot.progressed
+        && in_flight_repeats_the_loop(snapshot)
+}
+
+/// True when no call is running, or every running call is the call the settled attempts repeat.
+fn in_flight_repeats_the_loop(snapshot: &Snapshot) -> bool {
+    if snapshot.counts.in_flight == 0 {
+        return true;
+    }
+    let looping = snapshot
+        .attempts
+        .iter()
+        .rev()
+        .find(|a| a.elapsed_secs.is_none())
+        .map(|a| a.call.as_str());
+    let running: Vec<&str> = snapshot
+        .attempts
+        .iter()
+        .filter(|a| a.elapsed_secs.is_some())
+        .map(|a| a.call.as_str())
+        .collect();
+    !running.is_empty() && looping.is_some_and(|call| running.iter().all(|r| *r == call))
 }
 
 /// The yes-probability answered to `key`; invalid when it is missing or is not a probability.
@@ -575,6 +598,7 @@ mod tests {
     async fn counts_that_show_no_loop_cap_a_stuck_verdict_at_doubt() {
         // The model is as sure as can be, and the counts disagree: a child that progressed since
         // the last check, one that is not repeating, one with no failure waiting.
+        use super::super::facts::Attempt;
         for (what, change) in [
             (
                 "progressed",
@@ -582,6 +606,17 @@ mod tests {
             ),
             ("no repeat", |s| s.counts.repeat_streak = 1),
             ("no failure", |s| s.counts.failures_unanswered = 0),
+            // A different call still running (a long build after failed tests) is a new attempt:
+            // stopping the child would cut it.
+            ("a different call in flight", |s| {
+                s.counts.in_flight = 1;
+                s.attempts.push(Attempt {
+                    call: "cargo build --release".into(),
+                    exit: "in flight".into(),
+                    error: String::new(),
+                    elapsed_secs: Some(1200),
+                });
+            }),
         ] {
             let mut calm = snapshot();
             change(&mut calm);
@@ -591,6 +626,27 @@ mod tests {
                     .await;
             assert_eq!(verdict, Ok(Verdict::Doubt), "{what}");
         }
+        // The same failing call started again and still running is the loop itself: it may stop.
+        let mut again = snapshot();
+        let looping = again
+            .attempts
+            .last()
+            .expect("a looping attempt")
+            .call
+            .clone();
+        again.counts.in_flight = 1;
+        again.attempts.push(Attempt {
+            call: looping,
+            exit: "in flight".into(),
+            error: String::new(),
+            elapsed_secs: Some(30),
+        });
+        let model = ScriptedDecisionModel::new([answers("stuck", noul(0.99), noul(0.01))]);
+        assert_eq!(
+            judge_progress_with(&model, &evidence(), Some(&again), &CancellationToken::new()).await,
+            Ok(Verdict::Stuck),
+            "the looping call again"
+        );
         // Facts never raise a verdict: the same loop with an `active` answer stays active.
         assert_eq!(
             verdict_for("active", noul(0.99), noul(0.01)).await,

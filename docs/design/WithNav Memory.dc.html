@@ -1,0 +1,1045 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+<style>body{margin:0}a{color:var(--bl);cursor:pointer;text-decoration:none}a:hover{opacity:.8;text-decoration:underline}.mono{font-family:"JetBrains Mono",ui-monospace,Menlo,monospace}button,input,textarea{font-family:inherit;color:inherit}input::placeholder,textarea::placeholder{color:var(--mu)}::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-thumb{background:rgba(128,128,128,.35);border-radius:4px}@keyframes wnspin{to{transform:rotate(360deg)}}@keyframes wnpulse{0%,100%{opacity:.45}50%{opacity:.9}}.spin{display:inline-block;animation:wnspin 1s linear infinite}.sk{animation:wnpulse 1.4s ease-in-out infinite;background:var(--bd);border-radius:4px}</style>
+</helmet>
+<div style="{{ themeVars }};min-height:100vh;background:var(--bg);color:var(--tx);font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:13px;padding:18px 24px 32px;box-sizing:border-box;overflow-x:auto">
+<div style="min-width:1440px">
+
+  <!-- ===== TOP BAR: screens, state, width, theme ===== -->
+  <div style="display:flex;align-items:center;gap:18px;margin-bottom:10px;flex-wrap:wrap">
+    <span role="img" aria-label="WithNav" style="display:inline-flex;align-items:center;gap:8.4px;flex:none"><svg viewBox="0 0 64 64" width="29.4" height="29.4" aria-hidden="true"><circle cx="32" cy="16" r="12" fill="none" stroke="var(--la)" stroke-width="5.5" opacity=".6"></circle><circle cx="32" cy="16" r="4.5" fill="var(--la)"></circle><polygon points="32,31 40.5,47 32,63 23.5,47" fill="var(--tx)"></polygon><polygon points="23.5,47 40.5,47 32,63" fill="var(--bg)" opacity=".35"></polygon></svg><span style="font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:600;font-size:22.4px;letter-spacing:-0.02em;line-height:1;color:var(--tx)">WithNav</span></span>
+    <div style="display:flex;gap:2px;flex-wrap:wrap">
+      <sc-for list="{{ screens }}" as="s" hint-placeholder-count="7"><button onClick="{{ s.click }}" style="background:{{ s.bg }};color:{{ s.fg }};border:1px solid {{ s.bd }};border-radius:6px;padding:5px 10px;font-size:13px;cursor:pointer;display:flex;gap:6px;align-items:center;white-space:nowrap"><i class="{{ s.icon }}"></i>{{ s.label }}</button></sc-for>
+    </div>
+    <div style="margin-left:auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span style="color:var(--mu);font-size:12px">State</span>
+      <div style="display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden"><sc-for list="{{ dataOpts }}" as="t" hint-placeholder-count="4"><button onClick="{{ t.click }}" style="background:{{ t.bg }};color:{{ t.fg }};border:0;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap">{{ t.label }}</button></sc-for></div>
+      <span style="color:var(--mu);font-size:12px">Width</span>
+      <div style="display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden"><sc-for list="{{ widthOpts }}" as="t" hint-placeholder-count="2"><button onClick="{{ t.click }}" style="background:{{ t.bg }};color:{{ t.fg }};border:0;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap">{{ t.label }}</button></sc-for></div>
+      <span style="color:var(--mu);font-size:12px">Theme</span>
+      <div style="display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden"><sc-for list="{{ themeFams }}" as="t" hint-placeholder-count="2"><button onClick="{{ t.click }}" style="background:{{ t.bg }};color:{{ t.fg }};border:0;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap">{{ t.label }}</button></sc-for></div>
+      <div style="display:flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden"><sc-for list="{{ themeModes }}" as="t" hint-placeholder-count="2"><button onClick="{{ t.click }}" style="background:{{ t.bg }};color:{{ t.fg }};border:0;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap">{{ t.label }}</button></sc-for></div>
+    </div>
+  </div>
+  <div style="color:var(--mu);font-size:12px;margin-bottom:12px;display:flex;gap:8px;align-items:center"><i class="ph ph-info"></i>{{ screenNote }}</div>
+
+  <!-- ===== WEBUI FRAME ===== -->
+  <div style="{{ frameStyle }}">
+    <!-- app header -->
+    <div style="grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:8px 16px;border-bottom:1px solid var(--bd);background:var(--pn);position:relative;z-index:6">
+      <span role="img" aria-label="WithNav" style="display:inline-flex;align-items:center;gap:5.7px;flex:none"><svg viewBox="0 0 64 64" width="20" height="20" aria-hidden="true"><circle cx="32" cy="16" r="12" fill="none" stroke="var(--la)" stroke-width="5.5" opacity=".6"></circle><circle cx="32" cy="16" r="4.5" fill="var(--la)"></circle><polygon points="32,31 40.5,47 32,63 23.5,47" fill="var(--tx)"></polygon><polygon points="23.5,47 40.5,47 32,63" fill="var(--bg)" opacity=".35"></polygon></svg><span style="font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:600;font-size:15.2px;letter-spacing:-0.02em;line-height:1;color:var(--tx)">WithNav</span></span>
+      <span style="color:var(--mu)">{{ wsName }} / <span class="mono" style="font-size:12px">{{ route }}</span></span>
+      <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+        <button onClick="{{ toggleNotif }}" title="Sessions waiting for you, across workspaces" style="{{ waitBtn }}"><i class="ph ph-hand-waving"></i>{{ waitLabel }}</button>
+        <span style="border:1px solid var(--bd);border-radius:5px;padding:3px 8px;color:var(--mu);font-size:12px">⌘K</span>
+      </div>
+      <sc-if value="{{ notifOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;right:16px;top:40px;width:400px;background:var(--pn);border:1px solid var(--bd);border-radius:8px;box-shadow:0 14px 40px rgba(0,0,0,.35);overflow:hidden;z-index:12">
+        <div style="padding:8px 12px;border-bottom:1px solid var(--bd);display:flex;gap:6px;align-items:center;font-size:12px;color:var(--mu)"><i class="ph ph-hand-waving"></i>Waiting for you · all workspaces<a onClick="{{ closeNotif }}" style="margin-left:auto">close</a></div>
+        <sc-for list="{{ waitRows }}" as="w" hint-placeholder-count="3">
+          <div style="padding:8px 12px;border-bottom:1px solid var(--bd);display:flex;gap:8px;align-items:flex-start;opacity:{{ w.op }}">
+            <span style="width:7px;height:7px;border-radius:50%;background:var(--or);margin-top:6px;flex:none"></span>
+            <div style="min-width:0;flex:1"><div style="display:flex;gap:6px;align-items:baseline"><span style="font-weight:500">{{ w.session }}</span><span style="color:var(--mu);font-size:11.5px">{{ w.ws }}</span><span title="{{ w.abs }}" style="margin-left:auto;color:var(--mu);font-size:11.5px">{{ w.rel }}</span></div>
+              <div class="mono" style="font-size:11.5px;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ w.call }}</div></div>
+            <button onClick="{{ w.mute }}" title="{{ w.muteTip }}" style="background:transparent;border:0;color:{{ w.muteCol }};cursor:pointer;font-size:15px;padding:2px"><i class="{{ w.muteIcon }}"></i></button>
+          </div>
+        </sc-for>
+        <sc-if value="{{ waitNone }}" hint-placeholder-val="{{ false }}"><div style="padding:14px 12px;color:var(--mu)">No session is waiting for you.</div></sc-if>
+      </div>
+      </sc-if>
+    </div>
+
+    <!-- sidebar -->
+    <div style="border-right:1px solid var(--bd);background:var(--pn);padding:10px;overflow:auto;display:flex;flex-direction:column;gap:2px;min-height:0">
+      <sc-for list="{{ navItems }}" as="n" hint-placeholder-count="5">
+        <button onClick="{{ n.click }}" style="background:{{ n.bg }};border:0;border-left:2px solid {{ n.bd }};color:{{ n.fg }};text-align:left;padding:6px 8px;border-radius:5px;cursor:{{ n.cur }};display:flex;gap:8px;align-items:center;font-size:13px;opacity:{{ n.op }}"><i class="{{ n.icon }}" style="font-size:15px;color:{{ n.ic }}"></i>{{ n.label }}<sc-if value="{{ n.hasBadge }}" hint-placeholder-val="{{ false }}"><span title="{{ n.badgeTip }}" style="margin-left:auto;background:var(--or);color:var(--acfg);border-radius:9px;padding:0 6px;font-size:11px;font-weight:600;line-height:16px">{{ n.badge }}</span></sc-if></button>
+      </sc-for>
+      <div style="display:flex;align-items:center;padding:12px 6px 6px;color:var(--mu);font-size:11px">WORKSPACES<span style="margin-left:auto;font-size:14px"><i class="ph ph-folder-plus"></i></span></div>
+      <sc-for list="{{ wsRows }}" as="w" hint-placeholder-count="3">
+        <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:4px">
+          <div style="display:flex;align-items:center;gap:6px;padding:4px 6px"><i class="ph ph-folder" style="color:var(--mu)"></i><span style="font-weight:500">{{ w.name }}</span><span style="margin-left:auto;color:var(--mu);font-size:11px">{{ w.count }}</span></div>
+          <sc-for list="{{ w.sessions }}" as="x" hint-placeholder-count="3">
+            <button onClick="{{ x.click }}" style="margin-left:18px;background:{{ x.bg }};border:1px solid {{ x.bd }};border-radius:5px;color:var(--tx);padding:5px 8px;text-align:left;font-size:12.5px;cursor:pointer;display:flex;flex-direction:column"><span style="display:flex;gap:6px;align-items:center"><sc-if value="{{ x.waiting }}" hint-placeholder-val="{{ false }}"><span title="Waiting for you" style="width:7px;height:7px;border-radius:50%;background:var(--or);flex:none"></span></sc-if><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ x.title }}</span><sc-if value="{{ x.muted }}" hint-placeholder-val="{{ false }}"><i class="ph ph-bell-slash" title="Muted" style="margin-left:auto;color:var(--mu);font-size:12px"></i></sc-if></span><span style="color:var(--mu);font-size:11px">{{ x.meta }}</span></button>
+          </sc-for>
+        </div>
+      </sc-for>
+    </div>
+
+    <!-- main -->
+    <div style="min-width:0;min-height:0;position:relative;display:flex;flex-direction:column;overflow:hidden">
+
+      <!-- ================= MEMORY ================= -->
+      <sc-if value="{{ isMem }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:1;min-height:0;display:flex;flex-direction:column">
+        <!-- filters -->
+        <div style="padding:12px 16px 10px;border-bottom:1px solid var(--bd);display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;gap:10px;align-items:center">
+            <span style="font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:600;font-size:18px;letter-spacing:-0.01em">Memory</span>
+            <span style="color:var(--mu);font-size:12px">{{ memCount }}</span>
+            <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+              <sc-if value="{{ needsBanner }}" hint-placeholder-val="{{ true }}"><button onClick="{{ goNeeds }}" style="background:color-mix(in srgb,var(--or) 14%,transparent);color:var(--tx);border:1px solid var(--or);border-radius:5px;padding:3px 10px;font-size:12px;cursor:pointer;display:flex;gap:6px;align-items:center"><i class="ph ph-hand-waving" style="color:var(--or)"></i>{{ needsLabel }}</button></sc-if>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <div style="flex:1;display:flex;gap:6px;align-items:center;border:1px solid var(--bd);background:var(--sf);border-radius:6px;padding:5px 10px"><i class="ph ph-magnifying-glass" style="color:var(--mu)"></i><input value="{{ q }}" onInput="{{ onQ }}" placeholder="Search title, body and quote" style="flex:1;background:transparent;border:0;outline:0;font-size:13px"></div>
+            <button onClick="{{ togPin }}" style="{{ pinFilterStyle }}"><i class="ph ph-push-pin"></i>Pinned</button>
+          </div>
+          <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+            <div style="display:flex;gap:4px;align-items:center"><span style="color:var(--mu);font-size:11px;width:44px">SCOPE</span><sc-for list="{{ scopeChips }}" as="c" hint-placeholder-count="4"><button onClick="{{ c.click }}" style="background:{{ c.bg }};color:{{ c.fg }};border:1px solid {{ c.bd }};border-radius:11px;padding:2px 10px;font-size:12px;cursor:pointer">{{ c.label }}</button></sc-for></div>
+            <div style="display:flex;gap:4px;align-items:center"><span style="color:var(--mu);font-size:11px;width:36px">KIND</span><sc-for list="{{ kindChips }}" as="c" hint-placeholder-count="5"><button onClick="{{ c.click }}" style="background:{{ c.bg }};color:{{ c.fg }};border:1px solid {{ c.bd }};border-radius:11px;padding:2px 10px;font-size:12px;cursor:pointer;display:flex;gap:5px;align-items:center"><i class="{{ c.icon }}"></i>{{ c.label }}</button></sc-for></div>
+          </div>
+          <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+            <div style="display:flex;gap:4px;align-items:center"><span style="color:var(--mu);font-size:11px;width:44px">STATUS</span><sc-for list="{{ statusChips }}" as="c" hint-placeholder-count="5"><button onClick="{{ c.click }}" style="background:{{ c.bg }};color:{{ c.fg }};border:1px solid {{ c.bd }};border-radius:11px;padding:2px 10px;font-size:12px;cursor:pointer">{{ c.label }}<span style="color:var(--mu);margin-left:5px;font-size:11px">{{ c.n }}</span></button></sc-for></div>
+            <div style="display:flex;gap:4px;align-items:center"><span style="color:var(--mu);font-size:11px;width:36px">WHO</span><sc-for list="{{ authChips }}" as="c" hint-placeholder-count="5"><button onClick="{{ c.click }}" style="background:{{ c.bg }};color:{{ c.fg }};border:1px solid {{ c.bd }};border-radius:11px;padding:2px 10px;font-size:12px;cursor:pointer">{{ c.label }}</button></sc-for></div>
+          </div>
+        </div>
+        <!-- list + detail -->
+        <div style="{{ memGrid }}">
+          <!-- list -->
+          <div style="overflow:auto;min-width:0;padding:8px 10px;display:flex;flex-direction:column;gap:6px">
+            <sc-if value="{{ memError }}" hint-placeholder-val="{{ false }}">
+              <div style="border:1px solid var(--rd);border-radius:8px;padding:14px 16px;background:color-mix(in srgb,var(--rd) 8%,transparent);display:flex;gap:12px;align-items:flex-start"><i class="ph ph-plugs" style="font-size:20px;color:var(--rd)"></i><div style="flex:1"><div style="font-weight:500">Can’t reach the WithNav server</div><div style="color:var(--mu);margin:3px 0 8px">Memory is stored on the server. Nothing was changed. The last attempt failed 4 s ago: connection refused on <span class="mono">127.0.0.1:7777</span>.</div><div style="display:flex;gap:8px"><button onClick="{{ retry }}" style="{{ outBtn }}"><i class="ph ph-arrow-clockwise"></i> Retry</button><button style="{{ ghostBtn }}">Server status</button></div></div></div>
+            </sc-if>
+            <sc-if value="{{ memLoading }}" hint-placeholder-val="{{ false }}">
+              <sc-for list="{{ skRows }}" as="s" hint-placeholder-count="6"><div style="border:1px solid var(--bd);border-radius:8px;padding:12px 14px;display:flex;flex-direction:column;gap:8px"><div class="sk" style="height:12px;width:{{ s.w }}"></div><div style="display:flex;gap:8px"><div class="sk" style="height:10px;width:70px"></div><div class="sk" style="height:10px;width:90px"></div><div class="sk" style="height:10px;width:60px"></div></div></div></sc-for>
+            </sc-if>
+            <sc-if value="{{ memEmpty }}" hint-placeholder-val="{{ false }}">
+              <div style="margin:36px auto;max-width:420px;text-align:center;display:flex;flex-direction:column;gap:8px;align-items:center;color:var(--mu)"><i class="ph ph-notebook" style="font-size:30px"></i><div style="color:var(--tx);font-size:14px;font-weight:500">Nothing remembered yet</div><div style="line-height:1.55">When you tell Nav something worth keeping, it shows up here with who said it and the exact quote. Write one yourself with <span class="mono" style="color:var(--tx)">/remember</span>. Nav may also propose items; those wait for you.</div><button style="{{ outBtn }}"><i class="ph ph-plus"></i> Remember something</button></div>
+            </sc-if>
+            <sc-if value="{{ memNoMatch }}" hint-placeholder-val="{{ false }}"><div style="margin:30px auto;color:var(--mu);text-align:center">No item matches these filters.<br><a onClick="{{ clearFilters }}">Clear filters</a></div></sc-if>
+            <sc-for list="{{ rows }}" as="r" hint-placeholder-count="8">
+              <div onClick="{{ r.click }}" style="cursor:pointer;border:1px solid {{ r.bd }};background:{{ r.bg }};border-radius:8px;padding:9px 12px;display:flex;flex-direction:column;gap:6px;opacity:{{ r.op }}">
+                <div style="display:flex;gap:8px;align-items:flex-start">
+                  <i class="{{ r.kindIcon }}" title="{{ r.kindLabel }}" style="color:var(--mu);font-size:15px;margin-top:1px"></i>
+                  <span style="flex:1;font-weight:500;line-height:1.35;text-decoration:{{ r.deco }}">{{ r.title }}</span>
+                  <sc-if value="{{ r.pin }}" hint-placeholder-val="{{ false }}"><i class="ph-fill ph-push-pin" title="Pinned" style="color:var(--at);font-size:13px"></i></sc-if>
+                </div>
+                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:11.5px">
+                  <span style="border:1px solid {{ r.scopeCol }};color:{{ r.scopeCol }};border-radius:4px;padding:0 6px">{{ r.scopeLabel }}</span>
+                  <span title="{{ r.authTip }}" style="border:1px {{ r.authLine }} {{ r.authCol }};color:{{ r.authCol }};border-radius:4px;padding:0 6px;display:flex;gap:4px;align-items:center"><i class="{{ r.authIcon }}"></i>{{ r.authLabel }}</span>
+                  <sc-if value="{{ r.showStatus }}" hint-placeholder-val="{{ false }}"><span style="background:{{ r.stBg }};color:{{ r.stCol }};border-radius:4px;padding:0 6px">{{ r.status }}</span></sc-if>
+                  <span class="mono" style="color:var(--mu)">{{ r.ver }}</span>
+                  <span title="{{ r.abs }}" style="color:var(--mu)">{{ r.rel }}</span>
+                  <span style="color:var(--mu)">· {{ r.sess }}</span>
+                  <span style="color:var(--mu);margin-left:auto" title="Sent to Nav in {{ r.seenN }} sessions">seen in {{ r.seenN }} sessions</span>
+                </div>
+                <sc-if value="{{ r.isSup }}" hint-placeholder-val="{{ false }}"><div style="font-size:11.5px;color:var(--mu)">Superseded by <a onClick="{{ r.supClick }}">{{ r.supTitle }}</a></div></sc-if>
+              </div>
+            </sc-for>
+          </div>
+          <!-- detail -->
+          <div style="{{ detailStyle }}">
+            <sc-if value="{{ hasDetail }}" hint-placeholder-val="{{ true }}">
+            <div style="padding:14px 16px 20px;display:flex;flex-direction:column;gap:14px">
+              <div style="display:flex;gap:8px;align-items:flex-start">
+                <div style="flex:1;min-width:0">
+                  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;font-size:11.5px">
+                    <span style="border:1px solid {{ dScopeCol }};color:{{ dScopeCol }};border-radius:4px;padding:0 6px">{{ dScope }}</span>
+                    <span title="{{ dAuthTip }}" style="border:1px {{ dAuthLine }} {{ dAuthCol }};color:{{ dAuthCol }};border-radius:4px;padding:0 6px;display:flex;gap:4px;align-items:center"><i class="{{ dAuthIcon }}"></i>{{ dAuth }}</span>
+                    <span style="background:{{ dStBg }};color:{{ dStCol }};border-radius:4px;padding:0 6px">{{ dStatus }}</span>
+                    <span class="mono" style="color:var(--mu)">{{ dVer }}</span>
+                  </div>
+                  <div style="font-size:15px;font-weight:600;line-height:1.35">{{ dTitle }}</div>
+                  <div class="mono" style="color:var(--mu);font-size:11px;margin-top:3px">{{ dId }}</div>
+                </div>
+                <button onClick="{{ closeDrawer }}" title="Close" style="display:{{ drawerCloseDisp }};background:transparent;border:0;color:var(--mu);cursor:pointer;font-size:16px"><i class="ph ph-x"></i></button>
+              </div>
+
+              <div>
+                <div style="color:var(--mu);font-size:11px;margin-bottom:4px">DECISION</div>
+                <div style="line-height:1.5">{{ dDecision }}</div>
+                <div style="color:var(--mu);font-size:11px;margin:10px 0 4px">WHY</div>
+                <div style="line-height:1.5;color:{{ dWhyCol }}">{{ dWhy }}</div>
+              </div>
+
+              <div style="border-left:2px solid var(--ac);background:var(--sf);border-radius:0 6px 6px 0;padding:8px 12px">
+                <div style="color:var(--mu);font-size:11px;margin-bottom:4px;display:flex;gap:6px;align-items:center"><i class="ph ph-quotes"></i>EXACT QUOTE · {{ dQuoteBy }}</div>
+                <div style="line-height:1.5">“{{ dQuote }}”</div>
+                <div style="margin-top:6px;font-size:12px;display:flex;gap:8px;align-items:center"><a onClick="{{ stop }}"><i class="ph ph-arrow-square-out"></i> open in session</a><span style="color:var(--mu)">{{ dQuoteSess }} · {{ dQuoteTurn }}</span></div>
+              </div>
+
+              <div style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px">
+                <span style="border:1px solid var(--bd);border-radius:5px;padding:2px 8px;color:var(--mu)">category <span style="color:var(--tx)">{{ dCat }}</span></span>
+                <span style="border:1px solid var(--bd);border-radius:5px;padding:2px 8px;color:var(--mu)">horizon <span style="color:var(--tx)">{{ dHz }}</span></span>
+              </div>
+
+              <div style="font-size:11.5px;color:var(--mu);display:flex;gap:6px;align-items:flex-start;line-height:1.5"><i class="ph ph-shield-check" style="margin-top:2px"></i>Memory informs Nav. It never grants permission: every tool call is still judged on its own.</div>
+
+              <!-- actions -->
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <sc-for list="{{ actions }}" as="a" hint-placeholder-count="6"><button onClick="{{ a.click }}" style="{{ a.style }}"><i class="{{ a.icon }}"></i>{{ a.label }}</button></sc-for>
+              </div>
+              <sc-if value="{{ formOpen }}" hint-placeholder-val="{{ false }}">
+              <div style="border:1px solid var(--ac);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;background:color-mix(in srgb,var(--ac) 6%,transparent)">
+                <div style="font-weight:500">{{ formTitle }}</div>
+                <sc-if value="{{ formHasText }}" hint-placeholder-val="{{ false }}"><textarea rows="3" onInput="{{ onFText }}" style="background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:7px 9px;font-size:13px;resize:vertical;outline:0;line-height:1.45">{{ fText }}</textarea></sc-if>
+                <sc-if value="{{ formHasScope }}" hint-placeholder-val="{{ false }}"><div style="display:flex;gap:4px"><sc-for list="{{ formScopes }}" as="c" hint-placeholder-count="4"><button onClick="{{ c.click }}" style="background:{{ c.bg }};color:{{ c.fg }};border:1px solid {{ c.bd }};border-radius:11px;padding:2px 10px;font-size:12px;cursor:pointer">{{ c.label }}</button></sc-for></div></sc-if>
+                <input value="{{ fReason }}" onInput="{{ onFReason }}" placeholder="{{ reasonPh }}" style="background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:6px 9px;font-size:13px;outline:0">
+                <div style="display:flex;gap:8px;align-items:center"><button onClick="{{ submitForm }}" style="{{ submitStyle }}">{{ submitLabel }}</button><button onClick="{{ cancelForm }}" style="{{ ghostBtn }}">Cancel</button><span style="color:var(--mu);font-size:11.5px">{{ formNote }}</span></div>
+              </div>
+              </sc-if>
+
+              <!-- timeline -->
+              <div>
+                <div style="color:var(--mu);font-size:11px;margin-bottom:8px;display:flex;gap:8px;align-items:center">VERSIONS · nothing is overwritten<span style="margin-left:auto">{{ diffHint }}</span></div>
+                <div style="display:flex;flex-direction:column">
+                  <sc-for list="{{ timeline }}" as="v" hint-placeholder-count="3">
+                    <div style="display:flex;gap:10px">
+                      <div style="display:flex;flex-direction:column;align-items:center;width:14px"><span style="width:9px;height:9px;border-radius:50%;background:{{ v.dot }};border:2px solid {{ v.dot }};margin-top:5px;flex:none"></span><span style="flex:1;width:1px;background:var(--bd);display:{{ v.line }}"></span></div>
+                      <div style="flex:1;min-width:0;padding-bottom:12px">
+                        <div style="display:flex;gap:6px;align-items:center;font-size:12px"><span class="mono" style="color:var(--mu)">{{ v.n }}</span><span style="color:{{ v.col }};font-weight:500">{{ v.change }}</span><span title="{{ v.abs }}" style="color:var(--mu)">{{ v.rel }}</span><button onClick="{{ v.pick }}" title="Select to compare" style="margin-left:auto;background:{{ v.pbg }};color:{{ v.pfg }};border:1px solid {{ v.pbd }};border-radius:4px;font-size:11px;padding:0 6px;cursor:pointer">{{ v.pickLabel }}</button></div>
+                        <div style="font-size:12px;color:var(--mu);margin-top:1px">{{ v.by }} · {{ v.sess }}</div>
+                        <div style="font-size:12.5px;margin-top:2px;line-height:1.45">{{ v.reason }}</div>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+                <sc-if value="{{ diffOn }}" hint-placeholder-val="{{ false }}">
+                <div style="border:1px solid var(--bd);border-radius:6px;overflow:hidden;font-size:12.5px;line-height:1.5">
+                  <div style="padding:5px 10px;background:var(--sf);color:var(--mu);font-size:11px;border-bottom:1px solid var(--bd)">DIFF · {{ diffAT }} → {{ diffBT }}</div>
+                  <div style="padding:6px 10px;background:color-mix(in srgb,var(--rd) 10%,transparent);display:flex;gap:8px"><span class="mono" style="color:var(--rd)">−</span><span>{{ diffA }}</span></div>
+                  <div style="padding:6px 10px;background:color-mix(in srgb,var(--gr) 10%,transparent);display:flex;gap:8px"><span class="mono" style="color:var(--gr)">+</span><span>{{ diffB }}</span></div>
+                </div>
+                </sc-if>
+              </div>
+
+              <!-- relations -->
+              <div>
+                <div style="color:var(--mu);font-size:11px;margin-bottom:6px">RELATIONS</div>
+                <sc-for list="{{ relations }}" as="r" hint-placeholder-count="2"><div style="display:flex;gap:8px;align-items:baseline;font-size:12.5px;padding:2px 0"><span style="color:{{ r.col }};width:100px;flex:none">{{ r.type }}</span><a onClick="{{ r.click }}" style="{{ r.linkStyle }}">{{ r.label }}</a></div></sc-for>
+              </div>
+
+              <!-- seen by -->
+              <div>
+                <div style="color:var(--mu);font-size:11px;margin-bottom:6px">SEEN BY · sessions and turns where Nav received it</div>
+                <sc-for list="{{ seenBy }}" as="s" hint-placeholder-count="3"><div style="display:flex;gap:8px;align-items:center;font-size:12.5px;padding:3px 0;border-top:1px solid var(--bd)"><span>{{ s.sess }}</span><span class="mono" style="color:var(--mu);font-size:11.5px">{{ s.turn }}</span><span style="margin-left:auto;border:1px solid var(--bd);border-radius:4px;padding:0 6px;font-size:11.5px;color:{{ s.col }}">{{ s.why }}</span><span title="{{ s.abs }}" style="color:var(--mu);font-size:11.5px;width:74px;text-align:right">{{ s.rel }}</span></div></sc-for>
+                <div style="color:var(--mu);font-size:11.5px;padding-top:6px">{{ seenMore }}</div>
+              </div>
+            </div>
+            </sc-if>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ================= NEEDS YOU ================= -->
+      <sc-if value="{{ isNeeds }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1;min-height:0;overflow:auto;padding:18px 24px 30px">
+        <div style="max-width:880px;margin:0 auto;display:flex;flex-direction:column;gap:14px">
+          <div style="display:flex;gap:10px;align-items:baseline">
+            <span style="font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:600;font-size:18px;letter-spacing:-0.01em">Needs you</span>
+            <span style="color:var(--mu);font-size:12px">{{ needsCount }}</span>
+            <a onClick="{{ goMem }}" style="margin-left:auto;font-size:12px">All memory</a>
+          </div>
+          <div style="color:var(--mu);line-height:1.5">Only what Nav can’t decide alone. Each item stays proposed until you accept its exact wording and scope. Proposals you don’t answer expire on their own.</div>
+
+          <sc-if value="{{ needsError }}" hint-placeholder-val="{{ false }}"><div style="border:1px solid var(--rd);border-radius:8px;padding:14px 16px;background:color-mix(in srgb,var(--rd) 8%,transparent);display:flex;gap:12px"><i class="ph ph-plugs" style="font-size:20px;color:var(--rd)"></i><div><div style="font-weight:500">Can’t reach the WithNav server</div><div style="color:var(--mu);margin:3px 0 8px">Proposals are kept on the server, so none can be answered right now. Nothing was lost.</div><button onClick="{{ retry }}" style="{{ outBtn }}"><i class="ph ph-arrow-clockwise"></i> Retry</button></div></div></sc-if>
+          <sc-if value="{{ needsLoading }}" hint-placeholder-val="{{ false }}"><sc-for list="{{ skRows }}" as="s" hint-placeholder-count="3"><div style="border:1px solid var(--bd);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:8px"><div class="sk" style="height:12px;width:{{ s.w }}"></div><div class="sk" style="height:10px;width:60%"></div></div></sc-for></sc-if>
+
+          <sc-if value="{{ needsEmpty }}" hint-placeholder-val="{{ false }}">
+            <div style="border:1px dashed var(--bd);border-radius:10px;padding:46px 20px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:8px;color:var(--mu)"><i class="ph ph-anchor-simple" style="font-size:30px;color:var(--vig)"></i><div style="color:var(--tx);font-size:14px;font-weight:500">Nothing needs you</div><div style="max-width:380px;line-height:1.55">Nav has no proposal waiting. You’ll see a badge here and in the sidebar when it does.</div><a onClick="{{ goMem }}" style="font-size:12px">{{ proposedLink }}</a></div>
+          </sc-if>
+
+          <sc-for list="{{ needRows }}" as="n" hint-placeholder-count="4">
+            <div style="border:1px solid var(--bd);border-left:3px solid var(--or);border-radius:8px;background:var(--pn);padding:12px 14px;display:flex;flex-direction:column;gap:9px">
+              <div style="display:flex;gap:8px;align-items:center;font-size:12px">
+                <span style="color:var(--or);display:flex;gap:5px;align-items:center"><i class="{{ n.icon }}"></i>{{ n.reason }}</span>
+                <span title="{{ n.expAbs }}" style="margin-left:auto;color:var(--mu)">{{ n.exp }}</span>
+              </div>
+              <div style="font-size:14px;font-weight:600;line-height:1.35">{{ n.title }}</div>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:11.5px">
+                <span style="border:1px solid {{ n.scopeCol }};color:{{ n.scopeCol }};border-radius:4px;padding:0 6px">{{ n.scopeLabel }}</span>
+                <span style="color:var(--mu);display:flex;gap:4px;align-items:center"><i class="{{ n.kindIcon }}"></i>{{ n.kindLabel }}</span>
+                <span style="border:1px {{ n.authLine }} {{ n.authCol }};color:{{ n.authCol }};border-radius:4px;padding:0 6px;display:flex;gap:4px;align-items:center"><i class="{{ n.authIcon }}"></i>{{ n.authLabel }}</span>
+                <span style="color:var(--mu)">· {{ n.sess }}</span>
+              </div>
+              <sc-if value="{{ n.isConflict }}" hint-placeholder-val="{{ false }}">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                  <div style="border:1px solid var(--or);border-radius:6px;padding:8px 10px;background:var(--bg)"><div style="color:var(--or);font-size:11px;margin-bottom:4px">NEW · proposed</div><div style="line-height:1.45">{{ n.decision }}</div><div style="color:var(--mu);font-size:12px;margin-top:6px;line-height:1.45">“{{ n.quote }}”</div></div>
+                  <div style="border:1px solid var(--bd);border-radius:6px;padding:8px 10px;background:var(--bg)"><div style="color:var(--mu);font-size:11px;margin-bottom:4px">EXISTING · {{ n.oldMeta }}</div><div style="line-height:1.45">{{ n.oldDecision }}</div><div style="color:var(--mu);font-size:12px;margin-top:6px;line-height:1.45">“{{ n.oldQuote }}”</div></div>
+                </div>
+                <div style="font-size:12px;color:var(--mu)">Accepting makes the new item active and keeps the existing one as a superseded version.</div>
+              </sc-if>
+              <sc-if value="{{ n.notConflict }}" hint-placeholder-val="{{ true }}">
+                <div style="line-height:1.5">{{ n.decision }}</div>
+                <div style="border-left:2px solid var(--ac);background:var(--sf);border-radius:0 6px 6px 0;padding:6px 10px;font-size:12.5px;line-height:1.45">“{{ n.quote }}” <span style="color:var(--mu)">· {{ n.qsess }}</span> <a onClick="{{ stop }}">open in session</a></div>
+              </sc-if>
+              <sc-if value="{{ n.isOk }}" hint-placeholder-val="{{ false }}"><div style="font-size:12px;color:var(--mu)">You answered “ok” to Nav’s proposal. Confirm the wording before it becomes active.</div></sc-if>
+              <sc-if value="{{ n.editing }}" hint-placeholder-val="{{ false }}">
+                <textarea rows="2" onInput="{{ onNText }}" style="background:var(--bg);border:1px solid var(--ac);border-radius:6px;padding:7px 9px;font-size:13px;resize:vertical;outline:0;line-height:1.45">{{ nText }}</textarea>
+              </sc-if>
+              <div style="display:flex;gap:8px;align-items:center">
+                <button onClick="{{ n.accept }}" style="{{ n.acceptStyle }}"><i class="ph ph-check"></i>{{ n.acceptLabel }}</button>
+                <button onClick="{{ n.edit }}" style="{{ ghostBorder }}">{{ n.editLabel }}</button>
+                <button onClick="{{ n.reject }}" style="{{ ghostBorder }}">Reject</button>
+                <span style="margin-left:auto;color:var(--mu);font-size:11.5px">{{ n.note }}</span>
+              </div>
+            </div>
+          </sc-for>
+          <sc-if value="{{ needsFoot }}" hint-placeholder-val="{{ true }}"><div style="color:var(--mu);font-size:12px;text-align:center">Capped at 5. Nothing here is a backlog.</div></sc-if>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ================= PROJECTS ================= -->
+      <sc-if value="{{ isProj }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1;min-height:0;display:grid;grid-template-columns:{{ projCols }};position:relative">
+        <div style="border-right:1px solid var(--bd);padding:12px 10px;overflow:auto;display:flex;flex-direction:column;gap:3px">
+          <div style="display:flex;align-items:center;padding:2px 6px 6px;color:var(--mu);font-size:11px">GROUPS<button onClick="{{ newGroup }}" title="Create group" style="margin-left:auto;background:transparent;border:0;color:var(--mu);cursor:pointer;font-size:15px"><i class="ph ph-plus"></i></button></div>
+          <sc-if value="{{ gForm }}" hint-placeholder-val="{{ false }}"><div style="display:flex;gap:4px;padding:0 4px 6px"><input value="{{ gName }}" onInput="{{ onGName }}" placeholder="{{ gPh }}" style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--ac);border-radius:5px;padding:4px 8px;font-size:12.5px;outline:0"><button onClick="{{ gSave }}" style="{{ outBtn }}">Save</button></div></sc-if>
+          <sc-for list="{{ groupRows }}" as="g" hint-placeholder-count="4">
+            <button onClick="{{ g.click }}" style="background:{{ g.bg }};border:0;border-left:2px solid {{ g.bd }};color:var(--tx);text-align:left;padding:7px 8px;border-radius:5px;cursor:pointer;display:flex;flex-direction:column;gap:2px"><span style="display:flex;gap:6px;align-items:center"><i class="{{ g.icon }}" style="color:{{ g.ic }}"></i><span style="font-weight:500">{{ g.name }}</span></span><span style="color:var(--mu);font-size:11.5px;padding-left:22px">{{ g.meta }}</span></button>
+          </sc-for>
+        </div>
+        <div style="overflow:auto;padding:14px 18px 24px;display:flex;flex-direction:column;gap:12px;min-width:0">
+          <sc-if value="{{ projError }}" hint-placeholder-val="{{ false }}"><div style="border:1px solid var(--rd);border-radius:8px;padding:14px 16px;background:color-mix(in srgb,var(--rd) 8%,transparent);display:flex;gap:12px"><i class="ph ph-plugs" style="font-size:20px;color:var(--rd)"></i><div><div style="font-weight:500">Can’t reach the WithNav server</div><div style="color:var(--mu);margin:3px 0 8px">Groups and projects are kept on the server. Nothing was changed.</div><button onClick="{{ retry }}" style="{{ outBtn }}"><i class="ph ph-arrow-clockwise"></i> Retry</button></div></div></sc-if>
+          <sc-if value="{{ projLoading }}" hint-placeholder-val="{{ false }}"><sc-for list="{{ skRows }}" as="s" hint-placeholder-count="3"><div style="border:1px solid var(--bd);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:8px"><div class="sk" style="height:13px;width:{{ s.w }}"></div><div class="sk" style="height:10px;width:50%"></div><div class="sk" style="height:10px;width:35%"></div></div></sc-for></sc-if>
+          <sc-if value="{{ projEmpty }}" hint-placeholder-val="{{ false }}"><div style="margin:50px auto;max-width:440px;text-align:center;display:flex;flex-direction:column;gap:8px;align-items:center;color:var(--mu)"><i class="ph ph-folders" style="font-size:30px"></i><div style="color:var(--tx);font-size:14px;font-weight:500">No groups yet</div><div style="line-height:1.55">A group lets projects share memory, like the commit style of every <span class="mono">kyber</span> repository. Without groups, items are either global or scoped to one project.</div><button onClick="{{ newGroup }}" style="{{ outBtn }}"><i class="ph ph-plus"></i> Create a group</button></div></sc-if>
+
+          <sc-if value="{{ projShow }}" hint-placeholder-val="{{ true }}">
+          <div style="display:flex;gap:8px;align-items:baseline">
+            <span style="font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:600;font-size:18px;letter-spacing:-0.01em">{{ gTitle }}</span>
+            <span style="color:var(--mu);font-size:12px">{{ gSub }}</span>
+            <div style="margin-left:auto;display:flex;gap:6px"><sc-if value="{{ gCanRename }}" hint-placeholder-val="{{ true }}"><button onClick="{{ renameGroup }}" style="{{ ghostBorder }}"><i class="ph ph-pencil-simple"></i> Rename</button></sc-if><button onClick="{{ openDlg }}" style="{{ ghostBorder }}" title="Preview the dialog shown for an unknown repository"><i class="ph ph-question"></i> New-project question</button></div>
+          </div>
+          <div style="font-size:12px;color:var(--mu);display:flex;gap:6px;align-items:center;line-height:1.5"><i class="ph ph-notebook"></i><span>{{ gMemNote }}</span><a onClick="{{ goMem }}">Open in Memory</a></div>
+          <sc-for list="{{ projCards }}" as="p" hint-placeholder-count="3">
+            <div style="border:1px solid var(--bd);border-radius:8px;background:var(--pn);display:flex;flex-direction:column">
+              <div style="padding:10px 14px;display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--bd)">
+                <i class="ph ph-git-branch" style="color:var(--mu);font-size:16px"></i>
+                <div style="min-width:0"><div style="font-weight:600;font-size:14px">{{ p.name }}</div><div class="mono" style="color:var(--mu);font-size:11.5px" title="Project identity: the repository path">{{ p.path }}</div></div>
+                <div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+                  <sc-for list="{{ p.groups }}" as="g" hint-placeholder-count="2"><span style="border:1px solid var(--bl);color:var(--bl);border-radius:11px;padding:0 4px 0 9px;font-size:12px;display:flex;gap:2px;align-items:center">{{ g.name }}<button onClick="{{ g.remove }}" title="Remove from {{ g.name }}" style="background:transparent;border:0;color:var(--mu);cursor:pointer;font-size:11px;padding:2px"><i class="ph ph-x"></i></button></span></sc-for>
+                  <sc-if value="{{ p.noGroup }}" hint-placeholder-val="{{ false }}"><span style="color:var(--mu);font-size:12px">No group</span></sc-if>
+                  <div style="position:relative"><button onClick="{{ p.toggleAdd }}" style="{{ ghostBorder }}"><i class="ph ph-plus"></i> Add to group</button>
+                    <sc-if value="{{ p.addOpen }}" hint-placeholder-val="{{ false }}"><div style="position:absolute;right:0;top:28px;min-width:150px;background:var(--pn);border:1px solid var(--bd);border-radius:6px;box-shadow:0 10px 30px rgba(0,0,0,.35);z-index:5;overflow:hidden"><sc-for list="{{ p.addOpts }}" as="o" hint-placeholder-count="2"><button onClick="{{ o.click }}" style="display:block;width:100%;text-align:left;background:transparent;border:0;padding:6px 10px;cursor:pointer;font-size:12.5px">{{ o.name }}</button></sc-for><sc-if value="{{ p.noOpts }}" hint-placeholder-val="{{ false }}"><div style="padding:6px 10px;color:var(--mu);font-size:12px">Already in every group</div></sc-if></div></sc-if></div>
+                </div>
+              </div>
+              <div style="padding:10px 14px;display:grid;grid-template-columns:{{ projInner }};gap:14px">
+                <div><div style="color:var(--mu);font-size:11px;margin-bottom:5px">WORKTREES</div><sc-for list="{{ p.trees }}" as="t" hint-placeholder-count="2"><div style="display:flex;gap:8px;align-items:baseline;font-size:12px;padding:2px 0"><i class="ph ph-tree" style="color:var(--mu)"></i><span class="mono" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.path }}</span><span class="mono" style="color:var(--at);margin-left:auto;white-space:nowrap">{{ t.branch }}</span></div></sc-for></div>
+                <div><div style="color:var(--mu);font-size:11px;margin-bottom:5px">SESSIONS · recent first</div>
+                  <sc-for list="{{ p.sessions }}" as="s" hint-placeholder-count="3"><div style="display:flex;gap:8px;align-items:center;font-size:12.5px;padding:3px 0"><span style="width:7px;height:7px;border-radius:50%;background:{{ s.dot }};flex:none"></span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ s.title }}</span><span style="color:{{ s.agentCol }};font-size:11.5px">{{ s.agent }}</span><span style="color:var(--mu);font-size:11.5px">{{ s.status }}</span><span title="{{ s.abs }}" style="color:var(--mu);font-size:11.5px;margin-left:auto;white-space:nowrap">{{ s.rel }}</span><button onClick="{{ s.detach }}" style="background:transparent;border:0;color:var(--mu);cursor:pointer;font-size:11.5px;text-decoration:underline">detach</button></div></sc-for>
+                  <sc-if value="{{ p.noSess }}" hint-placeholder-val="{{ false }}"><div style="color:var(--mu);font-size:12px">No session attached.</div></sc-if>
+                </div>
+              </div>
+            </div>
+          </sc-for>
+          <sc-if value="{{ looseShow }}" hint-placeholder-val="{{ true }}">
+          <div style="border:1px dashed var(--bd);border-radius:8px;padding:10px 14px">
+            <div style="color:var(--mu);font-size:11px;margin-bottom:5px">SESSIONS WITHOUT A PROJECT · not in a git repository</div>
+            <sc-for list="{{ looseRows }}" as="s" hint-placeholder-count="1"><div style="display:flex;gap:8px;align-items:center;font-size:12.5px;padding:3px 0"><span style="width:7px;height:7px;border-radius:50%;background:var(--mu);flex:none"></span><span>{{ s.title }}</span><span style="color:var(--mu);font-size:11.5px">{{ s.status }}</span><span style="margin-left:auto;display:flex;gap:6px;align-items:center"><span style="color:var(--mu);font-size:11.5px">attach to</span><sc-for list="{{ s.opts }}" as="o" hint-placeholder-count="2"><button onClick="{{ o.click }}" style="{{ chipBtn }}">{{ o.name }}</button></sc-for></span></div></sc-for>
+          </div>
+          </sc-if>
+          <div>
+            <button onClick="{{ toggleHist }}" style="background:transparent;border:0;color:var(--mu);cursor:pointer;font-size:12px;display:flex;gap:6px;align-items:center;padding:0"><i class="{{ histCaret }}"></i>History · {{ histCount }} membership changes</button>
+            <sc-if value="{{ histOpen }}" hint-placeholder-val="{{ false }}"><div style="margin-top:6px;border:1px solid var(--bd);border-radius:6px;overflow:hidden"><sc-for list="{{ histRows }}" as="h" hint-placeholder-count="4"><div style="display:flex;gap:10px;align-items:center;font-size:12px;padding:5px 10px;border-bottom:1px solid var(--bd)"><i class="{{ h.icon }}" style="color:{{ h.col }}"></i><span>{{ h.text }}</span><span style="color:var(--mu);margin-left:auto">{{ h.by }}</span><span title="{{ h.abs }}" style="color:var(--mu);width:80px;text-align:right">{{ h.rel }}</span></div></sc-for></div></sc-if>
+          </div>
+          </sc-if>
+        </div>
+
+        <!-- new-project dialog -->
+        <sc-if value="{{ dlgOpen }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ closeDlg }}" style="position:absolute;inset:0;z-index:8;background:color-mix(in srgb,var(--bg) 72%,transparent);display:flex;align-items:center;justify-content:center">
+          <div onClick="{{ stop }}" style="width:460px;background:var(--pn);border:1px solid var(--bd);border-radius:10px;box-shadow:0 14px 40px rgba(0,0,0,.4);padding:18px 20px;display:flex;flex-direction:column;gap:12px">
+            <div style="color:var(--mu);font-size:11.5px;display:flex;gap:6px;align-items:center"><i class="ph ph-folder-simple-plus"></i>New project · first session in an unknown repository</div>
+            <div style="font-size:15px;font-weight:600;line-height:1.35">Which group does <span class="mono" style="font-weight:500">navai-site</span> belong to?</div>
+            <div class="mono" style="color:var(--mu);font-size:12px;margin-top:-6px">~/dev/navai-site · main</div>
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <sc-for list="{{ dlgOpts }}" as="o" hint-placeholder-count="5">
+                <button onClick="{{ o.click }}" style="background:{{ o.bg }};border:1px solid {{ o.bd }};border-radius:6px;color:var(--tx);padding:7px 10px;text-align:left;cursor:pointer;display:flex;gap:10px;align-items:center;font-size:13px"><span style="width:14px;height:14px;border-radius:50%;border:2px solid {{ o.ring }};display:flex;align-items:center;justify-content:center;flex:none"><span style="width:6px;height:6px;border-radius:50%;background:{{ o.dot }}"></span></span><span style="font-weight:500">{{ o.name }}</span><span style="color:var(--mu);font-size:12px;margin-left:auto">{{ o.meta }}</span></button>
+              </sc-for>
+              <sc-if value="{{ dlgNew }}" hint-placeholder-val="{{ false }}"><input value="{{ dlgName }}" onInput="{{ onDlgName }}" placeholder="Name of the new group" style="margin-left:24px;background:var(--bg);border:1px solid var(--ac);border-radius:6px;padding:6px 9px;font-size:13px;outline:0"></sc-if>
+            </div>
+            <div style="font-size:12px;color:var(--mu);line-height:1.5;display:flex;gap:6px"><i class="ph ph-info" style="margin-top:2px"></i>Items scoped to the group are shared with its projects; global items are shared everywhere.</div>
+            <div style="display:flex;gap:8px;justify-content:flex-end"><button onClick="{{ closeDlg }}" style="{{ ghostBtn }}">Ask me later</button><button onClick="{{ saveDlg }}" style="{{ outBtn }}">Save</button></div>
+          </div>
+        </div>
+        </sc-if>
+      </div>
+      </sc-if>
+
+      <!-- ================= SESSION ================= -->
+      <sc-if value="{{ isSess }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1;min-height:0;display:flex;flex-direction:column;position:relative">
+        <div style="padding:8px 16px;border-bottom:1px solid var(--bd);display:flex;gap:10px;align-items:center">
+          <span style="font-weight:500">Refactor parser</span><span style="color:var(--nav);font-size:12px">build</span><span style="color:var(--mu);font-size:12px">· <span class="mono">omniroute/cc/claude-opus-5-5</span> · high</span>
+          <button onClick="{{ togPanel }}" title="Goal, Ledger, Memory" style="{{ panelBtn }}"><i class="ph ph-sidebar-simple"></i>Panel</button>
+        </div>
+        <div style="flex:1;overflow:auto;padding:18px 24px;display:flex;flex-direction:column;gap:12px;line-height:1.55;min-height:0">
+          <div style="border-left:2px solid var(--bd);padding:2px 0 2px 12px"><div style="color:var(--mu);font-size:11.5px;margin-bottom:3px;display:flex;gap:6px;align-items:center"><i class="ph ph-user"></i>Captain</div>Fix the clippy warnings in <span class="mono" style="color:var(--bl)">src/parser</span>. Windows CI must pass before we merge.</div>
+          <div style="font-size:12px;color:var(--mu);display:flex;gap:6px;align-items:center;padding-left:14px"><i class="ph ph-bookmark-simple" style="color:var(--at)"></i><span>{{ remLine }}</span> · <span>project WithNav</span> · <a onClick="{{ togRem }}">{{ remAct }}</a></div>
+          <div style="max-width:84%"><div style="color:var(--nav);font-size:11.5px;margin-bottom:3px">Nav · build</div>I’ll fix the warnings first, then run the tests on both targets.
+            <div style="margin-top:8px;border:1px solid var(--bd);border-radius:6px;overflow:hidden">
+              <div style="padding:6px 10px;display:flex;gap:8px;color:var(--mu)"><i class="ph ph-check" style="color:var(--gr)"></i>cargo clippy <span class="mono">--all-targets</span><span style="margin-left:auto">0 warnings</span></div>
+              <div style="padding:6px 10px;display:flex;gap:8px;color:var(--mu);border-top:1px solid var(--bd)"><i class="ph ph-x" style="color:var(--rd)"></i>cargo test<span class="mono">--features test-support</span><span style="margin-left:auto">exit 101 · windows-latest</span></div>
+            </div></div>
+          <div style="font-size:12px;color:var(--mu);display:flex;gap:6px;align-items:center;padding-left:14px"><i class="ph ph-bookmark-simple" style="color:var(--or)"></i><span>Proposed to remember: “Fixture paths use forward slashes”</span> · <a onClick="{{ goNeeds }}">review</a></div>
+          <div style="max-width:84%;border-left:2px solid var(--bl);padding:6px 12px;background:linear-gradient(90deg,color-mix(in srgb,var(--bl) 9%,transparent),transparent 80%);font-size:12.5px">
+            <div style="color:var(--bl);display:flex;gap:6px;align-items:center;font-size:11.5px"><i class="ph ph-target"></i>Goal note<span style="color:var(--mu)">· automatic observation, not a Captain message</span><span title="Wed 25 Nov 2026, 22:17" style="margin-left:auto;color:var(--mu)">2 min ago</span></div>
+            <div style="margin-top:2px">Goal check (revision 3): criterion 2 “Windows CI passes” is contradicted — cargo test exited 101.</div>
+          </div>
+          <div style="max-width:84%"><div style="color:var(--nav);font-size:11.5px;margin-bottom:3px">Nav · build</div>The Windows run fails on a path separator in a fixture. I’ll look at <span class="mono" style="color:var(--bl)">tests/fixtures.rs</span> next.</div>
+        </div>
+        <div style="padding:10px 24px 14px"><div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;background:var(--sf)"><div style="color:var(--mu)">Message Nav… @file  /skill  @agent  /command</div>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;color:var(--mu);font-size:12px"><button onClick="{{ togPal }}" style="background:transparent;color:var(--tx);border:1px solid var(--ac);border-radius:5px;padding:2px 8px;font-size:12px;cursor:pointer">/ commands</button><span style="border:1px solid var(--bd);border-radius:5px;padding:2px 8px">build ▾</span><span style="margin-left:auto;border:1px solid var(--ac);color:var(--at);border-radius:5px;padding:3px 10px"><i class="ph ph-arrow-up"></i> Send</span></div></div></div>
+        <sc-if value="{{ palOpen }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ togPal }}" style="position:absolute;inset:0;z-index:4">
+          <div onClick="{{ stop }}" style="position:absolute;left:24px;bottom:84px;width:520px;max-width:calc(100% - 48px);background:var(--pn);border:1px solid var(--bd);border-radius:8px;box-shadow:0 14px 40px rgba(0,0,0,.35);overflow:hidden">
+            <div style="padding:8px 12px;border-bottom:1px solid var(--bd);color:var(--mu);display:flex;gap:6px;align-items:center"><i class="ph ph-magnifying-glass"></i>/</div>
+            <sc-for list="{{ palGroups }}" as="g" hint-placeholder-count="2"><div><div style="padding:6px 12px 2px;color:var(--mu);font-size:11px">{{ g.label }}</div><sc-for list="{{ g.items }}" as="i" hint-placeholder-count="3"><div style="padding:6px 12px;display:flex;gap:10px;align-items:baseline;background:{{ i.bg }}"><span class="mono" style="color:var(--at);min-width:96px">{{ i.cmd }}</span><span style="color:var(--mu);font-size:12.5px">{{ i.desc }}</span></div></sc-for></div></sc-for>
+            <div style="height:6px"></div>
+          </div>
+        </div>
+        </sc-if>
+      </div>
+      </sc-if>
+
+      <!-- ================= PERMISSION ================= -->
+      <sc-if value="{{ isPerm }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1;min-height:0;overflow:auto;padding:16px 24px 28px">
+        <div style="max-width:760px;margin:0 auto;display:flex;flex-direction:column;gap:14px">
+          <div style="display:flex;flex-direction:column;gap:8px;border:1px solid var(--bd);border-radius:8px;padding:10px 12px;background:var(--pn)">
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="color:var(--mu);font-size:11px;width:56px">STATE</span><sc-for list="{{ stepChips }}" as="c" hint-placeholder-count="5"><button onClick="{{ c.click }}" style="background:{{ c.bg }};color:{{ c.fg }};border:1px solid {{ c.bd }};border-radius:11px;padding:2px 10px;font-size:12px;cursor:pointer">{{ c.label }}</button></sc-for></div>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="color:var(--mu);font-size:11px;width:56px">CALL</span><sc-for list="{{ cmdChips }}" as="c" hint-placeholder-count="3"><button onClick="{{ c.click }}" style="background:{{ c.bg }};color:{{ c.fg }};border:1px solid {{ c.bd }};border-radius:11px;padding:2px 10px;font-size:12px;cursor:pointer">{{ c.label }}</button></sc-for><button onClick="{{ togStarted }}" title="Simulates answering after the call has already begun" style="{{ startedStyle }}">Call already started</button><a onClick="{{ resetPerm }}" style="margin-left:auto;font-size:12px">Reset card</a></div>
+            <div style="color:var(--mu);font-size:12px;line-height:1.5">{{ stepNote }}</div>
+          </div>
+
+          <div style="border-left:2px solid var(--bd);padding:2px 0 2px 12px"><div style="color:var(--mu);font-size:11.5px;margin-bottom:3px;display:flex;gap:6px;align-items:center"><i class="ph ph-user"></i>Captain</div>Fix the clippy warnings in <span class="mono" style="color:var(--bl)">src/parser</span> and tidy up.</div>
+
+          <!-- the card -->
+          <sc-if value="{{ cardOpenLook }}" hint-placeholder-val="{{ true }}">
+          <div style="border:1px solid {{ cardBd }};border-radius:8px;background:var(--pn);overflow:hidden;opacity:{{ cardOp }}">
+            <div style="padding:9px 12px;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--bd)">
+              <i class="ph ph-terminal-window" style="color:var(--ac);font-size:16px"></i><span style="font-weight:500">Permission requested</span><span class="mono" style="color:var(--mu);font-size:12px">bash</span>
+              <span style="margin-left:auto;display:flex;gap:6px;align-items:center"><sc-if value="{{ badgeOn }}" hint-placeholder-val="{{ true }}"><span style="background:{{ badgeBg }};color:{{ badgeFg }};border-radius:4px;padding:1px 8px;font-size:11.5px;font-weight:500;display:flex;gap:5px;align-items:center"><i class="{{ badgeIcon }}"></i>{{ badgeText }}</span></sc-if><span title="Wed 25 Nov 2026, 22:14" style="color:var(--mu);font-size:11.5px">{{ cardTime }}</span></span>
+            </div>
+            <div style="padding:10px 12px;display:flex;flex-direction:column;gap:10px">
+              <div class="mono" style="font-size:12px;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:8px 10px;line-height:1.6;word-break:break-all">{{ cmdFull }}</div>
+              <div>
+                <div style="color:var(--mu);font-size:11px;margin-bottom:5px;display:flex;gap:8px">{{ partsHead }}<span style="margin-left:auto;font-weight:400">{{ partsNote }}</span></div>
+                <div style="border:1px solid var(--bd);border-radius:6px;overflow:hidden">
+                  <sc-for list="{{ parts }}" as="p" hint-placeholder-count="3">
+                    <div style="padding:7px 10px;border-top:1px solid var(--bd);border-left:3px solid {{ p.rule }};background:{{ p.bg }};display:flex;flex-direction:column;gap:3px">
+                      <div style="display:flex;gap:8px;align-items:center"><span class="mono" style="font-size:12px;word-break:break-all">{{ p.cmd }}</span><sc-if value="{{ p.culprit }}" hint-placeholder-val="{{ false }}"><span style="margin-left:auto;color:var(--or);font-size:11px;white-space:nowrap;display:flex;gap:4px;align-items:center"><i class="ph ph-arrow-fat-line-left"></i>caused the question</span></sc-if></div>
+                      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:11.5px"><span class="mono" style="color:var(--mu)">→</span><span class="mono" style="color:var(--bl)">{{ p.dest }}</span><sc-if value="{{ p.hasRedir }}" hint-placeholder-val="{{ false }}"><span class="mono" style="color:var(--mu)">{{ p.redir }}</span></sc-if></div>
+                      <div style="font-size:12px;color:{{ p.cqCol }}">{{ p.consequence }}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+
+              <sc-if value="{{ reviewLineOn }}" hint-placeholder-val="{{ true }}"><div style="display:flex;gap:8px;align-items:center;font-size:12px;color:{{ reviewCol }};border-top:1px solid var(--bd);padding-top:8px"><i class="{{ reviewIcon }}" style="{{ reviewIconStyle }}"></i>{{ reviewText }}</div></sc-if>
+
+              <sc-if value="{{ reasonOn }}" hint-placeholder-val="{{ false }}">
+                <div style="border-left:2px solid {{ reasonRule }};background:var(--sf);border-radius:0 6px 6px 0;padding:7px 11px;font-size:12.5px;line-height:1.5">
+                  <div style="display:flex;gap:6px;align-items:center;font-size:11.5px;color:var(--mu)"><i class="ph ph-compass" style="color:var(--at)"></i>Metacognition · short conclusion<a onClick="{{ togReason }}" style="margin-left:auto;display:{{ reasonToggleDisp }}">{{ reasonToggle }}</a></div>
+                  <sc-if value="{{ reasonBody }}" hint-placeholder-val="{{ true }}"><div style="margin-top:3px">{{ reasonText }}</div></sc-if>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ btnsOn }}" hint-placeholder-val="{{ true }}">
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                  <button onClick="{{ pAllow }}" style="{{ outBtn }}">Allow once</button>
+                  <sc-if value="{{ alwaysOn }}" hint-placeholder-val="{{ true }}"><button onClick="{{ pAlways }}" style="{{ ghostBorder }}">Always for this folder</button></sc-if>
+                  <button onClick="{{ pDeny }}" style="{{ ghostBorder }}">Reject</button>
+                  <button onClick="{{ pHold }}" title="Pause Nav on this call and answer later" style="{{ ghostBorder }}"><i class="ph ph-pause"></i> Hold for me</button>
+                </div>
+              </sc-if>
+              <sc-if value="{{ resultOn }}" hint-placeholder-val="{{ false }}"><div style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;line-height:1.5"><i class="{{ resultIcon }}" style="color:{{ resultCol }};margin-top:2px"></i><div><span style="color:var(--tx)">{{ resultText }}</span><div style="color:var(--mu);font-size:12px">{{ resultSub }}</div></div><a onClick="{{ resetPerm }}" style="margin-left:auto;font-size:12px">undo not possible · reset demo</a></div></sc-if>
+              <div style="font-size:11px;color:var(--mu);line-height:1.5;display:flex;gap:6px;align-items:flex-start"><i class="ph ph-lock-simple" style="margin-top:1px"></i><span>{{ finePrint }}</span></div>
+            </div>
+          </div>
+          </sc-if>
+
+          <!-- compact transcript record for the closed card -->
+          <sc-if value="{{ recordOn }}" hint-placeholder-val="{{ false }}">
+            <div style="border:1px solid var(--bd);border-left:3px solid var(--gr);border-radius:6px;padding:7px 12px;display:flex;flex-direction:column;gap:4px;background:var(--pn)">
+              <div style="display:flex;gap:8px;align-items:center;font-size:12.5px"><i class="ph ph-check-circle" style="color:var(--gr)"></i><span class="mono" style="font-size:12px;word-break:break-all">{{ recordCmd }}</span><span style="margin-left:auto;white-space:nowrap;color:var(--mu);font-size:11.5px">Allowed by Metacognition · <span title="Wed 25 Nov 2026, 22:14">22:14</span></span></div>
+              <div style="display:flex;gap:6px;align-items:flex-start;font-size:12px;color:var(--mu);line-height:1.5"><i class="ph ph-compass" style="margin-top:2px"></i><span><a onClick="{{ togReason }}">{{ reasonToggle }}</a> {{ recordWhy }}</span></div>
+            </div>
+          </sc-if>
+          <div style="max-width:84%"><div style="color:var(--nav);font-size:11.5px;margin-bottom:3px">Nav · build</div>{{ navLine }}</div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ================= NOTIFICATIONS ================= -->
+      <sc-if value="{{ isNotif }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1;min-height:0;overflow:auto;padding:16px 24px 28px">
+        <div style="max-width:900px;margin:0 auto;display:flex;flex-direction:column;gap:16px">
+          <div style="display:flex;gap:10px;align-items:center;border:1px solid var(--bd);border-radius:8px;padding:9px 12px;background:var(--pn)">
+            <span style="color:var(--mu);font-size:12px;line-height:1.5">One notification per blocked turn, never one per review. It closes in every client as soon as the card is answered anywhere.</span>
+            <button onClick="{{ togAnswered }}" style="{{ answeredStyle }}">{{ answeredLabel }}</button>
+          </div>
+          <div style="display:grid;grid-template-columns:{{ notifCols }};gap:18px;align-items:start">
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <div style="color:var(--mu);font-size:11px">BROWSER NOTIFICATION</div>
+              <sc-if value="{{ osOpen }}" hint-placeholder-val="{{ true }}">
+              <div style="width:360px;max-width:100%;background:var(--sf);border:1px solid var(--bd);border-radius:12px;box-shadow:0 12px 34px rgba(0,0,0,.35);padding:12px 14px;display:flex;gap:12px;align-items:flex-start">
+                <svg viewBox="0 0 64 64" width="34" height="34" aria-hidden="true" style="flex:none"><circle cx="32" cy="16" r="12" fill="none" stroke="var(--la)" stroke-width="5.5" opacity=".6"></circle><circle cx="32" cy="16" r="4.5" fill="var(--la)"></circle><polygon points="32,31 40.5,47 32,63 23.5,47" fill="var(--tx)"></polygon><polygon points="23.5,47 40.5,47 32,63" fill="var(--bg)" opacity=".35"></polygon></svg>
+                <div style="min-width:0;flex:1"><div style="display:flex;gap:6px;color:var(--mu);font-size:11.5px"><span>withnav.dev</span><span style="margin-left:auto">now</span></div>
+                  <div style="font-weight:600;line-height:1.35;margin-top:2px">Nav is waiting for you in Refactor parser: rm 3 files in ~/.config/opencode</div>
+                  <div style="color:var(--mu);font-size:12px;margin-top:3px">Metacognition asked you to decide. Tap to open the card.</div>
+                  <div style="display:flex;gap:8px;margin-top:8px"><span style="{{ outBtn }}">Open</span><span style="{{ ghostBorder }}">Mute session</span></div></div>
+              </div>
+              </sc-if>
+              <sc-if value="{{ osClosed }}" hint-placeholder-val="{{ false }}"><div style="width:360px;max-width:100%;border:1px dashed var(--bd);border-radius:12px;padding:16px 14px;color:var(--mu);font-size:12.5px;line-height:1.5;display:flex;gap:10px"><i class="ph ph-check-circle" style="color:var(--gr);font-size:18px"></i><span>Closed. The card was answered on your laptop, so this notification disappeared here and on every other device.</span></div></sc-if>
+              <div style="color:var(--mu);font-size:12px;line-height:1.55;max-width:360px">Title format: <span style="color:var(--tx)">Nav is waiting for you in &lt;session&gt;: &lt;short call&gt;</span>. It carries no reasoning and no command arguments beyond a short summary.</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <div style="color:var(--mu);font-size:11px">IN-APP LIST · top bar badge, all workspaces</div>
+              <div style="border:1px solid var(--bd);border-radius:8px;overflow:hidden;background:var(--pn)">
+                <div style="padding:8px 12px;border-bottom:1px solid var(--bd);display:flex;gap:6px;align-items:center;font-size:12px;color:var(--mu)"><i class="ph ph-hand-waving"></i>Waiting for you · {{ waitCountText }}</div>
+                <sc-for list="{{ waitRows }}" as="w" hint-placeholder-count="3">
+                  <div style="padding:9px 12px;border-bottom:1px solid var(--bd);display:flex;gap:8px;align-items:flex-start;opacity:{{ w.op }}">
+                    <span style="width:7px;height:7px;border-radius:50%;background:var(--or);margin-top:6px;flex:none"></span>
+                    <div style="min-width:0;flex:1"><div style="display:flex;gap:6px;align-items:baseline"><span style="font-weight:500">{{ w.session }}</span><span style="color:var(--mu);font-size:11.5px">{{ w.ws }}</span><span title="{{ w.abs }}" style="margin-left:auto;color:var(--mu);font-size:11.5px">{{ w.rel }}</span></div><div class="mono" style="font-size:11.5px;color:var(--mu)">{{ w.call }}</div><div style="font-size:11.5px;color:var(--mu);margin-top:2px">{{ w.muteNote }}</div></div>
+                    <button onClick="{{ w.mute }}" title="{{ w.muteTip }}" style="background:transparent;border:1px solid var(--bd);border-radius:5px;color:{{ w.muteCol }};cursor:pointer;font-size:14px;padding:3px 6px"><i class="{{ w.muteIcon }}"></i></button>
+                  </div>
+                </sc-for>
+                <sc-if value="{{ waitNone }}" hint-placeholder-val="{{ false }}"><div style="padding:16px 12px;color:var(--mu)">No session is waiting for you.</div></sc-if>
+              </div>
+              <div style="color:var(--mu);font-size:12px;line-height:1.55">Muting a session keeps its card and its sidebar dot, and turns off the browser notification and the badge count for it. The badge counts only unmuted sessions.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+    </div>
+
+    <!-- right panel (session) -->
+    <div style="{{ panelStyle }}">
+      <div style="padding:8px 14px;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--bd);color:var(--mu);font-size:11px;position:sticky;top:0;background:var(--pn);z-index:2">SESSION PANEL<button onClick="{{ togPanel }}" style="margin-left:auto;display:{{ panelCloseDisp }};background:transparent;border:0;color:var(--mu);cursor:pointer;font-size:15px"><i class="ph ph-x"></i></button></div>
+      <div style="padding:12px 14px;display:flex;flex-direction:column;gap:16px">
+
+        <div>
+          <div style="color:var(--mu);font-size:11px;margin-bottom:6px;display:flex;gap:6px;align-items:center"><i class="ph ph-notepad"></i>INTENT RECORD</div>
+          <div style="font-size:12.5px;line-height:1.5">Swap the toml parser for an incremental one. <span class="mono" style="color:var(--bl)">Config::load</span> stays as it is.</div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:6px;font-size:12px;color:var(--mu)"><span class="mono" style="color:var(--gr)">█████████░</span>drift 0.86</div>
+        </div>
+
+        <!-- Goal -->
+        <div>
+          <div style="color:var(--mu);font-size:11px;margin-bottom:6px;display:flex;gap:6px;align-items:center"><i class="ph ph-target"></i>GOAL</div>
+          <sc-if value="{{ goalNone }}" hint-placeholder-val="{{ false }}"><div style="border:1px dashed var(--bd);border-radius:6px;padding:10px 12px;color:var(--mu);font-size:12.5px;line-height:1.5">No goal for this session. Set one with <span class="mono" style="color:var(--tx)">/goal</span> and Nav checks it against the criteria as the work moves.<div style="margin-top:6px"><button style="{{ outBtn }}">/goal</button></div></div></sc-if>
+          <sc-if value="{{ goalOn }}" hint-placeholder-val="{{ true }}">
+            <div style="font-size:12.5px;line-height:1.5;{{ goalClamp }}">Fix the clippy warnings in src/parser and get Windows CI green, without changing the public API of Config::load. Stop and ask if a fixture has to change.</div>
+            <a onClick="{{ togGoal }}" style="font-size:11.5px">{{ goalMore }}</a>
+            <div style="display:flex;gap:8px;align-items:center;margin:6px 0;font-size:12px"><span class="mono" style="color:var(--mu)">revision 3</span><button onClick="{{ togPaused }}" style="{{ pausedStyle }}">{{ pausedLabel }}</button><span title="Wed 25 Nov 2026, 22:17" style="margin-left:auto;color:var(--mu);font-size:11.5px">last checked 2 min ago</span></div>
+            <div style="display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:6px;overflow:hidden">
+              <sc-for list="{{ criteria }}" as="c" hint-placeholder-count="3"><div title="{{ c.tip }}" style="padding:6px 10px;display:flex;gap:8px;align-items:flex-start;border-top:{{ c.top }};font-size:12.5px;line-height:1.4"><i class="{{ c.icon }}" style="color:{{ c.col }};margin-top:2px"></i><span style="flex:1"><span style="color:var(--mu);font-size:11px">Criterion {{ c.n }}</span><br>{{ c.text }}</span><span style="color:{{ c.col }};font-size:11px;white-space:nowrap">{{ c.state }}</span></div></sc-for>
+            </div>
+            <div style="color:var(--mu);font-size:11.5px;margin-top:4px">Hover a criterion for its evidence.</div>
+          </sc-if>
+        </div>
+
+        <!-- Ledger -->
+        <div>
+          <div style="color:var(--mu);font-size:11px;margin-bottom:6px;display:flex;gap:6px;align-items:center"><i class="ph ph-list-checks"></i>LEDGER</div>
+          <div style="display:grid;grid-template-columns:1fr auto;gap:5px 10px;font-size:12.5px">
+            <span style="color:var(--mu)">Turns</span><span class="mono">14</span>
+            <span style="color:var(--mu)">Files changed</span><span class="mono">6</span>
+          </div>
+          <div class="mono" style="font-size:11.5px;color:var(--mu);margin:4px 0 6px;line-height:1.6">src/parser/incr.rs<br>src/parser/mod.rs<br>tests/fixtures.rs</div>
+          <div style="display:grid;grid-template-columns:1fr auto;gap:5px 10px;font-size:12.5px">
+            <span style="color:var(--mu)">Repeated failures</span><span class="mono" style="color:var(--rd)">2</span>
+          </div>
+          <div style="font-size:12px;color:var(--mu);margin:3px 0 6px;line-height:1.45">Worst: <span class="mono" style="color:var(--tx)">cargo test</span> failed 3 times in a row on windows-latest.</div>
+          <div style="display:grid;grid-template-columns:1fr auto;gap:5px 10px;font-size:12.5px"><span style="color:var(--mu)">Open questions</span><span class="mono">1</span></div>
+          <div style="font-size:12px;color:var(--mu);margin-top:3px;line-height:1.45">Does the path fixture have to change?</div>
+        </div>
+
+        <!-- Memory -->
+        <div>
+          <div style="color:var(--mu);font-size:11px;margin-bottom:6px;display:flex;gap:6px;align-items:center"><i class="ph ph-notebook"></i>MEMORY · sent to Nav this turn<a onClick="{{ goMem }}" style="margin-left:auto;font-size:11.5px">Open Memory</a></div>
+          <div style="display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:6px;overflow:hidden">
+            <sc-for list="{{ sentRows }}" as="m" hint-placeholder-count="4"><div title="Why picked: {{ m.why }}" style="padding:6px 10px;border-top:{{ m.top }};display:flex;flex-direction:column;gap:3px;cursor:default"><span style="font-size:12.5px;line-height:1.4">{{ m.title }}</span><span style="display:flex;gap:6px;align-items:center;font-size:11px"><span style="border:1px {{ m.authLine }} {{ m.authCol }};color:{{ m.authCol }};border-radius:4px;padding:0 5px">{{ m.auth }}</span><span style="color:var(--mu)">{{ m.scope }}</span><span style="margin-left:auto;color:var(--mu);display:flex;gap:4px;align-items:center"><i class="ph ph-info"></i>why picked</span></span></div></sc-for>
+          </div>
+          <div style="color:var(--mu);font-size:11.5px;margin-top:5px;line-height:1.45">Memory informs Nav. It is never a permission.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- toast -->
+    <sc-if value="{{ toastOn }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;left:50%;transform:translateX(-50%);bottom:16px;z-index:20;background:var(--sf);border:1px solid var(--bd);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.4);padding:8px 12px;display:flex;gap:12px;align-items:center;font-size:12.5px"><i class="ph ph-check-circle" style="color:var(--gr)"></i><span>{{ toastMsg }}</span><button onClick="{{ undo }}" style="{{ outBtn }}">Undo</button></div>
+    </sc-if>
+  </div>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+const TH = {
+  ayuDark: ['Ayu Dark', 'ayu-dark', { bg: '#0b0e14', pn: '#0f131a', sf: '#151a23', bd: '#232a36', tx: '#bfbdb6', mu: '#7b8494', ac: '#e6b450', at: '#e6b450', acfg: '#0b0e14', gr: '#aad94c', rd: '#f07178', bl: '#59c2ff', pu: '#d2a6ff', or: '#ff8f40', lh: '#e6b450', la: '#d2a6ff' }],
+  ayuLight: ['Ayu Light', 'ayu-light', { bg: '#fcfcfc', pn: '#f3f4f5', sf: '#ffffff', bd: '#dfe2e6', tx: '#4a5058', mu: '#6e7781', ac: '#ffaa33', at: '#a35f00', acfg: '#1f2328', gr: '#5c8a00', rd: '#d94f4f', bl: '#1a7bbf', pu: '#8052b8', or: '#c25d00', lh: '#a35f00', la: '#8052b8' }],
+  nordDark: ['Nord Dark', 'nord-dark', { bg: '#2e3440', pn: '#292e39', sf: '#3b4252', bd: '#434c5e', tx: '#d8dee9', mu: '#8f9bb3', ac: '#88c0d0', at: '#88c0d0', acfg: '#2e3440', gr: '#a3be8c', rd: '#bf616a', bl: '#81a1c1', pu: '#b48ead', or: '#d08770', lh: '#d08770', la: '#88c0d0' }],
+  nordLight: ['Nord Light', 'nord-light', { bg: '#eceff4', pn: '#e5e9f0', sf: '#ffffff', bd: '#d0d7e3', tx: '#2e3440', mu: '#586174', ac: '#5e81ac', at: '#3f6591', acfg: '#eceff4', gr: '#4f7a3c', rd: '#b0424d', bl: '#3f6591', pu: '#7d5a78', or: '#a85a3f', lh: '#a85a3f', la: '#3f6591' }]
+};
+// Crew colors, from logo/agents (dark and light variants)
+const CREW = {
+  dark: { nav: '#5ecaed', lux: '#f8ca65', mou: '#f89177', vig: '#72d8b3', car: '#dca3e5', son: '#a3b3f8' },
+  light: { nav: '#036b9a', lux: '#8f5d04', mou: '#b14328', vig: '#107460', car: '#85468f', son: '#4d5aac' }
+};
+const NOW_ABS = 'Wed 25 Nov 2026, 22:19';
+const CAP = 'The Captain', NAVACC = 'proposed by Nav, accepted by the Captain', OBS = 'observed by Nav', EXT = 'extracted by Nav';
+const V = (c, by, rel, abs, sess, reason, dec) => ({ c, by, rel, abs, sess, reason, dec });
+const AUTH = {
+  said: ['captain said', 'var(--gr)', 'ph ph-user', 'solid', 'The Captain said this himself.', 'said by the Captain'],
+  accepted: ['captain accepted', 'var(--bl)', 'ph ph-check', 'solid', 'Nav proposed it and the Captain accepted it.', 'proposed by Nav, accepted by the Captain'],
+  observed: ['observed', 'var(--pu)', 'ph ph-eye', 'solid', 'Nav saw it in a tool result or a file. Nobody said it.', 'seen in a tool result'],
+  assumed: ['assumed', 'var(--mu)', 'ph ph-question', 'dashed', 'Nav assumed it. Nobody said it and nothing confirmed it.', 'Nav’s assumption']
+};
+const KINDS = { decision: ['ph ph-gavel', 'decision'], convention: ['ph ph-ruler', 'convention'], preference: ['ph ph-sliders-horizontal', 'preference'], environment: ['ph ph-desktop-tower', 'environment'], pitfall: ['ph ph-warning', 'pitfall'] };
+const STATUS = { active: ['var(--gr)'], proposed: ['var(--or)'], superseded: ['var(--mu)'], invalidated: ['var(--rd)'], expired: ['var(--mu)'] };
+const SCOPES = ['global', 'group', 'project', 'session'];
+const SCOPE_COL = { global: 'var(--pu)', group: 'var(--bl)', project: 'var(--at)', session: 'var(--mu)' };
+
+const ITEMS = [
+  { id: 'mem_01KT7P', title: 'Personal repos sign commits with the YubiKey', scope: 'group', sn: 'perso', kind: 'environment', auth: 'said', status: 'active', seen: 4, cat: 'git', hz: 'project',
+    decision: 'Commits in the perso repositories are signed with the YubiKey, not with a file key.', why: '',
+    quote: 'Everything in perso gets signed with the YubiKey. No file keys on that laptop.', qs: 'Dotfiles sync', qt: 'turn 5',
+    vs: [V('created', CAP, '1 week ago', 'Wed 18 Nov 2026, 19:05', 'Dotfiles sync', 'Said while setting up signing.')] },
+  { id: 'mem_01KS4N', title: 'Do not touch tests/golden in this session', scope: 'session', sn: 'Refactor parser', kind: 'decision', auth: 'said', status: 'active', seen: 3, cat: 'testing', hz: 'task',
+    decision: 'Leave the golden files in tests/golden as they are until this session ends.', why: 'The parser rewrite must reproduce them byte for byte.',
+    quote: 'Don’t touch tests/golden. The new parser has to match them as they are.', qs: 'Refactor parser', qt: 'turn 2',
+    vs: [V('created', CAP, '3 hours ago', 'Wed 25 Nov 2026, 19:20', 'Refactor parser', 'Written with /remember.')] },
+  { id: 'mem_01KU2R', title: 'Instinct decisions are never cached across turns', scope: 'project', sn: 'WithNav', kind: 'decision', auth: 'accepted', status: 'active', seen: 7, cat: 'instinct', hz: 'project',
+    decision: 'An Instinct decision is computed again on every turn; it is never reused from an earlier one.', why: 'The conversation changes between turns, so an old answer can be wrong.',
+    quote: 'ok, no caching across turns, that is how we got burned', qs: 'Permission review design', qt: 'turn 17', rels: [['supersedes', 'mem_01KA9Q']],
+    vs: [V('created', NAVACC, '4 days ago', 'Sat 21 Nov 2026, 11:30', 'Permission review design', 'The Captain answered “ok” and confirmed the wording.')] },
+  { id: 'mem_01KQ8K', title: 'Freeze the config schema until the 0.9 release', scope: 'project', sn: 'WithNav', kind: 'decision', auth: 'said', status: 'expired', seen: 2, cat: 'config', hz: 'feature',
+    decision: 'No new keys in config.json until the 0.9 release ships.', why: 'The release is blocked on migration tooling.',
+    quote: 'Freeze the config schema until 0.9, I don’t want another migration.', qs: 'Settings screens', qt: 'turn 12',
+    vs: [V('created', CAP, '3 weeks ago', 'Wed 4 Nov 2026, 14:02', 'Settings screens', 'Valid until the 0.9 release.'), V('updated', 'expired on its horizon', '2 days ago', 'Mon 23 Nov 2026, 00:00', 'automatic', 'Feature horizon reached: 0.9 shipped.')] },
+  { id: 'mem_01KR1M', title: 'WebUI polls sessions every 2 seconds', scope: 'project', sn: 'WithNav', kind: 'decision', auth: 'accepted', status: 'invalidated', seen: 5, cat: 'webui', hz: 'feature',
+    decision: 'The WebUI polls the session list every 2 seconds.', why: 'not stated',
+    quote: 'ok, poll every 2 seconds for now', qs: 'WebUI skeleton', qt: 'turn 8',
+    vs: [V('created', NAVACC, '4 weeks ago', 'Wed 28 Oct 2026, 09:40', 'WebUI skeleton', 'The Captain answered “ok”.'), V('invalidated', CAP, '1 week ago', 'Wed 18 Nov 2026, 16:12', 'Session streaming', 'Replaced by the SSE stream.')] },
+  { id: 'mem_01KN2E', title: 'Fixture paths use forward slashes', scope: 'project', sn: 'WithNav', kind: 'pitfall', auth: 'observed', status: 'proposed', seen: 0, cat: 'testing', hz: 'project', exp: 'expires in 5 days', expAbs: 'Mon 30 Nov 2026, 22:19',
+    decision: 'Paths in test fixtures use forward slashes so the Windows run can open them.', why: 'A backslash path made the Windows run panic.',
+    quote: 'No such file or directory: tests\\data\\a.toml', qs: 'Refactor parser', qt: 'turn 13',
+    vs: [V('created', EXT, '2 min ago', 'Wed 25 Nov 2026, 22:17', 'Refactor parser', 'Seen in a failing test run.')] },
+  { id: 'mem_01KM2H', title: 'Docs live in docs/design, not in the wiki', scope: 'project', sn: 'WithNav', kind: 'convention', auth: 'accepted', status: 'proposed', seen: 0, cat: 'docs', hz: 'project', exp: 'expires in 12 days', expAbs: 'Mon 7 Dec 2026, 22:19',
+    decision: 'Design files and their handoff notes live in docs/design. The wiki is not used for them.', why: 'not stated',
+    quote: 'ok', qs: 'Memory page design', qt: 'turn 6',
+    vs: [V('created', NAVACC, '1 day ago', 'Tue 24 Nov 2026, 18:44', 'Memory page design', 'Nav asked “Remember that docs live in docs/design?” and the Captain only answered “ok”.')] },
+  { id: 'mem_01KL9G', title: 'Commit titles stay under 72 characters, with no scope', scope: 'group', sn: 'kyber', kind: 'convention', auth: 'said', status: 'proposed', seen: 0, cat: 'git', hz: 'project', exp: 'expires in 6 days', expAbs: 'Tue 1 Dec 2026, 22:19', rels: [['conflicts with', 'mem_01KC4F']],
+    decision: 'Commit titles in kyber projects stay under 72 characters and carry no scope.', why: 'not stated',
+    quote: 'keep commit titles under 72 chars, don’t bother with scopes', qs: 'Fix flaky CI', qt: 'turn 9',
+    vs: [V('created', EXT, '5 hours ago', 'Wed 25 Nov 2026, 17:10', 'Fix flaky CI', 'Extracted from the conversation.')] },
+  { id: 'mem_01KK6F', title: 'infra hosts are reached through the bastion only', scope: 'group', sn: 'infra', kind: 'environment', auth: 'said', status: 'proposed', seen: 0, cat: 'security', hz: 'project', exp: 'expires in 9 days', expAbs: 'Fri 4 Dec 2026, 22:19',
+    decision: 'Every host in the infra group is reached through the bastion, never directly.', why: 'not stated',
+    quote: 'Everything under infra goes through the bastion, never straight in.', qs: 'Tailscale ACL review', qt: 'turn 11',
+    vs: [V('created', EXT, '1 day ago', 'Tue 24 Nov 2026, 21:30', 'Tailscale ACL review', 'Extracted from the conversation.')] },
+  { id: 'mem_01KJ3E', title: 'Run cargo clippy before each commit in WithNav', scope: 'project', sn: 'WithNav', kind: 'convention', auth: 'said', status: 'proposed', seen: 0, cat: 'workflow', hz: 'project', exp: 'expires in 3 days', expAbs: 'Sat 28 Nov 2026, 22:19',
+    decision: 'Run cargo clippy before every commit in the WithNav repository.', why: 'not stated',
+    quote: 'I always run clippy before I commit, so make that the rule.', qs: 'Refactor parser', qt: 'turn 4',
+    vs: [V('created', EXT, '11 days ago', 'Sat 14 Nov 2026, 10:48', 'Refactor parser', 'Extracted from the conversation.')] },
+  { id: 'mem_01KH8D', title: 'Release builds target x86_64 Linux musl', scope: 'project', sn: 'WithNav', kind: 'environment', auth: 'assumed', status: 'active', seen: 2, cat: 'build', hz: 'project',
+    decision: 'Release builds of WithNav target x86_64-unknown-linux-musl.', why: 'not stated',
+    quote: 'target = "x86_64-unknown-linux-musl"', qs: 'Release build', qt: 'turn 1',
+    vs: [V('created', 'assumed by Nav', '2 weeks ago', 'Wed 11 Nov 2026, 15:20', 'Release build', 'Read from .cargo/config.toml. Nobody confirmed it.')] },
+  { id: 'mem_01KG5C', title: 'cargo test needs --features test-support', scope: 'project', sn: 'WithNav', kind: 'pitfall', auth: 'observed', status: 'active', seen: 9, cat: 'testing', hz: 'project',
+    decision: 'In WithNav, run cargo test with --features test-support; without it the test helpers don’t build.', why: 'The helpers sit behind that feature.',
+    quote: 'error[E0432]: unresolved import `testkit`. help: use --features test-support', qs: 'Refactor parser', qt: 'turn 10',
+    vs: [V('created', OBS, '9 days ago', 'Mon 16 Nov 2026, 11:15', 'Refactor parser', 'Seen in a compiler error.'), V('updated', CAP, '8 days ago', 'Tue 17 Nov 2026, 09:02', 'Refactor parser', 'Accepted. Wording kept.')] },
+  { id: 'mem_01KF1B', title: 'Prefers tmux sessions per role for long work', scope: 'global', kind: 'preference', auth: 'said', status: 'active', seen: 14, cat: 'workflow', hz: 'project',
+    decision: 'For long work, use one tmux session per role (build, plan, review) instead of one shared session.', why: 'One big session got slow and hard to read.',
+    quote: 'One tmux session per role for anything long. The shared one was a mess.', qs: 'tmux layout', qt: 'turn 7',
+    vs: [V('created', CAP, '3 weeks ago', 'Mon 2 Nov 2026, 20:11', 'tmux layout', 'Said while tidying the terminal.', 'Prefers tmux sessions per role for long work.'),
+         V('invalidated', CAP, '2 weeks ago', 'Tue 10 Nov 2026, 08:30', 'tmux layout', 'Trying one big session for a week.', 'Prefers tmux sessions per role for long work.'),
+         V('restored', CAP, '4 days ago', 'Sat 21 Nov 2026, 17:55', 'Refactor parser', 'Back to one session per role; the big one got slow.', 'For long work, use one tmux session per role (build, plan, review) instead of one shared session.')] },
+  { id: 'mem_01KE9A', title: 'Permission requested is judged against the conversation, not the command', scope: 'project', sn: 'WithNav', kind: 'decision', auth: 'said', status: 'active', seen: 18, pinned: true, cat: 'permissions', hz: 'project',
+    decision: 'A permission request is judged against what the Captain asked for in the conversation, not against the command text alone.', why: 'A fixed threshold blocked harmless commands and let through deletes nobody asked for.',
+    quote: 'Judge the call against what I asked for. A threshold on the command doesn’t mean anything.', qs: 'Permission review design', qt: 'turn 19', rels: [['supersedes', 'v1 · fixed threshold of 0.8', null]],
+    vs: [V('created', NAVACC, '3 weeks ago', 'Wed 4 Nov 2026, 16:20', 'Permission review design', 'Nav proposed a fixed threshold; the Captain answered “ok”.', 'Permission review blocks a call when its risk score is above a fixed threshold of 0.8.'),
+         V('updated', CAP, '4 days ago', 'Sat 21 Nov 2026, 11:42', 'Permission review design', 'A fixed threshold missed deletes that were not asked for and blocked harmless ones. Judge against the conversation.', 'A permission request is judged against what the Captain asked for in the conversation, not against the command text alone.')] },
+  { id: 'mem_01KD7H', title: 'Passive goal notes stay off until the shadow results show they are useful', scope: 'project', sn: 'WithNav', kind: 'decision', auth: 'accepted', status: 'active', seen: 6, cat: 'goal', hz: 'feature',
+    decision: 'Passive goal notes stay off. They are turned on only when the shadow results show they are useful.', why: 'They add noise to the transcript until proven otherwise.',
+    quote: 'ok, keep them off until the shadow run shows they help', qs: 'Goal shadow run', qt: 'turn 15',
+    vs: [V('created', NAVACC, '1 week ago', 'Wed 18 Nov 2026, 14:36', 'Goal shadow run', 'The Captain answered “ok” and confirmed the wording.')] },
+  { id: 'mem_01KC4F', title: 'Kyber projects use conventional commits with a scope', scope: 'group', sn: 'kyber', kind: 'convention', auth: 'said', status: 'active', seen: 24, cat: 'git', hz: 'project', rels: [['conflicts with', 'mem_01KL9G']],
+    decision: 'Every kyber project uses conventional commits and always includes a scope: feat(parser): …', why: 'Release notes are generated from the commit log.',
+    quote: 'In every kyber repo: conventional commits, and always a scope.', qs: 'Commit style cleanup', qt: 'turn 3',
+    vs: [V('created', CAP, '2 weeks ago', 'Wed 11 Nov 2026, 18:25', 'Commit style cleanup', 'Said while cleaning up the history.')] },
+  { id: 'mem_01KB2R', title: 'Inspect OmniRoute and agent configs over Tailscale only', scope: 'global', kind: 'environment', auth: 'said', status: 'active', seen: 11, pinned: true, cat: 'security', hz: 'project',
+    decision: 'Inspect OmniRoute and the agent configs over the Tailscale address only, never the public one.', why: 'The gateway holds the provider keys.',
+    quote: 'Only over Tailscale. Never from the public side, the keys sit behind it.', qs: 'Gateway hardening', qt: 'turn 9',
+    vs: [V('created', CAP, '3 weeks ago', 'Wed 4 Nov 2026, 10:12', 'Gateway hardening', 'Said while locking down the gateway.'), V('rescoped', CAP, '5 days ago', 'Fri 20 Nov 2026, 16:40', 'Permission review design', 'Applies to every project, not only WithNav.')] },
+  { id: 'mem_01KA9Q', title: 'Instinct decisions are cached for 10 minutes per call', scope: 'project', sn: 'WithNav', kind: 'decision', auth: 'accepted', status: 'superseded', seen: 8, supBy: 'mem_01KU2R', cat: 'instinct', hz: 'project', rels: [['superseded by', 'mem_01KU2R']],
+    decision: 'An Instinct decision is cached for 10 minutes for the same tool call.', why: 'Saves a model call on repeated commands.',
+    quote: 'ok, cache them for ten minutes', qs: 'Instinct design', qt: 'turn 11',
+    vs: [V('created', NAVACC, '5 weeks ago', 'Wed 21 Oct 2026, 13:18', 'Instinct design', 'The Captain answered “ok”.'), V('updated', 'automatic', '4 days ago', 'Sat 21 Nov 2026, 11:30', 'Permission review design', 'Superseded by “Instinct decisions are never cached across turns”.')] }
+];
+const NEEDS = [
+  { k: 'n1', id: 'mem_01KK6F', kind: 'group' },
+  { k: 'n2', id: 'mem_01KL9G', kind: 'conflict', old: 'mem_01KC4F' },
+  { k: 'n3', id: 'mem_01KM2H', kind: 'ok' },
+  { k: 'n4', id: 'mem_01KJ3E', kind: 'auto' },
+  { k: 'n5', id: 'mem_01KN2E', kind: 'auto' }
+];
+const POOL = [['Refactor parser', 'turn 14'], ['Memory page design', 'turn 3'], ['Goal shadow run', 'turn 8'], ['Permission review design', 'turn 21'], ['Commit style cleanup', 'turn 6'], ['Fix flaky CI', 'turn 2']];
+const SESS = [
+  { k: 's1', title: 'Refactor parser', agent: 'build', status: 'waiting for you', rel: 'now', abs: NOW_ABS, def: 'withnav' },
+  { k: 's2', title: 'Memory page design', agent: 'plan', status: 'idle', rel: '2 hours ago', abs: 'Wed 25 Nov 2026, 20:14', def: 'withnav' },
+  { k: 's3', title: 'Goal shadow run', agent: 'build', status: 'idle', rel: '1 week ago', abs: 'Wed 18 Nov 2026, 14:36', def: 'withnav' },
+  { k: 's4', title: 'Fix flaky CI', agent: 'build', status: 'waiting for you', rel: '31 min ago', abs: 'Wed 25 Nov 2026, 21:48', def: 'kcore' },
+  { k: 's5', title: 'Bump dependencies', agent: 'build', status: 'idle', rel: '3 days ago', abs: 'Sun 22 Nov 2026, 10:05', def: 'kcore' },
+  { k: 's6', title: 'Landing page copy', agent: 'plan', status: 'idle', rel: '5 days ago', abs: 'Fri 20 Nov 2026, 15:30', def: 'kweb' },
+  { k: 's7', title: 'Terraform plan review', agent: 'plan', status: 'idle', rel: '2 days ago', abs: 'Mon 23 Nov 2026, 09:12', def: 'kinfra' },
+  { k: 's8', title: 'Tailscale ACL review', agent: 'build', status: 'waiting for you', rel: '14 min ago', abs: 'Wed 25 Nov 2026, 22:05', def: 'homelab' },
+  { k: 's9', title: 'Backup job', agent: 'build', status: 'idle', rel: '1 week ago', abs: 'Tue 17 Nov 2026, 08:00', def: 'homelab' },
+  { k: 's10', title: 'Shell aliases', agent: 'build', status: 'idle', rel: '2 weeks ago', abs: 'Tue 10 Nov 2026, 19:40', def: 'dotfiles' },
+  { k: 's11', title: 'tmux notes', agent: 'plan', status: 'idle', rel: '3 weeks ago', abs: 'Mon 2 Nov 2026, 20:11', def: null }
+];
+const PROJECTS = [
+  { k: 'kcore', name: 'kyber-core', path: '~/work/kyber/kyber-core', g: ['kyber'], trees: [['~/work/kyber/kyber-core', 'main'], ['~/work/kyber/kyber-core.wt/flaky-ci', 'fix/flaky-ci']] },
+  { k: 'kweb', name: 'kyber-web', path: '~/work/kyber/kyber-web', g: ['kyber'], trees: [['~/work/kyber/kyber-web', 'main']] },
+  { k: 'kinfra', name: 'kyber-infra', path: '~/work/kyber/kyber-infra', g: ['kyber', 'infra'], trees: [['~/work/kyber/kyber-infra', 'main']] },
+  { k: 'homelab', name: 'homelab', path: '~/dev/homelab', g: ['infra'], trees: [['~/dev/homelab', 'main']] },
+  { k: 'withnav', name: 'WithNav', path: '~/dev/Navai', g: ['perso'], trees: [['~/dev/Navai', 'main'], ['~/dev/Navai/.worktrees/memory-ui', 'feat/memory-ui']] },
+  { k: 'dotfiles', name: 'dotfiles', path: '~/dev/dotfiles', g: [], trees: [['~/dev/dotfiles', 'main']] }
+];
+const WAITS = [
+  { k: 'w1', session: 'Refactor parser', ws: 'WithNav', call: 'rm ~/.config/opencode/*.bak  (3 files)', rel: '2 min ago', abs: NOW_ABS },
+  { k: 'w2', session: 'Tailscale ACL review', ws: 'homelab', call: 'tailscale set --accept-routes', rel: '14 min ago', abs: 'Wed 25 Nov 2026, 22:05' },
+  { k: 'w3', session: 'Fix flaky CI', ws: 'kyber-core', call: 'git push --force-with-lease origin fix/flaky-ci', rel: '31 min ago', abs: 'Wed 25 Nov 2026, 21:48' }
+];
+const P1 = { cmd: 'cargo fmt', dest: 'src/parser/*.rs · 4 project files', redir: '', consequence: 'rewrites formatting in 4 project files', culprit: false };
+const P2 = { cmd: 'gh pr comment 214 --body-file notes.md', dest: 'github.com/PixmaNts/Navai · PR 214', redir: '', consequence: 'publishes a comment on GitHub', culprit: false };
+const P3 = { cmd: 'rm ~/.config/opencode/*.bak', dest: '~/.config/opencode/ · outside the project', redir: '2>/dev/null', consequence: 'deletes 3 files outside the project', culprit: true };
+const P4 = { cmd: 'rm ~/.config/withnav/config.json', dest: '~/.config/withnav/ · WithNav’s own config', redir: '', consequence: 'deletes WithNav’s own config file', culprit: true };
+const CMDS = {
+  simple: { full: 'rm ~/.config/opencode/*.bak 2>/dev/null', parts: [P3], head: 'WHAT IT DOES', allow: 'The Captain asked Nav to tidy up after itself, and these three .bak files were created in this session. Nothing else in that folder is touched.', wait: 'Deletes files in another tool’s config directory; the Captain asked to fix warnings, not to remove these files.', short: 'rm ~/.config/opencode/*.bak' },
+  compound: { full: 'cargo fmt && gh pr comment 214 --body-file notes.md; rm ~/.config/opencode/*.bak 2>/dev/null', parts: [P1, P2, P3], head: 'SPLIT INTO 3 COMMANDS', allow: 'The Captain asked for the formatting and the PR comment, and the three .bak files were created in this session. Nothing else is touched outside the project.', wait: 'The comment and the formatting were asked for, but the last command deletes files in another tool’s config directory that the Captain did not mention.', short: 'cargo fmt && gh pr comment … ; rm …' },
+  protected: { full: 'rm ~/.config/withnav/config.json', parts: [P4], head: 'WHAT IT DOES', allow: '', wait: '', short: 'rm ~/.config/withnav/config.json' }
+};
+const NOTES = {
+  memory: 'Memory page, #/memory. Filters on top, one row per item, detail on the right. Click a row; try Edit, Invalidate, Pin and the compare buttons in the version timeline.',
+  needs: 'Needs you, #/memory (also the sidebar badge). Capped at 5. Try Accept, Edit then accept and Reject; every answer has an undo toast. Set State to Empty for the calm empty state.',
+  projects: 'Projects and groups, #/projects. Pick a group, add or remove a project, attach or detach a session, create or rename a group. Open History to see membership changes.',
+  newproj: 'The new-project question, shown the first time a session starts in an unknown repository.',
+  session: 'Session view, #/chat. The right panel adds Goal, Ledger and Memory. In a narrow window the panel collapses behind the Panel button.',
+  permission: 'Permission card with a parallel Metacognition review. Pick a state and a call. Answer the card to see the result lines; tick “Call already started” to see that wording.',
+  notif: 'Notifications. The in-app list is also behind the top bar badge on every screen. Mute a session, or mark the card as answered elsewhere.'
+};
+
+class Component extends DCLogic {
+  state = { scr: 'memory', th: 'ayuDark', data: 'normal', narrow: false,
+    sel: 'mem_01KE9A', q: '', fScope: {}, fKind: {}, fStatus: 'active', fAuth: 'any', fPin: false, drawer: false,
+    form: null, fText: '', fReason: '', fScopePick: 'project', diff: [], ov: {}, needsDone: {}, nEdit: null, nText: '', toast: null,
+    groups: [{ k: 'kyber', name: 'kyber' }, { k: 'infra', name: 'infra' }, { k: 'perso', name: 'perso' }],
+    pm: { kcore: ['kyber'], kweb: ['kyber'], kinfra: ['kyber', 'infra'], homelab: ['infra'], withnav: ['perso'], dotfiles: [] },
+    ps: { s1: 'withnav', s2: 'withnav', s3: 'withnav', s4: 'kcore', s5: 'kcore', s6: 'kweb', s7: 'kinfra', s8: 'homelab', s9: 'homelab', s10: 'dotfiles', s11: null },
+    newProjs: [], pgroup: 'kyber', gForm: null, gName: '', addOpen: null, histOpen: false,
+    hist: [
+      { icon: 'ph ph-plus-circle', col: 'var(--gr)', text: 'kyber-infra added to infra', by: 'The Captain', rel: '1 week ago', abs: 'Wed 18 Nov 2026, 11:02' },
+      { icon: 'ph ph-minus-circle', col: 'var(--rd)', text: 'homelab removed from perso', by: 'The Captain', rel: '2 weeks ago', abs: 'Wed 11 Nov 2026, 20:15' },
+      { icon: 'ph ph-plus-circle', col: 'var(--gr)', text: 'kyber-core added to kyber', by: 'proposed by Nav, accepted by the Captain', rel: '4 weeks ago', abs: 'Wed 28 Oct 2026, 09:31' }
+    ],
+    dlgOpen: false, dlgChoice: 'kyber', dlgName: '',
+    pw: true, pn: false, goalOpen: false, paused: false, remUndone: false, palOpen: false,
+    perm: { step: 3, cmd: 'simple', ans: null, started: false, reasonOpen: false },
+    notifOpen: false, mute: { w3: true }, answered: false };
+
+  pill(on) { return on ? ['color-mix(in srgb,var(--ac) 16%,transparent)', 'var(--tx)', 'var(--ac)'] : ['transparent', 'var(--mu)', 'var(--bd)']; }
+  groupName(k) { const g = this.state.groups.find((x) => x.k === k); return g ? g.name : k; }
+  item(id) {
+    const b = ITEMS.find((i) => i.id === id); if (!b) return null;
+    const o = this.state.ov[id] || {};
+    return { ...b, status: o.status || b.status, scope: o.scope || b.scope, sn: o.sn !== undefined ? o.sn : b.sn, pinned: o.pinned !== undefined ? o.pinned : !!b.pinned, decision: o.decision || b.decision, vs: [...b.vs, ...(o.extra || [])], supBy: o.supBy || b.supBy };
+  }
+  scopeLabel(it) { return it.scope === 'global' ? 'global' : it.scope === 'group' ? 'group · ' + this.groupName(it.sn) : it.scope === 'project' ? 'project · ' + it.sn : 'session · ' + it.sn; }
+  addVer(id, c, reason, o2, dec) {
+    const s = this.state, o = s.ov[id] || {}, cur = this.item(id);
+    const v = { c, by: 'The Captain', rel: 'just now', abs: NOW_ABS, sess: 'Memory page', reason, dec: dec || cur.decision };
+    return { ...s.ov, [id]: { ...o, ...(o2 || {}), extra: [...(o.extra || []), v] } };
+  }
+  act(msg, patch) {
+    const s = this.state, id = Date.now();
+    const snap = { ov: s.ov, nd: s.needsDone, pm: s.pm, hist: s.hist, ps: s.ps, groups: s.groups, np: s.newProjs };
+    this.setState({ ...patch, toast: { msg, snap, id } });
+    setTimeout(() => { if (this.state.toast && this.state.toast.id === id) this.setState({ toast: null }); }, 8000);
+  }
+  undo() {
+    const t = this.state.toast; if (!t) return; const n = t.snap;
+    this.setState({ ov: n.ov, needsDone: n.nd, pm: n.pm, hist: n.hist, ps: n.ps, groups: n.groups, newProjs: n.np, toast: null, form: null });
+  }
+  go(scr) { return () => this.setState({ scr, dlgOpen: scr === 'newproj', drawer: false, notifOpen: false, form: null }); }
+  allProjects() { return [...PROJECTS, ...this.state.newProjs]; }
+
+  // ---------- frame ----------
+  frameVals(st) {
+    const narrow = st.narrow, wide = !narrow;
+    const sessionScr = st.scr === 'session';
+    const cols = (narrow ? '200px minmax(0,1fr)' : '240px minmax(0,1fr)') + (sessionScr && wide && st.pw ? ' 340px' : '');
+    const frameStyle = `position:relative;width:${narrow ? 900 : 1440}px;height:860px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);display:grid;grid-template-columns:${cols};grid-template-rows:auto minmax(0,1fr);overflow:hidden`;
+    const needsLeft = st.data === 'normal' || st.data === 'loading' ? NEEDS.filter((n) => !st.needsDone[n.k]).length : 0;
+    const route = st.scr === 'memory' || st.scr === 'needs' ? '#/memory' : st.scr === 'projects' || st.scr === 'newproj' ? '#/projects' : '#/chat';
+    const navDef = [['Chat', 'ph ph-chat-circle-text', 'session', ['session', 'permission', 'notif']], ['Memory', 'ph ph-notebook', 'memory', ['memory']], ['Needs you', 'ph ph-hand-waving', 'needs', ['needs']], ['Projects', 'ph ph-folders', 'projects', ['projects', 'newproj']], ['Studio', 'ph ph-flow-arrow', null, []], ['Settings', 'ph ph-gear', null, []]];
+    const navItems = navDef.map(([label, icon, scr, ons]) => {
+      const on = ons.includes(st.scr), dis = !scr, badge = label === 'Needs you' ? needsLeft : 0;
+      return { label, icon, click: dis ? () => {} : this.go(scr), bg: on ? 'color-mix(in srgb,var(--ac) 14%,transparent)' : 'transparent', bd: on ? 'var(--ac)' : 'transparent', fg: 'var(--tx)', ic: on ? 'var(--at)' : 'var(--mu)', cur: dis ? 'default' : 'pointer', op: dis ? '.45' : '1', hasBadge: badge > 0, badge, badgeTip: badge + ' need you' };
+    });
+    const waits = this.waitList(st);
+    const wsDef = [['WithNav', ['s1', 's2']], ['kyber-core', ['s4', 's5']], ['homelab', ['s8']]];
+    const wsRows = wsDef.map(([name, ks]) => ({ name, count: ks.length, sessions: ks.map((k) => {
+      const s = SESS.find((x) => x.k === k), w = WAITS.find((x) => x.session === s.title), waiting = !!w && !(w.k === 'w1' && st.answered), cur = st.scr === 'session' && k === 's1';
+      return { title: s.title, meta: s.agent + ' · ' + s.rel, waiting, muted: !!w && !!st.mute[w.k], click: this.go('session'), bg: cur ? 'color-mix(in srgb,var(--ac) 14%,transparent)' : 'transparent', bd: cur ? 'var(--ac)' : 'transparent' };
+    }) }));
+    const n = waits.counted;
+    return { frameStyle, route, wsName: 'WithNav', navItems, wsRows, needsLeft,
+      waitLabel: n > 0 ? n + ' waiting' : 'Nothing waiting', waitBtn: `background:${n > 0 ? 'color-mix(in srgb,var(--or) 16%,transparent)' : 'transparent'};color:${n > 0 ? 'var(--tx)' : 'var(--mu)'};border:1px solid ${n > 0 ? 'var(--or)' : 'var(--bd)'};border-radius:5px;padding:3px 10px;font-size:12px;cursor:pointer;display:flex;gap:6px;align-items:center`,
+      waitRows: waits.rows, waitNone: waits.rows.length === 0, waitCountText: n + ' unmuted · ' + waits.rows.length + ' total', notifOpen: st.notifOpen && st.scr !== 'notif',
+      toggleNotif: () => this.setState((s) => ({ notifOpen: !s.notifOpen })), closeNotif: () => this.setState({ notifOpen: false }) };
+  }
+  waitList(st) {
+    const list = WAITS.filter((w) => !(w.k === 'w1' && st.answered));
+    const rows = list.map((w) => { const m = !!st.mute[w.k]; return { session: w.session, ws: w.ws, call: w.call, rel: w.rel, abs: w.abs, op: m ? '.6' : '1', muteIcon: m ? 'ph ph-bell-slash' : 'ph ph-bell', muteCol: m ? 'var(--mu)' : 'var(--tx)', muteTip: m ? 'Muted. Click to unmute' : 'Mute this session', muteNote: m ? 'Muted: no notification, not counted in the badge' : 'Notified once for this blocked turn', mute: () => this.setState((s) => ({ mute: { ...s.mute, [w.k]: !s.mute[w.k] } })) }; });
+    return { rows, counted: list.filter((w) => !st.mute[w.k]).length };
+  }
+
+  // ---------- memory ----------
+  memVals(st) {
+    const q = st.q.trim().toLowerCase();
+    const all = ITEMS.map((i) => this.item(i.id));
+    const scopeOn = Object.keys(st.fScope).filter((k) => st.fScope[k]), kindOn = Object.keys(st.fKind).filter((k) => st.fKind[k]);
+    const vis = all.filter((it) => it.status === st.fStatus && (!scopeOn.length || scopeOn.includes(it.scope)) && (!kindOn.length || kindOn.includes(it.kind)) && (st.fAuth === 'any' || it.auth === st.fAuth) && (!st.fPin || it.pinned) && (!q || (it.title + ' ' + it.decision + ' ' + it.why + ' ' + it.quote).toLowerCase().includes(q)));
+    const list = st.data === 'normal' ? vis : [];
+    const tint = 'color-mix(in srgb,var(--ac) 12%,transparent)';
+    const rows = list.map((it) => {
+      const a = AUTH[it.auth], k = KINDS[it.kind], last = it.vs[it.vs.length - 1], sup = it.status === 'superseded' && it.supBy, sel = st.sel === it.id;
+      const op = it.status === 'superseded' || it.status === 'expired' || it.status === 'invalidated' ? '.58' : it.auth === 'assumed' ? '.72' : '1';
+      return { title: it.title, kindIcon: k[0], kindLabel: k[1], scopeLabel: this.scopeLabel(it), scopeCol: SCOPE_COL[it.scope], authLabel: a[0], authCol: a[1], authIcon: a[2], authLine: a[3], authTip: a[4], showStatus: it.status !== 'active', status: it.status, stCol: STATUS[it.status][0], stBg: 'color-mix(in srgb,' + STATUS[it.status][0] + ' 14%,transparent)',
+        ver: 'v' + it.vs.length, rel: last.rel, abs: last.abs, sess: last.sess, seenN: it.seen, pin: it.pinned, op, deco: 'none', bg: sel ? tint : 'var(--pn)', bd: sel ? 'var(--ac)' : 'var(--bd)',
+        isSup: !!sup, supTitle: sup ? this.item(it.supBy).title : '', supClick: (e) => { e.stopPropagation(); this.setState({ sel: it.supBy, drawer: true }); },
+        click: () => this.setState({ sel: it.id, drawer: true, form: null, diff: [] }) };
+    });
+    const tog = (key, k) => () => this.setState((s) => ({ [key]: { ...s[key], [k]: !s[key][k] } }));
+    const scopeChips = SCOPES.map((k) => { const [bg, fg, bd] = this.pill(!!st.fScope[k]); return { label: k, bg, fg, bd, click: tog('fScope', k) }; });
+    const kindChips = Object.keys(KINDS).map((k) => { const [bg, fg, bd] = this.pill(!!st.fKind[k]); return { label: k, icon: KINDS[k][0], bg, fg, bd, click: tog('fKind', k) }; });
+    const statusChips = Object.keys(STATUS).map((k) => { const [bg, fg, bd] = this.pill(st.fStatus === k); return { label: k, n: all.filter((i) => i.status === k).length, bg, fg, bd, click: () => this.setState({ fStatus: k }) }; });
+    const authChips = [['any', 'any'], ['said', 'captain said'], ['accepted', 'captain accepted'], ['observed', 'observed'], ['assumed', 'assumed']].map(([k, label]) => { const [bg, fg, bd] = this.pill(st.fAuth === k); return { label, bg, fg, bd, click: () => this.setState({ fAuth: k }) }; });
+    const [pb, pf, pd] = this.pill(st.fPin);
+    const narrow = st.narrow;
+    const needsLeft = NEEDS.filter((n) => !st.needsDone[n.k]).length;
+    const d = this.detailVals(st);
+    return { isMem: st.scr === 'memory', memCount: st.data === 'normal' ? list.length + ' of ' + all.length + ' items' : '', needsBanner: st.data === 'normal' && needsLeft > 0, needsLabel: needsLeft + ' need you', goNeeds: this.go('needs'), q: st.q, onQ: (e) => this.setState({ q: e.target.value }),
+      togPin: () => this.setState((s) => ({ fPin: !s.fPin })), pinFilterStyle: `background:${pb};color:${pf};border:1px solid ${pd};border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;display:flex;gap:6px;align-items:center`,
+      scopeChips, kindChips, statusChips, authChips,
+      memGrid: narrow ? 'flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);position:relative' : 'flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 520px;position:relative',
+      memError: st.data === 'error', memLoading: st.data === 'loading', memEmpty: st.data === 'empty', memNoMatch: st.data === 'normal' && list.length === 0,
+      skRows: [{ w: '70%' }, { w: '55%' }, { w: '64%' }, { w: '48%' }, { w: '60%' }, { w: '52%' }],
+      clearFilters: () => this.setState({ q: '', fScope: {}, fKind: {}, fStatus: 'active', fAuth: 'any', fPin: false }),
+      retry: () => this.setState({ data: 'loading' }), rows, ...d };
+  }
+  detailVals(st) {
+    const it = st.data === 'normal' ? this.item(st.sel) : null, narrow = st.narrow;
+    const base = { hasDetail: !!it, detailStyle: narrow ? (st.drawer && it ? 'position:absolute;right:0;top:0;bottom:0;width:500px;z-index:7;border-left:1px solid var(--bd);background:var(--pn);overflow:auto;box-shadow:-14px 0 40px rgba(0,0,0,.35)' : 'display:none') : 'border-left:1px solid var(--bd);background:var(--pn);overflow:auto;min-height:0', drawerCloseDisp: narrow ? 'block' : 'none', closeDrawer: () => this.setState({ drawer: false }), stop: (e) => e.stopPropagation() };
+    if (!it) return { ...base, actions: [], timeline: [], relations: [], seenBy: [], formOpen: false, diffOn: false };
+    const a = AUTH[it.auth], last = it.vs.length;
+    const qBy = it.auth === 'said' ? 'said by the Captain' : it.auth === 'accepted' ? 'the Captain’s answer' : it.auth === 'observed' ? 'seen in a tool result' : 'Nav’s assumption, nobody said it';
+    const CHG = { created: 'var(--gr)', updated: 'var(--bl)', invalidated: 'var(--rd)', restored: 'var(--gr)', rescoped: 'var(--pu)' };
+    const timeline = it.vs.map((v, i) => ({ v, n: i + 1 })).reverse().map(({ v, n }, idx, arr) => {
+      const on = st.diff.includes(n), [pbg, pfg, pbd] = this.pill(on);
+      return { n: 'v' + n, change: v.c, col: CHG[v.c], dot: n === last ? CHG[v.c] : 'var(--bg)', line: idx === arr.length - 1 ? 'none' : 'block', rel: v.rel, abs: v.abs, by: v.by, sess: v.sess, reason: v.reason, pbg, pfg, pbd, pickLabel: on ? 'selected' : 'compare',
+        pick: () => this.setState((s) => { const d = s.diff.includes(n) ? s.diff.filter((x) => x !== n) : [...s.diff, n].slice(-2); return { diff: d }; }) };
+    });
+    const dd = st.diff.length === 2 ? [...st.diff].sort((x, y) => x - y) : null;
+    const decOf = (n) => { const v = it.vs[n - 1]; return v.dec || (n <= ITEMS.find((i) => i.id === it.id).vs.length ? ITEMS.find((i) => i.id === it.id).decision : it.decision); };
+    const rels = (ITEMS.find((i) => i.id === it.id).rels || []).map(([type, ref, tid]) => {
+      const target = tid === null ? null : this.item(ref);
+      return { type, col: type === 'conflicts with' ? 'var(--or)' : 'var(--mu)', label: target ? target.title : ref, hasClick: !!target, click: target ? () => this.setState({ sel: ref }) : () => {}, linkStyle: target ? '' : 'color:var(--tx)' };
+    });
+    rels.push({ type: 'scoped to', col: 'var(--mu)', label: this.scopeLabel(it), click: this.go(it.scope === 'global' ? 'memory' : 'projects'), linkStyle: '' });
+    if (it.status === 'superseded' && it.supBy && !rels.some((r) => r.type === 'superseded by')) rels.unshift({ type: 'superseded by', col: 'var(--mu)', label: this.item(it.supBy).title, click: () => this.setState({ sel: it.supBy }), linkStyle: '' });
+    const seenBy = Array.from({ length: Math.min(3, it.seen) }, (_, i) => { const p = POOL[(it.id.charCodeAt(9) + i) % POOL.length], why = it.pinned && i === 0 ? 'pinned' : i % 2 === 0 ? 'scope' : 'match'; return { sess: p[0], turn: p[1], why, col: why === 'pinned' ? 'var(--at)' : 'var(--tx)', rel: i === 0 ? '2 min ago' : i === 1 ? '3 hours ago' : '2 days ago', abs: NOW_ABS }; });
+    const f = st.form, can = (f === 'edit' ? st.fText.trim() && st.fReason.trim() : f === 'invalidate' ? st.fReason.trim() : st.fScopePick !== it.scope || it.scope === 'group');
+    const mkBtn = (label, icon, on, click, danger) => ({ label, icon, click: on ? click : () => {}, style: `background:transparent;color:${on ? (danger ? 'var(--rd)' : 'var(--tx)') : 'var(--mu)'};border:1px solid var(--bd);border-radius:5px;padding:4px 10px;font-size:12px;cursor:${on ? 'pointer' : 'default'};opacity:${on ? 1 : 0.45};display:flex;gap:6px;align-items:center` });
+    const canRestore = ['invalidated', 'expired', 'superseded'].includes(it.status), live = ['active', 'proposed'].includes(it.status);
+    const actions = [
+      mkBtn('Edit', 'ph ph-pencil-simple', live, () => this.setState({ form: 'edit', fText: it.decision, fReason: '' })),
+      mkBtn('Invalidate', 'ph ph-prohibit', live, () => this.setState({ form: 'invalidate', fReason: '' }), true),
+      mkBtn('Restore', 'ph ph-arrow-counter-clockwise', canRestore, () => this.act('Restored “' + it.title + '”', { ov: this.addVer(it.id, 'restored', 'Restored from the Memory page.', { status: 'active' }) })),
+      mkBtn('Change scope', 'ph ph-crosshair', live, () => this.setState({ form: 'scope', fReason: '', fScopePick: it.scope })),
+      mkBtn(it.pinned ? 'Unpin' : 'Pin', 'ph ph-push-pin', true, () => this.act((it.pinned ? 'Unpinned' : 'Pinned') + ' “' + it.title + '”', { ov: { ...st.ov, [it.id]: { ...(st.ov[it.id] || {}), pinned: !it.pinned } } })),
+      mkBtn('Copy id', 'ph ph-copy', true, () => { try { navigator.clipboard.writeText(it.id); } catch (e) {} this.act('Copied ' + it.id, {}); })
+    ];
+    const submit = () => {
+      if (!can) return; const r = st.fReason.trim();
+      if (f === 'edit') this.act('Saved a new version of “' + it.title + '”', { ov: this.addVer(it.id, 'updated', r, { decision: st.fText.trim() }, st.fText.trim()), form: null });
+      else if (f === 'invalidate') this.act('Invalidated “' + it.title + '”', { ov: this.addVer(it.id, 'invalidated', r, { status: 'invalidated' }), form: null });
+      else this.act('Rescoped “' + it.title + '” to ' + st.fScopePick, { ov: this.addVer(it.id, 'rescoped', r || 'Scope changed from the Memory page.', { scope: st.fScopePick, sn: st.fScopePick === 'global' ? undefined : st.fScopePick === 'group' ? 'kyber' : st.fScopePick === 'project' ? 'WithNav' : 'Refactor parser' }), form: null });
+    };
+    return { ...base, dScope: this.scopeLabel(it), dScopeCol: SCOPE_COL[it.scope], dAuth: a[0], dAuthCol: a[1], dAuthIcon: a[2], dAuthLine: a[3], dAuthTip: a[4], dStatus: it.status + (it.exp ? ' · ' + it.exp : ''), dStCol: STATUS[it.status][0], dStBg: 'color-mix(in srgb,' + STATUS[it.status][0] + ' 14%,transparent)', dVer: 'v' + last, dTitle: it.title, dId: it.id,
+      dDecision: it.decision, dWhy: it.why || 'not stated', dWhyCol: it.why && it.why !== 'not stated' ? 'var(--tx)' : 'var(--mu)', dQuote: it.quote, dQuoteBy: qBy.toUpperCase(), dQuoteSess: it.qs, dQuoteTurn: it.qt, dCat: it.cat, dHz: it.hz,
+      actions, timeline, diffOn: !!dd, diffHint: dd ? '' : st.diff.length === 1 ? 'pick one more' : 'select two versions to see a diff', diffAT: dd ? 'v' + dd[0] : '', diffBT: dd ? 'v' + dd[1] : '', diffA: dd ? decOf(dd[0]) : '', diffB: dd ? decOf(dd[1]) : '',
+      relations: rels, seenBy, seenMore: it.seen === 0 ? 'Never sent to Nav. A proposed item is not used until you accept it.' : it.seen > 3 ? '+ ' + (it.seen - 3) + ' more sessions' : '',
+      formOpen: !!f, formTitle: f === 'edit' ? 'Edit · creates v' + (last + 1) : f === 'invalidate' ? 'Invalidate · creates v' + (last + 1) : 'Change scope · creates v' + (last + 1), formHasText: f === 'edit', formHasScope: f === 'scope', fText: st.fText, fReason: st.fReason,
+      formScopes: SCOPES.map((k) => { const [bg, fg, bd] = this.pill(st.fScopePick === k); return { label: k, bg, fg, bd, click: () => this.setState({ fScopePick: k }) }; }),
+      onFText: (e) => this.setState({ fText: e.target.value }), onFReason: (e) => this.setState({ fReason: e.target.value }), reasonPh: f === 'scope' ? 'Reason (optional)' : 'Reason (required)',
+      submitLabel: f === 'edit' ? 'Save new version' : f === 'invalidate' ? 'Invalidate' : 'Change scope', submitStyle: `background:transparent;color:${can ? 'var(--at)' : 'var(--mu)'};border:1px solid ${can ? 'var(--ac)' : 'var(--bd)'};border-radius:5px;padding:4px 10px;font-size:12px;cursor:${can ? 'pointer' : 'default'};opacity:${can ? 1 : 0.5}`,
+      submit, submitForm: submit, cancelForm: () => this.setState({ form: null }), formNote: 'The previous version stays in the timeline.' };
+  }
+
+  // ---------- needs you ----------
+  needsVals(st) {
+    const left = NEEDS.filter((n) => !st.needsDone[n.k]);
+    const normal = st.data === 'normal';
+    const done = (n, status, verb, extraO) => {
+      const base = this.addVer(n.id, status === 'active' ? 'updated' : 'invalidated', status === 'active' ? 'Accepted by the Captain from Needs you.' : 'Rejected by the Captain from Needs you.', { status }, undefined);
+      return { ...base };
+    };
+    const needRows = normal ? left.map((n) => {
+      const it = this.item(n.id), a = AUTH[it.auth], k = KINDS[it.kind], editing = st.nEdit === n.k, old = n.old ? this.item(n.old) : null;
+      const reason = n.kind === 'group' ? (it.scope === 'global' ? 'Global scope' : 'Group scope') : n.kind === 'conflict' ? 'Conflicts with an active item' : n.kind === 'ok' ? 'You answered “ok”' : 'Extracted from the conversation';
+      const icon = n.kind === 'conflict' ? 'ph ph-git-diff' : n.kind === 'ok' ? 'ph ph-chat-circle-dots' : n.kind === 'group' ? 'ph ph-users-three' : 'ph ph-magic-wand';
+      const answer = (kind) => () => {
+        const o = { ...(kind === 'accept' ? { status: 'active' } : { status: 'invalidated' }) };
+        let ov = this.addVer(n.id, kind === 'accept' ? 'updated' : 'invalidated', kind === 'accept' ? (editing ? 'Accepted with edited wording.' : 'Accepted by the Captain from Needs you.') : 'Rejected by the Captain from Needs you.', { ...o, ...(editing && kind === 'accept' ? { decision: st.nText.trim() } : {}) }, editing && kind === 'accept' ? st.nText.trim() : undefined);
+        if (kind === 'accept' && old) { const oo = ov[old.id] || {}; ov = { ...ov, [old.id]: { ...oo, status: 'superseded', supBy: n.id, extra: [...(oo.extra || []), { c: 'updated', by: 'automatic', rel: 'just now', abs: NOW_ABS, sess: 'Needs you', reason: 'Superseded by “' + it.title + '”.', dec: old.decision }] } }; }
+        this.act((kind === 'accept' ? 'Accepted “' : 'Rejected “') + it.title + '”', { ov, needsDone: { ...st.needsDone, [n.k]: kind }, nEdit: null });
+      };
+      return { icon, reason, exp: it.exp, expAbs: it.expAbs, title: it.title, scopeCol: SCOPE_COL[it.scope], scopeLabel: this.scopeLabel(it), kindIcon: k[0], kindLabel: k[1], authLabel: a[0], authCol: a[1], authIcon: a[2], authLine: a[3], sess: it.vs[0].sess,
+        isConflict: n.kind === 'conflict', notConflict: n.kind !== 'conflict', isOk: n.kind === 'ok', decision: it.decision, quote: it.quote, qsess: it.qs + ' · ' + it.qt,
+        oldMeta: old ? 'active · v' + old.vs.length + ' · ' + this.scopeLabel(old) : '', oldDecision: old ? old.decision : '', oldQuote: old ? old.quote : '',
+        editing, accept: answer('accept'), acceptLabel: editing ? 'Accept edited' : 'Accept', acceptStyle: `background:color-mix(in srgb,var(--ac) 12%,transparent);color:var(--at);border:1px solid var(--ac);border-radius:5px;padding:4px 12px;font-size:12px;cursor:pointer;display:flex;gap:6px;align-items:center`,
+        edit: () => this.setState(editing ? { nEdit: null } : { nEdit: n.k, nText: it.decision }), editLabel: editing ? 'Cancel edit' : 'Edit then accept', reject: answer('reject'),
+        note: n.kind === 'group' ? 'Shared with every project in the group' : n.kind === 'conflict' ? 'You decide which one stays' : n.kind === 'ok' ? 'Confirm the exact words' : 'Stays proposed until you accept' };
+    }) : [];
+    return { isNeeds: st.scr === 'needs', needsCount: normal ? (left.length ? left.length + ' of 5 shown' : '') : '', goMem: this.go('memory'), needsError: st.data === 'error', needsLoading: st.data === 'loading', needsEmpty: st.data === 'empty' || (normal && left.length === 0),
+      proposedLink: st.data === 'empty' ? 'Nothing is remembered yet' : 'Browse proposed items in Memory', needRows, needsFoot: normal && left.length > 0, nText: st.nText, onNText: (e) => this.setState({ nText: e.target.value }),
+      ghostBorder: 'background:transparent;color:var(--tx);border:1px solid var(--bd);border-radius:5px;padding:4px 10px;font-size:12px;cursor:pointer' };
+  }
+
+  // ---------- projects ----------
+  projVals(st) {
+    const projs = this.allProjects(), normal = st.data === 'normal', empty = st.data === 'empty';
+    const groups = empty ? [] : st.groups;
+    const members = (gk) => projs.filter((p) => (st.pm[p.k] || []).includes(gk));
+    const itemsFor = (gk) => ITEMS.map((i) => this.item(i.id)).filter((i) => i.scope === 'group' && i.sn === gk && i.status === 'active').length;
+    const noGroup = projs.filter((p) => !(st.pm[p.k] || []).length);
+    const groupRows = normal || empty ? [...groups.map((g) => { const on = st.pgroup === g.k; return { name: g.name, icon: 'ph ph-stack', ic: on ? 'var(--at)' : 'var(--mu)', meta: members(g.k).length + ' projects · ' + itemsFor(g.k) + ' items', bg: on ? 'color-mix(in srgb,var(--ac) 12%,transparent)' : 'transparent', bd: on ? 'var(--ac)' : 'transparent', click: () => this.setState({ pgroup: g.k, addOpen: null }) }; }),
+      { name: 'No group', icon: 'ph ph-tray', ic: st.pgroup === '_none' ? 'var(--at)' : 'var(--mu)', meta: noGroup.length + ' projects · nothing shared', bg: st.pgroup === '_none' ? 'color-mix(in srgb,var(--ac) 12%,transparent)' : 'transparent', bd: st.pgroup === '_none' ? 'var(--ac)' : 'transparent', click: () => this.setState({ pgroup: '_none', addOpen: null }) }] : [];
+    const curG = st.pgroup === '_none' ? null : st.groups.find((g) => g.k === st.pgroup);
+    const show = normal && (st.pgroup === '_none' || !!curG);
+    const list = st.pgroup === '_none' ? noGroup : members(st.pgroup);
+    const hist = (text, icon, col) => ({ icon, col, text, by: 'The Captain', rel: 'just now', abs: NOW_ABS });
+    const projCards = show ? list.map((p) => {
+      const mine = st.pm[p.k] || [], open = st.addOpen === p.k, opts = st.groups.filter((g) => !mine.includes(g.k));
+      const sessions = SESS.filter((s) => st.ps[s.k] === p.k).map((s) => ({ title: s.title, agent: s.agent, agentCol: 'var(--nav)', status: s.status, dot: s.status === 'waiting for you' ? 'var(--or)' : s.status === 'running' ? 'var(--gr)' : 'var(--mu)', rel: s.rel, abs: s.abs,
+        detach: () => this.act('Detached “' + s.title + '” from ' + p.name, { ps: { ...st.ps, [s.k]: null }, hist: [hist('“' + s.title + '” detached from ' + p.name, 'ph ph-link-break', 'var(--rd)'), ...st.hist] }) }));
+      return { name: p.name, path: p.path, trees: p.trees.map(([path, branch]) => ({ path, branch })), sessions, noSess: sessions.length === 0, noGroup: mine.length === 0, addOpen: open, noOpts: opts.length === 0, toggleAdd: () => this.setState({ addOpen: open ? null : p.k }),
+        groups: mine.map((gk) => ({ name: this.groupName(gk), remove: () => this.act(p.name + ' removed from ' + this.groupName(gk), { pm: { ...st.pm, [p.k]: mine.filter((x) => x !== gk) }, hist: [hist(p.name + ' removed from ' + this.groupName(gk), 'ph ph-minus-circle', 'var(--rd)'), ...st.hist] }) })),
+        addOpts: opts.map((g) => ({ name: g.name, click: () => this.act(p.name + ' added to ' + g.name, { pm: { ...st.pm, [p.k]: [...mine, g.k] }, addOpen: null, hist: [hist(p.name + ' added to ' + g.name, 'ph ph-plus-circle', 'var(--gr)'), ...st.hist] }) })) };
+    }) : [];
+    const loose = SESS.filter((s) => !st.ps[s.k]);
+    const looseRows = loose.map((s) => ({ title: s.title, status: s.status, opts: projs.slice(0, 3).map((p) => ({ name: p.name, click: () => this.act('Attached “' + s.title + '” to ' + p.name, { ps: { ...st.ps, [s.k]: p.k }, hist: [hist('“' + s.title + '” attached to ' + p.name, 'ph ph-link', 'var(--gr)'), ...st.hist] }) })) }));
+    const dlgOpts = [...st.groups.map((g) => ({ k: g.k, name: g.name, meta: members(g.k).length + ' projects' })), { k: '__new', name: 'New group…', meta: '' }, { k: '__none', name: 'No group', meta: 'only this project’s items' }].map((o) => { const on = st.dlgChoice === o.k; return { name: o.name, meta: o.meta, bg: on ? 'color-mix(in srgb,var(--ac) 10%,transparent)' : 'transparent', bd: on ? 'var(--ac)' : 'var(--bd)', ring: on ? 'var(--ac)' : 'var(--mu)', dot: on ? 'var(--ac)' : 'transparent', click: () => this.setState({ dlgChoice: o.k }) }; });
+    const saveDlg = () => {
+      const c = st.dlgChoice, nm = st.dlgName.trim();
+      if (c === '__new' && !nm) return;
+      let groups2 = st.groups, gk = c === '__none' ? null : c;
+      if (c === '__new') { gk = 'g' + Date.now(); groups2 = [...st.groups, { k: gk, name: nm }]; }
+      const proj = { k: 'nsite', name: 'navai-site', path: '~/dev/navai-site', g: [], trees: [['~/dev/navai-site', 'main']] };
+      const exists = st.newProjs.some((p) => p.k === 'nsite');
+      this.act('navai-site added' + (gk ? ' to ' + (c === '__new' ? nm : this.groupName(gk)) : ' without a group'), { groups: groups2, newProjs: exists ? st.newProjs : [...st.newProjs, proj], pm: { ...st.pm, nsite: gk ? [gk] : [] }, pgroup: gk || '_none', dlgOpen: false, scr: 'projects', hist: [hist('navai-site added' + (gk ? ' to ' + (c === '__new' ? nm : this.groupName(gk)) : ' with no group'), 'ph ph-plus-circle', 'var(--gr)'), ...st.hist] });
+    };
+    return { isProj: st.scr === 'projects' || st.scr === 'newproj', projCols: st.narrow ? '190px minmax(0,1fr)' : '230px minmax(0,1fr)', projInner: st.narrow ? '1fr' : '1fr 1.4fr',
+      newGroup: () => this.setState({ gForm: 'create', gName: '' }), gForm: !!st.gForm, gName: st.gName, onGName: (e) => this.setState({ gName: e.target.value }), gPh: st.gForm === 'rename' ? 'New name' : 'Group name',
+      gSave: () => { const nm = st.gName.trim(); if (!nm) return; if (st.gForm === 'create') this.act('Created group ' + nm, { groups: [...st.groups, { k: 'g' + Date.now(), name: nm }], gForm: null, hist: [hist('group ' + nm + ' created', 'ph ph-plus-circle', 'var(--gr)'), ...st.hist] }); else this.act('Renamed ' + this.groupName(st.pgroup) + ' to ' + nm, { groups: st.groups.map((g) => g.k === st.pgroup ? { ...g, name: nm } : g), gForm: null, hist: [hist('group ' + this.groupName(st.pgroup) + ' renamed to ' + nm, 'ph ph-pencil-simple', 'var(--bl)'), ...st.hist] }); },
+      groupRows, projError: st.data === 'error', projLoading: st.data === 'loading', projEmpty: empty, projShow: show,
+      gTitle: curG ? curG.name : 'No group', gSub: show ? list.length + ' projects' : '', gCanRename: !!curG, renameGroup: () => this.setState({ gForm: 'rename', gName: curG ? curG.name : '' }), openDlg: () => this.setState({ dlgOpen: true }),
+      gMemNote: curG ? itemsFor(curG.k) + ' active items are scoped to ' + curG.name + ' and shared with its projects. Global items are shared everywhere.' : 'These projects share only global items. Group them to share more.', goMem: this.go('memory'),
+      projCards, looseShow: show && looseRows.length > 0, looseRows, chipBtn: 'background:transparent;color:var(--tx);border:1px solid var(--bd);border-radius:11px;padding:1px 9px;font-size:11.5px;cursor:pointer',
+      toggleHist: () => this.setState((s) => ({ histOpen: !s.histOpen })), histOpen: st.histOpen, histCaret: st.histOpen ? 'ph ph-caret-down' : 'ph ph-caret-right', histCount: st.hist.length, histRows: st.hist,
+      dlgOpen: st.dlgOpen && (st.scr === 'projects' || st.scr === 'newproj'), closeDlg: () => this.setState({ dlgOpen: false }), dlgOpts, dlgNew: st.dlgChoice === '__new', dlgName: st.dlgName, onDlgName: (e) => this.setState({ dlgName: e.target.value }), saveDlg };
+  }
+
+  // ---------- session ----------
+  sessVals(st) {
+    const narrow = st.narrow, sess = st.scr === 'session';
+    const panelStyle = !sess ? 'display:none' : narrow ? (st.pn ? 'position:absolute;right:0;top:41px;bottom:0;width:340px;z-index:7;border-left:1px solid var(--bd);background:var(--pn);overflow:auto;box-shadow:-14px 0 40px rgba(0,0,0,.35)' : 'display:none') : (st.pw ? 'border-left:1px solid var(--bd);background:var(--pn);overflow:auto;min-height:0' : 'display:none');
+    const noGoal = st.data === 'empty', open = narrow ? st.pn : st.pw;
+    const [pb, pf, pd] = this.pill(open);
+    const crit = [['1', 'cargo clippy has no warnings', 'ph ph-check-circle', 'var(--gr)', 'supported', 'Evidence: cargo clippy --all-targets exited 0 at 22:11, 0 warnings.'], ['2', 'Windows CI passes', 'ph ph-x-circle', 'var(--rd)', 'contradicted', 'Evidence: cargo test exited 101 on windows-latest at 22:16.'], ['3', 'Config::load keeps its public signature', 'ph ph-circle-dashed', 'var(--mu)', 'not checked', 'Not checked yet. It is verified when a diff touches src/config.rs.']];
+    const sentDef = [['mem_01KB2R', 'scope: global · pinned'], ['mem_01KE9A', 'scope: project WithNav · pinned'], ['mem_01KD7H', 'scope: project WithNav'], ['mem_01KS4N', 'scope: this session'], ['mem_01KG5C', 'match: “cargo test” in your message']];
+    const sentRows = sentDef.map(([id, why], i) => { const it = this.item(id), a = AUTH[it.auth]; return { title: it.title, auth: a[0], authCol: a[1], authLine: a[3], scope: it.scope === 'global' ? 'global' : it.scope === 'session' ? 'session' : it.scope + ' · ' + it.sn, why, top: i === 0 ? 'none' : '1px solid var(--bd)' }; });
+    const pal = [{ label: 'MEMORY', items: [{ cmd: '/remember', desc: 'Write an item now. It is active at once.', bg: 'color-mix(in srgb,var(--ac) 10%,transparent)' }, { cmd: '/forget', desc: 'Invalidate an item. Asks for a reason, keeps the history.', bg: 'transparent' }, { cmd: '/memory', desc: 'Open the Memory page.', bg: 'transparent' }] }, { label: 'GOAL', items: [{ cmd: '/goal', desc: 'Set or change the goal and its criteria for this session.', bg: 'transparent' }] }, { label: 'SESSION', items: [{ cmd: '/model', desc: 'Pick a model for this session.', bg: 'transparent' }, { cmd: '/agent', desc: 'Switch between build and plan.', bg: 'transparent' }] }];
+    return { isSess: sess, panelStyle, panelCloseDisp: narrow ? 'block' : 'none', togPanel: () => this.setState((s) => s.narrow ? { pn: !s.pn } : { pw: !s.pw }), panelBtn: `margin-left:auto;background:${pb};color:${pf};border:1px solid ${pd};border-radius:5px;padding:3px 10px;font-size:12px;cursor:pointer;display:flex;gap:6px;align-items:center`,
+      goalNone: noGoal, goalOn: !noGoal, goalClamp: st.goalOpen ? '' : 'display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden', togGoal: () => this.setState((s) => ({ goalOpen: !s.goalOpen })), goalMore: st.goalOpen ? 'Show less' : 'Show more',
+      togPaused: () => this.setState((s) => ({ paused: !s.paused })), pausedLabel: st.paused ? 'paused' : 'active', pausedStyle: `background:transparent;color:${st.paused ? 'var(--or)' : 'var(--gr)'};border:1px solid ${st.paused ? 'var(--or)' : 'var(--gr)'};border-radius:11px;padding:0 9px;font-size:11.5px;cursor:pointer`,
+      criteria: crit.map(([n, text, icon, col, state, tip], i) => ({ n, text, icon, col, state, tip, top: i === 0 ? 'none' : '1px solid var(--bd)' })), sentRows,
+      remLine: st.remUndone ? 'Removed from memory: “Passive goal notes stay off until the shadow results show they are useful”' : 'Remembered: “Passive goal notes stay off until the shadow results show they are useful”', remAct: st.remUndone ? 'redo' : 'undo', togRem: () => this.setState((s) => ({ remUndone: !s.remUndone })),
+      togPal: () => this.setState((s) => ({ palOpen: !s.palOpen })), palOpen: st.palOpen && sess, palGroups: pal };
+  }
+
+  // ---------- permission ----------
+  permVals(st) {
+    const p = st.perm, c = CMDS[p.cmd], prot = p.cmd === 'protected';
+    const step = prot ? 0 : p.step, ans = p.ans || (step === 4 ? 'allow' : null);
+    const closed = step === 2, started = p.started;
+    const badge = ans ? ['Answered', 'color-mix(in srgb,var(--gr) 16%,transparent)', 'var(--gr)', 'ph ph-check'] : prot ? ['Protected', 'color-mix(in srgb,var(--rd) 14%,transparent)', 'var(--rd)', 'ph ph-lock-simple'] : step === 3 ? ['Waiting for you', 'color-mix(in srgb,var(--or) 18%,transparent)', 'var(--or)', 'ph ph-hand-waving'] : ['Asked', 'color-mix(in srgb,var(--mu) 16%,transparent)', 'var(--mu)', 'ph ph-question'];
+    let review = null;
+    if (!prot) review = ans ? (step === 3 ? ['Review had asked you to wait', 'var(--mu)', 'ph ph-clock'] : step === 5 ? ['No review; your call', 'var(--mu)', 'ph ph-minus-circle'] : ['Review cancelled', 'var(--mu)', 'ph ph-prohibit']) : step === 1 ? ['Metacognition reviewing…', 'var(--tx)', 'ph ph-circle-notch spin'] : step === 3 ? ['Review says wait', 'var(--or)', 'ph ph-clock'] : step === 5 ? ['No review; your call', 'var(--mu)', 'ph ph-minus-circle'] : null;
+    const results = { allow: ['ph ph-check-circle', 'var(--gr)', 'Allowed once by you', started ? 'The call had already started when you answered. Nothing was changed or undone.' : 'The call is running.'], always: ['ph ph-check-circle', 'var(--gr)', 'Always allowed for this folder', 'Saved as a permission rule for ~/.config/opencode. You can remove it in Settings.'], deny: ['ph ph-prohibit', 'var(--rd)', 'Rejected by you', started ? 'Already started when you answered. The call was not undone.' : 'Nav is told the call was refused.'], hold: ['ph ph-pause-circle', 'var(--or)', 'On hold', started ? 'The call had already started when you answered. Hold does not stop it or undo it.' : 'Nav is paused on this call. Answer when you are ready.'] };
+    const res = ans ? results[ans] : null;
+    const set = (a) => () => this.setState((s) => ({ perm: { ...s.perm, ans: a } }));
+    const steps = [[1, '1 · Asked, reviewing'], [2, '2 · Allowed by review'], [3, '3 · Review says wait'], [4, '4 · Captain first'], [5, '5 · No review']];
+    const stepChips = steps.map(([k, label]) => { const [bg, fg, bd] = this.pill(step === k && !prot); return { label, bg, fg, bd, click: () => this.setState((s) => ({ perm: { ...s.perm, step: k, ans: null, reasonOpen: false, cmd: s.perm.cmd === 'protected' ? 'simple' : s.perm.cmd } })) }; });
+    const cmdChips = [['simple', 'Simple call'], ['compound', 'Compound line'], ['protected', 'Protected call']].map(([k, label]) => { const [bg, fg, bd] = this.pill(p.cmd === k); return { label, bg, fg, bd, click: () => this.setState((s) => ({ perm: { ...s.perm, cmd: k, ans: null } })) }; });
+    const [sb, sf, sd] = this.pill(started);
+    const open = p.reasonOpen;
+    const notes = { 0: 'Protected calls are never reviewed. Only the Captain can answer, and no notification text carries the arguments.', 1: 'The Captain and Metacognition are asked at once. The first decisive answer wins. The buttons stay active the whole time.', 2: 'Review allowed the call and the Captain was away. The card closes; the transcript keeps a compact record.', 3: 'Review says wait. The card stays open with the reasoning above the buttons, and a notification goes out if the Captain is not looking.', 4: 'The Captain answered first. The review line becomes “Review cancelled”.', 5: 'The review timed out or failed. Nothing is implied; the Captain decides.' };
+    const navLine = closed ? 'Backups removed. Moving on to the clippy fixes.' : ans === 'deny' ? 'Understood. I’ll leave those files alone and fix the warnings.' : ans === 'hold' ? 'Waiting for your answer before I continue.' : ans ? 'Running it now.' : 'Waiting for an answer on this call before I continue.';
+    return { isPerm: st.scr === 'permission', stepChips, cmdChips, togStarted: () => this.setState((s) => ({ perm: { ...s.perm, started: !s.perm.started } })), startedStyle: `background:${sb};color:${sf};border:1px solid ${sd};border-radius:11px;padding:2px 10px;font-size:12px;cursor:pointer;margin-left:8px`, resetPerm: () => this.setState((s) => ({ perm: { ...s.perm, ans: null, reasonOpen: false } })), stepNote: notes[step],
+      cardOpenLook: !closed, cardBd: step === 3 && !ans ? 'var(--or)' : 'var(--bd)', cardOp: ans ? '.92' : '1', badgeOn: true, badgeText: badge[0], badgeBg: badge[1], badgeFg: badge[2], badgeIcon: badge[3], cardTime: '22:14',
+      cmdFull: c.full, partsHead: c.parts.length > 1 ? 'SPLIT INTO ' + c.parts.length + ' COMMANDS · explanation only' : 'WHAT IT DOES', partsNote: 'The call runs, or is refused, as a whole.',
+      parts: c.parts.map((x) => ({ cmd: x.cmd, dest: x.dest, redir: x.redir, hasRedir: !!x.redir, consequence: x.consequence, culprit: x.culprit && c.parts.length > 1 || (x.culprit && prot), rule: x.culprit ? 'var(--or)' : 'var(--bd)', bg: x.culprit ? 'color-mix(in srgb,var(--or) 9%,transparent)' : 'transparent', cqCol: x.culprit ? 'var(--tx)' : 'var(--mu)' })),
+      reviewLineOn: !!review && !closed, reviewText: review ? review[0] : '', reviewCol: review ? review[1] : '', reviewIcon: review ? review[2] : '', reviewIconStyle: 'font-size:14px',
+      reasonOn: step === 3 && !prot, reasonRule: 'var(--or)', reasonText: step === 2 ? c.allow : c.wait, reasonBody: true, reasonToggleDisp: 'none', reasonToggle: open ? 'Hide reasoning' : 'Show reasoning', togReason: () => this.setState((s) => ({ perm: { ...s.perm, reasonOpen: !s.perm.reasonOpen } })),
+      btnsOn: !ans && step !== 2 && step !== 4, pAllow: set('allow'), alwaysOn: !prot, pAlways: set('always'), pDeny: set('deny'), pHold: set('hold'),
+      resultOn: !!res, resultIcon: res ? res[0] : '', resultCol: res ? res[1] : '', resultText: res ? (step === 4 && !p.ans ? 'Allowed once by you · 22:14' : res[2]) : '', resultSub: res ? (step === 4 && !p.ans ? 'You answered before the review finished, so the review was cancelled.' : res[3]) : '',
+      finePrint: prot ? 'Protected: only you can answer. Credentials and WithNav’s own config are never reviewed, never allowed by Metacognition, and never covered by an “always” rule.' : 'Metacognition can allow once or ask you to wait. It can never allow “always”. Memory is not a permission.',
+      recordOn: closed, recordCmd: c.short, recordWhy: open ? c.allow : '', navLine };
+  }
+
+  // ---------- notifications ----------
+  notifVals(st) {
+    const [ab, af, ad] = this.pill(st.answered);
+    return { isNotif: st.scr === 'notif', notifCols: st.narrow ? '1fr' : '380px minmax(0,1fr)', togAnswered: () => this.setState((s) => ({ answered: !s.answered })), answeredLabel: st.answered ? 'Card answered on laptop · reset' : 'Simulate: answer the card on another device',
+      answeredStyle: `margin-left:auto;background:${ab};color:${af};border:1px solid ${ad};border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap`, osOpen: !st.answered, osClosed: st.answered };
+  }
+
+  renderVals() {
+    const st = this.state, c = { ...TH[st.th][2], ...(st.th.endsWith('Dark') ? CREW.dark : CREW.light) };
+    const themeVars = Object.keys(c).map((k) => `--${k}:${c[k]}`).join(';');
+    const curF = st.th.replace(/(Dark|Light)$/, ''), curD = st.th.endsWith('Dark');
+    const tSty = (on) => ({ bg: on ? 'color-mix(in srgb,var(--ac) 18%,transparent)' : 'transparent', fg: on ? 'var(--tx)' : 'var(--mu)' });
+    const themeFams = [...new Set(Object.keys(TH).map((k) => k.replace(/(Dark|Light)$/, '')))].map((f) => ({ label: f[0].toUpperCase() + f.slice(1), ...tSty(f === curF), click: () => this.setState({ th: f + (curD ? 'Dark' : 'Light') }) }));
+    const themeModes = [['Dark', true], ['Light', false]].map(([l, d]) => ({ label: l, ...tSty(d === curD), click: () => this.setState({ th: curF + l }) }));
+    const sc = [['memory', 'ph ph-notebook', 'Memory'], ['needs', 'ph ph-hand-waving', 'Needs you'], ['projects', 'ph ph-folders', 'Projects'], ['newproj', 'ph ph-folder-simple-plus', 'New-project question'], ['session', 'ph ph-chat-circle-text', 'Session'], ['permission', 'ph ph-shield-warning', 'Permission card'], ['notif', 'ph ph-bell-ringing', 'Notifications']];
+    const screens = sc.map(([k, icon, label]) => { const on = st.scr === k; return { label, icon, click: this.go(k), bg: on ? 'color-mix(in srgb,var(--ac) 16%,transparent)' : 'transparent', fg: on ? 'var(--tx)' : 'var(--mu)', bd: on ? 'var(--ac)' : 'var(--bd)' }; });
+    const dataOpts = [['normal', 'Normal'], ['empty', 'Empty'], ['loading', 'Loading'], ['error', 'Error']].map(([k, label]) => ({ label, ...tSty(st.data === k), click: () => this.setState({ data: k }) }));
+    const widthOpts = [[false, 'Wide 1440'], [true, 'Narrow 900']].map(([k, label]) => ({ label, ...tSty(st.narrow === k), click: () => this.setState({ narrow: k, drawer: false }) }));
+    const common = { themeVars, themeFams, themeModes, screens, dataOpts, widthOpts, screenNote: NOTES[st.scr], outBtn: 'background:transparent;color:var(--at);border:1px solid var(--ac);border-radius:5px;padding:4px 10px;font-size:12px;cursor:pointer;display:inline-flex;gap:6px;align-items:center', ghostBtn: 'background:transparent;color:var(--mu);border:1px solid transparent;border-radius:5px;padding:4px 10px;font-size:12px;cursor:pointer',
+      toastOn: !!st.toast, toastMsg: st.toast ? st.toast.msg : '', undo: () => this.undo() };
+    return { ...common, ...this.frameVals(st), ...this.memVals(st), ...this.needsVals(st), ...this.projVals(st), ...this.sessVals(st), ...this.permVals(st), ...this.notifVals(st), notifOpen: st.notifOpen && st.scr !== 'notif' };
+  }
+}
+</script>
+</body>
+</html>

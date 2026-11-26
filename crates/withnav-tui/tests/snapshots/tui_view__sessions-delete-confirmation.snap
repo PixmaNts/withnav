@@ -18,14 +18,14 @@ expression: snapshot
                      │                    │▌enter/esc · Delete this session and its 1 subagent sessions? This cannot │      │ LEDGER                            
                      │                    │ Fix parser  ·  2026-10-02  ·  child                                      │      │  —                                
                      │                    │                                                                          │      │                                   
-                     │                    │ enter delete permanently  esc cancel                                     │      │ SKILLS · MCP · PLUGINS            
-                     │                    └──────────────────────────────────────────────────────────────────────────┘      │  skills                         — 
+                     │                    │ enter delete permanently  esc cancel                                     │      │ MEMORY                            
+                     │                    └──────────────────────────────────────────────────────────────────────────┘      │  —                                
+                     │                                                                                                      │                                   
+                     │                                                                                                      │ SKILLS · MCP · PLUGINS            
+                     │                                                                                                      │  skills                         — 
                      │                                                                                                      │  mcp                            — 
                      │                                                                                                      │                                   
                      │                                                                                                      │ LAYERS                            
-                     │                                                                                                      │  ● nav  idle                      
-                     │                                                                                                      │                                   
-                     │                                                                                                      │                                   
                      │──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                      │ ready                                                                                                                      session — tok 
                      │┌ Message ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐

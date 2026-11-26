@@ -10,9 +10,17 @@ import type {
   ImageRef,
   IntentBody,
   LayerEntry,
+  MembershipChange,
+  MemoryFilter,
+  MemoryGroup,
+  MemoryItem,
+  MemoryItemDetail,
+  MemoryProject,
   McpResourceBody,
   McpStatus,
   ModelEntry,
+  ProjectsBody,
+  SessionLedger,
   SessionListEntry,
   SessionSummary,
   SecretView,
@@ -42,6 +50,7 @@ export const api = {
     get<AgentsBody>(`/v1/agents?workspace=${q(workspace)}${sessionId ? `&session_id=${q(sessionId)}` : ""}`),
   commands: () => get<{ commands: CommandInfo[] }>("/v1/commands").then((b) => b.commands ?? []),
   skills: (id: string) => get<SkillsBody>(`/v1/sessions/${q(id)}/skills`),
+  ledger: (id: string) => get<SessionLedger>(`/v1/sessions/${q(id)}/ledger`),
   context: (id: string) => get<ContextSnapshot>(`/v1/sessions/${q(id)}/context`),
   layers: (workspace: string) => get<{ layers: LayerEntry[] }>(`/v1/layers?workspace=${q(workspace)}`).then((b) => b.layers ?? []),
   /** The service's MCP servers; the live `mcp.status` event carries the same body. */
@@ -92,4 +101,32 @@ export const api = {
   revokeSecret: (id: string, name: string) => del<void>(`/v1/sessions/${q(id)}/secrets/${q(name)}`),
   answerPermission: (id: string, requestId: string, decision: "allow_once" | "allow_always" | "reject", message?: string) =>
     post<{ accepted: boolean }>(`/v1/sessions/${q(id)}/permissions/${q(requestId)}`, message ? { decision, message } : { decision }),
+
+  // ---- memory register ----
+  memoryItems: (filter: MemoryFilter = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filter)) if (value !== undefined && value !== "") params.set(key, String(value));
+    const query = params.toString();
+    return get<{ items: MemoryItem[] }>(`/v1/memory${query ? `?${query}` : ""}`).then((b) => b.items ?? []);
+  },
+  memoryItem: (id: string) => get<MemoryItemDetail>(`/v1/memory/${q(id)}`),
+  reviseMemory: (id: string, body: { expected_version: number; text?: string; title?: string; why?: string; reason?: string }) =>
+    post<MemoryItem>(`/v1/memory/${q(id)}/revise`, body),
+  invalidateMemory: (id: string, body: { expected_version: number; reason?: string }) => post<MemoryItem>(`/v1/memory/${q(id)}/invalidate`, body),
+  restoreMemory: (id: string, body: { expected_version: number; from_version?: number; reason?: string }) =>
+    post<MemoryItem>(`/v1/memory/${q(id)}/restore`, body),
+  rescopeMemory: (id: string, body: { expected_version: number; scope: string; scope_ref?: string; confirm?: boolean; reason?: string }) =>
+    post<MemoryItem>(`/v1/memory/${q(id)}/rescope`, body),
+  needsYou: () => get<{ changes: MembershipChange[] }>("/v1/memory/needs-you").then((b) => b.changes ?? []),
+  decideChange: (id: number, decision: "accept" | "reject") => post<MembershipChange>(`/v1/memory/needs-you/${id}/${decision}`),
+  projects: () => get<ProjectsBody>("/v1/projects"),
+  createGroup: (name: string) => post<MemoryGroup>("/v1/groups", { name }),
+  renameGroup: (id: string, name: string) => request<MemoryGroup>(`/v1/groups/${q(id)}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  /** `confirm: false` is refused with the affected projects when the addition widens who reads the group's items. */
+  addProjectToGroup: (project: string, group: string, confirm: boolean) =>
+    put<MembershipChange>(`/v1/projects/${q(project)}/groups/${q(group)}`, { confirm }),
+  removeProjectFromGroup: (project: string, group: string) => del<MembershipChange>(`/v1/projects/${q(project)}/groups/${q(group)}`),
+  /** A project id attaches the session; `null` detaches it. The link stays in history either way. */
+  sessionProject: (session: string, project: string | null) => put<MembershipChange>(`/v1/sessions/${q(session)}/project`, { project_id: project }),
+  answerGroup: (project: string, body: { group_id: string | null; later?: boolean }) => post<MemoryProject>(`/v1/projects/${q(project)}/group-answer`, body),
 };

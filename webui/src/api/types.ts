@@ -289,3 +289,162 @@ export interface SecretView {
   use_count: number;
   last4: string;
 }
+
+// ---------- memory register (`src/server/memory.rs`, `withnav-client-api/src/memory.rs`) ----------
+
+export type MemoryScope = "global" | "group" | "project" | "session";
+export type MemoryKind = "decision" | "convention" | "preference" | "environment" | "pitfall";
+export type MemoryStatus = "active" | "proposed" | "invalidated" | "rejected";
+
+export interface MemoryVersion {
+  version: number;
+  change: "created" | "updated" | "invalidated" | "restored" | "rescoped" | string;
+  title: string;
+  body: string;
+  why: string | null;
+  quote: string | null;
+  scope: MemoryScope;
+  /** Empty for a global item; a group id, a project id or a session id otherwise. */
+  scope_ref: string;
+  source_actor: string;
+  drafted_by: string;
+  confirmed_by: string | null;
+  source_session_id: string | null;
+  source_event_seq: number | null;
+  reason: string | null;
+  at: string;
+}
+
+export interface MemoryItem {
+  id: string;
+  kind: MemoryKind | string;
+  scope: MemoryScope;
+  scope_ref: string;
+  status: MemoryStatus | string;
+  current_version: number;
+  pinned: boolean;
+  created_at: string;
+  updated_at: string;
+  current: MemoryVersion;
+}
+
+export interface MemoryItemDetail extends MemoryItem {
+  /** Oldest first. */
+  versions: MemoryVersion[];
+}
+
+export interface MemoryFilter {
+  /** The items eligible for this session (active ones unless `status` is set). */
+  session?: string;
+  scope?: MemoryScope;
+  kind?: MemoryKind;
+  status?: MemoryStatus;
+  scope_ref?: string;
+  limit?: number;
+}
+
+export interface MemorySessionLink {
+  session_id: string;
+  project_id: string;
+  /** False once detached: the link stays as history. */
+  active: boolean;
+}
+
+export interface MemoryProject {
+  id: string;
+  name: string;
+  /** False while the new-project group question is open. */
+  group_answered: boolean;
+  /** Group ids. */
+  groups: string[];
+  /** Other names the project is known by (repository paths). */
+  aliases: string[];
+  sessions: MemorySessionLink[];
+}
+
+export interface MemoryGroup {
+  id: string;
+  name: string;
+  /** Project ids. */
+  members: string[];
+  /** Active items scoped to the group. */
+  items: number;
+}
+
+export interface MembershipChange {
+  id: number;
+  relation: "project_group" | "session_project";
+  project_id: string;
+  group_id?: string;
+  linked_session_id?: string;
+  change: "add" | "remove" | string;
+  status: "applied" | "proposed" | "rejected" | string;
+  actor: string;
+  session_id: string | null;
+  at: string;
+  decided_at: string | null;
+}
+
+export interface ProjectsBody {
+  projects: MemoryProject[];
+  groups: MemoryGroup[];
+  history: MembershipChange[];
+}
+
+/** 409 body of a write that would let more projects read an item or group. */
+export interface WideningBody {
+  reason: "widening_requires_confirmation";
+  affected_projects: MemoryProject[];
+}
+
+// ---------- session ledger (`GET /v1/sessions/{id}/ledger`, `withnav-client-api/src/ledger.rs`) ----------
+
+export type CriterionStatus = "supported" | "contradicted" | "not_checked";
+export type ClaimStatus = "supported" | "contradicted" | "unverified";
+
+export interface CriterionCheck {
+  /** Numbered from 1, like the goal's criteria. */
+  index: number;
+  status: CriterionStatus;
+  /** A quote of the ledger line the status rests on; may be empty. */
+  evidence: string;
+}
+
+export interface ClaimCheck {
+  claim: string;
+  status: ClaimStatus;
+  evidence: string;
+}
+
+/** The last finished goal check of the goal's current revision. */
+export interface GoalCheck {
+  revision: number;
+  /** The turn whose end started the check; a ULID, so it carries the time. */
+  turn_id: string;
+  statuses: CriterionCheck[];
+  claims: ClaimCheck[];
+  note_sent: boolean;
+  note?: string;
+}
+
+export interface SessionGoal {
+  revision: number;
+  objective: string;
+  criteria: string[];
+  status: "active" | "paused";
+}
+
+export interface SessionLedger {
+  through_seq: number | null;
+  turns: { count: number; last?: { turn_id: string; outcome: "done" | "yielded" | "interrupted" | "error" } | null };
+  /** Most recently changed first. */
+  files_touched: { path: string; changes: number; last_turn: number }[];
+  commands: { command: string; outcome: { status: string; code?: number; error?: string }; turn: number }[];
+  /** Most failures first. */
+  repeated_failures: { command: string; count: number; last_error: string }[];
+  last_turn_text?: string | null;
+  open_questions: { kind: "ask" | "secret" | "permission"; id: string; title: string; child_session_id?: string }[];
+  compactions: number;
+  goal?: SessionGoal | null;
+  goal_check?: GoalCheck | null;
+}

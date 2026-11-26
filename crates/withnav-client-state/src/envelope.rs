@@ -15,7 +15,7 @@
 use crate::{
     ProtocolError,
     children::{ChildAgent, ChildStatus},
-    command::{outcome_text, tokens},
+    command::{goal_note_line, outcome_text, remembered_line, tokens},
     conversation::{
         Activity, Block, BlockKind, PermissionPrompt, QuestionPrompt, SecretPrompt, SecretState,
         block,
@@ -1108,6 +1108,26 @@ pub fn apply_envelope(
                     }
                 }
                 set_variant_offer(s, data);
+            }
+            // A line of its own, not a command's output: what `/remember` stored, and the note a
+            // goal check queued (a check without one adds nothing: the panel reads its result).
+            let line = v
+                .get("data")
+                .filter(|_| ok)
+                .and_then(|d| match name.as_str() {
+                    "remember" => remembered_line(d),
+                    "goal_check" => goal_note_line(d),
+                    _ => None,
+                });
+            if let Some(line) = line {
+                s.conversation.blocks.push(block(
+                    e.seq.to_string(),
+                    BlockKind::Notice(strip_controls(&line)),
+                ));
+                return Ok(());
+            }
+            if ok && name == "goal_check" {
+                return Ok(());
             }
             let text = outcome_text(
                 &name,

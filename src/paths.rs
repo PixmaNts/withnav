@@ -42,6 +42,12 @@ pub fn permission_review_log(data_dir: &std::path::Path) -> PathBuf {
     data_dir.join(crate::session::permission_review::LOG_FILE)
 }
 
+/// The record of the Instinct calls made outside flows (watchdogs, compaction pruning),
+/// `<data_dir>/instinct-calls.jsonl`, beside the goal check log.
+pub fn instinct_call_log(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join(crate::layers::recorded::LOG_FILE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3227,8 +3227,8 @@ fn the_right_column_reads_the_snapshot_the_compaction_and_git() {
         follow_bottom: true,
         ..UiState::default()
     };
-    render("panel-160", (160, 40), &s, &ui, &Editor::new());
-    let shown = screen_text(&s, &ui, (160, 40));
+    render("panel-160", (160, 44), &s, &ui, &Editor::new());
+    let shown = screen_text(&s, &ui, (160, 44));
     for want in [
         "AGENTS",
         "● ◎ Nav  in use",
@@ -3490,18 +3490,18 @@ fn the_layout_at_100_140_and_200_columns_in_dark_and_light() {
             let shown = if name == "dark" {
                 render(
                     &format!("layout-{width}"),
-                    (width, 40),
+                    (width, 44),
                     &s,
                     &ui,
                     &Editor::new(),
                 )
             } else {
-                screen_text(&s, &ui, (width, 40))
+                screen_text(&s, &ui, (width, 44))
             };
             assert!(shown.contains("feat/tui-design ●14"), "{width}: {shown}");
             assert_eq!(shown.contains("AGENTS"), width >= 140, "{width}: {shown}");
             // the theme paints the header panel and the transcript background
-            let t = cells(&s, &ui, (width, 40));
+            let t = cells(&s, &ui, (width, 44));
             let palette = theme.palette();
             assert_eq!(t.backend().buffer()[(width - 1, 0)].bg, palette.panel);
             assert_eq!(t.backend().buffer()[(30, 10)].bg, palette.bg);
@@ -3509,7 +3509,7 @@ fn the_layout_at_100_140_and_200_columns_in_dark_and_light() {
             let x = header[..header.find('◆').unwrap()].chars().count() as u16;
             assert_eq!(t.backend().buffer()[(x, 0)].fg, palette.nav, "{name}");
             if width >= 140 {
-                let row = (0..40)
+                let row = (0..44)
                     .find(|y| row_text(&t, *y, width).contains("AGENTS"))
                     .unwrap();
                 assert_eq!(t.backend().buffer()[(width - 2, row)].bg, palette.panel);
@@ -3544,7 +3544,7 @@ fn wide_and_combining_names_never_push_the_gauge_off_the_header() {
     });
     let ui = UiState::default();
     for width in [80u16, 100, 140, 200] {
-        let t = cells(&s, &ui, (width, 40));
+        let t = cells(&s, &ui, (width, 44));
         let header = row_text(&t, 0, width);
         assert!(
             header.contains("200k"),
@@ -3561,9 +3561,9 @@ fn wide_and_combining_names_never_push_the_gauge_off_the_header() {
         );
     }
     // Wide characters take two cells, the second one blank: read the text without those.
-    let t = cells(&s, &ui, (160, 40));
+    let t = cells(&s, &ui, (160, 44));
     let buffer = t.backend().buffer();
-    let shown: String = (0..40u16)
+    let shown: String = (0..44u16)
         .map(|y| {
             let mut row = String::new();
             let mut x = 0u16;
@@ -3933,5 +3933,141 @@ fn pending_images_show_as_chips_above_the_message_box() {
     assert!(
         rows[chips + 1].contains("Message"),
         "the chips sit right above the box: {rows:#?}"
+    );
+}
+
+// ---------------------------------------------------------------- session view
+
+fn with_checked_goal() -> State {
+    use withnav_client_api::ledger::{
+        ClaimCheck, ClaimStatus, CriterionCheck, CriterionStatus, GoalCheck, GoalStatus,
+        SessionGoal, SessionLedger,
+    };
+    let mut s = state();
+    s.conversation.ledger = Some(SessionLedger {
+        goal: Some(SessionGoal {
+            revision: 3,
+            objective: "Fix the clippy warnings and get Windows CI green".into(),
+            criteria: vec![
+                "clippy is clean".into(),
+                "Windows CI passes".into(),
+                "docs updated".into(),
+            ],
+            status: GoalStatus::Active,
+        }),
+        goal_check: Some(GoalCheck {
+            revision: 3,
+            turn_id: "01KB0000000000000000000000".into(),
+            statuses: vec![
+                CriterionCheck {
+                    index: 1,
+                    status: CriterionStatus::Supported,
+                    evidence: "cargo clippy exited 0".into(),
+                },
+                CriterionCheck {
+                    index: 2,
+                    status: CriterionStatus::Contradicted,
+                    evidence: "cargo test exited 101".into(),
+                },
+            ],
+            claims: vec![ClaimCheck {
+                claim: "committed".into(),
+                status: ClaimStatus::Unverified,
+                evidence: String::new(),
+            }],
+            note_sent: false,
+            note: None,
+        }),
+        ..Default::default()
+    });
+    s
+}
+
+#[test]
+fn criteria_show_their_last_check_status() {
+    let s = with_checked_goal();
+    let ui = UiState {
+        panel_shown: Some(true),
+        ..UiState::default()
+    };
+    let screen = render("session-goal-criteria", (140, 40), &s, &ui, &Editor::new());
+    for line in [
+        "✓ clippy is clean",
+        "✗ Windows CI passes",
+        "· docs updated",
+        "? committed",
+    ] {
+        assert!(screen.contains(line), "{line}: {screen}");
+    }
+    let t = cells(&s, &ui, (140, 40));
+    let theme = Theme::default();
+    let colour_of = |needle: &str| {
+        let row = (0..40)
+            .find(|y| row_text(&t, *y, 140).contains(needle))
+            .unwrap_or_else(|| panic!("{needle}: {screen}"));
+        let x = row_text(&t, row, 140).find(needle).unwrap();
+        let x = row_text(&t, row, 140)[..x].chars().count() as u16;
+        t.backend().buffer()[(x, row)].fg
+    };
+    assert_eq!(colour_of("✓ clippy"), theme.green);
+    assert_eq!(colour_of("✗ Windows"), theme.red);
+}
+
+#[test]
+fn the_memory_section_lists_eligible_titles() {
+    use withnav_tui::state::MemoryEntry;
+    let mut s = state();
+    s.conversation.memory = Some(vec![
+        MemoryEntry {
+            id: "m1".into(),
+            title: "Conventional commits".into(),
+            scope: "project".into(),
+        },
+        MemoryEntry {
+            id: "m2".into(),
+            title: "Reply in French".into(),
+            scope: "global".into(),
+        },
+    ]);
+    let ui = UiState {
+        panel_shown: Some(true),
+        ..UiState::default()
+    };
+    let screen = render("session-memory", (140, 40), &s, &ui, &Editor::new());
+    assert!(screen.contains("MEMORY"), "{screen}");
+    assert!(screen.contains("Conventional commits"), "{screen}");
+    assert!(screen.contains("Reply in French"), "{screen}");
+}
+
+#[test]
+fn the_remembered_line_and_the_goal_note_read_as_quiet_notices() {
+    let mut s = state();
+    for (id, text) in [
+        (
+            "r1",
+            "Remembered: \"Use conventional commits\" · project WithNav · undo with /forget m1",
+        ),
+        (
+            "g1",
+            "Goal note · automatic observation, not a Captain message\nGoal check (revision 3): criterion 2 is contradicted.",
+        ),
+    ] {
+        s.conversation.blocks.push(Block {
+            id: id.into(),
+            kind: BlockKind::Notice(text.into()),
+        });
+    }
+    let ui = UiState {
+        follow_bottom: true,
+        ..UiState::default()
+    };
+    let screen = render("session-lines", (100, 24), &s, &ui, &Editor::new());
+    assert!(
+        screen.contains("Remembered: \"Use conventional commits\" · project WithNav"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("automatic observation, not a Captain message"),
+        "{screen}"
     );
 }

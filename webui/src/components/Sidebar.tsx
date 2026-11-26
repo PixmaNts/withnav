@@ -9,6 +9,7 @@ import { sessionTitle } from "../lib/compose";
 import { dayLabel, plural, shortPath } from "../lib/format";
 import type { Route } from "../router";
 import type { useWorkspaceExpansion } from "../lib/workspaceExpansion";
+import { MemoryNav } from "../memory/MemoryNav";
 import { WorkspaceMenu, type RemoveRequest } from "./WorkspaceActions";
 import { rootSessions, subagentsOf, type DeleteSessionRequest } from "./SessionActions";
 
@@ -56,6 +57,7 @@ export function Sidebar({ route, navigate, expansion, onRemove, onDelete }: Prop
 
   return (
     <nav className="sidebar" aria-label="Workspaces">
+      <MemoryNav route={route} navigate={navigate} />
       <div className="side-head">
         WORKSPACES
         <div className="side-actions">

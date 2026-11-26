@@ -9,6 +9,7 @@ pub mod config;
 mod flows;
 pub(crate) mod lsp_route;
 mod mcp_app;
+mod memory;
 pub mod owner;
 pub mod pairing;
 mod permissions;

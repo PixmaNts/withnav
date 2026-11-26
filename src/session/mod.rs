@@ -20,6 +20,7 @@ mod instance;
 pub mod ledger;
 mod lifecycle;
 mod mcp;
+pub(crate) mod memory;
 mod message;
 mod metacognition_client;
 pub mod permission_review;

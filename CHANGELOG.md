@@ -24,8 +24,9 @@ requests land in `develop`.
   (the turn being run, corrections and answers to a question included; no earlier request, none a
   turn that ended without a final message such as an interruption, a provider error or the step
   limit, no tool output), and `conversation.tool_trail` (tool names and outcomes only, flagged when
-  older calls were dropped, `unknown` for a result that cannot be read). The review's runs stay out
-  of the outage window the blocking decisions share and are capped per runtime, so a slow or failing
+  older calls were dropped). The review's runs stay out
+  of the outage window the blocking decisions share and are capped per runtime (a skipped review
+  is logged; a flow the Captain wrote is never capped), so a slow or failing
   review never changes a verdict or delays it. A subagent reads the setting when it starts, like
   its parent. `nav doctor` flags a mode it cannot read, and a session with such a value runs no
   review. The permission evidence version is 2, so

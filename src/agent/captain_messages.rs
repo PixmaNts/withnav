@@ -276,7 +276,7 @@ pub const TOOL_TRAIL_CALLS: usize = 8;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ToolTrailEntry {
     pub tool: String,
-    /// `ok`, `error`, `denied`, `interrupted` or `unknown`.
+    /// `ok`, `error`, `denied` or `interrupted`.
     pub status: &'static str,
 }
 
@@ -334,13 +334,11 @@ fn is_interruption(content: &str) -> bool {
 }
 
 /// How a call ended, from what the model was told. The loop writes a success as
-/// the tool's plain output, and every other ending as a serialised result or one
-/// of the canonical interruption lines. So a serialised result reads by its
-/// status, an interruption line is `interrupted`, and plain text is `ok`. A
-/// result that looks serialised but is not one the loop can read (a failure
-/// whose shape drifted, one cut short) is `unknown`, never `ok`: assuming a
-/// success for something that may be a failure would tell the review that a
-/// step it needs was done.
+/// the tool's plain output, and every other ending as a serialised tool result or
+/// one of the canonical interruption lines. So a payload that parses as the
+/// tool-result envelope reads by its status, an interruption line is
+/// `interrupted`, and anything else is `ok`: a tool's own output may itself be
+/// JSON (an API's reply, a listing) and a success must not read as anything else.
 fn trail_status(content: &str) -> &'static str {
     use crate::tools::ToolStatus;
     if is_interruption(content) {
@@ -350,9 +348,7 @@ fn trail_status(content: &str) -> &'static str {
         Ok(ToolStatus::Denied) => "denied",
         Ok(ToolStatus::Error) => "error",
         Ok(ToolStatus::Interrupted) => "interrupted",
-        Ok(_) => "ok",
-        Err(_) if content.trim_start().starts_with('{') => "unknown",
-        Err(_) => "ok",
+        Ok(_) | Err(_) => "ok",
     }
 }
 
@@ -1291,8 +1287,8 @@ mod current_request_tests {
 
     // Only the lines the loop and the session write for a call that never ran or was cut short
     // read as interrupted: a tool's own output that begins with the same word is the tool's.
-    // The loop writes a success as plain output, so plain text is `ok`; a result that looks
-    // serialised but cannot be read is not assumed to be a success.
+    // The loop writes a success as the tool's plain output, which may itself be JSON: only a
+    // payload that is the tool-result envelope with an error reads as one.
     #[test]
     fn only_the_canonical_interruption_lines_read_as_interrupted() {
         for line in [
@@ -1312,8 +1308,11 @@ mod current_request_tests {
         }
         assert_eq!(trail_status("Compiling withnav\nFinished"), "ok");
         assert_eq!(trail_status(""), "ok");
-        assert_eq!(trail_status("{\"status\":\"error\",\"outp"), "unknown");
-        assert_eq!(trail_status("{\"unrelated\": true}"), "unknown");
+        // A successful tool whose own output is JSON stays a success.
+        let listing = serde_json::json!({"items": [1, 2], "next": null}).to_string();
+        assert_eq!(trail_status(&listing), "ok");
+        assert_eq!(trail_status("{\"unrelated\": true}"), "ok");
+        assert_eq!(trail_status("[1, 2, 3]"), "ok");
         let failed = serde_json::to_string(&crate::tools::ToolResult::error("boom", "x")).unwrap();
         assert_eq!(trail_status(&failed), "error");
     }
@@ -1358,10 +1357,7 @@ mod current_request_tests {
             assert!(!cut);
             // The calls of the dropped turn are not part of this request's trail either.
             let (trail, _) = tool_trail_with_cut(transcript, Some(start), 8);
-            assert!(
-                trail.is_empty() || trail.iter().all(|e| e.status != "interrupted"),
-                "{shape}"
-            );
+            assert!(trail.is_empty(), "{shape}: {trail:?}");
             // Without the session's boundary the earlier message joins: the reason it is kept.
             let (joined, _) = current_request_with_cut(transcript, None);
             assert_eq!(joined.len(), 2, "{shape}");

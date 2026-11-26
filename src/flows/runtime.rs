@@ -2631,8 +2631,9 @@ mod tests {
     /// What goes wrong with the consequence review's request, while the blocking decision's
     /// requests are answered at once.
     enum ReviewFault {
-        /// The answer comes only when the test releases it: slower than any budget.
-        Hangs(Arc<tokio::sync::Notify>),
+        /// The answer comes only when the test adds a permit: slower than any budget. A permit
+        /// added before the request arrives is kept, so no release is lost.
+        Hangs(Arc<tokio::sync::Semaphore>),
         /// The provider is unreachable for the review's request.
         Fails,
     }
@@ -2676,7 +2677,7 @@ mod tests {
                 if review {
                     match &self.fault {
                         ReviewFault::Fails => return Err(DecisionError::ProviderError),
-                        ReviewFault::Hangs(release) => release.notified().await,
+                        ReviewFault::Hangs(release) => release.acquire().await.unwrap().forget(),
                     }
                 }
                 Ok(instinct_flow::protocol::DecisionResponse {
@@ -2711,7 +2712,14 @@ mod tests {
 
     fn faulty_runtime(fault: ReviewFault) -> (FlowRuntime, Arc<std::sync::atomic::AtomicUsize>) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(FlowStore::new(dir.path().into(), dir.path().join("config")));
+        faulty_runtime_in(dir.path(), fault)
+    }
+
+    fn faulty_runtime_in(
+        dir: &std::path::Path,
+        fault: ReviewFault,
+    ) -> (FlowRuntime, Arc<std::sync::atomic::AtomicUsize>) {
+        let store = Arc::new(FlowStore::new(dir.into(), dir.join("config")));
         let decisions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let client = Arc::new(FaultyReview {
             fault,
@@ -2756,7 +2764,7 @@ mod tests {
         );
 
         // The review's answer is slower than the blocking budget: the verdict is out before it.
-        let release = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
         let (runtime, decisions) = faulty_runtime(ReviewFault::Hangs(release.clone()));
         let mut running = vec![];
         for call in 0..2 {
@@ -2775,15 +2783,14 @@ mod tests {
             running.extend(handles);
         }
         assert_eq!(decisions.load(Ordering::SeqCst), 2);
-        for _ in &running {
-            release.notify_one();
-        }
+        release.add_permits(running.len());
         for handle in running {
             handle.await.unwrap();
         }
 
-        // A burst of calls with reviews that never answer keeps the reviews in flight to the cap.
-        let release = Arc::new(tokio::sync::Notify::new());
+        // A burst of calls with reviews that never answer keeps exactly the allowed number of
+        // reviews in flight, and a finished review gives its place back.
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
         let (runtime, decisions) = faulty_runtime(ReviewFault::Hangs(release.clone()));
         let calls = REVIEW_RUNS_IN_FLIGHT + 3;
         let mut running = vec![];
@@ -2794,15 +2801,66 @@ mod tests {
             running.extend(handles);
         }
         assert_eq!(decisions.load(Ordering::SeqCst), calls);
-        assert!(
-            !running.is_empty() && running.len() <= REVIEW_RUNS_IN_FLIGHT,
-            "{} reviews in flight",
-            running.len()
+        assert_eq!(
+            running.len(),
+            REVIEW_RUNS_IN_FLIGHT,
+            "the calls past the cap went without a review"
         );
-        for _ in &running {
-            release.notify_one();
-        }
+        release.add_permits(running.len());
         for handle in running {
+            handle.await.unwrap();
+        }
+        let (_, handles) =
+            judge_on(&runtime, review_ctx(ReviewMode::Shadow), RuleResult::Allow).await;
+        assert_eq!(handles.len(), 1, "a finished review gave its place back");
+        release.add_permits(1);
+        for handle in handles {
+            handle.await.unwrap();
+        }
+    }
+
+    // The cap and the outage exemption are the consequence review's: a flow the Captain wrote
+    // on `tool.pre_call` that does not block keeps running when the review's places are all
+    // taken, whatever the review does.
+    #[tokio::test]
+    async fn a_captain_flow_beside_the_verdict_is_not_held_by_the_review_cap() {
+        use crate::settings::ReviewMode;
+        let dir = tempfile::tempdir().unwrap();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let (runtime, _) = faulty_runtime_in(dir.path(), ReviewFault::Hangs(release.clone()));
+        let mut reviews = vec![];
+        for _ in 0..REVIEW_RUNS_IN_FLIGHT {
+            let (_, handles) =
+                judge_on(&runtime, review_ctx(ReviewMode::Shadow), RuleResult::Allow).await;
+            reviews.extend(handles);
+        }
+        assert_eq!(reviews.len(), REVIEW_RUNS_IN_FLIGHT);
+        runtime
+            .store
+            .save(
+                "captain-note",
+                Location::Global,
+                None,
+                super::super::store::Content::Toml {
+                    toml: "[flow]\nversion=1\nname='captain-note'\non='tool.pre_call'\nstart=['a']\n[[node]]\nid='a'\ntype='action'\naction='inject_note'\n[node.params]\ntext='note'\n".into(),
+                    templates: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        runtime.store.validate_test_documents();
+        runtime.store.reload().unwrap();
+        let (verdict, handles) =
+            judge_on(&runtime, review_ctx(ReviewMode::Shadow), RuleResult::Allow).await;
+        assert_eq!(verdict, FlowVerdict::Allow);
+        assert_eq!(
+            handles.len(),
+            1,
+            "the Captain's flow ran and the review, past its cap, did not"
+        );
+        let outcome = handles.into_iter().next().unwrap().await.unwrap();
+        assert_eq!(outcome.trace.flow_name, "captain-note");
+        release.add_permits(reviews.len());
+        for handle in reviews {
             handle.await.unwrap();
         }
     }
@@ -3195,7 +3253,8 @@ impl InputSource for ContextSnapshot {
 /// enough that a transient hiccup does not hide Instinct for long.
 const OUTAGE_COOLDOWN: Duration = Duration::from_secs(30);
 
-/// How many non-blocking runs of permission evaluations may be in flight at once on a runtime.
+/// How many runs of the built-in consequence review may be in flight at once on a runtime (a
+/// non-blocking flow the Captain wrote is not counted).
 /// They share the decision client's admission (16 calls for every host instance) with the
 /// blocking decisions, and a run that waits holds its place until its own 10 s deadline: with
 /// no cap, a burst of tool calls whose reviews stall would leave the decisions to wait for
@@ -3489,13 +3548,26 @@ impl FlowRuntime {
                 run_id: ulid::Ulid::generate().to_string(),
             };
             let flow = flow.clone();
-            // A non-blocking run beside a verdict is a score: it takes a place among the few the
-            // runtime allows, and the call goes without it when they are all taken.
-            let beside_verdict = !header.blocking && permission.is_some();
+            // The built-in review is a score beside the verdict: it takes a place among the few the
+            // runtime allows, and the call goes without it when they are all taken. A flow the
+            // Captain wrote keeps the baseline: it always runs and feeds the outage window.
+            let beside_verdict = !header.blocking
+                && permission.is_some()
+                && flow.location == super::store::Location::Builtin
+                && name == super::builtin::CONSEQUENCE_REVIEW;
             let place = if beside_verdict {
                 match self.review_runs.clone().try_acquire_owned() {
                     Ok(place) => Some(place),
-                    Err(_) => continue,
+                    Err(_) => {
+                        // The review's counters live in the run records, which a skipped review
+                        // never writes: the log line is the only trace of the skip.
+                        tracing::info!(
+                            flow = %name,
+                            in_flight = REVIEW_RUNS_IN_FLIGHT,
+                            "consequence review skipped: the runtime already has its allowed reviews running"
+                        );
+                        continue;
+                    }
                 }
             } else {
                 None

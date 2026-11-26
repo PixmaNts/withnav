@@ -78,6 +78,9 @@ struct SessionFlows<'s> {
     review: ReviewMode,
     /// Where the turn running began in `transcript`: the current request starts there.
     turn_start: Option<usize>,
+    /// The transcript no longer holds the turn's start where it was: the request and the trail
+    /// are then reported as cut.
+    turn_start_lost: bool,
     evidence: OnceLock<Evidence>,
     cancel: CancellationToken,
 }
@@ -110,6 +113,7 @@ impl Evidence {
         captain_skill: Option<&str>,
         review: ReviewMode,
         turn_start: Option<usize>,
+        turn_start_lost: bool,
     ) -> Self {
         #[cfg(test)]
         EVIDENCE_READS.with(|reads| reads.set(reads.get() + 1));
@@ -138,7 +142,12 @@ impl Evidence {
         } else {
             let (request, cut) = current_request_with_cut(transcript, turn_start);
             let (trail, trail_cut) = tool_trail_with_cut(transcript, turn_start, TOOL_TRAIL_CALLS);
-            (request, cut, trail, trail_cut)
+            (
+                request,
+                cut || turn_start_lost,
+                trail,
+                trail_cut || turn_start_lost,
+            )
         };
         Self {
             captain_messages,
@@ -164,6 +173,7 @@ impl SessionFlows<'_> {
                 self.captain_skill.as_deref(),
                 self.review,
                 self.turn_start,
+                self.turn_start_lost,
             )
         })
     }
@@ -401,6 +411,7 @@ pub(super) async fn authorize(
             place = location(call, &commands, &cx, &scratch);
         }
     }
+    let (turn_start, turn_start_lost) = actor.request_boundary();
     let flows = SessionFlows {
         reason: std::sync::Mutex::new(None),
         runs: Default::default(),
@@ -430,7 +441,8 @@ pub(super) async fn authorize(
         captain_skill: (call.name == "skill" && call.args["captain_selected"] == true)
             .then(|| call.args["name"].as_str().unwrap_or_default().to_owned()),
         review: actor.review,
-        turn_start: actor.request_start,
+        turn_start,
+        turn_start_lost,
         evidence: OnceLock::new(),
         cancel: actor.cancel.clone(),
     };

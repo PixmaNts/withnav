@@ -2368,6 +2368,8 @@ async fn a_turn_begun_after_an_interrupted_one_is_its_own_request() {
     actor.push_user("delete the logs");
     assert_eq!(actor.request_start, Some(0));
     actor.transcript.push(assistant_calling("c1", "bash"));
+    // What the loop does when the Captain interrupts: the turn ends, its call is settled.
+    actor.end_skill_turn();
     append_interrupted(&mut actor, "c1");
     actor.push_user("release la version 0.8.4");
     assert_eq!(actor.request_start, Some(3));
@@ -2393,6 +2395,113 @@ async fn a_turn_begun_after_an_interrupted_one_is_its_own_request() {
     assert_eq!(request_of(&ctx).last(), Some(&("captain", "staging")));
 }
 
+// A correction the Captain sends while the agent works, with no question pending, is the same
+// request: the turn has not ended, so the original message is not dropped. A turn that ended
+// (the test above) is what starts a new request.
+#[tokio::test]
+async fn a_correction_sent_while_the_agent_works_stays_in_the_request() {
+    let mut actor = actor_with(None);
+    actor.review = crate::settings::ReviewMode::Shadow;
+    actor.push_user("release la version 0.8.4");
+    actor.transcript.push(assistant_calling("c1", "bash"));
+    append_tool_result(&mut actor, "c1", &crate::tools::ToolResult::ok("built"));
+    actor.push_user("make it 0.8.5");
+    assert_eq!(actor.request_start, Some(0));
+    let ctx = review_context_of(&mut actor).await;
+    assert_eq!(
+        request_of(&ctx),
+        [
+            ("captain", "release la version 0.8.4"),
+            ("captain", "make it 0.8.5")
+        ]
+    );
+    assert_eq!(
+        ctx.tool_trail
+            .iter()
+            .map(|e| (e.tool.as_str(), e.status))
+            .collect::<Vec<_>>(),
+        [("bash", "ok")]
+    );
+    assert!(!ctx.current_request_cut && !ctx.tool_trail_cut);
+}
+
+// The boundary is an index into the transcript. Nothing rewrites the transcript during a turn
+// today, but a rewrite that moved messages would leave the index on another message, and the
+// request would then start in the wrong place or be empty. The actor remembers what stood just
+// before the boundary and, when that is no longer there, falls back on the last finished turn and
+// tells the review that the request was cut.
+#[tokio::test]
+async fn a_transcript_rewritten_under_the_turn_marks_the_request_cut() {
+    let mut actor = actor_with(None);
+    actor.review = crate::settings::ReviewMode::Shadow;
+    actor.push_user("delete the logs");
+    actor
+        .transcript
+        .push(crate::provider::openai::ChatMessage::Assistant {
+            content: Some("Done, the logs are gone.".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            opaque: None,
+        });
+    actor.end_skill_turn();
+    actor.push_user("release la version 0.8.4");
+    assert_eq!(actor.request_start, Some(2));
+
+    // Appended to, as every turn does: the boundary holds and nothing is cut.
+    let ctx = review_context_of(&mut actor).await;
+    assert_eq!(
+        request_of(&ctx),
+        [
+            ("agent", "Done, the logs are gone."),
+            ("captain", "release la version 0.8.4")
+        ]
+    );
+    assert!(!ctx.current_request_cut && !ctx.tool_trail_cut);
+
+    // The first message is gone: index 2 is now past the end.
+    actor.transcript.remove(0);
+    let ctx = review_context_of(&mut actor).await;
+    assert_eq!(
+        request_of(&ctx),
+        [
+            ("agent", "Done, the logs are gone."),
+            ("captain", "release la version 0.8.4")
+        ]
+    );
+    assert!(ctx.current_request_cut, "the boundary could not be trusted");
+    assert!(ctx.tool_trail_cut);
+
+    // A message inserted before it: the index now points at the Captain's own message.
+    let mut actor = actor_with(None);
+    actor.review = crate::settings::ReviewMode::Shadow;
+    actor.push_user("delete the logs");
+    actor
+        .transcript
+        .push(crate::provider::openai::ChatMessage::Assistant {
+            content: Some("Done, the logs are gone.".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            opaque: None,
+        });
+    actor.end_skill_turn();
+    actor.push_user("release la version 0.8.4");
+    actor.transcript.insert(
+        0,
+        crate::provider::openai::ChatMessage::System {
+            content: "inserted".into(),
+        },
+    );
+    let ctx = review_context_of(&mut actor).await;
+    assert_eq!(
+        request_of(&ctx),
+        [
+            ("agent", "Done, the logs are gone."),
+            ("captain", "release la version 0.8.4")
+        ]
+    );
+    assert!(ctx.current_request_cut);
+}
+
 // The trail reads the lines the loop really writes: a success is plain output, a failure or a
 // refusal a serialised result, an interruption one of the canonical lines. The same word at the
 // start of a tool's own output is not an interruption.
@@ -2404,6 +2513,15 @@ fn the_trail_reads_what_the_loop_writes() {
         (
             "ok",
             crate::tools::ToolResult::ok("interrupted: a log line"),
+        ),
+        // A tool whose own output is JSON is a success, whatever the JSON says.
+        (
+            "ok",
+            crate::tools::ToolResult::ok(r#"{"items":[1,2],"next":null}"#),
+        ),
+        (
+            "ok",
+            crate::tools::ToolResult::ok(r#"{"status":"error","message":"the API said so"}"#),
         ),
         ("error", crate::tools::ToolResult::error("boom", "failed")),
         ("denied", crate::tools::ToolResult::permission_denied("no")),

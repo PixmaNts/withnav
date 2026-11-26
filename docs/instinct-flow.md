@@ -338,17 +338,20 @@ or the step limit leave nothing in the transcript, and what the Captain asked in
 dropped, not carried out, so it does not join the next request. A correction the Captain sends
 while the agent works, and the answer to an `ask`, belong to the request; an earlier request never
 does, however few messages separate them. A session resumed from disk has no recorded start until
-its next turn and falls back on the last finished turn. It holds the agent's message that ended
+its next turn and falls back on the last finished turn, and so does a session whose transcript no
+longer holds the message that stood before the start when the turn began (the start is an index,
+and a transcript rewritten under the turn would leave it on another message): the request and the
+trail are then flagged `cut`. It holds the agent's message that ended
 the previous turn (the proposal a short answer accepts, labelled `agent`, only when it carries no
 tool call), then the Captain's messages and answers
 to `ask` since, each `ask` question labelled `agent`. The agent's prose while it works, tool
 outputs, fetched text and the compaction summary are never in it. Whole messages within 8 KiB with a
 cut flag. `conversation.tool_trail` lists the tools called in that request and how each ended
-(`ok`, `error`, `denied`, `interrupted` or `unknown`), the newest 8, oldest first, with `cut` set
+(`ok`, `error`, `denied` or `interrupted`), the newest 8, oldest first, with `cut` set
 when older calls were dropped: names and outcomes only, never arguments or output. Only the lines
 the loop writes for a call that never ran or was cut short read as `interrupted`; a tool's own
-output that starts with the same word is `ok`. A result that looks serialised but cannot be read
-is `unknown`, never `ok`. The event also carries `review_mode` (`off`, `shadow` or `on`, from
+output that starts with the same word is `ok`, and so is a tool's own output that is JSON: only a
+payload that parses as the tool-result envelope reads as `error` or `denied`. The event also carries `review_mode` (`off`, `shadow` or `on`, from
 `permissions.review`). The projection version is 2 since these inputs exist; a score from
 version 1 was made from other evidence and is not comparable.
 

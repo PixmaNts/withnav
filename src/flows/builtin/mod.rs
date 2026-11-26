@@ -2,6 +2,10 @@
 use instinct_flow::Definition;
 use std::collections::BTreeMap;
 
+/// Name of the built-in review that scores each judged call beside the permission verdict. The
+/// runtime limits and isolates this flow only, never a flow the Captain wrote.
+pub const CONSEQUENCE_REVIEW: &str = "permission-consequence-shadow";
+
 pub fn definitions() -> Vec<(Definition, BTreeMap<String, String>)> {
     [
         (

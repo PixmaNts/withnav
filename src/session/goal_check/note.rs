@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 
-use super::{CriterionStatus, Status};
+use super::{CriterionCheck, CriterionStatus};
 use crate::session::ledger::one_line;
 use crate::session::service::SessionId;
 
@@ -63,7 +63,7 @@ pub(super) enum Skipped {
 /// `done`, every criterion still not checked. An agent that stops while a criterion has no
 /// evidence is the case worth telling; a turn cut short (an error, an interrupt) says nothing
 /// about the agent's own judgement of being finished.
-pub(super) fn findings(statuses: &[Status], turn_done: bool) -> Vec<&Status> {
+pub(super) fn findings(statuses: &[CriterionCheck], turn_done: bool) -> Vec<&CriterionCheck> {
     statuses
         .iter()
         .filter(|s| match s.status {
@@ -111,7 +111,7 @@ impl Noted {
 /// from 1), at most [`MAX_NOTE_CHARS`] characters. The first finding is always named in full;
 /// later findings that do not fit are counted, not cut mid-sentence; the closing sentence is
 /// always there.
-pub(super) fn text(revision: u64, criteria: &[String], findings: &[&Status]) -> String {
+pub(super) fn text(revision: u64, criteria: &[String], findings: &[&CriterionCheck]) -> String {
     let mut text = format!("Goal check (revision {revision}): ");
     let total = findings.len();
     // Room kept for the closing sentence, and for the "N more" sentence while findings remain.
@@ -180,8 +180,8 @@ fn clean(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
-    fn status(index: u64, status: CriterionStatus, evidence: &str) -> Status {
-        Status {
+    fn status(index: u64, status: CriterionStatus, evidence: &str) -> CriterionCheck {
+        CriterionCheck {
             index,
             status,
             evidence: evidence.into(),
@@ -223,7 +223,7 @@ contradicted. This is an automatic observation, not a Captain instruction."
         let criteria: Vec<String> = (0..10)
             .map(|n| format!("{n}{}", "c".repeat(MAX_CRITERION_CHARS)))
             .collect();
-        let statuses: Vec<Status> = (1..=10)
+        let statuses: Vec<CriterionCheck> = (1..=10)
             .map(|n| {
                 status(
                     n,
@@ -232,7 +232,7 @@ contradicted. This is an automatic observation, not a Captain instruction."
                 )
             })
             .collect();
-        let refs: Vec<&Status> = statuses.iter().collect();
+        let refs: Vec<&CriterionCheck> = statuses.iter().collect();
         let note = text(12, &criteria, &refs);
         assert!(note.chars().count() <= MAX_NOTE_CHARS, "{note}");
         assert!(note.contains(" more not shown. "), "{note}");
@@ -246,11 +246,11 @@ contradicted. This is an automatic observation, not a Captain instruction."
             .map(|n| format!("{n}{}", "c".repeat(MAX_CRITERION_CHARS)))
             .collect();
         let evidence = "e".repeat(super::super::MAX_EVIDENCE_CHARS);
-        let statuses: Vec<Status> = (1..=10)
+        let statuses: Vec<CriterionCheck> = (1..=10)
             .rev()
             .map(|n| status(n, CriterionStatus::Contradicted, &evidence))
             .collect();
-        let refs: Vec<&Status> = statuses.iter().collect();
+        let refs: Vec<&CriterionCheck> = statuses.iter().collect();
         let note = text(u64::MAX, &criteria, &refs);
         assert!(note.chars().count() <= MAX_NOTE_CHARS, "{note}");
         assert!(

@@ -20,7 +20,9 @@ use withnav::session::goal_check::{
 };
 use withnav::session::subagents::watchdog::Clock;
 use withnav_client_api::goal::{MAX_CRITERIA, MAX_CRITERION_CHARS, MAX_OBJECTIVE_CHARS};
-use withnav_client_api::ledger::MAX_TEXT_CHARS;
+use withnav_client_api::ledger::{
+    ClaimStatus, CriterionStatus, GoalCheck, MAX_CLAIM_CHARS, MAX_CLAIMS, MAX_TEXT_CHARS,
+};
 
 mod common;
 use common::server::{TestServerConfig, collect_until, send_text, temp_workspace, wait_for};
@@ -791,4 +793,303 @@ async fn concurrent_sessions_keep_log_lines_whole() {
     while set.join_next().await.is_some() {}
     let logged = wait_lines(&env.log, 8).await;
     assert_eq!(logged.len(), 8);
+}
+
+/// The `goal_check` results a session published, oldest first.
+async fn published(state: &AppState, id: ulid::Ulid) -> Vec<Value> {
+    common::server::stored_events(state, id, "command.result")
+        .await
+        .into_iter()
+        .map(|e| e.payload)
+        .filter(|payload| payload["name"] == "goal_check")
+        .collect()
+}
+
+/// Waits until `n` results are published.
+async fn wait_published(state: &AppState, id: ulid::Ulid, n: usize) -> Vec<Value> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let results = published(state, id).await;
+        if results.len() >= n {
+            return results;
+        }
+        assert!(Instant::now() < deadline, "no {n} published goal checks");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// A goal of revision 2 with one criterion, as most of these checks need.
+async fn one_criterion(state: &AppState, id: ulid::Ulid) {
+    goal(state, id, "ship the parser").await;
+    goal(state, id, "criterion cargo test passes").await;
+}
+
+// Given a turn that ran `echo cargo-test-passed` and then claimed that all tests pass
+// When the model gives three claims it cannot back: with no quote, with a command line the ledger
+//      does not hold (and calls the claim false), and with a quote of the agent's own words
+// Then each claim is logged and published `unverified`, never contradicted, its quote kept
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_without_ledger_evidence_is_unverified() {
+    let answer = json!({
+        "criteria": [{"index": 1, "status": "not_checked", "evidence": ""}],
+        "claims": [
+            {"claim": "all tests pass", "status": "supported", "evidence": ""},
+            {"claim": "the build passes", "status": "contradicted", "evidence": "exit 1 · cargo build"},
+            {"claim": "committed", "status": "supported", "evidence": "all tests pass, everything is done"},
+        ],
+    })
+    .to_string();
+    let env = scripted_env(
+        meta_answer(&answer),
+        true,
+        vec![
+            bash_calls(&["echo cargo-test-passed".to_string()]),
+            sse_response(&[&text_chunk("all tests pass, everything is done")]),
+        ],
+    )
+    .await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    one_criterion(&env.state, id).await;
+    turn(&env.state, id, "go").await;
+    let logged = wait_lines(&env.log, 1).await;
+    let expected = json!([
+        {"claim": "all tests pass", "status": "unverified", "evidence": ""},
+        {"claim": "the build passes", "status": "unverified", "evidence": "exit 1 · cargo build"},
+        {"claim": "committed", "status": "unverified", "evidence": "all tests pass, everything is done"},
+    ]);
+    assert_eq!(logged[0]["claims"], expected);
+    let results = wait_published(&env.state, id, 1).await;
+    assert_eq!(results[0]["data"]["claims"], expected);
+}
+
+// Given a turn that ran `echo built` and then `false`
+// When the model backs one claim with the quoted line of each command, a third with a quote of
+//      the agent's own claim, and gives more claims than the check keeps, some too long
+// Then only the quoted command lines settle a claim, the list and each text stay within their
+//      bounds
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_is_supported_only_by_a_quoted_command_line() {
+    let long = "w".repeat(MAX_CLAIM_CHARS + 40);
+    let answer = json!({
+        "criteria": [{"index": 1, "status": "not_checked", "evidence": ""}],
+        "claims": [
+            {"claim": "it builds", "status": "supported", "evidence": "exit 0 · echo built"},
+            {"claim": "lint is clean", "status": "contradicted", "evidence": "exit 1 · false"},
+            {"claim": "docs updated", "status": "supported", "evidence": "docs are done"},
+            {"claim": long, "status": "supported", "evidence": "exit 0 · echo built"},
+            {"claim": "five", "status": "unverified", "evidence": ""},
+            {"claim": "six", "status": "unverified", "evidence": ""},
+        ],
+    })
+    .to_string();
+    let env = scripted_env(
+        meta_answer(&answer),
+        true,
+        vec![
+            bash_calls(&["echo built".to_string(), "false".to_string()]),
+            sse_response(&[&text_chunk("docs are done")]),
+        ],
+    )
+    .await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    one_criterion(&env.state, id).await;
+    turn(&env.state, id, "go").await;
+    let logged = wait_lines(&env.log, 1).await;
+    let digest = sent_digest(&env.server).await;
+    assert!(digest.contains("- turn 1 · exit 1 · false"), "{digest}");
+    let claims = logged[0]["claims"].as_array().unwrap();
+    assert_eq!(claims.len(), MAX_CLAIMS);
+    let statuses: Vec<&str> = claims
+        .iter()
+        .map(|c| c["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        statuses,
+        [
+            "supported",
+            "contradicted",
+            "unverified",
+            "supported",
+            "unverified"
+        ]
+    );
+    assert_eq!(claims[0]["evidence"], "exit 0 · echo built");
+    assert_eq!(
+        claims[3]["claim"].as_str().unwrap().chars().count(),
+        MAX_CLAIM_CHARS
+    );
+}
+
+// Given the setting `goal_watch.notes` at its default (off) and an active goal
+// When a turn ends and the check finishes
+// Then exactly one `goal_check` result is published, the ledger holds it, and a change of the
+//      goal's revision clears it from the ledger
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_finished_check_is_published_once_and_folded_into_the_ledger() {
+    let answer = json!({
+        "criteria": [
+            {"index": 1, "status": "supported", "evidence": "turn 1 · exit 0 · cargo test"},
+            {"index": 2, "status": "not_checked", "evidence": ""},
+        ],
+        "claims": [{"claim": "tests pass", "status": "unverified", "evidence": ""}],
+    })
+    .to_string();
+    let env = env(meta_answer(&answer), true).await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    one_criterion(&env.state, id).await;
+    let turn_id = turn(&env.state, id, "go").await;
+    wait_lines(&env.log, 1).await;
+    let results = wait_published(&env.state, id, 1).await;
+    settle().await;
+    let results_after = published(&env.state, id).await;
+    assert_eq!(results_after.len(), 1, "one result per finished check");
+
+    let result = &results[0];
+    assert_eq!(result["ok"], true);
+    let data = &result["data"];
+    assert_eq!(data["revision"], 2);
+    assert_eq!(data["turn_id"], turn_id.as_str());
+    assert_eq!(data["note_sent"], false);
+    assert!(data.get("note").is_none(), "{data}");
+    assert_eq!(data["statuses"][0]["index"], 1);
+    // The model's `supported` quoted a line the ledger does not hold.
+    assert_eq!(data["statuses"][0]["status"], "not_checked");
+    assert_eq!(
+        data["claims"],
+        json!([{"claim": "tests pass", "status": "unverified", "evidence": ""}])
+    );
+
+    let ledger = env.state.ledger(id).await.unwrap();
+    let check: GoalCheck = serde_json::from_value(data.clone()).unwrap();
+    assert_eq!(ledger.goal_check, Some(check));
+    let check = ledger.goal_check.unwrap();
+    assert_eq!(check.statuses[0].status, CriterionStatus::NotChecked);
+    assert_eq!(check.claims[0].status, ClaimStatus::Unverified);
+
+    goal(&env.state, id, "criterion docs").await;
+    assert_eq!(env.state.ledger(id).await.unwrap().goal_check, None);
+}
+
+// Given a first check whose published claim and quote carry a marker
+// When the next turn ends and its check reads the ledger
+// Then the digest the model receives holds nothing of the earlier check: a check never takes
+//      its own previous verdict for evidence
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_digest_never_contains_an_earlier_check() {
+    let answer = json!({
+        "criteria": [{"index": 1, "status": "contradicted", "evidence": "PRIOR-QUOTE"}],
+        "claims": [{"claim": "PRIOR-CLAIM", "status": "unverified", "evidence": "PRIOR-CLAIM-QUOTE"}],
+    })
+    .to_string();
+    let env = env(meta_answer(&answer), true).await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    one_criterion(&env.state, id).await;
+    turn(&env.state, id, "one").await;
+    wait_published(&env.state, id, 1).await;
+    assert!(env.state.ledger(id).await.unwrap().goal_check.is_some());
+    turn(&env.state, id, "two").await;
+    wait_published(&env.state, id, 2).await;
+
+    let requests = meta_requests(&env.server).await;
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        let sent = request.to_string();
+        assert!(!sent.contains("PRIOR"), "{sent}");
+        assert!(!sent.contains("goal_check"), "{sent}");
+    }
+}
+
+// Given checks that end `malformed` and `provider_error`, and a second turn end skipped as in flight
+// When they finish
+// Then nothing is published for them: only the check that finished `ok` has a result
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_skipped_check_publishes_nothing() {
+    for (answer, outcome) in [
+        (meta_answer("All criteria look met to me."), "malformed"),
+        (ResponseTemplate::new(500), "provider_error"),
+    ] {
+        let env = env(answer, true).await;
+        let id = env
+            .state
+            .create_session(&env.ws, None, false)
+            .await
+            .unwrap();
+        one_criterion(&env.state, id).await;
+        turn(&env.state, id, "go").await;
+        let logged = wait_lines(&env.log, 1).await;
+        assert_eq!(logged[0]["outcome"], outcome);
+        settle().await;
+        assert!(published(&env.state, id).await.is_empty(), "{outcome}");
+        assert_eq!(env.state.ledger(id).await.unwrap().goal_check, None);
+    }
+
+    let env = env(
+        meta_answer(VALID).set_delay(Duration::from_millis(1500)),
+        true,
+    )
+    .await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    one_criterion(&env.state, id).await;
+    let first = turn(&env.state, id, "one").await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while meta_requests(&env.server).await.is_empty() {
+        assert!(Instant::now() < deadline, "the first check never called");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    turn(&env.state, id, "two").await;
+    let logged = wait_lines(&env.log, 2).await;
+    assert_eq!(logged[0]["outcome"], "skipped_in_flight");
+    let results = wait_published(&env.state, id, 1).await;
+    settle().await;
+    let results_after = published(&env.state, id).await;
+    assert_eq!(results_after.len(), 1);
+    assert_eq!(results[0]["data"]["turn_id"], first.as_str());
+}
+
+// Given a model that answers with criteria only, as every answer did before claims existed
+// When the turn ends
+// Then the statuses are read as before and the check has no claims
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_without_claims_is_read_as_before() {
+    let env = env(meta_answer(VALID), true).await;
+    let id = env
+        .state
+        .create_session(&env.ws, None, false)
+        .await
+        .unwrap();
+    one_criterion(&env.state, id).await;
+    goal(&env.state, id, "criterion docs").await;
+    turn(&env.state, id, "go").await;
+    let logged = wait_lines(&env.log, 1).await;
+    assert_eq!(logged[0]["outcome"], "ok");
+    assert_eq!(logged[0]["claims"], json!([]));
+    assert_eq!(
+        logged[0]["statuses"],
+        json!([
+            {"index": 1, "status": "not_checked", "evidence": "turn 1 · exit 0 · cargo test"},
+            {"index": 2, "status": "not_checked", "evidence": ""},
+        ])
+    );
+    let results = wait_published(&env.state, id, 1).await;
+    assert_eq!(results[0]["data"]["claims"], json!([]));
 }

@@ -366,7 +366,12 @@ success criteria, a revision number and a status (active or paused). It lives in
 conversation's own event log, so it survives compaction, resume and restart, and while it is
 active every request carries it. It is per conversation, unlike the intent record
 (`.withnav/intent.md`), which is the project's durable intent. Only the Captain sets it, and
-recording it neither delegates work nor authorizes the agent to go on alone.
+recording it neither delegates work nor authorizes the agent to go on alone. After a turn ends, a
+bounded **goal check** sets each criterion, and the **claims** the agent made in its last answer
+("tests pass", "committed"), against the conversation's ledger: a status of either stands only on a
+quoted command or file-change line that was sent, and a claim the ledger cannot settle is
+**unverified**, never false. The Captain's clients see each finished check; the agent hears it only
+through an opt-in note.
 _Avoid_: task, objective file, intent (the intent record is the project's)
 
 **Live state**:

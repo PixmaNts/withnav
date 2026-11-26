@@ -2,11 +2,17 @@
 //! at least one success criterion, one bounded metacognition call reads the session ledger and
 //! says, per criterion, whether a ledger item supports it, contradicts it, or neither.
 //!
+//! The same call also reads the agent's completion claims in its last turn text ("tests pass",
+//! "committed") against the ledger: a claim is `supported` or `contradicted` only on a quoted
+//! command or file-change line that was sent, and `unverified` otherwise, never false.
+//!
 //! Each check (or skipped check) is one line of `<data dir>/goal-checks.jsonl`, so the check can
-//! be compared with the Captain's own judgement. By default that line is all: no session event,
-//! no note, nothing shown to the Captain or a client. With the setting `goal_watch.notes` on, a
-//! check that finds something also queues one passive note for the agent's next turn (`note`);
-//! the line says whether a note was sent and, if not, why.
+//! be compared with the Captain's own judgement. A check that finished `ok` is also published to
+//! the session's clients as one `command.result` named `goal_check`, whatever `goal_watch.notes`
+//! says: the Captain sees what was checked, and the ledger keeps the last result of the goal's
+//! revision (`SessionLedger::goal_check`). The agent receives nothing by default: with the
+//! setting `goal_watch.notes` on, a check that finds something also queues one passive note for
+//! the agent's next turn (`note`); the line says whether a note was sent and, if not, why.
 //!
 //! The check runs off the turn's path: the watcher spawns it and goes on reading events, so a
 //! slow or hanging model never delays a turn's settlement or the next turn. It is bounded on
@@ -24,16 +30,21 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
+use serde_json::json;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use withnav_client_api::goal::SessionGoal;
+pub use withnav_client_api::ledger::{
+    ClaimCheck, ClaimStatus, CriterionCheck, CriterionStatus, GoalCheck,
+};
 
 use super::ledger::{SessionLedger, digest};
 use super::service::{Service, SessionHandle, SessionId};
 use super::subagents::watchdog::{Clock, RealClock};
-use crate::bus::event::EventEnvelope;
+use crate::bus::event::{COMMAND_RESULT_DATA_MAX_BYTES, CommandResult, EventEnvelope, EventKind};
 use crate::bus::runtime::RuntimeStatus;
+use crate::bus::sequencer::{Candidate, Sequencer};
 use crate::provider::assignments::{AssignedModel, Layer};
 use crate::provider::client::ModelClient;
 use crate::provider::openai::{
@@ -74,7 +85,13 @@ turn text is never enough.
 - \"contradicted\" only when a ledger item shows the opposite.
 - otherwise \"not_checked\".
 Evidence: at most 500 characters quoted from the ledger, or empty.
+Then list at most 5 completion claims the agent makes in the last turn text (for example \
+\"tests pass\", \"build passes\", \"committed\"), each at most 200 characters, with one status: \
+\"supported\" or \"contradicted\" only when a command or file-change line of the ledger shows it \
+or shows the opposite (quote that line, at most 200 characters), otherwise \"unverified\". A claim \
+no such line settles is \"unverified\", never \"contradicted\".
 Answer JSON only: {\"criteria\":[{\"index\":1,\"status\":\"supported|contradicted|not_checked\",\
+\"evidence\":\"...\"}],\"claims\":[{\"claim\":\"...\",\"status\":\"supported|contradicted|unverified\",\
 \"evidence\":\"...\"}]}";
 
 /// How one check ended, as the log names it.
@@ -93,22 +110,6 @@ pub enum Outcome {
     GoalChanged,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CriterionStatus {
-    Supported,
-    Contradicted,
-    NotChecked,
-}
-
-/// One criterion's status, numbered from 1 like the goal's criteria.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Status {
-    pub index: u64,
-    pub status: CriterionStatus,
-    pub evidence: String,
-}
-
 /// One line of the shadow log.
 #[derive(Debug, Serialize)]
 struct Record {
@@ -117,7 +118,9 @@ struct Record {
     turn_id: String,
     goal_revision: u64,
     outcome: Outcome,
-    statuses: Vec<Status>,
+    statuses: Vec<CriterionCheck>,
+    /// The completion claims of the last turn text and how the ledger stands against each.
+    claims: Vec<ClaimCheck>,
     latency_ms: u64,
     input_bytes: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -318,10 +321,11 @@ impl Service {
             return;
         };
         let checker = Arc::new(checker);
-        let (service, status, cancel) = (
+        let (service, status, cancel, sequencer) = (
             self.clone(),
             handle.status.clone(),
             handle.session_cancel.clone(),
+            handle.sequencer.clone(),
         );
         tokio::spawn(async move {
             let mut receiver = subscription.receiver;
@@ -360,7 +364,13 @@ impl Service {
                     goal,
                     done: event.payload["outcome"] == "done",
                 };
-                service.start_goal_check(turn, checker.clone(), &status, cancel.clone());
+                service.start_goal_check(
+                    turn,
+                    checker.clone(),
+                    &status,
+                    &sequencer,
+                    cancel.clone(),
+                );
             }
         });
     }
@@ -371,6 +381,7 @@ impl Service {
         turn: Turn,
         checker: Arc<Checker>,
         status: &Arc<RuntimeStatus>,
+        sequencer: &Sequencer,
         cancel: CancellationToken,
     ) {
         let (clock, deadline) = self.goal_checks.clock_and_deadline();
@@ -391,6 +402,7 @@ impl Service {
         };
         let service = self.clone();
         let status = status.clone();
+        let sequencer = sequencer.clone();
         tokio::spawn(async move {
             let _slot = slot;
             let started = clock.now();
@@ -408,10 +420,12 @@ impl Service {
             if let Ok(done) = result {
                 line.outcome = done.outcome;
                 line.statuses = done.statuses;
+                line.claims = done.claims;
                 line.input_bytes = done.input_bytes;
                 line.input_tokens = done.input_tokens;
                 line.output_tokens = done.output_tokens;
             }
+            let mut noted = None;
             line.set_note(service.goal_checks.note(
                 &turn,
                 &line,
@@ -419,6 +433,7 @@ impl Service {
                 cancel.is_cancelled(),
                 // The turn id names the check: one turn end makes at most one check.
                 |text| {
+                    noted = Some(text.clone());
                     status.queue_flow_note_report(
                         text,
                         note::FLOW.to_owned(),
@@ -428,6 +443,11 @@ impl Service {
                     )
                 },
             ));
+            // Published before the line is written, so a reader of the log finds the result.
+            // A stopped session has no clients left to tell.
+            if line.outcome == Outcome::Ok && !cancel.is_cancelled() {
+                publish(&sequencer, &turn, &line, noted.filter(|_| line.note_sent));
+            }
             append(&checker.log, &line);
         });
     }
@@ -446,6 +466,7 @@ impl Service {
         let mut done = Done {
             outcome: Outcome::ProviderError,
             statuses: Vec::new(),
+            claims: Vec::new(),
             input_bytes: 0,
             input_tokens: None,
             output_tokens: None,
@@ -510,6 +531,7 @@ impl Service {
             Some(statuses) => {
                 done.outcome = Outcome::Ok;
                 done.statuses = statuses;
+                done.claims = input::parse_claims(&answer.text, &input);
             }
             None => done.outcome = Outcome::Malformed,
         }
@@ -563,7 +585,8 @@ impl Service {
 /// What a finished call reports, before it becomes a log line.
 struct Done {
     outcome: Outcome,
-    statuses: Vec<Status>,
+    statuses: Vec<CriterionCheck>,
+    claims: Vec<ClaimCheck>,
     input_bytes: usize,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
@@ -577,6 +600,7 @@ fn record(turn: &Turn, checker: &Checker, outcome: Outcome) -> Record {
         goal_revision: turn.goal.revision,
         outcome,
         statuses: Vec::new(),
+        claims: Vec::new(),
         latency_ms: 0,
         input_bytes: 0,
         input_tokens: None,
@@ -585,6 +609,49 @@ fn record(turn: &Turn, checker: &Checker, outcome: Outcome) -> Record {
         note_sent: false,
         note_skipped: None,
     }
+}
+
+/// Publishes the result of a finished check to the session's clients: one `command.result` named
+/// `goal_check`, the pattern of the other notices that have no event kind of their own. The
+/// agent never reads it: only the note does, and only with `goal_watch.notes` on. A failure to
+/// publish is dropped, like the log line's.
+fn publish(sequencer: &Sequencer, turn: &Turn, line: &Record, note: Option<String>) {
+    let data = result_data(turn, line, note);
+    let _ = sequencer.publish(Candidate::new(
+        EventKind::CommandResult,
+        json!({
+            "operation_id": ulid::Ulid::generate(),
+            "name": "goal_check",
+            "ok": true,
+            "data": CommandResult::bound_data(data),
+        }),
+    ));
+}
+
+/// The `data` of the published result. A `command.result` keeps at most
+/// [`COMMAND_RESULT_DATA_MAX_BYTES`] and replaces anything larger by a marker that names nothing,
+/// which would lose the whole result: when the result is too large (thirty criteria with
+/// multi-byte quotes), the quotes go first, then the note text (`note_sent` stays true).
+fn result_data(turn: &Turn, line: &Record, note: Option<String>) -> serde_json::Value {
+    let mut check = GoalCheck {
+        revision: turn.goal.revision,
+        turn_id: turn.turn_id.clone(),
+        statuses: line.statuses.clone(),
+        claims: line.claims.clone(),
+        note_sent: line.note_sent,
+        note,
+    };
+    let fits = |check: &GoalCheck| {
+        serde_json::to_vec(check).is_ok_and(|bytes| bytes.len() <= COMMAND_RESULT_DATA_MAX_BYTES)
+    };
+    if !fits(&check) {
+        check.statuses.iter_mut().for_each(|s| s.evidence.clear());
+        check.claims.iter_mut().for_each(|c| c.evidence.clear());
+    }
+    if !fits(&check) {
+        check.note = None;
+    }
+    serde_json::to_value(check).unwrap_or_default()
 }
 
 /// Appends one line; a failure is logged to tracing and never reaches the session.
@@ -732,11 +799,12 @@ mod tests {
             turn_id: turn.turn_id.clone(),
             goal_revision: 3,
             outcome: Outcome::Ok,
-            statuses: vec![Status {
+            statuses: vec![CriterionCheck {
                 index: 1,
                 status: CriterionStatus::Contradicted,
                 evidence: "exit 101 · cargo test".into(),
             }],
+            claims: Vec::new(),
             latency_ms: 0,
             input_bytes: 0,
             input_tokens: None,
@@ -779,6 +847,49 @@ mod tests {
             checks.note(&turn, &line, true, false, |_| Ok(())),
             Some(note::Skipped::Duplicate)
         );
+    }
+
+    #[test]
+    fn a_published_result_keeps_what_fits_and_drops_quotes_before_the_note() {
+        let (turn, mut line) = contradicted();
+        line.statuses = (1..=30)
+            .map(|index| CriterionCheck {
+                index,
+                status: CriterionStatus::Contradicted,
+                // Four bytes a character: thirty of these alone overrun the bound.
+                evidence: "𝄞".repeat(MAX_EVIDENCE_CHARS),
+            })
+            .collect();
+        line.claims = vec![ClaimCheck {
+            claim: "tests pass".into(),
+            status: ClaimStatus::Unverified,
+            evidence: "𝄞".repeat(200),
+        }];
+        line.set_note(None);
+        let data = result_data(&turn, &line, Some("the note".into()));
+        assert!(serde_json::to_vec(&data).unwrap().len() <= COMMAND_RESULT_DATA_MAX_BYTES);
+        let check: GoalCheck = serde_json::from_value(data).unwrap();
+        assert_eq!(check.statuses.len(), 30, "every status is kept");
+        assert!(check.statuses.iter().all(|s| s.evidence.is_empty()));
+        assert_eq!(check.claims[0].claim, "tests pass");
+        assert_eq!(check.note.as_deref(), Some("the note"));
+        assert!(check.note_sent);
+
+        // A result that fits is published whole.
+        let (turn, mut line) = contradicted();
+        line.set_note(Some(note::Skipped::SettingOff));
+        let check: GoalCheck = serde_json::from_value(result_data(&turn, &line, None)).unwrap();
+        assert_eq!(check.revision, 3);
+        assert_eq!(check.statuses[0].evidence, "exit 101 · cargo test");
+        assert!(!check.note_sent && check.note.is_none());
+    }
+
+    #[test]
+    fn the_instructions_state_the_claim_bounds_and_the_never_false_rule() {
+        assert!(PROMPT.contains("at most 5 completion claims"));
+        assert!(PROMPT.contains("each at most 200 characters"));
+        assert!(PROMPT.contains("never \"contradicted\""));
+        assert!(PROMPT.contains("\"claims\":[{\"claim\""));
     }
 
     #[test]

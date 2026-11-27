@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api } from "./client";
-import type { McpStatus } from "./types";
+import type { MemoryFilter, McpStatus } from "./types";
 
 // Query keys in one place, so mutations invalidate exactly what they change.
 export const keys = {
@@ -16,6 +16,11 @@ export const keys = {
   settings: (ws: string) => ["settings", ws] as const,
   layers: (ws: string) => ["layers", ws] as const,
   mcp: ["mcp"] as const,
+  memory: ["memory"] as const,
+  memoryList: (filter: MemoryFilter) => ["memory", "list", filter] as const,
+  memoryItem: (id: string) => ["memory", "item", id] as const,
+  needsYou: ["needs-you"] as const,
+  projects: ["projects"] as const,
 };
 
 /** Everything a workspace removal or reopening changes: the list and every session list. */
@@ -85,3 +90,26 @@ export const useMcp = () => {
 /** Applies an `mcp.status` payload to the cache, unless the one held is newer. */
 export const keepMcpStatus = (qc: QueryClient, next: McpStatus) =>
   qc.setQueryData<McpStatus>(keys.mcp, (held) => (newerMcp(held, next) ? next : held));
+
+// ---- memory register ----
+
+/** Items matching the filter; every status unless `status` is set. */
+export const useMemoryItems = (filter: MemoryFilter) =>
+  useQuery({ queryKey: keys.memoryList(filter), queryFn: () => api.memoryItems(filter), retry: false, refetchInterval: 30_000 });
+
+export const useMemoryItem = (id: string | null) =>
+  useQuery({ queryKey: keys.memoryItem(id ?? ""), queryFn: () => api.memoryItem(id!), enabled: !!id, retry: false });
+
+/** The few changes that wait for the Captain; the server caps the list. */
+export const useNeedsYou = () =>
+  useQuery({ queryKey: keys.needsYou, queryFn: api.needsYou, retry: false, refetchInterval: 20_000 });
+
+export const useProjects = () => useQuery({ queryKey: keys.projects, queryFn: api.projects, retry: false, refetchInterval: 30_000 });
+
+/** After any write to the register: lists, open items, the waiting changes and the projects are read again. */
+export const registerChanged = (qc: QueryClient) =>
+  Promise.all([
+    qc.invalidateQueries({ queryKey: keys.memory }),
+    qc.invalidateQueries({ queryKey: keys.needsYou }),
+    qc.invalidateQueries({ queryKey: keys.projects }),
+  ]);

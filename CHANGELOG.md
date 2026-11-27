@@ -14,6 +14,7 @@ requests land in `develop`.
   summary no longer drops dead ends.
 ### Added
 
+- Memory and Projects pages in the web client (`#/memory`, `#/projects`, and a sidebar entry with a badge for what waits for you). Browse and filter the register, read every version with a word-by-word comparison, edit, invalidate, restore or change an item's scope with a reason, and undo from a toast. A write refused because the item moved on keeps your draft and shows the newer version; a change that lets more projects read something lists them and asks first. "Needs you" shows the few pending group and session changes; the projects page manages groups, memberships and session links, and a dialog asks which group a new repository belongs to (or "Ask me later").
 - A memory register for Captain-authored knowledge, with scoped items, version history, and confirmation for agent-requested widening or removal from another project. Use `/remember`, `/memory`, and `/forget`. Start `/remember` text with `@global`, `@group:<name>`, `@project`, or `@session` to choose a scope explicitly.
 
 - The session ledger: what a conversation did (turns and how the last one ended, files changed,

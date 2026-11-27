@@ -289,3 +289,108 @@ export interface SecretView {
   use_count: number;
   last4: string;
 }
+
+// ---------- memory register (`src/server/memory.rs`, `withnav-client-api/src/memory.rs`) ----------
+
+export type MemoryScope = "global" | "group" | "project" | "session";
+export type MemoryKind = "decision" | "convention" | "preference" | "environment" | "pitfall";
+export type MemoryStatus = "active" | "proposed" | "invalidated" | "rejected";
+
+export interface MemoryVersion {
+  version: number;
+  change: "created" | "updated" | "invalidated" | "restored" | "rescoped" | string;
+  title: string;
+  body: string;
+  why: string | null;
+  quote: string | null;
+  scope: MemoryScope;
+  /** Empty for a global item; a group id, a project id or a session id otherwise. */
+  scope_ref: string;
+  source_actor: string;
+  drafted_by: string;
+  confirmed_by: string | null;
+  source_session_id: string | null;
+  source_event_seq: number | null;
+  reason: string | null;
+  at: string;
+}
+
+export interface MemoryItem {
+  id: string;
+  kind: MemoryKind | string;
+  scope: MemoryScope;
+  scope_ref: string;
+  status: MemoryStatus | string;
+  current_version: number;
+  pinned: boolean;
+  created_at: string;
+  updated_at: string;
+  current: MemoryVersion;
+}
+
+export interface MemoryItemDetail extends MemoryItem {
+  /** Oldest first. */
+  versions: MemoryVersion[];
+}
+
+export interface MemoryFilter {
+  scope?: MemoryScope;
+  kind?: MemoryKind;
+  status?: MemoryStatus;
+  scope_ref?: string;
+  limit?: number;
+}
+
+export interface MemorySessionLink {
+  session_id: string;
+  project_id: string;
+  /** False once detached: the link stays as history. */
+  active: boolean;
+}
+
+export interface MemoryProject {
+  id: string;
+  name: string;
+  /** False while the new-project group question is open. */
+  group_answered: boolean;
+  /** Group ids. */
+  groups: string[];
+  /** Other names the project is known by (repository paths). */
+  aliases: string[];
+  sessions: MemorySessionLink[];
+}
+
+export interface MemoryGroup {
+  id: string;
+  name: string;
+  /** Project ids. */
+  members: string[];
+  /** Active items scoped to the group. */
+  items: number;
+}
+
+export interface MembershipChange {
+  id: number;
+  relation: "project_group" | "session_project";
+  project_id: string;
+  group_id?: string;
+  linked_session_id?: string;
+  change: "add" | "remove" | string;
+  status: "applied" | "proposed" | "rejected" | string;
+  actor: string;
+  session_id: string | null;
+  at: string;
+  decided_at: string | null;
+}
+
+export interface ProjectsBody {
+  projects: MemoryProject[];
+  groups: MemoryGroup[];
+  history: MembershipChange[];
+}
+
+/** 409 body of a write that would let more projects read an item or group. */
+export interface WideningBody {
+  reason: "widening_requires_confirmation";
+  affected_projects: MemoryProject[];
+}
